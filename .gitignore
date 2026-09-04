@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+target/
+
+# Build output
+dist/
+build/
+*.exe
+*.dll
+*.dylib
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rust
+
+# Environment
+.env
+.env.local
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+*.log
+
+# Signing keys (never commit)
+.update-keys/
+
+# Tauri generated
+src-tauri/gen/
+.svelte-kit/
