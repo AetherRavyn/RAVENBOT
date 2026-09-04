@@ -1,0 +1,19 @@
+[package]
+name = "ravenbot-plugins"
+description = "RAVENBOT 1000+ plugins via Composio + OpenAPI — native Skill generation"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ravenbot-core = { path = "../core" }
+ravenbot-skills = { path = "../skills" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sqlx.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
+async-trait = "0.1"
