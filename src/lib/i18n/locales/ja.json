@@ -1,0 +1,93 @@
+{
+  "app": {
+    "name": "RAVENBOT",
+    "tagline": "あなたの主権型AIエージェント艦隊",
+    "loading": "読み込み中..."
+  },
+  "sidebar": {
+    "search": "ボットを検索...",
+    "filterWaiting": "返信待ち",
+    "noBots": "ボットが見つかりません",
+    "pauseAll": "すべて一時停止",
+    "createBot": "新しいボットを作成"
+  },
+  "bot": {
+    "status": {
+      "idle": "待機中",
+      "thinking": "思考中...",
+      "runningTool": "ツール実行中",
+      "waitingOnUser": "あなたの入力待ち",
+      "paused": "一時停止"
+    },
+    "settings": "ボット設定",
+    "skills": "スキル",
+    "delete": "ボットを削除",
+    "deleteConfirm": "\"{{name}}\" を削除しますか？この操作は取り消せません。"
+  },
+  "thread": {
+    "threads": "スレッド",
+    "noThreads": "スレッドはまだありません",
+    "welcome": "{{name}} との会話を始めましょう",
+    "emptyWelcome": "メッセージを送信して開始しましょう。",
+    "typing": "メッセージを入力...",
+    "send": "メッセージを送信"
+  },
+  "settings": {
+    "title": "設定",
+    "apiKeys": "APIキー",
+    "apiKeysDesc": "モデルプロバイダーのAPIキーを設定します。キーはOSのキーチェーンに安全に保存されます。",
+    "localModels": "ローカルモデル",
+    "localModelsDesc": "Ollamaによるローカル推論を設定します",
+    "about": "情報",
+    "save": "保存",
+    "saved": "保存しました",
+    "cancel": "キャンセル",
+    "openrouter": "OpenRouter",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "ollamaUrl": "Ollama URL",
+    "version": "バージョン {{version}}"
+  },
+  "skills": {
+    "title": "スキル - {{botName}}",
+    "description": "このボットのスキルを有効にします。各スキルは使用時に特定の権限を要求します。",
+    "requires": "必要な権限:",
+    "saveSkills": "スキルを保存"
+  },
+  "killSwitch": {
+    "active": "キルスイッチ作動中",
+    "resume": "すべて再開",
+    "trigger": "緊急停止",
+    "confirmTitle": "キルスイッチを作動させますか？",
+    "confirmMessage": "実行中のすべてのボットを直ちに一時停止し、ネットワークアクセスを取り消します。",
+    "reasonPlaceholder": "例: 不審なアクティビティを検知",
+    "activate": "キルスイッチを作動"
+  },
+  "commandPalette": {
+    "placeholder": "コマンドを入力または検索...",
+    "noResults": "コマンドが見つかりません",
+    "createBot": "新しいボットを作成",
+    "createBotDesc": "新しいAIボットを作成",
+    "settings": "設定",
+    "settingsDesc": "APIキーと環境設定を構成"
+  },
+  "emptyState": {
+    "selectBot": "サイドバーからボットを選択するか、新しく作成してください",
+    "commandPalette": "コマンドパレット",
+    "settingsShortcut": "設定"
+  },
+  "errors": {
+    "loadFailed": "データの読み込みに失敗しました",
+    "sendFailed": "メッセージの送信に失敗しました",
+    "createFailed": "ボットの作成に失敗しました",
+    "updateFailed": "更新に失敗しました",
+    "deleteFailed": "削除に失敗しました"
+  },
+  "a11y": {
+    "sidebar": "ボット一覧",
+    "thread": "会話スレッド",
+    "compose": "メッセージ入力エリア",
+    "settings": "アプリケーション設定",
+    "killSwitch": "緊急停止ボタン"
+  }
+}

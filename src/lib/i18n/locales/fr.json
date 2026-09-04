@@ -1,0 +1,93 @@
+{
+  "app": {
+    "name": "RAVENBOT",
+    "tagline": "Votre flotte souveraine d'agents IA",
+    "loading": "Chargement..."
+  },
+  "sidebar": {
+    "search": "Rechercher des bots...",
+    "filterWaiting": "M'attendant",
+    "noBots": "Aucun bot trouvé",
+    "pauseAll": "Tout suspendre",
+    "createBot": "Créer un nouveau bot"
+  },
+  "bot": {
+    "status": {
+      "idle": "Inactif",
+      "thinking": "Réflexion...",
+      "runningTool": "Outil en cours",
+      "waitingOnUser": "Vous attend",
+      "paused": "En pause"
+    },
+    "settings": "Paramètres du bot",
+    "skills": "Compétences",
+    "delete": "Supprimer le bot",
+    "deleteConfirm": "Supprimer \"{{name}}\" ? Cette action est irréversible."
+  },
+  "thread": {
+    "threads": "Fils",
+    "noThreads": "Aucun fil pour le moment",
+    "welcome": "Commencez une conversation avec {{name}}",
+    "emptyWelcome": "Envoyez un message pour commencer.",
+    "typing": "Écrivez un message...",
+    "send": "Envoyer le message"
+  },
+  "settings": {
+    "title": "Paramètres",
+    "apiKeys": "Clés API",
+    "apiKeysDesc": "Configurez les clés API des fournisseurs de modèles. Les clés sont stockées en toute sécurité dans le trousseau de votre système.",
+    "localModels": "Modèles locaux",
+    "localModelsDesc": "Configurez l'inférence locale de modèles via Ollama",
+    "about": "À propos",
+    "save": "Enregistrer",
+    "saved": "Enregistré",
+    "cancel": "Annuler",
+    "openrouter": "OpenRouter",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "ollamaUrl": "URL Ollama",
+    "version": "Version {{version}}"
+  },
+  "skills": {
+    "title": "Compétences - {{botName}}",
+    "description": "Activez des compétences pour ce bot. Chaque compétence requiert des permissions spécifiques qui seront demandées lors de son utilisation.",
+    "requires": "Requiert :",
+    "saveSkills": "Enregistrer les compétences"
+  },
+  "killSwitch": {
+    "active": "ARRÊT D'URGENCE ACTIF",
+    "resume": "Tout reprendre",
+    "trigger": "Arrêt d'urgence",
+    "confirmTitle": "Activer l'arrêt d'urgence ?",
+    "confirmMessage": "Cela suspendra immédiatement tous les bots actifs et révoquera leur accès réseau.",
+    "reasonPlaceholder": "ex. : activité suspecte détectée",
+    "activate": "Activer l'arrêt d'urgence"
+  },
+  "commandPalette": {
+    "placeholder": "Saisissez une commande ou recherchez...",
+    "noResults": "Aucune commande trouvée",
+    "createBot": "Créer un nouveau bot",
+    "createBotDesc": "Créer un nouveau bot IA",
+    "settings": "Paramètres",
+    "settingsDesc": "Configurez les clés API et les préférences"
+  },
+  "emptyState": {
+    "selectBot": "Sélectionnez un bot dans la barre latérale ou créez-en un",
+    "commandPalette": "Palette de commandes",
+    "settingsShortcut": "Paramètres"
+  },
+  "errors": {
+    "loadFailed": "Échec du chargement des données",
+    "sendFailed": "Échec de l'envoi du message",
+    "createFailed": "Échec de la création du bot",
+    "updateFailed": "Échec de la mise à jour",
+    "deleteFailed": "Échec de la suppression"
+  },
+  "a11y": {
+    "sidebar": "Liste des bots",
+    "thread": "Fil de conversation",
+    "compose": "Zone de rédaction des messages",
+    "settings": "Paramètres de l'application",
+    "killSwitch": "Bouton d'arrêt d'urgence"
+  }
+}

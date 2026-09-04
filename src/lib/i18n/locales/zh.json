@@ -1,0 +1,93 @@
+{
+  "app": {
+    "name": "RAVENBOT",
+    "tagline": "你的主权 AI 智能体舰队",
+    "loading": "加载中..."
+  },
+  "sidebar": {
+    "search": "搜索机器人...",
+    "filterWaiting": "等待我处理",
+    "noBots": "未找到机器人",
+    "pauseAll": "全部暂停",
+    "createBot": "创建新机器人"
+  },
+  "bot": {
+    "status": {
+      "idle": "空闲",
+      "thinking": "思考中...",
+      "runningTool": "工具运行中",
+      "waitingOnUser": "等待你输入",
+      "paused": "已暂停"
+    },
+    "settings": "机器人设置",
+    "skills": "技能",
+    "delete": "删除机器人",
+    "deleteConfirm": "删除 \"{{name}}\"？此操作无法撤销。"
+  },
+  "thread": {
+    "threads": "会话",
+    "noThreads": "暂无会话",
+    "welcome": "开始与 {{name}} 的对话",
+    "emptyWelcome": "发送一条消息即可开始。",
+    "typing": "输入消息...",
+    "send": "发送消息"
+  },
+  "settings": {
+    "title": "设置",
+    "apiKeys": "API 密钥",
+    "apiKeysDesc": "配置模型提供商的 API 密钥。密钥会安全地保存在操作系统的钥匙串中。",
+    "localModels": "本地模型",
+    "localModelsDesc": "通过 Ollama 配置本地模型推理",
+    "about": "关于",
+    "save": "保存",
+    "saved": "已保存",
+    "cancel": "取消",
+    "openrouter": "OpenRouter",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "ollamaUrl": "Ollama 地址",
+    "version": "版本 {{version}}"
+  },
+  "skills": {
+    "title": "技能 - {{botName}}",
+    "description": "为该机器人启用技能。每项技能都需要特定权限，将在使用时请求。",
+    "requires": "需要权限：",
+    "saveSkills": "保存技能"
+  },
+  "killSwitch": {
+    "active": "紧急停止已激活",
+    "resume": "全部恢复",
+    "trigger": "紧急停止",
+    "confirmTitle": "激活紧急停止？",
+    "confirmMessage": "这将立即暂停所有正在运行的机器人并撤销其网络访问权限。",
+    "reasonPlaceholder": "例如：检测到可疑活动",
+    "activate": "激活紧急停止"
+  },
+  "commandPalette": {
+    "placeholder": "输入命令或搜索...",
+    "noResults": "未找到命令",
+    "createBot": "创建新机器人",
+    "createBotDesc": "创建一个新的 AI 机器人",
+    "settings": "设置",
+    "settingsDesc": "配置 API 密钥和偏好设置"
+  },
+  "emptyState": {
+    "selectBot": "从侧边栏选择一个机器人，或创建一个新机器人",
+    "commandPalette": "命令面板",
+    "settingsShortcut": "设置"
+  },
+  "errors": {
+    "loadFailed": "加载数据失败",
+    "sendFailed": "发送消息失败",
+    "createFailed": "创建机器人失败",
+    "updateFailed": "更新失败",
+    "deleteFailed": "删除失败"
+  },
+  "a11y": {
+    "sidebar": "机器人列表",
+    "thread": "对话线程",
+    "compose": "消息输入区",
+    "settings": "应用设置",
+    "killSwitch": "紧急停止按钮"
+  }
+}
