@@ -1,0 +1,11 @@
+[package]
+name = "ravenbot-ipc"
+description = "RAVENBOT typed IPC contract between Rust and UI"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ravenbot-core = { path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
