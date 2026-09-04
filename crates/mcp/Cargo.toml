@@ -1,0 +1,21 @@
+[package]
+name = "ravenbot-mcp"
+description = "RAVENBOT MCP — 60+ servers as native tools"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ravenbot-core = { path = "../core" }
+ravenbot-db = { path = "../db" }
+ravenbot-skills = { path = "../skills" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sqlx.workspace = true
+async-trait = "0.1"
+reqwest = { version = "0.12", features = ["json"] }
+schemars = "0.8"
