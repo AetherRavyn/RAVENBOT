@@ -1,0 +1,93 @@
+{
+  "app": {
+    "name": "RAVENBOT",
+    "tagline": "Tu flota soberana de agentes de IA",
+    "loading": "Cargando..."
+  },
+  "sidebar": {
+    "search": "Buscar bots...",
+    "filterWaiting": "Esperándome",
+    "noBots": "No se encontraron bots",
+    "pauseAll": "Pausar todo",
+    "createBot": "Crear nuevo bot"
+  },
+  "bot": {
+    "status": {
+      "idle": "Inactivo",
+      "thinking": "Pensando...",
+      "runningTool": "Ejecutando herramienta",
+      "waitingOnUser": "Esperándote",
+      "paused": "Pausado"
+    },
+    "settings": "Ajustes del bot",
+    "skills": "Habilidades",
+    "delete": "Eliminar bot",
+    "deleteConfirm": "¿Eliminar \"{{name}}\"? Esta acción no se puede deshacer."
+  },
+  "thread": {
+    "threads": "Hilos",
+    "noThreads": "Aún no hay hilos",
+    "welcome": "Comienza una conversación con {{name}}",
+    "emptyWelcome": "Envía un mensaje para comenzar.",
+    "typing": "Escribe un mensaje...",
+    "send": "Enviar mensaje"
+  },
+  "settings": {
+    "title": "Ajustes",
+    "apiKeys": "Claves de API",
+    "apiKeysDesc": "Configura las claves de API para los proveedores de modelos. Las claves se almacenan de forma segura en el llavero de tu sistema operativo.",
+    "localModels": "Modelos locales",
+    "localModelsDesc": "Configura la inferencia local de modelos mediante Ollama",
+    "about": "Acerca de",
+    "save": "Guardar",
+    "saved": "Guardado",
+    "cancel": "Cancelar",
+    "openrouter": "OpenRouter",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "ollamaUrl": "URL de Ollama",
+    "version": "Versión {{version}}"
+  },
+  "skills": {
+    "title": "Habilidades - {{botName}}",
+    "description": "Activa habilidades para este bot. Cada habilidad requiere permisos específicos que se solicitarán cuando se use.",
+    "requires": "Requiere:",
+    "saveSkills": "Guardar habilidades"
+  },
+  "killSwitch": {
+    "active": "INTERRUPTOR DE EMERGENCIA ACTIVO",
+    "resume": "Reanudar todo",
+    "trigger": "Parada de emergencia",
+    "confirmTitle": "¿Activar el interruptor de emergencia?",
+    "confirmMessage": "Esto pausará inmediatamente todos los bots en ejecución y revocará su acceso a la red.",
+    "reasonPlaceholder": "p. ej., actividad sospechosa detectada",
+    "activate": "Activar interruptor de emergencia"
+  },
+  "commandPalette": {
+    "placeholder": "Escribe un comando o busca...",
+    "noResults": "No se encontraron comandos",
+    "createBot": "Crear nuevo bot",
+    "createBotDesc": "Crea un nuevo bot de IA",
+    "settings": "Ajustes",
+    "settingsDesc": "Configura claves de API y preferencias"
+  },
+  "emptyState": {
+    "selectBot": "Selecciona un bot de la barra lateral o crea uno nuevo",
+    "commandPalette": "Paleta de comandos",
+    "settingsShortcut": "Ajustes"
+  },
+  "errors": {
+    "loadFailed": "No se pudieron cargar los datos",
+    "sendFailed": "No se pudo enviar el mensaje",
+    "createFailed": "No se pudo crear el bot",
+    "updateFailed": "No se pudo actualizar",
+    "deleteFailed": "No se pudo eliminar"
+  },
+  "a11y": {
+    "sidebar": "Lista de bots",
+    "thread": "Hilo de conversación",
+    "compose": "Área de redacción de mensajes",
+    "settings": "Ajustes de la aplicación",
+    "killSwitch": "Botón de parada de emergencia"
+  }
+}
