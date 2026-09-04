@@ -1,0 +1,93 @@
+{
+  "app": {
+    "name": "RAVENBOT",
+    "tagline": "Your sovereign AI agent fleet",
+    "loading": "Loading..."
+  },
+  "sidebar": {
+    "search": "Search bots...",
+    "filterWaiting": "Waiting on me",
+    "noBots": "No bots found",
+    "pauseAll": "Pause All",
+    "createBot": "Create New Bot"
+  },
+  "bot": {
+    "status": {
+      "idle": "Idle",
+      "thinking": "Thinking...",
+      "runningTool": "Running tool",
+      "waitingOnUser": "Waiting for you",
+      "paused": "Paused"
+    },
+    "settings": "Bot Settings",
+    "skills": "Skills",
+    "delete": "Delete Bot",
+    "deleteConfirm": "Delete \"{{name}}\"? This cannot be undone."
+  },
+  "thread": {
+    "threads": "Threads",
+    "noThreads": "No threads yet",
+    "welcome": "Start a conversation with {{name}}",
+    "emptyWelcome": "Send a message to begin.",
+    "typing": "Type a message...",
+    "send": "Send message"
+  },
+  "settings": {
+    "title": "Settings",
+    "apiKeys": "API Keys",
+    "apiKeysDesc": "Configure API keys for model providers. Keys are stored securely in your OS keychain.",
+    "localModels": "Local Models",
+    "localModelsDesc": "Configure local model inference via Ollama",
+    "about": "About",
+    "save": "Save",
+    "saved": "Saved",
+    "cancel": "Cancel",
+    "openrouter": "OpenRouter",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "ollamaUrl": "Ollama URL",
+    "version": "Version {{version}}"
+  },
+  "skills": {
+    "title": "Skills - {{botName}}",
+    "description": "Enable skills for this bot. Each skill requires specific permissions that will be requested when the skill is used.",
+    "requires": "Requires:",
+    "saveSkills": "Save Skills"
+  },
+  "killSwitch": {
+    "active": "KILL SWITCH ACTIVE",
+    "resume": "Resume All",
+    "trigger": "Emergency Stop",
+    "confirmTitle": "Activate Kill Switch?",
+    "confirmMessage": "This will immediately pause all running bots and revoke their network access.",
+    "reasonPlaceholder": "e.g., Suspicious activity detected",
+    "activate": "Activate Kill Switch"
+  },
+  "commandPalette": {
+    "placeholder": "Type a command or search...",
+    "noResults": "No commands found",
+    "createBot": "Create New Bot",
+    "createBotDesc": "Create a new AI bot",
+    "settings": "Settings",
+    "settingsDesc": "Configure API keys and preferences"
+  },
+  "emptyState": {
+    "selectBot": "Select a bot from the sidebar or create a new one",
+    "commandPalette": "Command palette",
+    "settingsShortcut": "Settings"
+  },
+  "errors": {
+    "loadFailed": "Failed to load data",
+    "sendFailed": "Failed to send message",
+    "createFailed": "Failed to create bot",
+    "updateFailed": "Failed to update",
+    "deleteFailed": "Failed to delete"
+  },
+  "a11y": {
+    "sidebar": "Bot list",
+    "thread": "Conversation thread",
+    "compose": "Message compose area",
+    "settings": "Application settings",
+    "killSwitch": "Emergency stop button"
+  }
+}
