@@ -27,9 +27,9 @@
 
 <div class="space-y-4">
   {#if intel}
-    <Card.Root class="bg-gradient-to-br from-purple-950/30 to-indigo-950/30 border-purple-500/20">
+    <Card.Root class="bg-[#141223] border-[var(--brand)]/25">
       <Card.Header class="pb-2">
-        <Card.Title class="text-sm flex items-center gap-2"><Brain class="size-4 text-purple-400" /> {botName} — Intelligence: {score}% <Badge variant="secondary" class="ml-auto bg-purple-600 text-white">{level}</Badge></Card.Title>
+        <Card.Title class="text-sm flex items-center gap-2"><Brain class="size-4 text-[var(--brand-text)]" /> {botName} — Intelligence: {score}% <Badge variant="secondary" class="ml-auto bg-[var(--brand)] text-white">{level}</Badge></Card.Title>
         <Card.Description class="text-xs">Gets smarter daily with more data — {intel.total_memories} personal + {intel.office_memories} team memories, {intel.learnings_count} learnings</Card.Description>
       </Card.Header>
       <Card.Content class="space-y-3">
@@ -38,9 +38,9 @@
           <Progress value={score} class="h-2" />
         </div>
         <div class="grid grid-cols-3 gap-2 text-center">
-          <div class="p-2 rounded-xl bg-card border"><div class="text-lg font-bold">{intel.tasks_today}</div><div class="text-[10px] text-muted-foreground">Tasks today</div></div>
-          <div class="p-2 rounded-xl bg-card border"><div class="text-lg font-bold text-emerald-400">{intel.success_streak}</div><div class="text-[10px] text-muted-foreground">Streak</div></div>
-          <div class="p-2 rounded-xl bg-card border"><div class="text-lg font-bold">{intel.total_memories + intel.office_memories}</div><div class="text-[10px] text-muted-foreground">Memories</div></div>
+          <div class="p-2 rounded-xl bg-[var(--surface-2)]ard border"><div class="text-lg font-bold">{intel.tasks_today}</div><div class="text-[10px] text-muted-foreground">Tasks today</div></div>
+          <div class="p-2 rounded-xl bg-[var(--surface-2)]ard border"><div class="text-lg font-bold text-success">{intel.success_streak}</div><div class="text-[10px] text-muted-foreground">Streak</div></div>
+          <div class="p-2 rounded-xl bg-[var(--surface-2)]ard border"><div class="text-lg font-bold">{intel.total_memories + intel.office_memories}</div><div class="text-[10px] text-muted-foreground">Memories</div></div>
         </div>
         <p class="text-xs text-muted-foreground flex items-center gap-1.5"><TrendingUp class="size-3" /> Agent learns from every success/failure — success rate drives promotion to long-term memory.</p>
       </Card.Content>
@@ -52,8 +52,8 @@
         <ScrollArea class="h-[250px] pr-2">
           <div class="space-y-2">
             {#each learnings as l}
-              <div class="p-2.5 rounded-xl border bg-card flex gap-2">
-                <div class="size-6 rounded-full flex items-center justify-center shrink-0 {l.learning_type === 'success' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'}">
+              <div class="p-2.5 rounded-xl border bg-[var(--surface-2)]ard flex gap-2">
+                <div class="size-6 rounded-full flex items-center justify-center shrink-0 {l.learning_type === 'success' ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning'}">
                   {#if l.learning_type === 'success'}<CheckCircle2 class="size-3.5" />{:else}<Zap class="size-3.5" />{/if}
                 </div>
                 <div class="flex-1 min-w-0">
@@ -62,7 +62,7 @@
                 </div>
               </div>
             {:else}
-              <div class="py-6 text-center text-sm text-muted-foreground border-2 border-dashed rounded-xl">No learnings yet — complete a task to see intelligence grow.</div>
+              <div class="py-6 text-center text-sm text-muted-foreground border-[var(--hairline)] border-dashed rounded-xl">No learnings yet — complete a task to see intelligence grow.</div>
             {/each}
           </div>
         </ScrollArea>

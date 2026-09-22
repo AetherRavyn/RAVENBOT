@@ -143,7 +143,7 @@ function flatBrand(
     statusLabel: "SYSTEM READY",
     statusDesc: "All systems operational",
     buttonBorderRadius: "rounded-xl",
-    buttonClass: "border-white/10 bg-white/[0.04] hover:bg-white/[0.08] text-zinc-100",
+    buttonClass: "border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-[var(--text-primary)]",
     cardClass: "bg-[var(--theme-card)] border-[var(--theme-border)]",
   };
 }

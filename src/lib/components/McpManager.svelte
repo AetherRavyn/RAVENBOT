@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import * as Dialog from "$lib/components/ui/dialog";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -59,6 +60,7 @@
     env_keys: string[];
     enabled: boolean;
     is_custom: boolean;
+    verified: boolean;
     env_configured: boolean;
     assigned_bot_ids: string[];
     tools_count: number;
@@ -80,7 +82,7 @@
   let customCategory = $state("Development & Coding");
   let customIcon = $state("⚡");
   let customCommand = $state("npx");
-  let customArgs = $state("-y @my-org/mcp-server");
+  let customArgs = $state("-y\n@my-org/mcp-server");
   let customEnvKeys = $state("");
   let isSavingCustom = $state(false);
   let customError = $state("");
@@ -281,23 +283,50 @@
     }
   }
 
+  const MCP_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+  const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
   async function saveCustomServer() {
+    const cleanId = customId.trim().toLowerCase().replace(/\s+/g, "-");
     if (!customId.trim() || !customName.trim()) {
       customError = "Server ID and Name are required";
       return;
     }
+    if (!MCP_NAME_RE.test(cleanId)) {
+      customError = "ID: 1–32 lowercase letters, numbers, _ or -, starting with a letter.";
+      return;
+    }
+    // One arg per line (OpenMausBot parity) — spaces inside an arg survive.
+    const parsedArgs = customArgs
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (parsedArgs.length > 64) {
+      customError = "Use at most 64 arguments (one per line).";
+      return;
+    }
+    // Env keys: KEY= / KEY=value per line; blank value on edit = keep saved.
+    const parsedEnv: Record<string, string> = {};
+    for (const rawLine of customEnvKeys.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const eq = line.indexOf("=");
+      const key = (eq < 0 ? line : line.slice(0, eq)).trim();
+      const val = eq < 0 ? "" : line.slice(eq + 1);
+      if (!ENV_NAME_RE.test(key)) {
+        customError = `Bad env name "${key}": letters, digits, _ only, not starting with a digit.`;
+        return;
+      }
+      if (key === "ELECTRON_RUN_AS_NODE" || key.startsWith("OMB_") || key.startsWith("OGB_")) {
+        customError = `Env name "${key}" is reserved.`;
+        return;
+      }
+      parsedEnv[key] = val;
+    }
     customError = "";
     isSavingCustom = true;
 
-    const parsedArgs = customArgs
-      .split(/[\s,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-
-    const parsedEnvKeys = customEnvKeys
-      .split(/[\s,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    const parsedEnvKeys = Object.keys(parsedEnv);
 
     const config = {
       id: customId.trim().toLowerCase().replace(/\s+/g, "-"),
@@ -318,7 +347,7 @@
       customId = "";
       customName = "";
       customDesc = "";
-      customArgs = "-y @my-org/mcp-server";
+      customArgs = "-y\n@my-org/mcp-server";
       customEnvKeys = "";
       await load();
     } catch (e) {
@@ -365,14 +394,14 @@
 {#if open}
   <Dialog.Root {open} onOpenChange={(o) => !o && onClose()}>
     <Dialog.Content
-      class="sm:max-w-5xl md:max-w-5xl lg:max-w-6xl max-w-6xl w-[96vw] max-h-[90vh] flex flex-col bg-[#0c0c14]/98 border border-purple-500/30 shadow-[0_0_60px_rgba(147,51,234,0.25)] backdrop-blur-2xl rounded-3xl p-0 overflow-hidden text-zinc-100"
+      class="sm:max-w-5xl md:max-w-5xl lg:max-w-6xl max-w-6xl w-[96vw] max-h-[90vh] flex flex-col bg-[var(--surface-1)] border border-[var(--brand)]/30 ]  rounded-xl p-0 overflow-hidden text-[var(--text-primary)]"
     >
       <!-- Fixed Header -->
-      <div class="px-6 pt-5 pb-3.5 border-b border-white/10 shrink-0 bg-[#0e0e18]/80">
+      <div class="px-6 pt-5 pb-3.5 border-[var(--hairline)] border-[var(--hairline)] shrink-0 bg-[var(--surface-1)]/80">
         <div class="flex items-center justify-between gap-4">
           <div class="flex items-center gap-3.5">
             <div
-              class="size-11 rounded-2xl bg-gradient-to-br from-purple-900/80 to-indigo-950/80 border border-purple-500/40 flex items-center justify-center text-purple-300 shadow-[0_0_20px_rgba(147,51,234,0.3)] shrink-0"
+              class="size-11 rounded-2xl bg-[#17122a] border border-[var(--brand)]/40 flex items-center justify-center text-[var(--brand-text)] shrink-0"
             >
               <Wrench class="size-5.5" />
             </div>
@@ -381,11 +410,11 @@
                 <Dialog.Title class="text-base font-bold text-white flex items-center gap-2">
                   {#if bot}
                     <span>MCP Native Tools for</span>
-                    <span class="text-purple-400 font-extrabold flex items-center gap-1.5">
+                    <span class="text-[var(--brand-text)] font-extrabold flex items-center gap-1.5">
                       <img
                         src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "bottts")}
                         alt={bot.name}
-                        class="size-4.5 rounded-full inline-block border border-purple-400"
+                        class="size-4.5 rounded-full inline-block border border-[var(--brand)]"
                       />
                       {bot.name}
                     </span>
@@ -393,11 +422,11 @@
                     <span>MCP Server Hub — 100+ Native Tools</span>
                   {/if}
                 </Dialog.Title>
-                <span class="text-[10px] bg-purple-950/80 text-purple-300 border border-purple-500/30 px-2 py-0.5 rounded-full font-mono font-bold">
+                <span class="text-[10px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30 px-2 py-0.5 rounded-full font-mono font-bold">
                   {servers.length} SERVERS
                 </span>
               </div>
-              <Dialog.Description class="text-xs text-zinc-400 mt-0.5">
+              <Dialog.Description class="text-xs text-[var(--text-tertiary)] mt-0.5">
                 Every Model Context Protocol server connects directly as native tools to all LLMs (Claude, GPT-4o, Ollama, Local).
               </Dialog.Description>
             </div>
@@ -407,17 +436,17 @@
             <Button
               size="sm"
               variant="outline"
-              class="h-8.5 gap-1.5 text-xs bg-[#171726] border-purple-500/30 text-purple-300 hover:bg-purple-950/40 hover:text-white cursor-pointer shadow-sm"
+              class="h-8.5 gap-1.5 text-xs bg-[var(--surface-3)] border-[var(--brand)]/30 text-[var(--brand-text)] hover:bg-[var(--brand-soft)] hover:text-[var(--text-primary)] cursor-pointer shadow-sm"
               onclick={() => load()}
               disabled={syncing}
             >
-              <RefreshCw class={cn("size-3.5", syncing && "animate-spin text-purple-400")} />
+              <RefreshCw class={cn("size-3.5", syncing && "animate-spin text-[var(--brand-text)]")} />
               <span>{syncing ? "Syncing..." : "Refresh"}</span>
             </Button>
 
             <Button
               size="sm"
-              class="h-8.5 gap-1.5 text-xs bg-purple-600 hover:bg-purple-500 text-white font-medium shadow-[0_0_15px_rgba(168,85,247,0.35)] cursor-pointer"
+              class="h-8.5 gap-1.5 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium ] cursor-pointer"
               onclick={() => (showAddCustom = true)}
             >
               <Plus class="size-3.5" />
@@ -430,16 +459,16 @@
         <div class="flex flex-col lg:flex-row gap-2.5 mt-3.5 items-stretch lg:items-center justify-between">
           <!-- Search input -->
           <div class="relative flex-1 min-w-[240px]">
-            <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-zinc-400 pointer-events-none" />
+            <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-[var(--text-tertiary)] pointer-events-none" />
             <Input
               bind:value={query}
               placeholder="Search 100+ MCP servers (github, postgres, fetch, duckdb, telegram, crypto, docker, shell)..."
-              class="pl-9 pr-8 h-9 text-xs bg-[#12121e] border-[#222234] focus-visible:border-purple-500/60 focus-visible:ring-purple-500/20 text-zinc-100 placeholder:text-zinc-500 rounded-xl"
+              class="pl-9 pr-8 h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] focus-visible:border-[var(--brand)]/60 focus-visible:ring-[var(--brand)]/20 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-xl"
             />
             {#if query}
               <button
                 type="button"
-                class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white p-1"
+                class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] p-1"
                 onclick={() => (query = "")}
               >
                 <X class="size-3.5" />
@@ -452,10 +481,10 @@
             <button
               type="button"
               class={cn(
-                "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
                 activeTab === "all"
-                  ? "bg-purple-600 text-white border-purple-400 shadow-[0_0_12px_rgba(147,51,234,0.35)]"
-                  : "bg-[#141422] text-zinc-400 border-[#222234] hover:bg-[#1a1a2e] hover:text-zinc-200"
+                  ? "bg-[var(--brand)] text-white border-[var(--brand)] ]"
+                  : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
               )}
               onclick={() => (activeTab = "all")}
             >
@@ -467,14 +496,14 @@
               <button
                 type="button"
                 class={cn(
-                  "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
                   activeTab === "bot"
-                    ? "bg-purple-600 text-white border-purple-400 shadow-[0_0_12px_rgba(147,51,234,0.35)]"
-                    : "bg-[#141422] text-zinc-400 border-[#222234] hover:bg-[#1a1a2e] hover:text-zinc-200"
+                    ? "bg-[var(--brand)] text-white border-[var(--brand)] ]"
+                    : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
                 )}
                 onclick={() => (activeTab = "bot")}
               >
-                <BotIcon class="size-3 text-purple-300" />
+                <BotIcon class="size-3 text-[var(--brand-text)]" />
                 <span>For {bot.name}</span>
                 <span class="text-[10px] font-mono opacity-80">({activeBotCount})</span>
               </button>
@@ -483,14 +512,14 @@
             <button
               type="button"
               class={cn(
-                "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
                 activeTab === "global"
-                  ? "bg-cyan-600 text-white border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.35)]"
-                  : "bg-[#141422] text-zinc-400 border-[#222234] hover:bg-[#1a1a2e] hover:text-zinc-200"
+                  ? "bg-[var(--brand)] text-white border-[var(--brand)] ]"
+                  : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
               )}
               onclick={() => (activeTab = "global")}
             >
-              <Globe class="size-3 text-cyan-300" />
+              <Globe class="size-3 text-[var(--brand-text)]" />
               <span>Global Active</span>
               <span class="text-[10px] font-mono opacity-80">({globalCount})</span>
             </button>
@@ -499,14 +528,14 @@
               <button
                 type="button"
                 class={cn(
-                  "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
                   activeTab === "configured"
-                    ? "bg-amber-600 text-white border-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.35)]"
-                    : "bg-[#141422] text-amber-300/90 border-amber-500/30 hover:bg-[#1a1a2e] hover:text-amber-200"
+                    ? "bg-warning text-white border-warning shadow-[0_0_12px_rgba(245,158,11,0.35)]"
+                    : "bg-[var(--surface-2)] text-warning/90 border-warning/30 hover:bg-[var(--surface-3)] hover:text-warning"
                 )}
                 onclick={() => (activeTab = "configured")}
               >
-                <Key class="size-3 text-amber-400" />
+                <Key class="size-3 text-warning" />
                 <span>Needs Keys</span>
                 <span class="text-[10px] font-mono opacity-80">({missingKeysCount})</span>
               </button>
@@ -516,14 +545,14 @@
               <button
                 type="button"
                 class={cn(
-                  "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-2.5 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
                   activeTab === "custom"
-                    ? "bg-indigo-600 text-white border-indigo-400 shadow-[0_0_12px_rgba(99,102,241,0.35)]"
-                    : "bg-[#141422] text-zinc-400 border-[#222234] hover:bg-[#1a1a2e] hover:text-zinc-200"
+                    ? "bg-[var(--brand)] text-white border-[var(--brand)] ]"
+                    : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
                 )}
                 onclick={() => (activeTab = "custom")}
               >
-                <Sparkles class="size-3 text-indigo-300" />
+                <Sparkles class="size-3 text-[var(--brand-text)]" />
                 <span>Custom</span>
                 <span class="text-[10px] font-mono opacity-80">({customCount})</span>
               </button>
@@ -532,7 +561,7 @@
         </div>
 
         <!-- Clean Wrapping Categories Strip (No Horizontal Scrolling / No Bar Problem) -->
-        <div class="flex flex-wrap items-center gap-1.5 mt-2.5 pt-2 border-t border-white/5">
+        <div class="flex flex-wrap items-center gap-1.5 mt-2.5 pt-2 border-t border-[var(--hairline)]">
           {#each categoryDefs as cat}
             {@const count = getCategoryCount(cat.id)}
             {@const IconComponent = cat.icon}
@@ -540,18 +569,18 @@
               <button
                 type="button"
                 class={cn(
-                  "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
                   selectedCategory === cat.id
-                    ? "bg-purple-900/60 text-purple-200 border-purple-400/80 shadow-[0_0_10px_rgba(168,85,247,0.25)] font-semibold"
-                    : "bg-[#11111b] text-zinc-400 border-[#1c1c2b] hover:bg-[#181828] hover:text-zinc-200 hover:border-purple-500/20"
+                    ? "bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/80 ] font-semibold"
+                    : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] hover:border-[var(--brand)]/25"
                 )}
                 onclick={() => (selectedCategory = cat.id)}
               >
-                <IconComponent class="size-3.5 text-purple-400 shrink-0" />
+                <IconComponent class="size-3.5 text-[var(--brand-text)] shrink-0" />
                 <span>{cat.label}</span>
                 <span class={cn(
-                  "text-[10px] font-mono px-1 rounded",
-                  selectedCategory === cat.id ? "bg-purple-800/80 text-purple-200" : "text-zinc-500"
+ "text-[10px] font-mono px-1 rounded",
+                  selectedCategory === cat.id ? "bg-[var(--brand-soft)] text-[var(--brand-text)]" : "text-[var(--text-muted)]"
                 )}>
                   {count}
                 </span>
@@ -572,12 +601,12 @@
 
             <div
               class={cn(
-                "rounded-2xl border p-4 transition-all flex flex-col justify-between gap-3 relative group backdrop-blur-md",
+ "rounded-2xl border p-4 transition-all flex flex-col justify-between gap-3 relative group ",
                 isBotEnabled
-                  ? "border-purple-500/70 bg-purple-950/20 shadow-[0_0_20px_rgba(168,85,247,0.15)] ring-1 ring-purple-500/30"
+                  ? "border-[var(--brand)]/70 bg-[var(--brand-soft)] ] ring-1 ring-[var(--brand)]/30"
                   : isGlobalEnabled
-                    ? "border-cyan-500/40 bg-[#0e121e]/80 hover:border-cyan-500/60"
-                    : "border-[#1e1e2d] bg-[#0e0e18]/85 hover:border-purple-500/40 hover:bg-[#121220]"
+                    ? "border-[var(--brand)]/40 bg-[var(--brand-soft)] hover:border-[var(--hairline-strong)]"
+                    : "border-[var(--hairline)] bg-[var(--surface-1)]/85 hover:border-[var(--brand)]/40 hover:bg-[var(--surface-2)]"
               )}
             >
               <!-- Top Row: Icon, Title, ID, Category & Badges -->
@@ -590,20 +619,28 @@
                         <h4 class="font-bold text-xs text-white truncate max-w-[140px] sm:max-w-[170px]" title={s.name}>
                           {s.name}
                         </h4>
-                        <span class="font-mono text-[9px] text-zinc-400 bg-black/40 border border-white/5 px-1.5 py-0.2 rounded shrink-0">
+                        <span class="font-mono text-[9px] text-[var(--text-tertiary)] bg-[var(--surface-2)]lack/40 border border-[var(--hairline)] px-1.5 py-0.2 rounded shrink-0">
                           {s.id}
                         </span>
                         {#if s.is_custom}
-                          <span class="text-[9px] bg-indigo-950/80 text-indigo-300 border border-indigo-500/40 px-1.5 py-0.2 rounded font-bold">
+                          <span class="text-[9px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/40 px-1.5 py-0.2 rounded font-bold">
                             CUSTOM
+                          </span>
+                        {/if}
+                        {#if !s.verified}
+                          <span
+                            class="text-[9px] bg-warning/80 text-warning border border-warning/40 px-1.5 py-0.2 rounded font-bold"
+                            title="Upstream launcher package was not found during the catalog audit. This connector may not work until it is fixed or reconfigured."
+                          >
+                            UNVERIFIED
                           </span>
                         {/if}
                       </div>
                       <div class="flex items-center gap-1 mt-1">
-                        <Badge variant="outline" class="text-[9px] px-1.5 py-0 border-purple-500/25 text-purple-300 bg-purple-950/30">
+                        <Badge variant="outline" class="text-[9px] px-1.5 py-0 border-[var(--hairline)] text-[var(--brand-text)] bg-[var(--brand-soft)]">
                           {s.category}
                         </Badge>
-                        <Badge variant="outline" class="text-[9px] px-1.5 py-0 border-zinc-700 text-zinc-400 bg-black/30">
+                        <Badge variant="outline" class="text-[9px] px-1.5 py-0 border-[var(--hairline-strong)] text-[var(--text-tertiary)] bg-[var(--surface-2)]lack/30">
                           {s.tools_count} tools
                         </Badge>
                       </div>
@@ -614,7 +651,7 @@
                   <div class="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
-                      class="size-7 rounded-lg bg-[#181826] border border-[#252538] hover:border-purple-500/40 hover:bg-purple-950/30 text-zinc-400 hover:text-purple-300 flex items-center justify-center transition-all cursor-pointer"
+                      class="size-7 rounded-lg bg-[var(--surface-3)] border border-[var(--hairline)] hover:border-[var(--brand)]/40 hover:bg-[var(--brand-soft)] text-[var(--text-tertiary)] hover:text-[var(--brand-text)] flex items-center justify-center transition-all cursor-pointer"
                       title="Test Connection & Inspect Tools"
                       onclick={() => openTestModal(s)}
                     >
@@ -624,10 +661,10 @@
                       <button
                         type="button"
                         class={cn(
-                          "size-7 rounded-lg border flex items-center justify-center transition-all cursor-pointer",
+ "size-7 rounded-lg border flex items-center justify-center transition-all cursor-pointer",
                           isKeyConfigured
-                            ? "bg-emerald-950/40 border-emerald-500/40 text-emerald-400 hover:bg-emerald-900/50"
-                            : "bg-amber-950/40 border-amber-500/40 text-amber-400 hover:bg-amber-900/50 animate-pulse"
+                            ? "bg-success/40 border-success/40 text-success hover:bg-success/50"
+                            : "bg-warning/40 border-warning/40 text-warning hover:bg-warning/50 animate-pulse"
                         )}
                         title={isKeyConfigured ? "View / Edit Configured Credentials" : "Missing Required Credentials — Click to Configure"}
                         onclick={() => openEnvConfig(s)}
@@ -638,7 +675,7 @@
                     {#if s.is_custom}
                       <button
                         type="button"
-                        class="size-7 rounded-lg bg-[#181826] border border-[#252538] hover:border-red-500/40 hover:bg-red-950/30 text-zinc-400 hover:text-red-400 flex items-center justify-center transition-all cursor-pointer"
+                        class="size-7 rounded-lg bg-[var(--surface-3)] border border-[var(--hairline)] hover:border-red-500/40 hover:bg-red-950/30 text-[var(--text-tertiary)] hover:text-red-400 flex items-center justify-center transition-all cursor-pointer"
                         title="Delete Custom Server"
                         onclick={() => deleteServer(s)}
                       >
@@ -649,7 +686,7 @@
                 </div>
 
                 <!-- Description -->
-                <p class="text-xs text-zinc-400 line-clamp-2 leading-relaxed h-8">
+                <p class="text-xs text-[var(--text-tertiary)] line-clamp-2 leading-relaxed h-8">
                   {s.description}
                 </p>
 
@@ -659,7 +696,7 @@
                     {#if isKeyConfigured}
                       <button
                         type="button"
-                        class="text-[10px] text-emerald-400 bg-emerald-950/50 border border-emerald-500/30 px-2 py-0.5 rounded-md flex items-center gap-1 hover:bg-emerald-900/40 cursor-pointer font-medium"
+                        class="text-[10px] text-success bg-success/50 border border-success/30 px-2 py-0.5 rounded-md flex items-center gap-1 hover:bg-success/40 cursor-pointer font-medium"
                         onclick={() => openEnvConfig(s)}
                       >
                         <Check class="size-3" />
@@ -668,10 +705,10 @@
                     {:else}
                       <button
                         type="button"
-                        class="text-[10px] text-amber-300 bg-amber-950/60 border border-amber-500/40 px-2 py-0.5 rounded-md flex items-center gap-1 hover:bg-amber-900/50 cursor-pointer font-semibold animate-pulse"
+                        class="text-[10px] text-warning bg-warning/60 border border-warning/40 px-2 py-0.5 rounded-md flex items-center gap-1 hover:bg-warning/50 cursor-pointer font-semibold animate-pulse"
                         onclick={() => openEnvConfig(s)}
                       >
-                        <Key class="size-3 text-amber-400" />
+                        <Key class="size-3 text-warning" />
                         <span>Needs {s.env_keys.slice(0, 2).join(", ")}</span>
                       </button>
                     {/if}
@@ -679,18 +716,18 @@
                 {/if}
 
                 <!-- Command Snippet with Copy -->
-                <div class="flex items-center justify-between gap-1 bg-[#090910] border border-[#1c1c2b] rounded-lg px-2 py-1 text-[10px] font-mono text-zinc-400">
+                <div class="flex items-center justify-between gap-1 bg-[var(--surface-2)] border border-[var(--hairline)] rounded-lg px-2 py-1 text-[10px] font-mono text-[var(--text-tertiary)]">
                   <span class="truncate" title={`${s.command} ${s.args.join(" ")}`}>
-                    <span class="text-purple-400">{s.command}</span> {s.args.slice(0, 3).join(" ")}
+                    <span class="text-[var(--brand-text)]">{s.command}</span> {s.args.slice(0, 3).join(" ")}
                   </span>
                   <button
                     type="button"
-                    class="shrink-0 text-zinc-500 hover:text-white transition-colors"
+                    class="shrink-0 text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors"
                     title="Copy command"
                     onclick={() => copyCommand(s)}
                   >
                     {#if copiedId === s.id}
-                      <Check class="size-3 text-emerald-400" />
+                      <Check class="size-3 text-success" />
                     {:else}
                       <Copy class="size-3" />
                     {/if}
@@ -699,16 +736,16 @@
               </div>
 
               <!-- Footer Actions Row -->
-              <div class="pt-2.5 border-t border-[#1e1e2d] flex items-center justify-between gap-2 mt-1">
+              <div class="pt-2.5 border-t border-[var(--hairline)] flex items-center justify-between gap-2 mt-1">
                 {#if bot}
                   <Button
                     size="sm"
                     variant={isBotEnabled ? "default" : "outline"}
                     class={cn(
-                      "h-7.5 text-xs px-3 font-medium flex-1 cursor-pointer transition-all",
+ "h-7.5 text-xs px-3 font-medium flex-1 cursor-pointer transition-all",
                       isBotEnabled
-                        ? "bg-purple-600 hover:bg-purple-500 text-white shadow-[0_0_12px_rgba(168,85,247,0.3)]"
-                        : "bg-[#151522] border-[#29293e] text-zinc-300 hover:bg-purple-950/30 hover:border-purple-500/40 hover:text-white"
+                        ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white ]"
+                        : "bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--brand-soft)] hover:border-[var(--brand)]/40 hover:text-[var(--text-primary)]"
                     )}
                     onclick={() => toggleBot(s.id)}
                   >
@@ -727,10 +764,10 @@
                   size="sm"
                   variant="ghost"
                   class={cn(
-                    "h-7.5 text-xs px-2.5 cursor-pointer font-normal",
+ "h-7.5 text-xs px-2.5 cursor-pointer font-normal",
                     isGlobalEnabled
-                      ? "text-cyan-400 hover:bg-cyan-950/30 hover:text-cyan-300"
-                      : "text-zinc-500 hover:text-zinc-300 hover:bg-[#171724]"
+                      ? "text-[var(--brand-text)] hover:bg-[var(--brand-soft)] hover:text-[var(--brand-hover)]"
+                      : "text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[#171724]"
                   )}
                   onclick={() => toggleGlobal(s.id, isGlobalEnabled)}
                   title={isGlobalEnabled ? "Globally enabled for all agents" : "Click to enable globally for all agents"}
@@ -741,13 +778,13 @@
               </div>
             </div>
           {:else}
-            <div class="col-span-full py-16 text-center border-2 border-dashed border-[#222234] rounded-3xl bg-[#0e0e18]/40 space-y-3">
-              <div class="size-12 rounded-2xl bg-purple-950/40 border border-purple-800/30 flex items-center justify-center text-purple-400 mx-auto">
+            <div class="col-span-full py-16 text-center border-[var(--hairline)] border-dashed border-[var(--hairline)] rounded-xl bg-[var(--surface-1)]/40 space-y-3">
+              <div class="size-12 rounded-2xl bg-[var(--brand-soft)] border border-[var(--brand)]/30 flex items-center justify-center text-[var(--brand-text)] mx-auto">
                 <Wrench class="size-6" />
               </div>
               <div class="space-y-1">
                 <p class="text-sm font-bold text-white">No MCP servers match your filter</p>
-                <p class="text-xs text-zinc-400 max-w-sm mx-auto">
+                <p class="text-xs text-[var(--text-tertiary)] max-w-sm mx-auto">
                   Try clearing your search query or add a custom MCP server to connect any custom tool.
                 </p>
               </div>
@@ -756,7 +793,7 @@
                   <Button
                     size="sm"
                     variant="outline"
-                    class="h-8 text-xs bg-[#161626] border-[#252538] text-zinc-300"
+                    class="h-8 text-xs bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)]"
                     onclick={() => {
                       query = "";
                       selectedCategory = "All";
@@ -768,7 +805,7 @@
                 {/if}
                 <Button
                   size="sm"
-                  class="h-8 text-xs bg-purple-600 hover:bg-purple-500 text-white font-medium gap-1.5"
+                  class="h-8 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium gap-1.5"
                   onclick={() => (showAddCustom = true)}
                 >
                   <Plus class="size-3.5" />
@@ -781,25 +818,25 @@
       </div>
 
       <!-- Fixed Footer Summary -->
-      <div class="px-6 py-3 border-t border-white/10 flex flex-col sm:flex-row justify-between items-center bg-[#0e0e18]/90 shrink-0 gap-2">
-        <div class="flex items-center gap-3 text-xs text-zinc-400">
+      <div class="px-6 py-3 border-t border-[var(--hairline)] flex flex-col sm:flex-row justify-between items-center bg-[var(--surface-1)] shrink-0 gap-2">
+        <div class="flex items-center gap-3 text-xs text-[var(--text-tertiary)]">
           <span class="flex items-center gap-1.5 font-medium text-white">
-            <Sparkles class="size-3.5 text-purple-400" />
+            <Sparkles class="size-3.5 text-[var(--brand-text)]" />
             <span>{filtered.length} of {servers.length} servers available</span>
           </span>
           {#if bot}
-            <span class="text-zinc-600">•</span>
-            <span class="text-purple-300">
+            <span class="text-[var(--text-muted)]">•</span>
+            <span class="text-[var(--brand-text)]">
               <span class="font-bold text-white">{botServers.size}</span> active for {bot.name}
             </span>
           {/if}
-          <span class="text-zinc-600">•</span>
-          <span class="text-cyan-300">
+          <span class="text-[var(--text-muted)]">•</span>
+          <span class="text-[var(--brand-text)]">
             <span class="font-bold text-white">{globalCount}</span> globally enabled
           </span>
         </div>
 
-        <Button size="sm" class="bg-purple-600 hover:bg-purple-500 text-white px-5 h-8.5 font-medium cursor-pointer" onclick={onClose}>
+        <Button size="sm" class="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white px-5 h-8.5 font-medium cursor-pointer" onclick={onClose}>
           Done
         </Button>
       </div>
@@ -809,17 +846,17 @@
   <!-- SUB-MODAL 1: Add Custom MCP Server -->
   {#if showAddCustom}
     <Dialog.Root open={showAddCustom} onOpenChange={(o) => !o && (showAddCustom = false)}>
-      <Dialog.Content class="sm:max-w-xl max-h-[88vh] overflow-y-auto bg-[#0c0c14]/98 border border-purple-500/30 shadow-[0_0_50px_rgba(147,51,234,0.3)] backdrop-blur-2xl rounded-3xl p-6 text-zinc-100">
-        <Dialog.Header class="pb-3 border-b border-white/10">
+      <Dialog.Content class="sm:max-w-xl max-h-[88vh] overflow-y-auto bg-[var(--surface-1)] border border-[var(--brand)]/30 ]  rounded-xl p-6 text-[var(--text-primary)]">
+        <Dialog.Header class="pb-3 border-[var(--hairline)] border-[var(--hairline)]">
           <div class="flex items-center gap-3">
-            <div class="size-10 rounded-2xl bg-purple-950/70 border border-purple-800/50 flex items-center justify-center text-purple-400">
+            <div class="size-10 rounded-2xl bg-[var(--brand-soft)] border border-[var(--brand)]/50 flex items-center justify-center text-[var(--brand-text)]">
               <Plus class="size-5" />
             </div>
             <div>
               <Dialog.Title class="text-base font-bold text-white">
                 Add Custom MCP Server
               </Dialog.Title>
-              <Dialog.Description class="text-xs text-zinc-400">
+              <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
                 Integrate any stdio CLI or SSE remote endpoint into RAVENBOT as native model skills.
               </Dialog.Description>
             </div>
@@ -840,7 +877,7 @@
               <Input
                 bind:value={customName}
                 placeholder="e.g. SQLite DB Explorer"
-                class="h-9 text-xs bg-[#141420] border-[#252538]"
+                class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)]"
               />
             </div>
             <div class="space-y-1.5">
@@ -848,7 +885,7 @@
               <Input
                 bind:value={customIcon}
                 placeholder="e.g. ⚡"
-                class="h-9 text-xs bg-[#141420] border-[#252538] text-center"
+                class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-center"
               />
             </div>
           </div>
@@ -859,19 +896,19 @@
               <Input
                 bind:value={customId}
                 placeholder="e.g. sqlite-explorer"
-                class="h-9 text-xs font-mono bg-[#141420] border-[#252538]"
+                class="h-9 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
               />
             </div>
             <div class="space-y-1.5">
               <Label class="text-xs font-bold text-white">Category</Label>
-              <select
-                bind:value={customCategory}
-                class="w-full h-9 rounded-xl text-xs bg-[#141424] border border-[#28283e] text-zinc-200 px-3 pr-8 focus:outline-none focus:border-purple-500 cursor-pointer"
-              >
-                {#each categoryDefs.filter((c) => c.id !== "All") as c}
-                  <option value={c.id} class="bg-[#0e0e1a] text-zinc-100">{c.icon} {c.id}</option>
-                {/each}
-              </select>
+              <SimpleSelect
+                value={customCategory}
+                options={categoryDefs
+                  .filter((c) => c.id !== "All")
+                  .map((c) => ({ value: c.id, label: c.id }))}
+                onValueChange={(v) => (customCategory = v)}
+                class="h-9 rounded-xl"
+              />
             </div>
           </div>
 
@@ -880,8 +917,12 @@
             <Textarea
               bind:value={customDesc}
               placeholder="Describe what capabilities and tools this MCP server provides to your agents..."
-              class="text-xs bg-[#141420] border-[#252538] min-h-[60px]"
+              class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] min-h-[60px]"
             />
+          </div>
+
+          <div class="rounded-xl border border-warning/25 bg-warning/5 px-3 py-2 text-[11px] leading-relaxed text-warning/90">
+            Only add servers you trust: a custom server runs its command on your machine with the env values you save here.
           </div>
 
           <div class="grid grid-cols-3 gap-2.5">
@@ -890,39 +931,41 @@
               <Input
                 bind:value={customCommand}
                 placeholder="npx, uvx, python, node"
-                class="h-9 text-xs font-mono bg-[#141420] border-[#252538]"
+                class="h-9 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
               />
             </div>
             <div class="col-span-2 space-y-1.5">
-              <Label class="text-xs font-bold text-white">Arguments (Space-separated)</Label>
-              <Input
+              <Label class="text-xs font-bold text-white">Arguments (one per line)</Label>
+              <Textarea
                 bind:value={customArgs}
-                placeholder="-y @modelcontextprotocol/server-sqlite /path/db.sqlite"
-                class="h-9 text-xs font-mono bg-[#141420] border-[#252538]"
+                placeholder={"-y\n@modelcontextprotocol/server-filesystem\n/tmp"}
+                rows={4}
+                class="text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
               />
             </div>
           </div>
 
           <div class="space-y-1.5">
             <Label class="text-xs font-bold text-white">
-              Required Environment Keys (Optional, Comma-separated)
+              Environment (one KEY=value per line, optional)
             </Label>
-            <Input
+            <Textarea
               bind:value={customEnvKeys}
-              placeholder="e.g. API_KEY, DATABASE_URL, AUTH_TOKEN"
-              class="h-9 text-xs font-mono bg-[#141420] border-[#252538]"
+              placeholder={"GITHUB_TOKEN=ghp_...\nAPI_URL=https://..."}
+              rows={3}
+              class="text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
             />
-            <p class="text-[10px] text-zinc-500">
-              Keys will be securely requested and stored in hardware keychain for authentication.
+            <p class="text-[10px] text-[var(--text-muted)]">
+              Secrets are write-only and stored locally. New servers stay disabled until tested + explicitly enabled.
             </p>
           </div>
         </div>
 
-        <div class="flex justify-end gap-2 pt-3 border-t border-white/10">
+        <div class="flex justify-end gap-2 pt-3 border-t border-[var(--hairline)]">
           <Button
             variant="outline"
             size="sm"
-            class="bg-[#141420] border-[#252538] text-zinc-300"
+            class="bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
             onclick={() => (showAddCustom = false)}
             disabled={isSavingCustom}
           >
@@ -930,7 +973,7 @@
           </Button>
           <Button
             size="sm"
-            class="bg-purple-600 hover:bg-purple-500 text-white font-medium"
+            class="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium"
             onclick={saveCustomServer}
             disabled={isSavingCustom}
           >
@@ -944,17 +987,17 @@
   <!-- SUB-MODAL 2: Configure Environment Keys -->
   {#if showConfigEnv && selectedServerForEnv}
     <Dialog.Root open={showConfigEnv} onOpenChange={(o) => !o && (showConfigEnv = false)}>
-      <Dialog.Content class="sm:max-w-md bg-[#0c0c14]/98 border border-purple-500/30 shadow-[0_0_50px_rgba(147,51,234,0.3)] backdrop-blur-2xl rounded-3xl p-5 text-zinc-100">
-        <Dialog.Header class="pb-3 border-b border-white/10">
+      <Dialog.Content class="sm:max-w-md bg-[var(--surface-1)] border border-[var(--brand)]/30 ]  rounded-xl p-5 text-[var(--text-primary)]">
+        <Dialog.Header class="pb-3 border-[var(--hairline)] border-[var(--hairline)]">
           <div class="flex items-center gap-3">
-            <div class="size-9 rounded-xl bg-purple-950/70 border border-purple-800/50 flex items-center justify-center text-purple-400">
+            <div class="size-9 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/50 flex items-center justify-center text-[var(--brand-text)]">
               <Key class="size-4.5" />
             </div>
             <div>
               <Dialog.Title class="text-sm font-bold text-white">
                 Credentials: {selectedServerForEnv.name}
               </Dialog.Title>
-              <Dialog.Description class="text-xs text-zinc-400">
+              <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
                 Stored in sovereign local database. Injected securely into MCP runtime.
               </Dialog.Description>
             </div>
@@ -962,29 +1005,30 @@
         </Dialog.Header>
 
         {#if envSaveSuccess}
-          <div class="p-3 rounded-xl bg-emerald-950/50 border border-emerald-500/40 text-xs text-emerald-300 flex items-center gap-2 my-2">
-            <CheckCircle2 class="size-4 shrink-0 text-emerald-400" />
+          <div class="p-3 rounded-xl bg-success/50 border border-success/40 text-xs text-success flex items-center gap-2 my-2">
+            <CheckCircle2 class="size-4 shrink-0 text-success" />
             <span>Credentials saved securely!</span>
           </div>
         {/if}
 
+        <p class="text-[11px] text-[var(--text-muted)]">Secrets are write-only: saved values are never shown. Leave blank to keep, clear in the danger zone below to remove.</p>
         <div class="space-y-3 py-3">
           {#each selectedServerForEnv.env_keys as key}
             <div class="space-y-1.5">
-              <Label class="text-xs font-mono font-bold text-zinc-300 flex items-center justify-between">
+              <Label class="text-xs font-mono font-bold text-[var(--text-secondary)] flex items-center justify-between">
                 <span>{key}</span>
-                <span class="text-[10px] text-zinc-500 font-sans">Required</span>
+                <span class="text-[10px] text-[var(--text-muted)] font-sans">Required</span>
               </Label>
               <div class="relative">
                 <Input
                   type={showSecrets[key] ? "text" : "password"}
                   bind:value={envValues[key]}
-                  placeholder={`Enter value for ${key}...`}
-                  class="h-9 text-xs font-mono pr-8 bg-[#141420] border-[#252538] text-zinc-200"
+                  placeholder={selectedServerForEnv?.env_configured ? `Saved — leave blank to keep` : `Enter value for ${key}...`}
+                  class="h-9 text-xs font-mono pr-8 bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
                 />
                 <button
                   type="button"
-                  class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white"
+                  class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
                   onclick={() => (showSecrets[key] = !showSecrets[key])}
                 >
                   {#if showSecrets[key]}
@@ -998,17 +1042,17 @@
           {/each}
         </div>
 
-        <div class="flex justify-between items-center pt-3 border-t border-white/10">
+        <div class="flex justify-between items-center pt-3 border-t border-[var(--hairline)]">
           <Button
             size="sm"
             variant="ghost"
-            class="text-xs text-purple-300 hover:text-white"
+            class="text-xs text-[var(--brand-text)] hover:text-[var(--text-primary)]"
             onclick={() => {
               showConfigEnv = false;
               openTestModal(selectedServerForEnv!);
             }}
           >
-            <Zap class="size-3 mr-1 text-purple-400" />
+            <Zap class="size-3 mr-1 text-[var(--brand-text)]" />
             <span>Test Connection</span>
           </Button>
 
@@ -1016,14 +1060,14 @@
             <Button
               variant="outline"
               size="sm"
-              class="bg-[#141420] border-[#252538] text-zinc-300"
+              class="bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
               onclick={() => (showConfigEnv = false)}
             >
               Cancel
             </Button>
             <Button
               size="sm"
-              class="bg-purple-600 hover:bg-purple-500 text-white font-medium"
+              class="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium"
               onclick={saveEnvConfig}
               disabled={isSavingEnv}
             >
@@ -1038,17 +1082,17 @@
   <!-- SUB-MODAL 3: Test Connection & Tool Inspector -->
   {#if showTestModal && selectedServerForTest}
     <Dialog.Root open={showTestModal} onOpenChange={(o) => !o && (showTestModal = false)}>
-      <Dialog.Content class="sm:max-w-lg max-h-[85vh] flex flex-col bg-[#0c0c14]/98 border border-purple-500/30 shadow-[0_0_50px_rgba(147,51,234,0.3)] backdrop-blur-2xl rounded-3xl p-5 text-zinc-100">
-        <Dialog.Header class="pb-3 border-b border-white/10 shrink-0">
+      <Dialog.Content class="sm:max-w-lg max-h-[85vh] flex flex-col bg-[var(--surface-1)] border border-[var(--brand)]/30 ]  rounded-xl p-5 text-[var(--text-primary)]">
+        <Dialog.Header class="pb-3 border-[var(--hairline)] border-[var(--hairline)] shrink-0">
           <div class="flex items-center gap-3">
-            <div class="size-9 rounded-xl bg-purple-950/70 border border-purple-800/50 flex items-center justify-center text-purple-400">
+            <div class="size-9 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/50 flex items-center justify-center text-[var(--brand-text)]">
               <Zap class="size-4.5" />
             </div>
             <div>
               <Dialog.Title class="text-sm font-bold text-white flex items-center gap-2">
                 <span>MCP Diagnostic: {selectedServerForTest.name}</span>
               </Dialog.Title>
-              <Dialog.Description class="text-xs text-zinc-400">
+              <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
                 Testing tool discovery and protocol handshake.
               </Dialog.Description>
             </div>
@@ -1058,27 +1102,27 @@
         <div class="flex-1 overflow-y-auto py-3 space-y-3">
           {#if isTesting}
             <div class="py-8 text-center space-y-2">
-              <RefreshCw class="size-6 text-purple-400 animate-spin mx-auto" />
-              <p class="text-xs text-zinc-400">Connecting to MCP stdio/remote server...</p>
+              <RefreshCw class="size-6 text-[var(--brand-text)] animate-spin mx-auto" />
+              <p class="text-xs text-[var(--text-tertiary)]">Connecting to MCP stdio/remote server...</p>
             </div>
           {:else if testResult}
             <div
               class={cn(
-                "p-3 rounded-xl border flex items-start gap-2.5 text-xs",
+ "p-3 rounded-xl border flex items-start gap-2.5 text-xs",
                 testResult.success
-                  ? "bg-emerald-950/40 border-emerald-500/40 text-emerald-300"
+                  ? "bg-success/40 border-success/40 text-success"
                   : "bg-red-950/40 border-red-500/40 text-red-300"
               )}
             >
               {#if testResult.success}
-                <CheckCircle2 class="size-4.5 text-emerald-400 shrink-0 mt-0.5" />
+                <CheckCircle2 class="size-4.5 text-success shrink-0 mt-0.5" />
               {:else}
                 <AlertCircle class="size-4.5 text-red-400 shrink-0 mt-0.5" />
               {/if}
               <div class="space-y-0.5 flex-1">
                 <div class="font-bold flex items-center justify-between">
                   <span>{testResult.success ? "Connection Verified" : "Connection Failed"}</span>
-                  <span class="font-mono text-[10px] text-zinc-400">{testResult.latency_ms}ms latency</span>
+                  <span class="font-mono text-[10px] text-[var(--text-tertiary)]">{testResult.latency_ms}ms latency</span>
                 </div>
                 <p class="leading-relaxed opacity-90">{testResult.message}</p>
               </div>
@@ -1086,24 +1130,24 @@
 
             <!-- Discovered Tools List -->
             <div class="space-y-2 pt-1">
-              <div class="flex items-center justify-between text-xs font-bold text-zinc-300">
+              <div class="flex items-center justify-between text-xs font-bold text-[var(--text-secondary)]">
                 <span class="flex items-center gap-1.5">
-                  <Wrench class="size-3.5 text-purple-400" />
+                  <Wrench class="size-3.5 text-[var(--brand-text)]" />
                   <span>Discovered Native Tools ({testResult.tools.length})</span>
                 </span>
-                <span class="text-[10px] font-mono text-zinc-500">Autonomous Execution Ready</span>
+                <span class="text-[10px] font-mono text-[var(--text-muted)]">Autonomous Execution Ready</span>
               </div>
 
               <div class="space-y-2 max-h-56 overflow-y-auto pr-1">
                 {#each testResult.tools as tool}
-                  <div class="p-2.5 rounded-xl border border-[#1e1e2d] bg-[#12121e] space-y-1">
+                  <div class="p-2.5 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] space-y-1">
                     <div class="flex items-center justify-between">
-                      <span class="font-mono text-xs font-bold text-purple-300">{tool.name}</span>
-                      <span class="text-[9px] bg-purple-950/60 border border-purple-500/20 text-purple-300 px-1.5 py-0.2 rounded font-mono">
+                      <span class="font-mono text-xs font-bold text-[var(--brand-text)]">{tool.name}</span>
+                      <span class="text-[9px] bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)] px-1.5 py-0.2 rounded font-mono">
                         NATIVE
                       </span>
                     </div>
-                    <p class="text-[11px] text-zinc-400 leading-snug">{tool.description}</p>
+                    <p class="text-[11px] text-[var(--text-tertiary)] leading-snug">{tool.description}</p>
                   </div>
                 {/each}
               </div>
@@ -1111,10 +1155,10 @@
           {/if}
         </div>
 
-        <div class="flex justify-end gap-2 pt-3 border-t border-white/10 shrink-0">
+        <div class="flex justify-end gap-2 pt-3 border-t border-[var(--hairline)] shrink-0">
           <Button
             size="sm"
-            class="bg-purple-600 hover:bg-purple-500 text-white font-medium"
+            class="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium"
             onclick={() => (showTestModal = false)}
           >
             Close Inspector
@@ -1127,25 +1171,25 @@
   <!-- Custom Server Delete Confirmation Modal -->
   {#if serverToDelete}
     <Dialog.Root open={Boolean(serverToDelete)} onOpenChange={(o) => !o && (serverToDelete = null)}>
-      <Dialog.Content class="sm:max-w-md max-w-md bg-[#0e0e1a] border border-red-500/40 rounded-3xl p-6 text-zinc-100 shadow-[0_0_60px_rgba(239,68,68,0.3)] flex flex-col gap-4 font-sans select-none z-50">
+      <Dialog.Content class="sm:max-w-md max-w-md bg-[var(--surface-1)] border border-red-500/40 rounded-xl p-6 text-[var(--text-primary)] ] flex flex-col gap-4 font-sans select-none z-50">
         <div class="flex items-start gap-3.5">
-          <div class="size-11 rounded-2xl bg-red-950/70 border border-red-500/50 flex items-center justify-center text-red-400 shrink-0 shadow-[0_0_20px_rgba(239,68,68,0.35)]">
+          <div class="size-11 rounded-2xl bg-red-950/70 border border-red-500/50 flex items-center justify-center text-red-400 shrink-0 ">
             <AlertCircle class="size-6" />
           </div>
           <div class="space-y-1">
             <Dialog.Title class="text-base font-extrabold text-white">
               Delete Custom Server?
             </Dialog.Title>
-            <Dialog.Description class="text-xs text-zinc-400 leading-relaxed">
+            <Dialog.Description class="text-xs text-[var(--text-tertiary)] leading-relaxed">
               Are you sure you want to delete custom server <span class="text-white font-bold font-mono">"{serverToDelete.name}"</span>?
             </Dialog.Description>
           </div>
         </div>
 
-        <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-white/5">
+        <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[var(--hairline)]">
           <Button
             variant="outline"
-            class="h-8.5 text-xs bg-[#141424] border-[#29293e] text-zinc-300 hover:bg-[#1a1a2e] hover:text-white cursor-pointer"
+            class="h-8.5 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] cursor-pointer"
             onclick={() => (serverToDelete = null)}
             disabled={isDeletingServer}
           >
@@ -1153,7 +1197,7 @@
           </Button>
 
           <Button
-            class="h-8.5 text-xs bg-red-600 hover:bg-red-500 text-white font-medium gap-1.5 shadow-[0_0_25px_rgba(239,68,68,0.4)] cursor-pointer"
+            class="h-8.5 text-xs bg-red-600 hover:bg-red-500 text-white font-medium gap-1.5 ] cursor-pointer"
             disabled={isDeletingServer}
             onclick={confirmDeleteServer}
           >

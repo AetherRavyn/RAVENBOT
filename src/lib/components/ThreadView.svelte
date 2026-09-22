@@ -1289,7 +1289,7 @@
                 />
                 <Button
                   size="sm"
-                  class="h-6 px-2 text-[10px] bg-white text-black hover:bg-zinc-200 cursor-pointer shrink-0"
+                  class="h-6 px-2 text-[10px] bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white cursor-pointer shrink-0"
                   onclick={applySwitcherModel}
                 >
                   Apply
@@ -1631,7 +1631,7 @@
                     <div class="pt-1 flex items-center gap-2">
                       <Button
                         size="sm"
-                        class="h-8 gap-1.5 text-xs bg-white text-black hover:bg-zinc-200 font-medium shadow cursor-pointer"
+                        class="h-8 gap-1.5 text-xs bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white font-medium shadow cursor-pointer"
                         onclick={triggerOpenSettings}
                       >
                         <Key class="size-3.5" />

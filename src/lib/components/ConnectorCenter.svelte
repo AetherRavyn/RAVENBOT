@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import { cn } from "$lib/utils.js";
   import { getDiceBearUrl } from "$lib/utils";
   import { Button } from "$lib/components/ui/button";
@@ -10,6 +11,7 @@
   import { ScrollArea } from "$lib/components/ui/scroll-area";
   import * as Dialog from "$lib/components/ui/dialog";
   import ConnectorIcon from "$lib/components/ConnectorIcon.svelte";
+  import { notify } from "$lib/toast";
   import {
     Wrench,
     Search,
@@ -34,6 +36,7 @@
     Filter,
     CheckSquare,
     Square,
+    MoreHorizontal,
     SlidersHorizontal,
     Code,
     Cpu,
@@ -68,6 +71,7 @@
     env_keys: string[];
     enabled: boolean;
     is_custom: boolean;
+    verified: boolean;
     env_configured: boolean;
     assigned_bot_ids: string[];
     tools_count: number;
@@ -84,6 +88,8 @@
 
   // Multi-Selection State for Batch Operations
   let selectedConnectorIds = $state<Set<string>>(new Set());
+  // Overflow menu (one open at a time)
+  let activeMenu = $state<string | null>(null);
 
   // Assign Multi-Agents Modal State
   let showAssignAgentsModal = $state(false);
@@ -99,7 +105,7 @@
   let customCategory = $state("Development & Coding");
   let customIcon = $state("⚡");
   let customCommand = $state("npx");
-  let customArgs = $state("-y @my-org/mcp-server");
+  let customArgs = $state("-y\n@my-org/mcp-server");
   let customEnvKeys = $state("");
   let isSavingCustom = $state(false);
   let customError = $state("");
@@ -303,8 +309,9 @@
         ...botServersMap,
         [currentBotId]: updatedSet,
       };
+      notify(nextState ? "Connector enabled for this agent" : "Connector removed from this agent", "success");
     } catch (e) {
-      alert("Failed to toggle connector for agent: " + String(e));
+      notify("Failed to update connector: " + String(e), "error");
     }
   }
 
@@ -312,8 +319,9 @@
     try {
       await invoke("toggle_mcp_server", { serverId, enabled: !currentEnabled });
       servers = servers.map((s) => (s.id === serverId ? { ...s, enabled: !currentEnabled } : s));
+      notify(!currentEnabled ? "Connector enabled globally" : "Connector disabled globally", "success");
     } catch (e) {
-      alert("Failed to toggle global connector: " + String(e));
+      notify("Failed to toggle global connector: " + String(e), "error");
     }
   }
 
@@ -363,7 +371,7 @@
       };
       selectedConnectorIds = new Set();
     } catch (e) {
-      alert("Failed to batch update agent connectors: " + String(e));
+      notify("Failed to batch update agent connectors: " + String(e), "error");
     }
   }
 
@@ -376,7 +384,7 @@
       await load();
       selectedConnectorIds = new Set();
     } catch (e) {
-      alert("Failed to batch enable global connectors: " + String(e));
+      notify("Failed to batch enable global connectors: " + String(e), "error");
     }
   }
 
@@ -399,7 +407,7 @@
       };
       showPresetModal = false;
     } catch (e) {
-      alert("Failed to apply preset stack: " + String(e));
+      notify("Failed to apply preset stack: " + String(e), "error");
     } finally {
       applyingPreset = false;
     }
@@ -441,7 +449,7 @@
       botServersMap = updatedMap;
       showAssignAgentsModal = false;
     } catch (e) {
-      alert("Failed to save agent assignments: " + String(e));
+      notify("Failed to save agent assignments: " + String(e), "error");
     } finally {
       isSavingAgentAssignment = false;
     }
@@ -475,13 +483,14 @@
         env: envValues,
       });
       envSaveSuccess = true;
+      notify("Credentials saved", "success");
       await load();
       setTimeout(() => {
         showConfigEnv = false;
         envSaveSuccess = false;
       }, 1000);
     } catch (e) {
-      alert("Failed to save credentials: " + String(e));
+      notify("Failed to save credentials: " + String(e), "error");
     } finally {
       isSavingEnv = false;
     }
@@ -509,24 +518,52 @@
     }
   }
 
+  const MCP_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+  const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
   // Custom Server Save
   async function saveCustomServer() {
+    const cleanId = customId.trim().toLowerCase().replace(/\s+/g, "-");
     if (!customId.trim() || !customName.trim()) {
       customError = "Server ID and Name are required";
+      return;
+    }
+    if (!MCP_NAME_RE.test(cleanId)) {
+      customError = "ID: 1–32 lowercase letters, numbers, _ or -, starting with a letter.";
       return;
     }
     customError = "";
     isSavingCustom = true;
 
     const parsedArgs = customArgs
-      .split(/[\s,]+/)
+      .split(/\r?\n/)
       .map((s) => s.trim())
       .filter(Boolean);
-
-    const parsedEnvKeys = customEnvKeys
-      .split(/[\s,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
+    if (parsedArgs.length > 64) {
+      customError = "Use at most 64 arguments (one per line).";
+      isSavingCustom = false;
+      return;
+    }
+    const parsedEnv: Record<string, string> = {};
+    for (const rawLine of customEnvKeys.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
+      const eq = line.indexOf("=");
+      const key = (eq < 0 ? line : line.slice(0, eq)).trim();
+      const val = eq < 0 ? "" : line.slice(eq + 1);
+      if (!ENV_NAME_RE.test(key)) {
+        customError = `Bad env name "${key}": letters, digits, _ only, not starting with a digit.`;
+        isSavingCustom = false;
+        return;
+      }
+      if (key === "ELECTRON_RUN_AS_NODE" || key.startsWith("OMB_") || key.startsWith("OGB_")) {
+        customError = `Env name "${key}" is reserved.`;
+        isSavingCustom = false;
+        return;
+      }
+      parsedEnv[key] = val;
+    }
+    const parsedEnvKeys = Object.keys(parsedEnv);
 
     const config = {
       id: customId.trim().toLowerCase().replace(/\s+/g, "-"),
@@ -547,7 +584,7 @@
       customId = "";
       customName = "";
       customDesc = "";
-      customArgs = "-y @my-org/mcp-server";
+      customArgs = "-y\n@my-org/mcp-server";
       customEnvKeys = "";
       await load();
     } catch (e) {
@@ -567,9 +604,10 @@
     try {
       await invoke("delete_mcp_server", { serverId: serverToDelete.id });
       serverToDelete = null;
+      notify("Connector deleted", "success");
       await load();
     } catch (e) {
-      alert("Failed to delete connector: " + String(e));
+      notify("Failed to delete connector: " + String(e), "error");
     } finally {
       isDeletingServer = false;
     }
@@ -589,14 +627,16 @@
   });
 </script>
 
-<div class="flex flex-col h-full w-full min-h-0 bg-[#08080f] text-zinc-100 overflow-hidden select-none font-sans">
+<svelte:window onclick={() => (activeMenu = null)} />
+
+<div class="flex flex-col h-full w-full min-h-0 bg-[var(--surface-0)] text-[var(--text-primary)] overflow-hidden select-none font-sans">
   <!-- Top Command Center Header -->
-  <div class="px-6 py-4 border-b border-white/10 shrink-0 bg-[#0c0c16]/90 backdrop-blur-xl">
+  <div class="px-6 py-4 border-[var(--hairline)] border-[var(--hairline)] shrink-0 bg-[var(--surface-1)] ">
     <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
       <!-- Title & Branding -->
       <div class="flex items-center gap-3.5">
         <div
-          class="size-11 rounded-2xl bg-gradient-to-br from-purple-600/30 to-indigo-700/30 border border-purple-500/40 flex items-center justify-center text-purple-300 shadow-[0_0_25px_rgba(168,85,247,0.25)] shrink-0"
+          class="size-11 rounded-2xl bg-[#17122a] border border-[var(--brand)]/40 flex items-center justify-center text-[var(--brand-text)] shrink-0"
         >
           <Layers class="size-6" />
         </div>
@@ -605,11 +645,11 @@
             <h2 class="text-base font-extrabold text-white tracking-wide flex items-center gap-2">
               <span>Connectors & Tools Command Center</span>
             </h2>
-            <span class="text-[10px] bg-purple-950/80 text-purple-300 border border-purple-500/30 px-2.5 py-0.5 rounded-full font-mono font-bold shadow-sm">
+            <span class="text-[10px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30 px-2.5 py-0.5 rounded-full font-mono font-bold shadow-sm">
               {servers.length} CONNECTORS
             </span>
           </div>
-          <p class="text-xs text-zinc-400 mt-0.5">
+          <p class="text-xs text-[var(--text-tertiary)] mt-0.5">
             Official vector-connected MCP tools (135+), REST APIs, specialized databases, anti-bot scrapers & local OS bridges.
           </p>
         </div>
@@ -620,27 +660,27 @@
         <Button
           size="sm"
           variant="outline"
-          class="h-8.5 gap-1.5 text-xs bg-[#141422] border-purple-500/30 text-purple-300 hover:bg-purple-950/40 hover:text-white cursor-pointer shadow-sm"
+          class="h-8.5 gap-1.5 text-xs bg-[var(--surface-2)] border-[var(--brand)]/30 text-[var(--brand-text)] hover:bg-[var(--brand-soft)] hover:text-[var(--text-primary)] cursor-pointer shadow-sm"
           onclick={() => (showPresetModal = true)}
         >
-          <Sparkles class="size-3.5 text-purple-400" />
+          <Sparkles class="size-3.5 text-[var(--brand-text)]" />
           <span>Preset Stacks</span>
         </Button>
 
         <Button
           size="sm"
           variant="outline"
-          class="h-8.5 gap-1.5 text-xs bg-[#141422] border-[#222234] text-zinc-300 hover:bg-[#1c1c2e] hover:text-white cursor-pointer shadow-sm"
+          class="h-8.5 gap-1.5 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--hairline)] hover:text-[var(--text-primary)] cursor-pointer shadow-sm"
           onclick={() => load()}
           disabled={syncing}
         >
-          <RefreshCw class={cn("size-3.5", syncing && "animate-spin text-purple-400")} />
+          <RefreshCw class={cn("size-3.5", syncing && "animate-spin text-[var(--brand-text)]")} />
           <span>{syncing ? "Syncing..." : "Refresh"}</span>
         </Button>
 
         <Button
           size="sm"
-          class="h-8.5 gap-1.5 text-xs bg-purple-600 hover:bg-purple-500 text-white font-medium shadow-[0_0_20px_rgba(168,85,247,0.35)] cursor-pointer"
+          class="h-8.5 gap-1.5 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium ] cursor-pointer"
           onclick={() => (showAddCustom = true)}
         >
           <Plus class="size-3.5" />
@@ -651,10 +691,10 @@
 
     <!-- Agent Quick Selector Strip -->
     {#if bots.length > 0}
-      <div class="mt-4 pt-3.5 border-t border-white/5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div class="mt-4 pt-3.5 border-t border-[var(--hairline)] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div class="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-          <span class="text-xs font-semibold text-zinc-400 uppercase font-mono shrink-0 mr-1 flex items-center gap-1.5">
-            <BotIcon class="size-3.5 text-purple-400" />
+          <span class="text-xs font-semibold text-[var(--text-tertiary)] uppercase font-mono shrink-0 mr-1 flex items-center gap-1.5">
+            <BotIcon class="size-3.5 text-[var(--brand-text)]" />
             <span>Select Agent:</span>
           </span>
           {#each bots as b (b.id)}
@@ -663,10 +703,10 @@
             <button
               type="button"
               class={cn(
-                "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-2 cursor-pointer shrink-0 border",
+ "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-2 cursor-pointer shrink-0 border",
                 isSelected
-                  ? "bg-purple-600 text-white border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.35)] font-bold scale-[1.02]"
-                  : "bg-[#11111d] text-zinc-300 border-[#202032] hover:bg-[#18182b] hover:text-white"
+                  ? "bg-[var(--brand)] text-white border-[var(--brand)] ] font-bold scale-[1.02]"
+                  : "bg-[var(--surface-2)] text-[var(--text-secondary)] border-[var(--hairline)] hover:bg-[#18182b] hover:text-[var(--text-primary)]"
               )}
               onclick={() => {
                 currentBotId = b.id;
@@ -676,13 +716,13 @@
               <img
                 src={b.avatar_url || getDiceBearUrl(b.name, b.avatar_style || "bottts")}
                 alt={b.name}
-                class="size-4.5 rounded-full object-cover border border-white/20"
+                class="size-4.5 rounded-full object-cover border border-[var(--hairline-strong)]"
               />
               <span>{b.name}</span>
               <span
                 class={cn(
-                  "text-[10px] font-mono px-1.5 py-0.2 rounded-full",
-                  isSelected ? "bg-white/20 text-white" : "bg-black/40 text-purple-300"
+ "text-[10px] font-mono px-1.5 py-0.2 rounded-full",
+                  isSelected ? "bg-[var(--surface-3)] text-white" : "bg-[var(--surface-2)]lack/40 text-[var(--brand-text)]"
                 )}
               >
                 {botCount}
@@ -693,8 +733,8 @@
 
         {#if currentBot}
           <div class="flex items-center gap-2 shrink-0">
-            <span class="text-xs text-zinc-400">
-              Active for <span class="font-bold text-purple-300">{currentBot.name}</span>:
+            <span class="text-xs text-[var(--text-tertiary)]">
+              Active for <span class="font-bold text-[var(--brand-text)]">{currentBot.name}</span>:
               <span class="font-mono font-bold text-white ml-1">{activeBotCount}</span> connectors
             </span>
           </div>
@@ -706,16 +746,16 @@
     <div class="flex flex-col lg:flex-row gap-2.5 mt-3.5 items-stretch lg:items-center justify-between">
       <!-- Search input -->
       <div class="relative flex-1 min-w-[260px]">
-        <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-zinc-400 pointer-events-none" />
+        <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-[var(--text-tertiary)] pointer-events-none" />
         <Input
           bind:value={query}
           placeholder="Search 135+ connectors by name, ID, category, or command (e.g. postgres, telegram, duckdb, github, aws)..."
-          class="pl-9 pr-8 h-9 text-xs bg-[#11111c] border-[#222234] focus-visible:border-purple-500/60 focus-visible:ring-purple-500/20 text-zinc-100 placeholder:text-zinc-500 rounded-xl"
+          class="pl-9 pr-8 h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] focus-visible:border-[var(--brand)]/60 focus-visible:ring-[var(--brand)]/20 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] rounded-xl"
         />
         {#if query}
           <button
             type="button"
-            class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white p-1 cursor-pointer"
+            class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] p-1 cursor-pointer"
             onclick={() => (query = "")}
           >
             <X class="size-3.5" />
@@ -728,10 +768,10 @@
         <button
           type="button"
           class={cn(
-            "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
             activeTab === "all"
-              ? "bg-purple-600 text-white border-purple-400 shadow-[0_0_12px_rgba(147,51,234,0.35)] font-bold"
-              : "bg-[#121220] text-zinc-400 border-[#202032] hover:bg-[#18182c] hover:text-zinc-200"
+              ? "bg-[var(--brand)] text-white border-[var(--brand)] ] font-bold"
+              : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
           )}
           onclick={() => (activeTab = "all")}
         >
@@ -744,14 +784,14 @@
           <button
             type="button"
             class={cn(
-              "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
               activeTab === "active"
-                ? "bg-purple-600 text-white border-purple-400 shadow-[0_0_12px_rgba(147,51,234,0.35)] font-bold"
-                : "bg-[#121220] text-zinc-400 border-[#202032] hover:bg-[#18182c] hover:text-zinc-200"
+                ? "bg-[var(--brand)] text-white border-[var(--brand)] ] font-bold"
+                : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
             )}
             onclick={() => (activeTab = "active")}
           >
-            <BotIcon class="size-3 text-purple-300" />
+            <BotIcon class="size-3 text-[var(--brand-text)]" />
             <span>Active for {currentBot.name}</span>
             <span class="text-[10px] font-mono opacity-80">({activeBotCount})</span>
           </button>
@@ -760,14 +800,14 @@
         <button
           type="button"
           class={cn(
-            "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
             activeTab === "global"
-              ? "bg-cyan-600 text-white border-cyan-400 shadow-[0_0_12px_rgba(6,182,212,0.35)] font-bold"
-              : "bg-[#121220] text-zinc-400 border-[#202032] hover:bg-[#18182c] hover:text-zinc-200"
+              ? "bg-[var(--brand)] text-white border-[var(--brand)] ] font-bold"
+              : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
           )}
           onclick={() => (activeTab = "global")}
         >
-          <Server class="size-3 text-cyan-300" />
+          <Server class="size-3 text-[var(--brand-text)]" />
           <span>Global Active</span>
           <span class="text-[10px] font-mono opacity-80">({globalCount})</span>
         </button>
@@ -776,14 +816,14 @@
           <button
             type="button"
             class={cn(
-              "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
               activeTab === "configured"
-                ? "bg-amber-600 text-white border-amber-400 shadow-[0_0_12px_rgba(245,158,11,0.35)] font-bold"
-                : "bg-[#121220] text-amber-300/90 border-amber-500/30 hover:bg-[#18182c] hover:text-amber-200"
+                ? "bg-warning text-white border-warning shadow-[0_0_12px_rgba(245,158,11,0.35)] font-bold"
+                : "bg-[var(--surface-2)] text-warning/90 border-warning/30 hover:bg-[var(--surface-3)] hover:text-warning"
             )}
             onclick={() => (activeTab = "configured")}
           >
-            <Key class="size-3 text-amber-400" />
+            <Key class="size-3 text-warning" />
             <span>Needs Keys</span>
             <span class="text-[10px] font-mono opacity-80">({missingKeysCount})</span>
           </button>
@@ -793,14 +833,14 @@
           <button
             type="button"
             class={cn(
-              "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-3 py-1.5 rounded-xl text-xs font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
               activeTab === "custom"
-                ? "bg-indigo-600 text-white border-indigo-400 shadow-[0_0_12px_rgba(99,102,241,0.35)] font-bold"
-                : "bg-[#121220] text-zinc-400 border-[#202032] hover:bg-[#18182c] hover:text-zinc-200"
+                ? "bg-[var(--brand)] text-white border-[var(--brand)] ] font-bold"
+                : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
             )}
             onclick={() => (activeTab = "custom")}
           >
-            <Sparkles class="size-3 text-indigo-300" />
+            <Sparkles class="size-3 text-[var(--brand-text)]" />
             <span>Custom</span>
             <span class="text-[10px] font-mono opacity-80">({customCount})</span>
           </button>
@@ -809,7 +849,7 @@
     </div>
 
     <!-- Category Filter Chips with Proper Lucide Icons (No horizontal scrollbars) -->
-    <div class="flex flex-wrap items-center gap-1.5 mt-3 pt-2.5 border-t border-white/5">
+    <div class="flex flex-wrap items-center gap-1.5 mt-3 pt-2.5 border-t border-[var(--hairline)]">
       {#each categoryDefs as cat}
         {@const count = getCategoryCount(cat.id)}
         {@const IconComponent = cat.icon}
@@ -817,19 +857,19 @@
           <button
             type="button"
             class={cn(
-              "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all flex items-center gap-1.5 cursor-pointer border",
               selectedCategory === cat.id
-                ? "bg-purple-900/70 text-purple-100 border-purple-400/80 shadow-[0_0_10px_rgba(168,85,247,0.3)] font-bold"
-                : "bg-[#0f0f1c] text-zinc-400 border-[#1c1c2e] hover:bg-[#18182c] hover:text-zinc-200 hover:border-purple-500/30"
+                ? "bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/80 ] font-bold"
+                : "bg-[var(--surface-2)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)]"
             )}
             onclick={() => (selectedCategory = cat.id)}
           >
-            <IconComponent class="size-3.5 text-purple-400 shrink-0" />
+            <IconComponent class="size-3.5 text-[var(--brand-text)] shrink-0" />
             <span>{cat.label}</span>
             <span
               class={cn(
-                "text-[10px] font-mono px-1 rounded",
-                selectedCategory === cat.id ? "bg-purple-800 text-purple-100" : "text-zinc-500"
+ "text-[10px] font-mono px-1 rounded",
+                selectedCategory === cat.id ? "bg-[var(--brand-soft)] text-[var(--brand-text)]" : "text-[var(--text-muted)]"
               )}
             >
               {count}
@@ -842,9 +882,9 @@
 
   <!-- Multi-Selection Action Toolbar Ribbon -->
   {#if selectedConnectorIds.size > 0}
-    <div class="px-6 py-2.5 bg-gradient-to-r from-purple-950/90 via-indigo-950/90 to-purple-950/90 border-b border-purple-500/40 flex items-center justify-between gap-4 z-10 shrink-0 shadow-lg animate-in fade-in slide-in-from-top-2">
+    <div class="px-6 py-2.5 bg-[var(--brand-soft)] border-[var(--hairline)] border-[var(--brand)]/40 flex items-center justify-between gap-4 z-10 shrink-0 shadow-lg animate-in fade-in slide-in-from-top-2">
       <div class="flex items-center gap-3">
-        <div class="size-6 rounded-lg bg-purple-500/30 border border-purple-400/50 flex items-center justify-center text-purple-200 text-xs font-bold font-mono">
+        <div class="size-6 rounded-lg bg-[var(--brand-soft)] border border-[var(--brand)]/50 flex items-center justify-center text-[var(--brand-text)] text-xs font-bold font-mono">
           {selectedConnectorIds.size}
         </div>
         <span class="text-xs font-semibold text-white">
@@ -856,7 +896,7 @@
         {#if currentBot}
           <Button
             size="sm"
-            class="h-7.5 text-xs bg-purple-600 hover:bg-purple-500 text-white font-medium gap-1.5 shadow-sm cursor-pointer"
+            class="h-7.5 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium gap-1.5 shadow-sm cursor-pointer"
             onclick={() => batchAssignSelectedToCurrentBot(true)}
           >
             <Check class="size-3.5" />
@@ -866,7 +906,7 @@
           <Button
             size="sm"
             variant="outline"
-            class="h-7.5 text-xs bg-[#161626] border-[#29293e] text-zinc-300 hover:bg-red-950/40 hover:text-red-300 hover:border-red-500/40 cursor-pointer"
+            class="h-7.5 text-xs bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-red-950/40 hover:text-red-300 hover:border-red-500/40 cursor-pointer"
             onclick={() => batchAssignSelectedToCurrentBot(false)}
           >
             <span>Disable for {currentBot.name}</span>
@@ -876,7 +916,7 @@
         <Button
           size="sm"
           variant="outline"
-          class="h-7.5 text-xs bg-cyan-950/40 border-cyan-500/40 text-cyan-300 hover:bg-cyan-900/50 cursor-pointer"
+          class="h-7.5 text-xs bg-[var(--brand-soft)] border-[var(--brand)]/40 text-[var(--brand-text)] hover:bg-[var(--brand-soft)] cursor-pointer"
           onclick={batchEnableSelectedGlobally}
         >
           <Globe class="size-3.5 mr-1" />
@@ -886,7 +926,7 @@
         <Button
           size="sm"
           variant="ghost"
-          class="h-7.5 text-xs text-zinc-400 hover:text-white cursor-pointer"
+          class="h-7.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
           onclick={clearSelection}
         >
           <span>Clear Selection</span>
@@ -908,225 +948,163 @@
 
         <div
           class={cn(
-            "rounded-2xl border p-4 transition-all flex flex-col justify-between gap-3 relative group backdrop-blur-md",
+ "rounded-2xl border transition-all flex flex-col gap-3 relative group p-3.5",
             isCardSelected
-              ? "ring-2 ring-purple-400 border-purple-400/90 bg-purple-950/30 shadow-[0_0_25px_rgba(168,85,247,0.25)]"
+              ? "border-[var(--brand)] ring-2 ring-[var(--brand)]/40 bg-[var(--brand-soft)]"
               : isCurrentBotEnabled
-                ? "border-purple-500/70 bg-purple-950/20 shadow-[0_0_15px_rgba(168,85,247,0.12)] ring-1 ring-purple-500/30"
-                : isGlobalEnabled
-                  ? "border-cyan-500/40 bg-[#0d1220]/85 hover:border-cyan-500/60"
-                  : "border-[#1c1c2e] bg-[#0c0c16]/90 hover:border-purple-500/40 hover:bg-[#111120]"
+                ? "border-[var(--brand)]/60 bg-[var(--brand-soft)]"
+                : "border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--hairline-strong)] hover:bg-[var(--surface-2)]"
           )}
         >
-          <!-- Top Row: Checkbox, Icon, Title, ID, Category & Diagnostic Buttons -->
-          <div class="space-y-2.5">
-            <div class="flex items-start justify-between gap-2">
-              <div class="flex items-start gap-2.5 min-w-0">
-                <!-- Checkbox for multi-select -->
-                <button
-                  type="button"
-                  class="mt-1 text-zinc-500 hover:text-purple-300 transition-colors cursor-pointer"
-                  onclick={() => toggleSelectConnector(s.id)}
-                  title={isCardSelected ? "Deselect" : "Select connector"}
-                >
-                  {#if isCardSelected}
-                    <CheckSquare class="size-4 text-purple-400" />
-                  {:else}
-                    <Square class="size-4" />
-                  {/if}
-                </button>
+          <!-- Header: select, icon, identity, overflow -->
+          <div class="flex items-start gap-2.5 min-w-0">
+            <button
+              type="button"
+              class="mt-0.5 shrink-0 text-[var(--text-muted)] hover:text-[var(--brand)] transition-colors cursor-pointer"
+              onclick={() => toggleSelectConnector(s.id)}
+              title={isCardSelected ? "Deselect" : "Select connector"}
+            >
+              {#if isCardSelected}
+                <CheckSquare class="size-4 text-[var(--brand)]" />
+              {:else}
+                <Square class="size-4" />
+              {/if}
+            </button>
 
-                <!-- Vector Brand SVG Icon -->
-                <ConnectorIcon id={s.id} name={s.name} size="md" />
+            <ConnectorIcon id={s.id} name={s.name} size="md" />
 
-                <!-- Name & Meta -->
-                <div class="min-w-0">
-                  <div class="flex items-center gap-1.5 flex-wrap">
-                    <h4 class="font-bold text-xs text-white truncate max-w-[130px]" title={s.name}>
-                      {s.name}
-                    </h4>
-                    <span class="font-mono text-[9px] text-zinc-400 bg-black/40 border border-white/5 px-1.5 py-0.2 rounded shrink-0">
-                      {s.id}
-                    </span>
-                    {#if s.is_custom}
-                      <span class="text-[9px] bg-indigo-950/80 text-indigo-300 border border-indigo-500/40 px-1.5 py-0.2 rounded font-bold">
-                        CUSTOM
-                      </span>
-                    {/if}
-                  </div>
-                  <div class="flex items-center gap-1 mt-1">
-                    <Badge variant="outline" class="text-[9px] px-1.5 py-0 border-purple-500/25 text-purple-300 bg-purple-950/30">
-                      {s.category}
-                    </Badge>
-                    <Badge variant="outline" class="text-[9px] px-1.5 py-0 border-zinc-700 text-zinc-400 bg-black/30">
-                      {s.tools_count} tools
-                    </Badge>
-                  </div>
-                </div>
-              </div>
-
-              <!-- Diagnostic & Actions Icons -->
-              <div class="flex items-center gap-1 shrink-0">
-                <button
-                  type="button"
-                  class="size-7 rounded-lg bg-[#161626] border border-[#252538] hover:border-purple-500/40 hover:bg-purple-950/30 text-zinc-400 hover:text-purple-300 flex items-center justify-center transition-all cursor-pointer"
-                  title="Test Connection & Inspect Tools"
-                  onclick={() => openTestModal(s)}
-                >
-                  <Zap class="size-3.5" />
-                </button>
-
-                {#if hasRequiredKeys}
-                  <button
-                    type="button"
-                    class={cn(
-                      "size-7 rounded-lg border flex items-center justify-center transition-all cursor-pointer",
-                      isKeyConfigured
-                        ? "bg-emerald-950/40 border-emerald-500/40 text-emerald-400 hover:bg-emerald-900/50"
-                        : "bg-amber-950/40 border-amber-500/40 text-amber-400 hover:bg-amber-900/50 animate-pulse"
-                    )}
-                    title={isKeyConfigured ? "View / Edit Configured Credentials" : "Missing Required Credentials — Click to Configure"}
-                    onclick={() => openEnvConfig(s)}
-                  >
-                    <Key class="size-3.5" />
-                  </button>
-                {/if}
-
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-1.5 min-w-0">
+                <h4 class="font-bold text-xs text-white truncate" title={s.name}>{s.name}</h4>
                 {#if s.is_custom}
-                  <button
-                    type="button"
-                    class="size-7 rounded-lg bg-[#161626] border border-[#252538] hover:border-red-500/40 hover:bg-red-950/30 text-zinc-400 hover:text-red-400 flex items-center justify-center transition-all cursor-pointer"
-                    title="Delete Custom Connector"
-                    onclick={() => deleteServer(s)}
-                  >
-                    <Trash2 class="size-3.5" />
-                  </button>
+                  <span class="text-[9px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/40 px-1.5 py-0.2 rounded font-bold shrink-0">CUSTOM</span>
                 {/if}
+                {#if !s.verified}
+                  <span
+                    class="text-[9px] bg-warning/80 text-warning border border-warning/40 px-1.5 py-0.2 rounded font-bold shrink-0"
+                    title="Upstream launcher package was not found during the catalog audit. This connector may not work until it is fixed or reconfigured."
+                  >UNVERIFIED</span>
+                {/if}
+              </div>
+              <div class="flex items-center gap-1.5 mt-0.5 text-[10px] text-[var(--text-muted)] min-w-0">
+                <span class="truncate">{s.category}</span>
+                <span>·</span>
+                <span class="font-mono shrink-0">{s.tools_count} tools</span>
               </div>
             </div>
 
-            <!-- Description -->
-            <p class="text-xs text-zinc-400 line-clamp-2 leading-relaxed h-8">
-              {s.description}
-            </p>
-
-            <!-- Credential Status Banner -->
-            {#if hasRequiredKeys}
-              <div class="flex items-center gap-1.5 pt-0.5">
-                {#if isKeyConfigured}
-                  <button
-                    type="button"
-                    class="text-[10px] text-emerald-400 bg-emerald-950/50 border border-emerald-500/30 px-2 py-0.5 rounded-md flex items-center gap-1 hover:bg-emerald-900/40 cursor-pointer font-medium"
-                    onclick={() => openEnvConfig(s)}
-                  >
-                    <Check class="size-3" />
-                    <span>Credentials Configured</span>
-                  </button>
-                {:else}
-                  <button
-                    type="button"
-                    class="text-[10px] text-amber-300 bg-amber-950/60 border border-amber-500/40 px-2 py-0.5 rounded-md flex items-center gap-1 hover:bg-amber-900/50 cursor-pointer font-semibold animate-pulse"
-                    onclick={() => openEnvConfig(s)}
-                  >
-                    <Key class="size-3 text-amber-400" />
-                    <span>Needs {s.env_keys.slice(0, 2).join(", ")}</span>
-                  </button>
-                {/if}
-              </div>
-            {/if}
-
-            <!-- Command Snippet with 1-Click Copy -->
-            <div class="flex items-center justify-between gap-1 bg-[#080812] border border-[#1a1a2b] rounded-lg px-2 py-1 text-[10px] font-mono text-zinc-400">
-              <span class="truncate" title={`${s.command} ${s.args.join(" ")}`}>
-                <span class="text-purple-400">{s.command}</span> {s.args.slice(0, 3).join(" ")}
-              </span>
+            <!-- Overflow actions -->
+            <div class="relative shrink-0">
               <button
                 type="button"
-                class="shrink-0 text-zinc-500 hover:text-white transition-colors cursor-pointer"
-                title="Copy command"
-                onclick={() => copyCommand(s)}
+                class="icon-btn size-7 border border-[var(--hairline)]"
+                onclick={(e) => { e.stopPropagation(); activeMenu = activeMenu === s.id ? null : s.id; }}
+                title="More actions"
               >
-                {#if copiedId === s.id}
-                  <Check class="size-3 text-emerald-400" />
-                {:else}
-                  <Copy class="size-3" />
-                {/if}
+                <MoreHorizontal class="size-4" />
               </button>
+              {#if activeMenu === s.id}
+                <!-- svelte-ignore a11y_no_static_element_interactions -->
+                <!-- svelte-ignore a11y_click_events_have_key_events -->
+                <div
+                  class="absolute right-0 top-8 z-30 w-48 rounded-xl border border-[var(--hairline-strong)] bg-[var(--surface-1)] shadow-2xl p-1 space-y-0.5"
+                  onclick={(e) => e.stopPropagation()}
+                >
+                  <button type="button" class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] text-left cursor-pointer" onclick={() => { activeMenu = null; openTestModal(s); }}>
+                    <Zap class="size-3.5 text-[var(--text-tertiary)]" /> Test connection
+                  </button>
+                  {#if hasRequiredKeys}
+                    <button type="button" class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] text-left cursor-pointer" onclick={() => { activeMenu = null; openEnvConfig(s); }}>
+                      <Key class="size-3.5 text-[var(--text-tertiary)]" /> Configure credentials
+                    </button>
+                  {/if}
+                  <button type="button" class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] text-left cursor-pointer" onclick={() => { activeMenu = null; copyCommand(s); }}>
+                    {#if copiedId === s.id}<Check class="size-3.5 text-success" />{:else}<Copy class="size-3.5 text-[var(--text-tertiary)]" />{/if}
+                    {copiedId === s.id ? "Copied" : "Copy command"}
+                  </button>
+                  {#if s.is_custom}
+                    <button type="button" class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-danger hover:bg-danger/10 text-left cursor-pointer" onclick={() => { activeMenu = null; deleteServer(s); }}>
+                      <Trash2 class="size-3.5" /> Delete connector
+                    </button>
+                  {/if}
+                </div>
+              {/if}
             </div>
           </div>
 
-          <!-- Footer Action Buttons -->
-          <div class="pt-2.5 border-t border-[#1c1c2e] flex flex-col gap-2 mt-1">
-            <div class="flex items-center gap-1.5">
-              {#if currentBot}
-                <Button
-                  size="sm"
-                  variant={isCurrentBotEnabled ? "default" : "outline"}
-                  class={cn(
-                    "h-8 text-xs font-medium flex-1 cursor-pointer transition-all",
-                    isCurrentBotEnabled
-                      ? "bg-purple-600 hover:bg-purple-500 text-white shadow-[0_0_12px_rgba(168,85,247,0.3)] font-bold"
-                      : "bg-[#131322] border-[#26263b] text-zinc-300 hover:bg-purple-950/30 hover:border-purple-500/40 hover:text-white"
-                  )}
-                  onclick={() => toggleForCurrentBot(s.id)}
-                >
-                  {#if isCurrentBotEnabled}
-                    <Check class="size-3 mr-1" />
-                    <span>Active for {currentBot.name}</span>
-                  {:else}
-                    <Plus class="size-3 mr-1" />
-                    <span>Enable for {currentBot.name}</span>
-                  {/if}
-                </Button>
-              {/if}
+          <!-- Description -->
+          <p class="text-[11px] text-[var(--text-tertiary)] line-clamp-2 leading-relaxed min-h-8">{s.description}</p>
 
-              <!-- Assign to Multiple Agents Button -->
+          <!-- Single status line -->
+          <button
+            type="button"
+            class="flex items-center gap-1.5 text-[10px] w-fit text-left cursor-pointer"
+            title={hasRequiredKeys && !isKeyConfigured ? "Click to configure credentials" : s.description}
+            onclick={() => { if (hasRequiredKeys) openEnvConfig(s); }}
+          >
+            {#if !s.verified}
+              <span class="size-1.5 rounded-full bg-warning"></span><span class="text-warning">Unverified connector</span>
+            {:else if hasRequiredKeys && !isKeyConfigured}
+              <span class="size-1.5 rounded-full bg-warning"></span>
+              <span class="text-warning">Needs {s.env_keys.slice(0, 2).join(", ")} — configure</span>
+            {:else if isCurrentBotEnabled}
+              <span class="size-1.5 rounded-full bg-success"></span><span class="text-success">Active for {currentBot?.name}</span>
+            {:else if isGlobalEnabled}
+              <span class="size-1.5 rounded-full bg-[var(--brand)]"></span><span class="text-[var(--brand-text)]">Global · ready</span>
+            {:else}
+              <span class="size-1.5 rounded-full bg-[var(--surface-3)]"></span><span class="text-[var(--text-tertiary)]">Ready to assign</span>
+            {/if}
+          </button>
+
+          <!-- Footer actions -->
+          <div class="flex items-center gap-1.5 pt-2.5 border-t border-[var(--hairline)] mt-auto">
+            {#if currentBot}
               <Button
                 size="sm"
-                variant="outline"
-                class="h-8 px-2.5 text-xs bg-[#131322] border-[#26263b] text-zinc-400 hover:text-white hover:border-purple-500/30 hover:bg-purple-950/30 cursor-pointer shrink-0"
-                title="Assign this connector to multiple agents"
-                onclick={() => openAssignAgentsModal(s)}
-              >
-                <BotIcon class="size-3.5" />
-              </Button>
-            </div>
-
-            <!-- Global State indicator -->
-            <div class="flex items-center justify-between text-[11px] text-zinc-500 px-1">
-              <button
-                type="button"
-                class="hover:text-purple-300 transition-colors flex items-center gap-1 cursor-pointer"
-                onclick={() => openAssignAgentsModal(s)}
-              >
-                <BotIcon class="size-3" />
-                <span>Assigned to {assignedBotsCount} agent{assignedBotsCount === 1 ? '' : 's'}</span>
-              </button>
-
-              <button
-                type="button"
+                variant={isCurrentBotEnabled ? "default" : "outline"}
                 class={cn(
-                  "flex items-center gap-1 transition-colors cursor-pointer",
-                  isGlobalEnabled ? "text-cyan-400 font-semibold" : "text-zinc-500 hover:text-zinc-300"
+ "h-8 text-xs font-medium flex-1 cursor-pointer",
+                  isCurrentBotEnabled ? "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white" : ""
                 )}
-                onclick={() => toggleGlobal(s.id, isGlobalEnabled)}
-                title={isGlobalEnabled ? "Globally enabled for all agents" : "Click to enable globally"}
+                onclick={() => toggleForCurrentBot(s.id)}
               >
-                <Globe class="size-3" />
-                <span>{isGlobalEnabled ? "Global Active" : "Global Off"}</span>
-              </button>
-            </div>
+                {#if isCurrentBotEnabled}<Check class="size-3 mr-1" /> Active{:else}<Plus class="size-3 mr-1" /> Enable{/if}
+              </Button>
+            {/if}
+            <Button
+              size="sm"
+              variant="outline"
+              class="h-8 px-2.5 text-xs cursor-pointer shrink-0"
+              title="Assign this connector to multiple agents"
+              onclick={() => openAssignAgentsModal(s)}
+            >
+              <BotIcon class="size-3.5" />
+            </Button>
+            <button
+              type="button"
+              class={cn(
+ "h-8 px-2.5 rounded-lg border text-[10px] font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0",
+                isGlobalEnabled
+                  ? "border-[var(--brand)]/40 bg-[var(--brand-soft)] text-[var(--brand-text)]"
+                  : "border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]"
+              )}
+              onclick={() => toggleGlobal(s.id, isGlobalEnabled)}
+              title={isGlobalEnabled ? "Globally enabled for all agents" : "Enable for all agents"}
+            >
+              <Globe class="size-3.5" />
+              {isGlobalEnabled ? "Global" : "Global off"}
+            </button>
           </div>
         </div>
       {:else}
         <!-- Empty State -->
-        <div class="col-span-full py-20 text-center border-2 border-dashed border-[#202034] rounded-3xl bg-[#0c0c16]/50 space-y-4">
-          <div class="size-14 rounded-2xl bg-purple-950/40 border border-purple-800/30 flex items-center justify-center text-purple-400 mx-auto shadow-inner">
+        <div class="col-span-full py-20 text-center border-[var(--hairline)] border-dashed border-[var(--hairline)] rounded-xl bg-[var(--surface-1)] space-y-4">
+          <div class="size-14 rounded-2xl bg-[var(--brand-soft)] border border-[var(--brand)]/30 flex items-center justify-center text-[var(--brand-text)] mx-auto shadow-inner">
             <Wrench class="size-7" />
           </div>
           <div class="space-y-1">
             <p class="text-base font-bold text-white">No connectors match your current filter</p>
-            <p class="text-xs text-zinc-400 max-w-md mx-auto leading-relaxed">
+            <p class="text-xs text-[var(--text-tertiary)] max-w-md mx-auto leading-relaxed">
               Try clearing your search query, switching categories, or register a new custom stdio/SSE connector.
             </p>
           </div>
@@ -1135,7 +1113,7 @@
               <Button
                 size="sm"
                 variant="outline"
-                class="h-8 text-xs bg-[#161626] border-[#252538] text-zinc-300 cursor-pointer"
+                class="h-8 text-xs bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)] cursor-pointer"
                 onclick={() => {
                   query = "";
                   selectedCategory = "All";
@@ -1147,7 +1125,7 @@
             {/if}
             <Button
               size="sm"
-              class="h-8 text-xs bg-purple-600 hover:bg-purple-500 text-white font-medium gap-1.5 cursor-pointer"
+              class="h-8 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium gap-1.5 cursor-pointer"
               onclick={() => (showAddCustom = true)}
             >
               <Plus class="size-3.5" />
@@ -1163,13 +1141,13 @@
 <!-- Modal 1: Preset Stacks Drawer -->
 {#if showPresetModal}
   <Dialog.Root open={showPresetModal} onOpenChange={(o) => !o && (showPresetModal = false)}>
-    <Dialog.Content class="sm:max-w-2xl max-w-2xl bg-[#0c0c16] border border-purple-500/30 rounded-3xl p-6 text-zinc-100 shadow-[0_0_50px_rgba(147,51,234,0.25)]">
-      <Dialog.Header class="pb-3 border-b border-white/10">
+    <Dialog.Content class="sm:max-w-2xl max-w-2xl bg-[var(--surface-1)] border border-[var(--brand)]/30 rounded-xl p-6 text-[var(--text-primary)] ]">
+      <Dialog.Header class="pb-3 border-[var(--hairline)] border-[var(--hairline)]">
         <Dialog.Title class="text-base font-bold text-white flex items-center gap-2">
-          <Sparkles class="size-4.5 text-purple-400" />
+          <Sparkles class="size-4.5 text-[var(--brand-text)]" />
           <span>One-Click Connector Stacks for {currentBot ? currentBot.name : "Agents"}</span>
         </Dialog.Title>
-        <Dialog.Description class="text-xs text-zinc-400">
+        <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
           Apply curated multi-connector bundles designed for specific workflows and engineering domains.
         </Dialog.Description>
       </Dialog.Header>
@@ -1177,21 +1155,21 @@
       <div class="space-y-3 py-4 max-h-[65vh] overflow-y-auto pr-1">
         {#each PRESET_STACKS as stack}
           {@const IconComp = stack.iconComponent}
-          <div class="rounded-2xl border p-4 bg-[#10101f] border-[#222238] flex flex-col justify-between gap-3 hover:border-purple-500/40 transition-colors">
+          <div class="rounded-2xl border p-4 bg-[var(--surface-1)] border-[var(--hairline)] flex flex-col justify-between gap-3 hover:border-[var(--brand)]/40 transition-colors">
             <div class="flex items-start justify-between gap-3">
               <div class="flex items-start gap-3">
-                <div class="size-10 rounded-xl bg-purple-950/40 border border-purple-500/30 flex items-center justify-center text-purple-300 shrink-0">
+                <div class="size-10 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/30 flex items-center justify-center text-[var(--brand-text)] shrink-0">
                   <IconComp class="size-5" />
                 </div>
                 <div>
                   <h4 class="font-bold text-sm text-white">{stack.name}</h4>
-                  <p class="text-xs text-zinc-400 mt-0.5">{stack.description}</p>
+                  <p class="text-xs text-[var(--text-tertiary)] mt-0.5">{stack.description}</p>
                 </div>
               </div>
 
               <Button
                 size="sm"
-                class="h-8 text-xs bg-purple-600 hover:bg-purple-500 text-white font-medium shrink-0 cursor-pointer shadow-sm"
+                class="h-8 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium shrink-0 cursor-pointer shadow-sm"
                 disabled={applyingPreset || !currentBotId}
                 onclick={() => applyPresetStack(stack)}
               >
@@ -1201,10 +1179,10 @@
             </div>
 
             <!-- Connector Tags Included -->
-            <div class="flex flex-wrap items-center gap-1.5 pt-2 border-t border-white/5">
-              <span class="text-[10px] font-mono text-zinc-500 uppercase">Includes:</span>
+            <div class="flex flex-wrap items-center gap-1.5 pt-2 border-t border-[var(--hairline)]">
+              <span class="text-[10px] font-mono text-[var(--text-muted)] uppercase">Includes:</span>
               {#each stack.connectors as cid}
-                <span class="text-[10px] bg-purple-950/60 border border-purple-500/25 text-purple-300 px-2 py-0.5 rounded-md font-mono">
+                <span class="text-[10px] bg-[var(--brand-soft)] border border-[var(--hairline)] text-[var(--brand-text)] px-2 py-0.5 rounded-md font-mono">
                   {cid}
                 </span>
               {/each}
@@ -1213,8 +1191,8 @@
         {/each}
       </div>
 
-      <div class="flex justify-end pt-3 border-t border-white/10">
-        <Button variant="outline" class="h-8 text-xs border-[#29293e] text-zinc-300" onclick={() => (showPresetModal = false)}>
+      <div class="flex justify-end pt-3 border-t border-[var(--hairline)]">
+        <Button variant="outline" class="h-8 text-xs border-[var(--hairline)] text-[var(--text-secondary)]" onclick={() => (showPresetModal = false)}>
           Close
         </Button>
       </div>
@@ -1225,13 +1203,13 @@
 <!-- Modal 2: Assign Connector to Multiple Agents -->
 {#if showAssignAgentsModal && selectedConnectorForAgentAssignment}
   <Dialog.Root open={showAssignAgentsModal} onOpenChange={(o) => !o && (showAssignAgentsModal = false)}>
-    <Dialog.Content class="sm:max-w-md max-w-md bg-[#0c0c16] border border-purple-500/30 rounded-3xl p-6 text-zinc-100 shadow-[0_0_50px_rgba(147,51,234,0.25)]">
-      <Dialog.Header class="pb-3 border-b border-white/10">
+    <Dialog.Content class="sm:max-w-md max-w-md bg-[var(--surface-1)] border border-[var(--brand)]/30 rounded-xl p-6 text-[var(--text-primary)] ]">
+      <Dialog.Header class="pb-3 border-[var(--hairline)] border-[var(--hairline)]">
         <Dialog.Title class="text-base font-bold text-white flex items-center gap-2">
           <ConnectorIcon id={selectedConnectorForAgentAssignment.id} name={selectedConnectorForAgentAssignment.name} size="sm" />
           <span>Assign '{selectedConnectorForAgentAssignment.name}'</span>
         </Dialog.Title>
-        <Dialog.Description class="text-xs text-zinc-400">
+        <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
           Check which agents should have access to this connector.
         </Dialog.Description>
       </Dialog.Header>
@@ -1242,10 +1220,10 @@
           <button
             type="button"
             class={cn(
-              "w-full flex items-center justify-between p-3 rounded-xl border transition-all text-left cursor-pointer",
+ "w-full flex items-center justify-between p-3 rounded-xl border transition-all text-left cursor-pointer",
               isAssigned
-                ? "bg-purple-950/40 border-purple-500/60 text-white"
-                : "bg-[#11111e] border-[#222234] text-zinc-400 hover:bg-[#161628] hover:text-zinc-200"
+                ? "bg-[var(--brand-soft)] border-[var(--brand)]/60 text-white"
+                : "bg-[#11111e] border-[var(--hairline)] text-[var(--text-tertiary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
             )}
             onclick={() => {
               const next = new Set(assignedAgentIds);
@@ -1261,15 +1239,15 @@
               <img
                 src={b.avatar_url || getDiceBearUrl(b.name, b.avatar_style || "bottts")}
                 alt={b.name}
-                class="size-8 rounded-full object-cover border border-purple-400/40"
+                class="size-8 rounded-full object-cover border border-[var(--brand)]/40"
               />
               <div>
                 <span class="font-bold text-xs text-white block">{b.name}</span>
-                <span class="text-[10px] text-zinc-400 font-mono">{b.model || "Default Model"}</span>
+                <span class="text-[10px] text-[var(--text-tertiary)] font-mono">{b.model || "Default Model"}</span>
               </div>
             </div>
 
-            <div class={cn("size-5 rounded-md border flex items-center justify-center", isAssigned ? "bg-purple-600 border-purple-400 text-white" : "border-zinc-700")}>
+            <div class={cn("size-5 rounded-md border flex items-center justify-center", isAssigned ? "bg-[var(--brand)] border-[var(--brand)] text-white" : "border-[var(--hairline-strong)]")}>
               {#if isAssigned}
                 <Check class="size-3.5" />
               {/if}
@@ -1278,11 +1256,11 @@
         {/each}
       </div>
 
-      <div class="flex items-center justify-between pt-3 border-t border-white/10">
+      <div class="flex items-center justify-between pt-3 border-t border-[var(--hairline)]">
         <Button
           size="sm"
           variant="ghost"
-          class="h-8 text-xs text-zinc-400 hover:text-white"
+          class="h-8 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
           onclick={() => {
             if (assignedAgentIds.size === bots.length) {
               assignedAgentIds = new Set();
@@ -1295,12 +1273,12 @@
         </Button>
 
         <div class="flex gap-2">
-          <Button size="sm" variant="outline" class="h-8 text-xs border-[#29293e]" onclick={() => (showAssignAgentsModal = false)}>
+          <Button size="sm" variant="outline" class="h-8 text-xs border-[var(--hairline)]" onclick={() => (showAssignAgentsModal = false)}>
             Cancel
           </Button>
           <Button
             size="sm"
-            class="h-8 text-xs bg-purple-600 hover:bg-purple-500 text-white font-medium"
+            class="h-8 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium"
             disabled={isSavingAgentAssignment}
             onclick={saveAgentAssignment}
           >
@@ -1315,13 +1293,13 @@
 <!-- Modal 3: Add Custom Connector -->
 {#if showAddCustom}
   <Dialog.Root open={showAddCustom} onOpenChange={(o) => !o && (showAddCustom = false)}>
-    <Dialog.Content class="sm:max-w-lg max-w-lg bg-[#0c0c16] border border-purple-500/30 rounded-3xl p-6 text-zinc-100 shadow-[0_0_50px_rgba(147,51,234,0.25)]">
-      <Dialog.Header class="pb-3 border-b border-white/10">
+    <Dialog.Content class="sm:max-w-lg max-w-lg bg-[var(--surface-1)] border border-[var(--brand)]/30 rounded-xl p-6 text-[var(--text-primary)] ]">
+      <Dialog.Header class="pb-3 border-[var(--hairline)] border-[var(--hairline)]">
         <Dialog.Title class="text-base font-bold text-white flex items-center gap-2">
-          <Plus class="size-4.5 text-purple-400" />
+          <Plus class="size-4.5 text-[var(--brand-text)]" />
           <span>Register Custom MCP / Stdio Connector</span>
         </Dialog.Title>
-        <Dialog.Description class="text-xs text-zinc-400">
+        <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
           Connect any local binary, Python script, Docker container, or SSE endpoint.
         </Dialog.Description>
       </Dialog.Header>
@@ -1339,7 +1317,7 @@
             <Input
               bind:value={customId}
               placeholder="e.g. my-custom-db"
-              class="h-8.5 text-xs font-mono bg-[#141420] border-[#252538]"
+              class="h-8.5 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
             />
           </div>
           <div class="space-y-1.5">
@@ -1347,7 +1325,7 @@
             <Input
               bind:value={customIcon}
               placeholder="⚡"
-              class="h-8.5 text-xs text-center bg-[#141420] border-[#252538]"
+              class="h-8.5 text-xs text-center bg-[var(--surface-2)] border-[var(--hairline)]"
             />
           </div>
         </div>
@@ -1358,19 +1336,19 @@
             <Input
               bind:value={customName}
               placeholder="e.g. Custom Analytics DB"
-              class="h-8.5 text-xs bg-[#141420] border-[#252538]"
+              class="h-8.5 text-xs bg-[var(--surface-2)] border-[var(--hairline)]"
             />
           </div>
           <div class="space-y-1.5">
             <Label class="text-xs font-bold text-white">Category</Label>
-            <select
-              bind:value={customCategory}
-              class="w-full h-8.5 rounded-xl text-xs bg-[#141424] border border-[#28283e] text-zinc-200 px-3 pr-8 focus:outline-none focus:border-purple-500 cursor-pointer"
-            >
-              {#each categoryDefs.filter((c) => c.id !== "All") as c}
-                <option value={c.id} class="bg-[#0e0e1a] text-zinc-100">{c.label || c.id}</option>
-              {/each}
-            </select>
+            <SimpleSelect
+              value={customCategory}
+              options={categoryDefs
+                .filter((c) => c.id !== "All")
+                .map((c) => ({ value: c.id, label: c.label || c.id }))}
+              onValueChange={(v) => (customCategory = v)}
+              class="h-8.5 rounded-xl"
+            />
           </div>
         </div>
 
@@ -1379,8 +1357,12 @@
           <Textarea
             bind:value={customDesc}
             placeholder="Describe what capabilities and operations this connector provides to agents..."
-            class="text-xs bg-[#141420] border-[#252538] min-h-[50px]"
+            class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] min-h-[50px]"
           />
+        </div>
+
+        <div class="rounded-xl border border-warning/25 bg-warning/5 px-3 py-2 text-[11px] leading-relaxed text-warning/90">
+          Only add servers you trust: a custom server runs its command on your machine with the env values you save here.
         </div>
 
         <div class="grid grid-cols-3 gap-3">
@@ -1389,36 +1371,39 @@
             <Input
               bind:value={customCommand}
               placeholder="npx / python / uvx"
-              class="h-8.5 text-xs font-mono bg-[#141420] border-[#252538]"
+              class="h-8.5 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
             />
           </div>
           <div class="col-span-2 space-y-1.5">
-            <Label class="text-xs font-bold text-white">Arguments</Label>
-            <Input
+            <Label class="text-xs font-bold text-white">Arguments (one per line)</Label>
+            <Textarea
               bind:value={customArgs}
-              placeholder="-y @my-org/mcp-server --port 8000"
-              class="h-8.5 text-xs font-mono bg-[#141420] border-[#252538]"
+              placeholder={"-y\n@my-org/mcp-server\n--port 8000"}
+              rows={4}
+              class="text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
             />
           </div>
         </div>
 
         <div class="space-y-1.5">
-          <Label class="text-xs font-bold text-white">Required Environment Keys</Label>
-          <Input
+          <Label class="text-xs font-bold text-white">Environment (one KEY=value per line, optional)</Label>
+          <Textarea
             bind:value={customEnvKeys}
-            placeholder="API_KEY, DB_URL (comma separated)"
-            class="h-8.5 text-xs font-mono bg-[#141420] border-[#252538]"
+            placeholder={"API_KEY=sk-...\nDB_URL=postgres://..."}
+            rows={3}
+            class="text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
           />
+          <p class="text-[10px] text-[var(--text-muted)]">Secrets are write-only and stored locally. New servers stay disabled until tested + explicitly enabled.</p>
         </div>
       </div>
 
-      <div class="flex justify-end gap-2 pt-3 border-t border-white/10">
-        <Button size="sm" variant="outline" class="h-8 text-xs border-[#29293e]" onclick={() => (showAddCustom = false)}>
+      <div class="flex justify-end gap-2 pt-3 border-t border-[var(--hairline)]">
+        <Button size="sm" variant="outline" class="h-8 text-xs border-[var(--hairline)]" onclick={() => (showAddCustom = false)}>
           Cancel
         </Button>
         <Button
           size="sm"
-          class="h-8 text-xs bg-purple-600 hover:bg-purple-500 text-white font-medium"
+          class="h-8 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium"
           disabled={isSavingCustom}
           onclick={saveCustomServer}
         >
@@ -1432,34 +1417,35 @@
 <!-- Modal 4: Configure Credentials Drawer -->
 {#if showConfigEnv && selectedServerForEnv}
   <Dialog.Root open={showConfigEnv} onOpenChange={(o) => !o && (showConfigEnv = false)}>
-    <Dialog.Content class="sm:max-w-md max-w-md bg-[#0c0c16] border border-purple-500/30 rounded-3xl p-6 text-zinc-100 shadow-[0_0_50px_rgba(147,51,234,0.25)]">
-      <Dialog.Header class="pb-3 border-b border-white/10">
+    <Dialog.Content class="sm:max-w-md max-w-md bg-[var(--surface-1)] border border-[var(--brand)]/30 rounded-xl p-6 text-[var(--text-primary)] ]">
+      <Dialog.Header class="pb-3 border-[var(--hairline)] border-[var(--hairline)]">
         <Dialog.Title class="text-base font-bold text-white flex items-center gap-2">
-          <Key class="size-4.5 text-amber-400" />
+          <Key class="size-4.5 text-warning" />
           <span>Configure '{selectedServerForEnv.name}' Credentials</span>
         </Dialog.Title>
-        <Dialog.Description class="text-xs text-zinc-400">
+        <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
           Encrypted locally in OS keychain. Never transmitted to third-party servers.
         </Dialog.Description>
       </Dialog.Header>
 
+      <p class="text-[11px] text-[var(--text-muted)]">Secrets are write-only: saved values are never shown. Leave blank to keep.</p>
       <div class="space-y-3.5 py-4 max-h-[50vh] overflow-y-auto">
         {#each selectedServerForEnv.env_keys as k}
           <div class="space-y-1.5">
-            <Label class="text-xs font-bold text-zinc-300 font-mono flex items-center justify-between">
+            <Label class="text-xs font-bold text-[var(--text-secondary)] font-mono flex items-center justify-between">
               <span>{k}</span>
-              <span class="text-[9px] text-zinc-500 uppercase">Secret Token</span>
+              <span class="text-[9px] text-[var(--text-muted)] uppercase">Secret Token</span>
             </Label>
             <div class="relative">
               <Input
                 type={showSecrets[k] ? "text" : "password"}
                 bind:value={envValues[k]}
-                placeholder={`Enter ${k}...`}
-                class="pr-9 h-8.5 text-xs font-mono bg-[#141420] border-[#252538] text-zinc-200"
+                placeholder={selectedServerForEnv?.env_configured ? `Saved — leave blank to keep` : `Enter ${k}...`}
+                class="pr-9 h-8.5 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
               />
               <button
                 type="button"
-                class="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-500 hover:text-white cursor-pointer"
+                class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
                 onclick={() => (showSecrets[k] = !showSecrets[k])}
               >
                 {#if showSecrets[k]}
@@ -1473,13 +1459,13 @@
         {/each}
       </div>
 
-      <div class="flex justify-end gap-2 pt-3 border-t border-white/10">
-        <Button size="sm" variant="outline" class="h-8 text-xs border-[#29293e]" onclick={() => (showConfigEnv = false)}>
+      <div class="flex justify-end gap-2 pt-3 border-t border-[var(--hairline)]">
+        <Button size="sm" variant="outline" class="h-8 text-xs border-[var(--hairline)]" onclick={() => (showConfigEnv = false)}>
           Cancel
         </Button>
         <Button
           size="sm"
-          class={cn("h-8 text-xs font-medium", envSaveSuccess ? "bg-emerald-600 text-white" : "bg-purple-600 hover:bg-purple-500 text-white")}
+          class={cn("h-8 text-xs font-medium", envSaveSuccess ? "bg-success text-white" : "bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white")}
           disabled={isSavingEnv}
           onclick={saveEnvConfig}
         >
@@ -1498,13 +1484,13 @@
 <!-- Modal 5: Live Test & Tool Inspector -->
 {#if showTestModal && selectedServerForTest}
   <Dialog.Root open={showTestModal} onOpenChange={(o) => !o && (showTestModal = false)}>
-    <Dialog.Content class="sm:max-w-xl max-w-xl bg-[#0c0c16] border border-purple-500/30 rounded-3xl p-6 text-zinc-100 shadow-[0_0_50px_rgba(147,51,234,0.25)]">
-      <Dialog.Header class="pb-3 border-b border-white/10">
+    <Dialog.Content class="sm:max-w-xl max-w-xl bg-[var(--surface-1)] border border-[var(--brand)]/30 rounded-xl p-6 text-[var(--text-primary)] ]">
+      <Dialog.Header class="pb-3 border-[var(--hairline)] border-[var(--hairline)]">
         <Dialog.Title class="text-base font-bold text-white flex items-center gap-2">
-          <Zap class="size-4.5 text-purple-400" />
+          <Zap class="size-4.5 text-[var(--brand-text)]" />
           <span>Diagnostic Inspector — {selectedServerForTest.name}</span>
         </Dialog.Title>
-        <Dialog.Description class="text-xs text-zinc-400">
+        <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
           Verifying MCP protocol endpoint, measuring round-trip latency, and discovering exposed tools.
         </Dialog.Description>
       </Dialog.Header>
@@ -1512,11 +1498,11 @@
       <div class="space-y-4 py-4 max-h-[55vh] overflow-y-auto">
         {#if isTesting}
           <div class="py-12 text-center space-y-2">
-            <RefreshCw class="size-8 animate-spin text-purple-400 mx-auto" />
-            <p class="text-xs text-zinc-300 font-semibold">Testing MCP process & handshake...</p>
+            <RefreshCw class="size-8 animate-spin text-[var(--brand-text)] mx-auto" />
+            <p class="text-xs text-[var(--text-secondary)] font-semibold">Testing MCP process & handshake...</p>
           </div>
         {:else if testResult}
-          <div class={cn("p-3.5 rounded-2xl border flex items-center justify-between", testResult.success ? "bg-emerald-950/30 border-emerald-500/40 text-emerald-300" : "bg-red-950/30 border-red-500/40 text-red-300")}>
+          <div class={cn("p-3.5 rounded-2xl border flex items-center justify-between", testResult.success ? "bg-success/30 border-success/40 text-success" : "bg-red-950/30 border-red-500/40 text-red-300")}>
             <div class="flex items-center gap-2.5">
               <span class="text-lg">{testResult.success ? "✅" : "❌"}</span>
               <div>
@@ -1525,7 +1511,7 @@
               </div>
             </div>
             {#if testResult.success}
-              <Badge variant="outline" class="bg-emerald-900/40 border-emerald-500/40 text-emerald-300 font-mono text-[10px]">
+              <Badge variant="outline" class="bg-success/40 border-success/40 text-success font-mono text-[10px]">
                 {testResult.latency_ms}ms latency
               </Badge>
             {/if}
@@ -1534,16 +1520,16 @@
           {#if testResult.tools.length > 0}
             <div class="space-y-2">
               <h5 class="text-xs font-bold text-white uppercase tracking-wider font-mono flex items-center gap-1.5">
-                <Code class="size-3.5 text-purple-400" />
+                <Code class="size-3.5 text-[var(--brand-text)]" />
                 <span>Discovered Native Tools ({testResult.tools.length}):</span>
               </h5>
               <div class="space-y-2">
                 {#each testResult.tools as tool}
-                  <div class="p-3 rounded-xl bg-[#111120] border border-[#202034] space-y-1">
+                  <div class="p-3 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] space-y-1">
                     <div class="flex items-center justify-between">
-                      <span class="font-mono font-bold text-xs text-purple-300">{tool.name}</span>
+                      <span class="font-mono font-bold text-xs text-[var(--brand-text)]">{tool.name}</span>
                     </div>
-                    <p class="text-[11px] text-zinc-400">{tool.description}</p>
+                    <p class="text-[11px] text-[var(--text-tertiary)]">{tool.description}</p>
                   </div>
                 {/each}
               </div>
@@ -1552,8 +1538,8 @@
         {/if}
       </div>
 
-      <div class="flex justify-end pt-3 border-t border-white/10">
-        <Button size="sm" variant="outline" class="h-8 text-xs border-[#29293e]" onclick={() => (showTestModal = false)}>
+      <div class="flex justify-end pt-3 border-t border-[var(--hairline)]">
+        <Button size="sm" variant="outline" class="h-8 text-xs border-[var(--hairline)]" onclick={() => (showTestModal = false)}>
           Close Inspector
         </Button>
       </div>
@@ -1564,26 +1550,26 @@
 <!-- Custom Connector Delete Confirmation Modal -->
 {#if serverToDelete}
   <Dialog.Root open={Boolean(serverToDelete)} onOpenChange={(o) => !o && (serverToDelete = null)}>
-    <Dialog.Content class="sm:max-w-md max-w-md bg-[#0e0e1a] border border-red-500/40 rounded-3xl p-6 text-zinc-100 shadow-[0_0_60px_rgba(239,68,68,0.3)] flex flex-col gap-4 font-sans select-none z-50">
+    <Dialog.Content class="sm:max-w-md max-w-md bg-[var(--surface-1)] border border-red-500/40 rounded-xl p-6 text-[var(--text-primary)] ] flex flex-col gap-4 font-sans select-none z-50">
       <div class="flex items-start gap-3.5">
-        <div class="size-11 rounded-2xl bg-red-950/70 border border-red-500/50 flex items-center justify-center text-red-400 shrink-0 shadow-[0_0_20px_rgba(239,68,68,0.35)]">
+        <div class="size-11 rounded-2xl bg-red-950/70 border border-red-500/50 flex items-center justify-center text-red-400 shrink-0 ">
           <AlertCircle class="size-6" />
         </div>
         <div class="space-y-1">
           <Dialog.Title class="text-base font-extrabold text-white">
             Delete Custom Connector?
           </Dialog.Title>
-          <Dialog.Description class="text-xs text-zinc-400 leading-relaxed">
+          <Dialog.Description class="text-xs text-[var(--text-tertiary)] leading-relaxed">
             Are you sure you want to delete custom connector <span class="text-white font-bold font-mono">"{serverToDelete.name}"</span>?
             This will remove the tool registration and unbind it from all agents.
           </Dialog.Description>
         </div>
       </div>
 
-      <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-white/5">
+      <div class="flex items-center justify-end gap-2.5 pt-2 border-t border-[var(--hairline)]">
         <Button
           variant="outline"
-          class="h-8.5 text-xs bg-[#141424] border-[#29293e] text-zinc-300 hover:bg-[#1a1a2e] hover:text-white cursor-pointer"
+          class="h-8.5 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] cursor-pointer"
           onclick={() => (serverToDelete = null)}
           disabled={isDeletingServer}
         >
@@ -1591,7 +1577,7 @@
         </Button>
 
         <Button
-          class="h-8.5 text-xs bg-red-600 hover:bg-red-500 text-white font-medium gap-1.5 shadow-[0_0_25px_rgba(239,68,68,0.4)] cursor-pointer"
+          class="h-8.5 text-xs bg-red-600 hover:bg-red-500 text-white font-medium gap-1.5 ] cursor-pointer"
           disabled={isDeletingServer}
           onclick={confirmDeleteServer}
         >

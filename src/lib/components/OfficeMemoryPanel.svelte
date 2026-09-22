@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import * as Card from "$lib/components/ui/card";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -70,22 +71,22 @@
 
 <div class="space-y-4">
   <!-- Knowledge Capture Card -->
-  <div class="rounded-2xl border border-[#202034] bg-[#0e0e1a]/90 p-4 space-y-3.5 backdrop-blur-md">
+  <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3.5 ">
     <div class="flex items-center justify-between">
       <div class="flex items-center gap-2">
-        <div class="size-7 rounded-lg bg-purple-950/60 border border-purple-500/30 flex items-center justify-center text-purple-300">
+        <div class="size-7 rounded-lg bg-[var(--brand-soft)] border border-[var(--brand)]/30 flex items-center justify-center text-[var(--brand-text)]">
           <Brain class="size-4" />
         </div>
         <div>
           <h4 class="text-xs font-bold text-white uppercase tracking-wider font-mono">
             Shared Office Brain (Blackboard Memory)
           </h4>
-          <p class="text-[11px] text-zinc-400">
+          <p class="text-[11px] text-[var(--text-tertiary)]">
             Persistent long-term knowledge shared across all agents in this office.
           </p>
         </div>
       </div>
-      <Badge variant="outline" class="bg-purple-950/40 border-purple-500/30 text-purple-300 font-mono text-[10px]">
+      <Badge variant="outline" class="bg-[var(--brand-soft)] border-[var(--brand)]/30 text-[var(--brand-text)] font-mono text-[10px]">
         {memories.length} Memories
       </Badge>
     </div>
@@ -93,11 +94,11 @@
     <!-- Search Bar -->
     <div class="flex gap-2">
       <div class="relative flex-1">
-        <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500" />
+        <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
         <Input
           bind:value={query}
           placeholder="Semantic search team knowledge base..."
-          class="pl-8 h-8.5 text-xs bg-[#141424] border-[#25253c] text-white focus-visible:border-purple-500"
+          class="pl-8 h-8.5 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-white focus-visible:border-[var(--brand)]"
           onkeydown={(e) => e.key === "Enter" && search()}
         />
       </div>
@@ -105,7 +106,7 @@
         size="sm"
         variant="outline"
         onclick={search}
-        class="gap-1.5 h-8.5 text-xs bg-[#161628] border-[#29293e] text-zinc-200 hover:bg-[#1f1f34] cursor-pointer"
+        class="gap-1.5 h-8.5 text-xs bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[#1f1f34] cursor-pointer"
       >
         <Search class="size-3.5" />
         <span>Search</span>
@@ -115,7 +116,7 @@
           size="sm"
           variant="outline"
           onclick={() => { query = ""; load(); }}
-          class="h-8.5 text-xs bg-[#161628] border-[#29293e] text-zinc-400 hover:text-white cursor-pointer"
+          class="h-8.5 text-xs bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
         >
           Clear
         </Button>
@@ -123,34 +124,30 @@
     </div>
 
     <!-- Add New Knowledge Item -->
-    <div class="space-y-2.5 pt-2 border-t border-white/5">
+    <div class="space-y-2.5 pt-2 border-t border-[var(--hairline)]">
       <Textarea
         bind:value={newContent}
         placeholder="Add sovereign team knowledge (e.g. 'Always use strict JSON schema validation for all incoming API payloads. Client database host is staging-db.internal.')"
         rows={2}
-        class="text-xs bg-[#141424] border-[#25253c] text-white focus-visible:border-purple-500 min-h-[56px] leading-relaxed"
+        class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-white focus-visible:border-[var(--brand)] min-h-[56px] leading-relaxed"
       />
 
       <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
         <!-- Styled Dropdown Menu -->
         <div class="relative flex-1">
-          <select
-            bind:value={newCategory}
-            class="w-full h-8.5 rounded-xl border border-[#28283e] bg-[#141424] px-3 pr-8 text-xs text-zinc-200 focus:border-purple-500 focus:ring-1 focus:ring-purple-500/30 outline-none cursor-pointer transition-all hover:bg-[#18182a]"
-          >
-            {#each CATEGORIES as c}
-              <option value={c.id} class="bg-[#0e0e1a] text-zinc-100 py-1.5">
-                {c.icon} {c.label}
-              </option>
-            {/each}
-          </select>
+          <SimpleSelect
+            value={newCategory}
+            options={CATEGORIES.map((c) => ({ value: c.id, label: c.label, icon: c.icon }))}
+            onValueChange={(v) => (newCategory = v)}
+            class="h-8.5 rounded-xl"
+          />
         </div>
 
         <Button
           size="sm"
           onclick={add}
           disabled={loading || !newContent.trim()}
-          class="h-8.5 text-xs bg-purple-600 hover:bg-purple-500 text-white font-medium gap-1.5 cursor-pointer shadow-sm shrink-0"
+          class="h-8.5 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium gap-1.5 cursor-pointer shadow-sm shrink-0"
         >
           <Sparkles class="size-3.5" />
           <span>Add to Team Brain</span>
@@ -162,36 +159,36 @@
   <!-- Memory Items List -->
   <div class="space-y-2 max-h-[300px] min-h-0 overflow-y-auto pr-1 overscroll-contain">
     {#each memories as m (m.id || m.content)}
-      <div class="p-3.5 rounded-xl border border-[#202034] bg-[#10101e] hover:border-purple-500/30 transition-all space-y-2">
+      <div class="p-3.5 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] hover:border-[var(--hairline-strong)] transition-all space-y-2">
         <div class="flex items-start justify-between gap-3">
-          <p class="text-xs text-zinc-200 flex-1 leading-relaxed font-sans select-text">
+          <p class="text-xs text-[var(--text-secondary)] flex-1 leading-relaxed font-sans select-text">
             {m.content}
           </p>
           <Badge
             variant="outline"
-            class="text-[10px] font-mono shrink-0 bg-purple-950/40 border-purple-500/30 text-purple-300 px-2 py-0.5"
+            class="text-[10px] font-mono shrink-0 bg-[var(--brand-soft)] border-[var(--brand)]/30 text-[var(--brand-text)] px-2 py-0.5"
           >
             {m.category || "general"}
           </Badge>
         </div>
 
-        <div class="flex items-center gap-3 text-[10px] text-zinc-400 font-mono pt-1 border-t border-white/5">
+        <div class="flex items-center gap-3 text-[10px] text-[var(--text-tertiary)] font-mono pt-1 border-t border-[var(--hairline)]">
           <span class="flex items-center gap-1 text-pink-300">
             <Brain class="size-3" />
             <span>{Math.round((m.importance || 0.8) * 100)}% relevance</span>
           </span>
           <span>•</span>
-          <span class="text-zinc-400">{m.access_count || 0} recalls</span>
-          <span class="ml-auto text-zinc-400">
+          <span class="text-[var(--text-tertiary)]">{m.access_count || 0} recalls</span>
+          <span class="ml-auto text-[var(--text-tertiary)]">
             {m.created_at ? new Date(m.created_at).toLocaleDateString() : "Active"}
           </span>
         </div>
       </div>
     {:else}
-      <div class="py-10 text-center text-zinc-500 border border-dashed border-[#202034] rounded-xl space-y-1.5">
-        <Brain class="size-6 mx-auto opacity-30 text-purple-400" />
+      <div class="py-10 text-center text-[var(--text-muted)] border border-dashed border-[var(--hairline)] rounded-xl space-y-1.5">
+        <Brain class="size-6 mx-auto opacity-30 text-[var(--brand-text)]" />
         <p class="text-xs">No team memories recorded yet.</p>
-        <p class="text-[11px] text-zinc-400">Add operational facts or SOP rules above for your agents to recall.</p>
+        <p class="text-[11px] text-[var(--text-tertiary)]">Add operational facts or SOP rules above for your agents to recall.</p>
       </div>
     {/each}
   </div>

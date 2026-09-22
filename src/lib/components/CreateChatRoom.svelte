@@ -38,13 +38,16 @@
   let showAvatarPicker = $state(false);
   let selectedMembers: { botId: string; rank: string; specialty: string }[] = $state([]);
   let isCreating = $state(false);
+  // Provision the template's full org (CEO + specialists) automatically. This
+  // is what turns a new office into a real team without hand-creating bots.
+  let autoStaff = $state(true);
 
   const templateIcons: Record<string, any> = {
-    "it-office": Laptop,
-    "marketing": TrendingUp,
-    "sales": Briefcase,
-    "design": Palette,
-    "custom": Building2,
+ "it-office": Laptop,
+ "marketing": TrendingUp,
+ "sales": Briefcase,
+ "design": Palette,
+ "custom": Building2,
   };
 
   let templates = Object.entries(OFFICE_TEMPLATES);
@@ -80,14 +83,27 @@
         avatarUrl: url,
         avatarStyle: roomAvatarStyle,
       });
+      const roomId = (room as any).id;
 
-      for (const m of selectedMembers) {
-        await invoke("add_member_to_chatroom", {
-          chatroomId: (room as any).id,
-          botId: m.botId,
-          rank: m.rank,
-          specialty: m.specialty,
+      if (autoStaff) {
+        // Build the full org (CEO + role specialists) from the blueprint.
+        // Existing fleet agents that match a role are reused, not duplicated.
+        const roles = await invoke<any[]>("default_office_org", {
+          officeTemplate,
         });
+        if (roles.length > 0) {
+          await invoke("provision_office_org", { chatroomId: roomId, roles });
+          window.dispatchEvent(new CustomEvent("bots-changed"));
+        }
+      } else {
+        for (const m of selectedMembers) {
+          await invoke("add_member_to_chatroom", {
+            chatroomId: roomId,
+            botId: m.botId,
+            rank: m.rank,
+            specialty: m.specialty,
+          });
+        }
       }
 
       onCreated(room);
@@ -106,31 +122,31 @@
 </script>
 
 <Dialog.Root {open} onOpenChange={(o) => !o && onClose()}>
-  <Dialog.Content class="sm:max-w-3xl max-h-[88vh] overflow-y-auto bg-[#0c0c14]/95 border border-purple-500/30 shadow-[0_0_50px_rgba(147,51,234,0.25)] backdrop-blur-2xl rounded-3xl">
-    <Dialog.Header class="pb-3 border-b border-purple-500/15">
+  <Dialog.Content class="sm:max-w-3xl max-h-[88vh] overflow-y-auto bg-[var(--surface-1)] border border-[var(--brand)]/30 ]  rounded-xl">
+    <Dialog.Header class="pb-3 border-[var(--hairline)] border-[var(--hairline)]">
       <Dialog.Title class="text-base font-bold flex items-center gap-2.5 text-white">
-        <div class="size-8 rounded-xl bg-purple-950/60 border border-purple-800/50 flex items-center justify-center text-purple-400">
+        <div class="size-8 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/50 flex items-center justify-center text-[var(--brand-text)]">
           <Building2 class="size-4.5" />
         </div>
         Create Office Workspace
       </Dialog.Title>
-      <Dialog.Description class="text-xs text-zinc-400">
+      <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
         Form a specialized multi-bot collaborative office with ranked roles, automated task distribution, and shared thread lanes.
       </Dialog.Description>
     </Dialog.Header>
 
     <div class="grid gap-5 py-3">
       <!-- Room Identity Card -->
-      <div class="p-4 rounded-2xl border border-[#1e1e2d] bg-[#0f0f18]/80 flex flex-col md:flex-row gap-4 items-start">
+      <div class="p-4 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]/80 flex flex-col md:flex-row gap-4 items-start">
         <button
           type="button"
           onclick={() => (showAvatarPicker = !showAvatarPicker)}
           class="flex flex-col items-center gap-1.5 shrink-0 group focus:outline-none cursor-pointer"
         >
-          <div class="size-16 rounded-full overflow-hidden bg-[#181826] border-2 border-purple-500/40 p-0.5 shadow-[0_0_20px_rgba(147,51,234,0.2)] group-hover:scale-105 transition-transform">
+          <div class="size-16 rounded-full overflow-hidden bg-[var(--surface-3)] border-[var(--hairline)] border-[var(--brand)]/40 p-0.5 ] group-hover:scale-105 transition-transform">
             <img src={roomPreviewUrl} alt={name || "Office"} class="size-full rounded-full object-cover" />
           </div>
-          <span class="text-[11px] text-purple-400 flex items-center gap-1 group-hover:underline font-medium">
+          <span class="text-[11px] text-[var(--brand-text)] flex items-center gap-1 group-hover:underline font-medium">
             <Sparkles class="size-3" />
             Change Icon
           </span>
@@ -138,18 +154,18 @@
 
         <div class="flex-1 space-y-3 w-full">
           <div class="space-y-1">
-            <Label for="room-name" class="text-xs font-bold uppercase tracking-wider text-zinc-400">
+            <Label for="room-name" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
               Office Name
             </Label>
             <Input
               id="room-name"
               bind:value={name}
               placeholder="e.g. Core Engineering, Growth Pod, Product Studio..."
-              class="h-9 text-xs bg-[#141420] border-[#252538] text-zinc-200"
+              class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
             />
           </div>
           <div class="space-y-1">
-            <Label for="room-desc" class="text-xs font-bold uppercase tracking-wider text-zinc-400">
+            <Label for="room-desc" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
               Office Mission
             </Label>
             <Textarea
@@ -157,14 +173,14 @@
               bind:value={description}
               placeholder="What does this office collaborate on?"
               rows={2}
-              class="text-xs bg-[#141420] border-[#252538] text-zinc-200 resize-none"
+              class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] resize-none"
             />
           </div>
         </div>
       </div>
 
       {#if showAvatarPicker}
-        <div class="p-4 rounded-2xl border border-purple-500/40 bg-[#0e0e18] shadow-2xl">
+        <div class="p-4 rounded-2xl border border-[var(--brand)]/40 bg-[var(--surface-1)] shadow-2xl">
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs font-bold text-white">Customize Office Avatar</span>
             <Button variant="ghost" size="xs" onclick={() => (showAvatarPicker = false)}>Done</Button>
@@ -184,7 +200,7 @@
 
       <!-- Template Selection -->
       <div class="space-y-2">
-        <Label class="text-xs font-bold uppercase tracking-wider text-zinc-400">
+        <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
           Office Template & Organization
         </Label>
         <div class="grid grid-cols-2 md:grid-cols-3 gap-2.5">
@@ -195,34 +211,34 @@
               type="button"
               onclick={() => (officeTemplate = key as OfficeTemplateKey)}
               class={cn(
-                "text-left rounded-2xl border p-3 transition-all flex flex-col justify-between focus:outline-none cursor-pointer",
+ "text-left rounded-2xl border p-3 transition-all flex flex-col justify-between focus:outline-none cursor-pointer",
                 isSelected
-                  ? "border-purple-500 bg-purple-950/40 shadow-[0_0_20px_rgba(147,51,234,0.2)] ring-1 ring-purple-500/60"
-                  : "border-[#1e1e2d] bg-[#0d0d16] hover:border-purple-500/40 hover:bg-[#131320]"
+                  ? "border-[var(--brand)] bg-[var(--brand-soft)] ] ring-1 ring-[var(--brand)]/60"
+                  : "border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--brand)]/40 hover:bg-[#131320]"
               )}
             >
               <div>
                 <div class="flex items-center justify-between">
-                  <div class="size-8 rounded-xl bg-[#181826] border border-[#27273a] flex items-center justify-center text-purple-400">
+                  <div class="size-8 rounded-xl bg-[var(--surface-3)] border border-[var(--hairline)] flex items-center justify-center text-[var(--brand-text)]">
                     <IconComponent class="size-4" />
                   </div>
                   {#if isSelected}
-                    <CheckCircle2 class="size-4 text-purple-400" />
+                    <CheckCircle2 class="size-4 text-[var(--brand-text)]" />
                   {/if}
                 </div>
                 <div class="font-bold text-xs text-white mt-2">{tmpl.name}</div>
-                <p class="text-[11px] text-zinc-400 line-clamp-2 mt-0.5">{tmpl.description}</p>
+                <p class="text-[11px] text-[var(--text-tertiary)] line-clamp-2 mt-0.5">{tmpl.description}</p>
               </div>
 
               {#if tmpl.ranks.length}
-                <div class="flex flex-wrap gap-1 mt-2.5 pt-2 border-t border-[#1e1e2d]">
+                <div class="flex flex-wrap gap-1 mt-2.5 pt-2 border-t border-[var(--hairline)]">
                   {#each tmpl.ranks.slice(0, 3) as r}
-                    <span class="text-[9px] px-1.5 py-0.5 rounded bg-[#141420] border border-[#232334] font-mono text-zinc-400">
+                    <span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--hairline)] font-mono text-[var(--text-tertiary)]">
                       {r.rank}
                     </span>
                   {/each}
                   {#if tmpl.ranks.length > 3}
-                    <span class="text-[9px] px-1.5 py-0.5 rounded bg-[#181826] text-zinc-500 font-mono">
+                    <span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-muted)] font-mono">
                       +{tmpl.ranks.length - 3}
                     </span>
                   {/if}
@@ -233,17 +249,17 @@
         </div>
 
         {#if currentTemplate.ranks.length}
-          <div class="rounded-2xl bg-[#0f0f18]/80 border border-[#1e1e2d] p-3 space-y-1.5 mt-2">
+          <div class="rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)] p-3 space-y-1.5 mt-2">
             <div class="text-[11px] font-bold text-white flex items-center gap-1.5">
-              <Sparkles class="size-3.5 text-purple-400" />
+              <Sparkles class="size-3.5 text-[var(--brand-text)]" />
               Pre-configured specialized roles for {currentTemplate.name}:
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
               {#each currentTemplate.ranks as r}
-                <div class="flex items-center gap-2 text-xs bg-[#141420] px-2.5 py-1.5 rounded-xl border border-[#232334]">
+                <div class="flex items-center gap-2 text-xs bg-[var(--surface-2)] px-2.5 py-1.5 rounded-xl border border-[var(--hairline)]">
                   <span class="size-2 rounded-full shrink-0" style="background-color: {r.color}"></span>
                   <span class="font-bold text-white text-[11px]">{r.rank}</span>
-                  <span class="text-zinc-400 text-[11px] truncate">— {r.specialty}</span>
+                  <span class="text-[var(--text-tertiary)] text-[11px] truncate">— {r.specialty}</span>
                 </div>
               {/each}
             </div>
@@ -251,24 +267,40 @@
         {/if}
       </div>
 
+      <!-- Staffing mode -->
+      <div class="space-y-2.5">
+        <label class="flex items-start gap-3 p-3 rounded-2xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] cursor-pointer">
+          <input type="checkbox" bind:checked={autoStaff} class="mt-0.5 size-4 accent-[var(--brand)] cursor-pointer" />
+          <span class="space-y-0.5">
+            <span class="text-xs font-bold text-white block">Auto-staff the full team</span>
+            <span class="text-[11px] text-[var(--text-tertiary)] block">
+              Creates the {currentTemplate.name} org automatically — a CEO plus each specialist role,
+              with role-specific prompts and skills. No pre-made bots required. You can add or remove
+              people later from the office.
+            </span>
+          </span>
+        </label>
+      </div>
+
+      {#if !autoStaff}
       <!-- Team Members -->
       <div class="space-y-2.5">
         <div class="flex items-center justify-between">
-          <Label class="text-xs font-bold uppercase tracking-wider text-zinc-400">
+          <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
             Staffing: Assign Agents ({selectedMembers.length} selected)
           </Label>
           {#if bots.length > 0}
-            <Button variant="outline" size="xs" class="h-7 text-xs gap-1 bg-[#181826] border-[#2b2b3e] text-zinc-300 hover:bg-[#202033]" onclick={autoAssign}>
-              <Wand2 class="size-3 text-purple-400" />
+            <Button variant="outline" size="xs" class="h-7 text-xs gap-1 bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[#202033]" onclick={autoAssign}>
+              <Wand2 class="size-3 text-[var(--brand-text)]" />
               Auto-fill from template
             </Button>
           {/if}
         </div>
 
         {#if bots.length === 0}
-          <div class="p-8 text-center border border-dashed border-[#232334] rounded-2xl">
-            <Users class="size-8 text-zinc-600 mx-auto mb-2" />
-            <p class="text-xs text-zinc-500">No bots created yet. Create bots from the sidebar first.</p>
+          <div class="p-8 text-center border border-dashed border-[var(--hairline)] rounded-2xl">
+            <Users class="size-8 text-[var(--text-muted)] mx-auto mb-2" />
+            <p class="text-xs text-[var(--text-muted)]">No bots created yet. Create bots from the sidebar first.</p>
           </div>
         {:else}
           <div class="grid gap-2 max-h-56 overflow-y-auto pr-1">
@@ -278,14 +310,14 @@
               {@const rankInfo = currentTemplate.ranks.find((r) => r.rank === mem?.rank)}
               <div
                 class={cn(
-                  "flex items-center justify-between gap-3 rounded-2xl border p-2.5 transition-all",
+ "flex items-center justify-between gap-3 rounded-2xl border p-2.5 transition-all",
                   isSelected
-                    ? "border-purple-500/70 bg-purple-950/25 shadow-sm"
-                    : "border-[#1e1e2d] bg-[#0d0d16]"
+                    ? "border-[var(--brand)]/70 bg-[var(--brand-soft)] shadow-sm"
+                    : "border-[var(--hairline)] bg-[var(--surface-1)]"
                 )}
               >
                 <div class="flex items-center gap-3 min-w-0">
-                  <div class="size-9 rounded-full overflow-hidden bg-[#161624] border border-[#2b2b3d] shrink-0">
+                  <div class="size-9 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[#2b2b3d] shrink-0">
                     <img
                       src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
                       alt={bot.name}
@@ -298,14 +330,14 @@
                       <div class="flex items-center gap-1.5 mt-0.5">
                         <span
                           class="text-[10px] py-0 px-1.5 rounded text-white font-mono font-bold"
-                          style="background-color: {rankInfo?.color || '#8b5cf6'}"
+                          style="background-color: {rankInfo?.color || '#007cf7'}"
                         >
                           {mem.rank}
                         </span>
-                        <span class="text-[11px] text-zinc-400 truncate">{mem.specialty}</span>
+                        <span class="text-[11px] text-[var(--text-tertiary)] truncate">{mem.specialty}</span>
                       </div>
                     {:else}
-                      <span class="text-[11px] text-zinc-500 truncate block">
+                      <span class="text-[11px] text-[var(--text-muted)] truncate block">
                         {bot.description || "General sovereign agent"}
                       </span>
                     {/if}
@@ -326,7 +358,7 @@
                   <Button
                     variant="outline"
                     size="xs"
-                    class="h-7 text-xs gap-1 shrink-0 bg-[#181826] border-[#2b2b3e] text-zinc-300 hover:bg-[#202033]"
+                    class="h-7 text-xs gap-1 shrink-0 bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[#202033]"
                     onclick={() => toggleMember(bot, autoR?.rank || "Member", autoR?.specialty || "Generalist")}
                   >
                     <Plus class="size-3" />
@@ -338,15 +370,16 @@
           </div>
         {/if}
       </div>
+      {/if}
     </div>
 
-    <div class="flex items-center justify-end gap-2 pt-3 border-t border-purple-500/15">
-      <Button variant="outline" size="sm" class="bg-[#141420] border-[#252538] text-zinc-300 hover:bg-[#1a1a2a]" onclick={onClose} disabled={isCreating}>
+    <div class="flex items-center justify-end gap-2 pt-3 border-t border-[var(--hairline)]">
+      <Button variant="outline" size="sm" class="bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)]" onclick={onClose} disabled={isCreating}>
         Cancel
       </Button>
       <Button
         size="sm"
-        class="gap-1.5 bg-purple-600 hover:bg-purple-500 text-white font-medium shadow-md shadow-purple-950/50"
+        class="gap-1.5 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium shadow-md "
         onclick={create}
         disabled={!name.trim() || isCreating}
       >

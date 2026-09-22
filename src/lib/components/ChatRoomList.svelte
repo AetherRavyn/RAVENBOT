@@ -28,11 +28,11 @@
   let loading = $state(true);
 
   const templateIcons: Record<string, any> = {
-    "it-office": Laptop,
-    "marketing": TrendingUp,
-    "sales": Briefcase,
-    "design": Palette,
-    "custom": Building2,
+ "it-office": Laptop,
+ "marketing": TrendingUp,
+ "sales": Briefcase,
+ "design": Palette,
+ "custom": Building2,
   };
 
   async function load() {
@@ -59,18 +59,18 @@
   <!-- Section Header -->
   <div class="px-3 pt-3 pb-2 flex items-center justify-between">
     <div class="flex items-center gap-2">
-      <div class="size-5 rounded-md bg-purple-950/70 border border-purple-800/50 flex items-center justify-center text-purple-400">
+      <div class="size-5 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/50 flex items-center justify-center text-[var(--brand-text)]">
         <Building2 class="size-3.5" />
       </div>
-      <span class="font-bold text-[11px] tracking-wider uppercase text-zinc-100">Offices & Pods</span>
-      <span class="bg-[#181824] text-zinc-400 text-[10px] font-mono font-medium px-2 py-0.5 rounded-full border border-[#232333]">
+      <span class="font-bold text-[11px] tracking-wider uppercase text-[var(--text-primary)]">Offices & Pods</span>
+      <span class="bg-[#181824] text-[var(--text-tertiary)] text-[10px] font-mono font-medium px-2 py-0.5 rounded-full border border-[#232333]">
         {rooms.length}
       </span>
     </div>
 
     <button
       type="button"
-      class="size-7 rounded-lg border border-[#232334] bg-[#12121d] flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors"
+      class="size-7 rounded-lg border border-[var(--hairline)] bg-[#12121d] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors"
       onclick={() => (showCreate = true)}
       title="Create office"
     >
@@ -83,27 +83,27 @@
     {#if loading}
       <div class="space-y-2">
         {#each [1, 2, 3] as _}
-          <div class="p-3 rounded-2xl border border-[#1e1e2d] bg-[#0d0d16] space-y-2">
+          <div class="p-3 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] space-y-2">
             <div class="flex items-center gap-3">
-              <Skeleton class="size-11 rounded-full bg-[#181826]" />
+              <Skeleton class="size-11 rounded-full bg-[var(--surface-3)]" />
               <div class="space-y-1.5 flex-1">
-                <Skeleton class="h-3.5 w-3/4 bg-[#181826] rounded-md" />
-                <Skeleton class="h-2.5 w-1/2 bg-[#181826] rounded-md" />
+                <Skeleton class="h-3.5 w-3/4 bg-[var(--surface-3)] rounded-md" />
+                <Skeleton class="h-2.5 w-1/2 bg-[var(--surface-3)] rounded-md" />
               </div>
             </div>
           </div>
         {/each}
       </div>
     {:else if rooms.length === 0}
-      <div class="p-6 text-center border border-dashed border-[#222234] rounded-2xl my-4 bg-[#0d0d16]/50">
-        <div class="size-10 rounded-2xl bg-purple-950/40 border border-purple-800/40 text-purple-400 flex items-center justify-center mx-auto mb-3">
+      <div class="p-6 text-center border border-dashed border-[var(--hairline)] rounded-2xl my-4 bg-[var(--surface-1)]/50">
+        <div class="size-10 rounded-2xl bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] flex items-center justify-center mx-auto mb-3">
           <Building2 class="size-5" />
         </div>
         <h4 class="font-bold text-xs text-white">No offices established</h4>
-        <p class="text-[11px] text-zinc-500 mt-1 leading-relaxed">
+        <p class="text-[11px] text-[var(--text-muted)] mt-1 leading-relaxed">
           Create an IT Office, Growth Pod, or Design Studio.
         </p>
-        <Button class="mt-3.5 h-7 text-xs gap-1.5 bg-purple-600 hover:bg-purple-500 text-white font-medium" size="sm" onclick={() => (showCreate = true)}>
+        <Button class="mt-3.5 h-7 text-xs gap-1.5 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium" size="sm" onclick={() => (showCreate = true)}>
           <Plus class="size-3" />
           Create First Office
         </Button>
@@ -120,11 +120,11 @@
         >
           <div
             class="p-3 rounded-2xl border transition-all {isSelected
-              ? 'border-purple-500/80 bg-[#120f20]/90 shadow-[0_0_25px_rgba(147,51,234,0.18)]'
-              : 'border-[#1e1e2c] bg-[#0d0d15]/80 hover:border-purple-500/40 hover:bg-[#12121d]'}"
+              ? 'border-[var(--brand)]/80 bg-[var(--brand-soft)] ]'
+              : 'border-[#1e1e2c] bg-[#0d0d15]/80 hover:border-[var(--brand)]/40 hover:bg-[#12121d]'}"
           >
             <div class="flex items-center gap-3">
-              <div class="size-11 rounded-full overflow-hidden bg-[#181826] border border-[#2b2b3d] shrink-0">
+              <div class="size-11 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[#2b2b3d] shrink-0">
                 <img
                   src={room.avatar_url || getDiceBearUrl(room.name, room.avatar_style || "bottts")}
                   alt={room.name}
@@ -135,18 +135,18 @@
               <div class="flex-1 min-w-0">
                 <div class="flex items-center justify-between">
                   <span class="font-bold text-sm text-white truncate">{room.name}</span>
-                  <div class="size-5 rounded-md bg-[#161624] border border-[#252538] flex items-center justify-center text-purple-400 shrink-0">
+                  <div class="size-5 rounded-md bg-[var(--surface-3)] border border-[var(--hairline)] flex items-center justify-center text-[var(--brand-text)] shrink-0">
                     <IconComponent class="size-3" />
                   </div>
                 </div>
-                <p class="text-[11px] text-zinc-400 truncate mt-0.5">
+                <p class="text-[11px] text-[var(--text-tertiary)] truncate mt-0.5">
                   {room.description || tmpl.description}
                 </p>
                 <div class="flex items-center gap-2 mt-1.5">
-                  <span class="text-[9px] px-1.5 py-0.2 rounded bg-[#161624] border border-[#262638] text-zinc-300 font-mono capitalize">
+                  <span class="text-[9px] px-1.5 py-0.2 rounded bg-[var(--surface-3)] border border-[#262638] text-[var(--text-secondary)] font-mono capitalize">
                     {room.office_template.replace("-", " ")}
                   </span>
-                  <span class="text-[10px] text-emerald-400 flex items-center gap-1 font-mono">
+                  <span class="text-[10px] text-success flex items-center gap-1 font-mono">
                     <Radio class="size-2.5" />
                     Parallel
                   </span>
