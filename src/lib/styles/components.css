@@ -1,0 +1,369 @@
+/*
+ * Component styles that used to live in Svelte `<style>` blocks.
+ *
+ * They are global CSS on purpose: `@tailwindcss/vite` (v4, `enforce: "pre"`)
+ * matches Svelte's `*.svelte?svelte&type=style&lang.css` virtual module and
+ * tries to parse it as CSS. When that module is requested before the component
+ * has been compiled, Vite falls back to reading the raw `.svelte` file, so
+ * Tailwind parses the component source as CSS and the dev server dies with
+ * `Invalid declaration: <first js token>`. Keeping these styles out of
+ * `<style>` blocks avoids that virtual module entirely.
+ *
+ * Do NOT add a `<style>` block to a component in this project — add the rules
+ * here instead. `src/lib/styles/no-component-styles.test.ts` enforces this.
+ *
+ * Visual language (OpenBot): flat neutral surfaces (#1a1a1a canvas / #212121
+ * panels), near-invisible hairline borders, blue (#007cf7) reserved for focus,
+ * selection, links and status — and a LIGHT primary button. No glass blur, no
+ * gradients, no purple.
+ */
+
+/* ── ThreadView: loading shimmer ─────────────────────────────────────── */
+.shimmer {
+  background: var(--surface-3);
+  animation: rb-fade-in 0.9s var(--ease-in-out) infinite alternate;
+}
+@keyframes shimmer-slide {
+  0% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+/* ── ChatRoomView: hide scrollbars ───────────────────────────────────── */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ── MarkdownRenderer: rendered markdown ─────────────────────────────── */
+.markdown-content {
+  color: var(--text-secondary);
+}
+.markdown-content p {
+  margin-bottom: 0.65rem;
+  line-height: 1.6;
+}
+.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+.markdown-content h1 {
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 1rem;
+  margin-bottom: 0.5rem;
+  letter-spacing: var(--tracking-tight);
+}
+.markdown-content h2 {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 0.85rem;
+  margin-bottom: 0.4rem;
+}
+.markdown-content h3 {
+  font-size: var(--text-base);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-top: 0.7rem;
+  margin-bottom: 0.3rem;
+}
+.markdown-content ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin-bottom: 0.65rem;
+}
+.markdown-content ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin-bottom: 0.65rem;
+}
+.markdown-content li {
+  margin-bottom: 0.25rem;
+  line-height: 1.55;
+}
+.markdown-content li::marker {
+  color: var(--text-muted);
+}
+.markdown-content code:not(pre code) {
+  font-family: var(--font-mono, monospace);
+  font-size: 0.725rem;
+  padding: 0.15rem 0.35rem;
+  border-radius: var(--radius-xs);
+  background-color: rgba(255, 255, 255, 0.06);
+  color: var(--brand-text);
+  border: 1px solid var(--hairline-faint);
+}
+.markdown-content blockquote {
+  border-left: 2px solid var(--brand);
+  background: rgba(0, 124, 247, 0.05);
+  padding: 0.4rem 0.8rem;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin: 0.65rem 0;
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+.markdown-content hr {
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  margin: 1rem 0;
+}
+.markdown-content a {
+  color: var(--brand-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-content a:hover {
+  color: var(--brand-hover);
+}
+.markdown-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+  font-size: var(--text-xs);
+}
+.markdown-content img {
+  max-width: 100%;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--hairline);
+  margin: 0.5rem 0;
+  background: var(--surface-1);
+}
+.markdown-content th {
+  border: 1px solid var(--hairline);
+  background-color: var(--surface-2);
+  padding: 0.4rem 0.65rem;
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.markdown-content td {
+  border: 1px solid var(--hairline);
+  padding: 0.35rem 0.65rem;
+  color: var(--text-secondary);
+}
+
+/* Reasoning panel (rendered from <think> blocks) — blue-tinted, quiet. */
+.think-details {
+  margin-bottom: 0.75rem;
+  border: 1px solid rgba(0, 124, 247, 0.24);
+  background: rgba(0, 124, 247, 0.05);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+.think-summary {
+  cursor: pointer;
+  padding: 0.5rem 0.8rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--brand-text);
+  user-select: none;
+  list-style: none;
+}
+.think-summary::-webkit-details-marker {
+  display: none;
+}
+.think-body {
+  padding: 0.6rem 0.9rem;
+  margin: 0;
+  border-top: 1px solid rgba(0, 124, 247, 0.18);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, monospace);
+  font-size: 10.5px;
+  line-height: 1.55;
+  color: var(--text-tertiary);
+  background: rgba(0, 0, 0, 0.25);
+}
+
+/* ── ScreenReader / FocusTrap: visually hidden ───────────────────────── */
+.sr-only,
+.focus-trap-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Shared surface utilities — OpenBot flat chrome
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* App background: the plain neutral canvas. */
+.app-ambient {
+  background: var(--surface-0);
+}
+
+/* Header / palette / floating-bar surface.
+ * OpenBot has no frosted glass — keep the class for existing markup but make
+ * it a solid panel colour so nothing blurs or desaturates behind it. */
+.glass {
+  background: var(--surface-1);
+}
+
+.glass-strong {
+  background: var(--surface-1);
+}
+
+/* Layered card — quiet hairline border, barely-there shadow. */
+.card-surface {
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
+}
+
+.card-raised {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-md);
+}
+
+.hover-lift {
+  transition: border-color var(--duration-normal) var(--ease-out),
+    box-shadow var(--duration-normal) var(--ease-out),
+    background-color var(--duration-normal) var(--ease-out);
+}
+.hover-lift:hover {
+  border-color: var(--hairline-strong);
+  box-shadow: var(--shadow-md);
+}
+
+.brand-gradient {
+  background-color: var(--brand);
+}
+.gradient-text {
+  color: var(--brand-text);
+}
+
+.hairline-b { border-bottom: 1px solid var(--hairline); }
+.hairline-t { border-top: 1px solid var(--hairline); }
+.hairline-r { border-right: 1px solid var(--hairline); }
+.hairline-l { border-left: 1px solid var(--hairline); }
+
+/* Icon button base for consistent hit targets + hover. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--text-tertiary);
+  transition: color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+.icon-btn:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+}
+.icon-btn:active {
+  transform: scale(0.96);
+}
+
+/* Status dot */
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  flex: none;
+}
+.status-dot--idle { background: var(--status-idle); }
+.status-dot--thinking { background: var(--status-thinking); animation: rb-pulse-soft 1.6s infinite; }
+.status-dot--running_tool { background: var(--status-running); animation: rb-pulse-soft 1.2s infinite; }
+.status-dot--waiting_on_user { background: var(--status-waiting); animation: rb-pulse-soft 1s infinite; }
+.status-dot--paused { background: var(--status-paused); }
+.status-dot--done { background: var(--status-success); }
+
+/* Typing indicator */
+.typing-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: var(--text-tertiary);
+  display: inline-block;
+  animation: rb-typing 1.2s var(--ease-in-out) infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+
+/* Slim scroll container */
+.scroll-slim {
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-4) transparent;
+}
+
+/* Skeleton block */
+.skeleton {
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+  animation: shimmer-slide 1s var(--ease-in-out) infinite alternate;
+}
+
+/* Primary button — OpenBot's LIGHT Apple-style button.
+ * Blue is never the button fill; it stays reserved for focus/selection. */
+.btn-brand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  color: var(--text-on-light);
+  background-color: var(--surface-light);
+  transition: background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+.btn-brand:hover { background-color: #ffffff; }
+.btn-brand:active { transform: scale(0.98); }
+.btn-brand:disabled {
+  background-color: var(--surface-3);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* Theme-driven accent helpers — follow the active palette (flat, no gradient). */
+.bg-brand { background-color: var(--brand); }
+.text-brand { color: var(--brand-text); }
+.border-brand { border-color: var(--brand); }
+.theme-selected {
+  border-color: var(--brand);
+  background-color: var(--brand-soft);
+}
+
+/* Modal shell — one consistent panel for every dialog/drawer. */
+.modal-panel {
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+}
+.modal-header {
+  padding: 1.25rem 1.5rem 0.75rem;
+  border-bottom: 1px solid var(--hairline);
+}
+.modal-body {
+  padding: 1rem 1.5rem;
+}
+.modal-footer {
+  padding: 0.875rem 1.5rem;
+  border-top: 1px solid var(--hairline);
+}

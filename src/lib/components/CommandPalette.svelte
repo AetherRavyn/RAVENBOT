@@ -129,7 +129,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-start justify-center pt-[15vh] p-4 transition-all"
+    class="fixed inset-0 z-50 bg-black/60  flex items-start justify-center pt-[15vh] p-4 transition-all"
     onclick={onClose}
     onkeydown={handleKeydown}
     role="dialog"
@@ -140,30 +140,30 @@
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <div
       role="document"
-      class="w-full max-w-xl bg-[#0c0c10]/98 border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-all duration-200 animate-in fade-in zoom-in-95 backdrop-blur-2xl"
+      class="w-full max-w-xl bg-[var(--surface-1)] border border-[var(--hairline)] rounded-2xl shadow-2xl overflow-hidden flex flex-col transition-all duration-200 animate-in fade-in zoom-in-95 "
       onclick={(e) => e.stopPropagation()}
     >
       <!-- Search Bar -->
-      <div class="flex items-center px-4 py-3 border-b border-white/10 bg-white/[0.02] gap-3">
-        <Search class="size-4 text-zinc-400 shrink-0" />
+      <div class="flex items-center px-4 py-3 border-b border-[var(--hairline)] bg-[var(--surface-1)] gap-3">
+        <Search class="size-4 text-[var(--text-tertiary)] shrink-0" />
         <input
           bind:this={inputRef}
           type="text"
           placeholder="Search bots, commands, actions..."
           bind:value={query}
           onkeydown={handleKeydown}
-          class="flex-1 bg-transparent text-sm text-zinc-100 placeholder:text-zinc-500 outline-none border-none ring-0 font-sans"
+          class="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none border-none ring-0 font-sans"
         />
         {#if query}
           <button
             type="button"
-            class="text-xs text-zinc-400 hover:text-white px-2 py-0.5 rounded-lg bg-white/5 border border-white/10 transition-colors"
+            class="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-2 py-0.5 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)] transition-colors"
             onclick={() => (query = "")}
           >
             Clear
           </button>
         {/if}
-        <span class="px-2 py-0.5 rounded-lg border border-white/10 bg-white/5 text-zinc-400 font-mono text-[10px]">
+        <span class="px-2 py-0.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-tertiary)] font-mono text-[10px]">
           ESC
         </span>
       </div>
@@ -178,8 +178,8 @@
             class={cn(
               "w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl text-left text-xs transition-all group cursor-pointer focus:outline-none",
               isSelected
-                ? "bg-white/10 border border-white/20 text-white shadow-sm font-medium"
-                : "text-zinc-300 hover:bg-white/5 border border-transparent"
+                ? "bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-white shadow-sm font-medium"
+                : "text-[var(--text-secondary)] hover:bg-[var(--surface-3)] border border-transparent"
             )}
             onclick={cmd.action}
             onmouseenter={() => (selectedIndex = i)}
@@ -189,8 +189,8 @@
                 class={cn(
                   "size-8 rounded-lg flex items-center justify-center shrink-0 transition-colors",
                   isSelected
-                    ? "bg-white/20 border border-white/30 text-white"
-                    : "bg-white/5 border border-white/10 text-zinc-400 group-hover:text-zinc-200"
+                    ? "bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-white"
+                    : "bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] group-hover:text-[var(--text-primary)]"
                 )}
               >
                 <IconComponent class="size-4" />
@@ -203,8 +203,8 @@
                       class={cn(
                         "text-[9px] px-1.5 py-0.2 rounded font-mono uppercase border",
                         isSelected
-                          ? "bg-white/20 border-white/30 text-white"
-                          : "bg-white/5 border-white/10 text-zinc-400"
+                          ? "bg-[var(--surface-3)] border-[var(--hairline-strong)] text-white"
+                          : "bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)]"
                       )}
                     >
                       {cmd.badge}
@@ -214,7 +214,7 @@
                 <span
                   class={cn(
                     "text-[11px] truncate mt-0.5",
-                    isSelected ? "text-zinc-300" : "text-zinc-500"
+                    isSelected ? "text-[var(--text-secondary)]" : "text-[var(--text-muted)]"
                   )}
                 >
                   {cmd.description}
@@ -226,39 +226,39 @@
               <CornerDownLeft
                 class={cn(
                   "size-4 transition-all",
-                  isSelected ? "opacity-100 text-purple-300 drop-shadow-[0_0_6px_#a855f7]" : "opacity-0 text-zinc-500"
+                  isSelected ? "opacity-100 text-[var(--brand-text)] " : "opacity-0 text-[var(--text-muted)]"
                 )}
               />
             </div>
           </button>
         {:else}
           <div class="py-12 px-4 text-center">
-            <Bot class="size-8 text-purple-400/40 mx-auto mb-2" />
-            <p class="text-sm font-semibold text-zinc-200">No matching commands</p>
-            <p class="text-xs text-zinc-500 mt-0.5">Try searching with another keyword</p>
+            <Bot class="size-8 text-[var(--brand-text)]/40 mx-auto mb-2" />
+            <p class="text-sm font-semibold text-[var(--text-secondary)]">No matching commands</p>
+            <p class="text-xs text-[var(--text-muted)] mt-0.5">Try searching with another keyword</p>
           </div>
         {/each}
       </div>
 
       <!-- Footer Info Bar -->
-      <div class="px-4 py-2.5 bg-[#08080d]/90 border-t border-purple-500/15 flex items-center justify-between text-[11px] text-zinc-400">
+      <div class="px-4 py-2.5 bg-[var(--surface-0)] border-t border-[var(--hairline)] flex items-center justify-between text-[11px] text-[var(--text-tertiary)]">
         <div class="flex items-center gap-4">
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 rounded bg-[#12121c] border border-purple-500/20 text-purple-300 text-[10px] font-mono">↑</kbd>
-            <kbd class="px-1.5 py-0.5 rounded bg-[#12121c] border border-purple-500/20 text-purple-300 text-[10px] font-mono">↓</kbd>
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">↑</kbd>
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">↓</kbd>
             Navigate
           </span>
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 rounded bg-[#12121c] border border-purple-500/20 text-purple-300 text-[10px] font-mono">↵</kbd>
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">↵</kbd>
             Select
           </span>
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 rounded bg-[#12121c] border border-purple-500/20 text-purple-300 text-[10px] font-mono">esc</kbd>
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">esc</kbd>
             Dismiss
           </span>
         </div>
-        <div class="flex items-center gap-1.5 font-mono text-[10px] text-purple-400/80">
-          <Zap class="size-3 text-purple-400" />
+        <div class="flex items-center gap-1.5 font-mono text-[10px] text-[var(--brand-text)]/80">
+          <Zap class="size-3 text-[var(--brand-text)]" />
           <span>RAVENBOT Core</span>
         </div>
       </div>

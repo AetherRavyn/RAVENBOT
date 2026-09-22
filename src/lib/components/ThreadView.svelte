@@ -1,16 +1,41 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onMount, onDestroy, tick } from "svelte";
   import { Button } from "$lib/components/ui/button";
   import AgentIntelligence from "$lib/components/AgentIntelligence.svelte";
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
+  import ModelPicker from "$lib/components/ModelPicker.svelte";
   import ArtifactPanel from "$lib/components/ArtifactPanel.svelte";
   import RoutinesPanel from "$lib/components/RoutinesPanel.svelte";
   import SyncPanel from "$lib/components/SyncPanel.svelte";
+  import ComputerPanel from "$lib/components/ComputerPanel.svelte";
+  import ChannelsPanel from "$lib/components/ChannelsPanel.svelte";
+  import TeamImport from "$lib/components/TeamImport.svelte";
   import type { Artifact } from "$lib/artifact";
-  import { getDiceBearUrl } from "$lib/utils";
+  import { getDiceBearUrl, isUserMessage } from "$lib/utils";
   import { cn } from "$lib/utils.js";
+  import {
+    recordUtterance,
+    transcribeBlob,
+    speakText,
+    stripForSpeech,
+    voiceErrorMessage,
+    type UtteranceRecorder,
+    type SpeechHandle,
+  } from "$lib/voice";
+  import {
+    ACCEPTED_IMAGE_MIMES,
+    isTextFile,
+    readAsDataUrl,
+    readAsText,
+    type PendingAttachment,
+  } from "$lib/attachments";
+  import {
+    getCatalog, providerById, modelsFor,
+    type CatalogProvider,
+  } from "$lib/model-catalog";
   import {
     Plus,
     DollarSign,
@@ -32,6 +57,7 @@
     AlertTriangle,
     Key,
     Settings,
+    ShieldAlert,
     ArrowUp,
     ChevronDown,
     Copy,
@@ -43,6 +69,10 @@
     History,
     Trash2,
     Terminal,
+    Cpu,
+    Monitor,
+    Hash,
+    Users,
   } from "@lucide/svelte";
 
   interface Props {
@@ -63,11 +93,124 @@
   let showThreadDropdown = $state(false);
   let showRoutines = $state(false);
   let showSync = $state(false);
+  let showComputer = $state(false);
+  let showChannels = $state(false);
+  let showTeamImport = $state(false);
+  // Active channel (context) for new threads, plus the list for the picker.
+  let activeChannelId = $state<string | null>(null);
+  let channelOptions = $state<{ id: string; name: string }[]>([]);
+
+  async function loadChannelOptions() {
+    try {
+      const list = await invoke<any[]>("list_channels");
+      channelOptions = list.map((c) => ({ id: c.id, name: c.name }));
+      if (activeChannelId && !channelOptions.some((c) => c.id === activeChannelId)) {
+        activeChannelId = null;
+      }
+    } catch {
+      channelOptions = [];
+    }
+  }
   // Model quick switcher (per-conversation, Grok-style)
+  // OpenMausBot-style: Cloud/Local provider rail + suggested list with
+  // search + full list, dimmed with reason when a key is missing.
   let showModelSwitcher = $state(false);
   let switcherModel = $state("");
+  let switcherSearch = $state("");
+  let switcherRail = $state<string | null>(null);
+  let switcherCatalog = $state<CatalogProvider[]>([]);
+  let switcherConfigured = $state<string[]>([]);
+  let switcherModels = $state<any[]>([]);
+  let switcherLoading = $state(false);
+  let switcherError = $state<string | null>(null);
+  // Availability: global default model + local engine reachability (with reason)
+  let switcherDefault = $state<{ provider: string; model: string } | null>(null);
+  let switcherOllamaOk = $state<boolean | null>(null);
+  let switcherOllamaError = $state<string | null>(null);
+
+  // ── Approval gate ("bots ask before they act") ──────────────────────────
+  // Pending Allow/Deny cards. The composer blocks while any is pending; the
+  // run parks server-side until decide_approval resolves it.
+  interface PendingApproval {
+    id: string; bot_id: string; thread_id: string; run_id: string;
+    tool_name: string; tool_label: string; arguments: any; risk: string;
+    status: string; created_at: string;
+  }
+  let pendingApprovals = $state<PendingApproval[]>([]);
+  let decidingApproval = $state<string | null>(null);
+
+  async function refreshApprovals(threadId: string) {
+    try {
+      pendingApprovals = await invoke<PendingApproval[]>("list_pending_approvals", { threadId });
+    } catch {
+      pendingApprovals = [];
+    }
+  }
+
+  async function decideApproval(id: string, allowed: boolean) {
+    if (decidingApproval) return;
+    decidingApproval = id;
+    try {
+      await invoke("decide_approval", { approvalId: id, allowed, note: null });
+      pendingApprovals = pendingApprovals.filter((a) => a.id !== id);
+    } catch (e) {
+      console.error("Failed to decide approval:", e);
+    } finally {
+      decidingApproval = null;
+    }
+  }
+
+  function approvalSummary(args: any): string {
+    try {
+      if (args == null) return "";
+      if (typeof args === "string") return args.slice(0, 280);
+      if (typeof args.command === "string") return String(args.command).slice(0, 280);
+      if (typeof args.path === "string" && typeof args.content === "string")
+        return `${args.path} (+${args.content.length} chars)`;
+      if (typeof args.path === "string") return String(args.path).slice(0, 280);
+      if (typeof args.instruction === "string") return String(args.instruction).slice(0, 280);
+      if (typeof args.query === "string") return String(args.query).slice(0, 280);
+      if (typeof args.url === "string") return String(args.url).slice(0, 280);
+      return JSON.stringify(args).slice(0, 280);
+    } catch {
+      return "";
+    }
+  }
+  // ── Human-in-the-loop questions ("ask_user") ────────────────────────────
+  // The agent asks a question mid-run; the run parks until the user answers.
+  interface PendingQuestion {
+    id: string; bot_id: string; thread_id: string; run_id: string;
+    header: string; question: string; options: string[]; allow_custom: boolean;
+    status: string; created_at: string;
+  }
+  let pendingQuestions = $state<PendingQuestion[]>([]);
+  let answeringQuestion = $state<string | null>(null);
+  let questionDraft = $state<Record<string, string>>({});
+
+  async function refreshQuestions(threadId: string) {
+    try {
+      pendingQuestions = await invoke<PendingQuestion[]>("list_pending_questions", { threadId });
+    } catch {
+      pendingQuestions = [];
+    }
+  }
+
+  async function answerQuestion(id: string, answer: string) {
+    const value = (answer ?? "").trim();
+    if (!value || answeringQuestion) return;
+    answeringQuestion = id;
+    try {
+      await invoke("answer_question", { questionId: id, answer: value });
+      pendingQuestions = pendingQuestions.filter((q) => q.id !== id);
+    } catch (e) {
+      console.error("Failed to answer question:", e);
+    } finally {
+      answeringQuestion = null;
+    }
+  }
+
   // Inline image attachments (paste/drop) sent with the next message
-  let pendingImages = $state<{ name: string; mime: string; data: string }[]>([]);
+  let pendingAttachments = $state<PendingAttachment[]>([]);
   let sessionTokens = $state(0);
   let sessionCost = $state(0.0);
   let userAvatar = $state<string | null>(null);
@@ -81,6 +224,10 @@
   let streamingText = $state("");
   let streamingTool = $state<string | null>(null);
   let streamingSources = $state<any[]>([]);
+  // Live images produced by tools during the run (e.g. screenshots)
+  let streamingImages = $state<{ name: string; data_url: string }[]>([]);
+  // Which message is currently being read aloud (per-reply speaker button)
+  let speakingMessageId = $state<string | null>(null);
   let regenerating = $state(false);
   let renamingThreadId = $state<string | null>(null);
   let renameValue = $state("");
@@ -162,6 +309,19 @@
         const tid = payload?.thread_id;
         if (!tid || tid !== selectedThreadId) return;
         switch (payload?.kind) {
+          case "run_started":
+            activeRunId = payload.run_id ?? null;
+            break;
+          case "paused":
+            // Keep activeRunId/pausedRunId so the Play button can resume it.
+            if (payload?.run_id) {
+              activeRunId = payload.run_id;
+              pausedRunId = payload.run_id;
+            }
+            if (payload?.bot_id === bot.id) {
+              onBotUpdated?.({ ...bot, status: "paused" });
+            }
+            break;
           case "delta":
             streamingText += payload.content || "";
             scrollToBottom();
@@ -182,10 +342,25 @@
               }
             }
             break;
+          case "image":
+            if (payload?.data_url) {
+              streamingImages = [
+                ...streamingImages,
+                { name: payload.name || "image", data_url: payload.data_url },
+              ];
+              scrollToBottom();
+            }
+            break;
           case "done":
             streamingText = "";
             streamingTool = null;
-            streamingSources = [];
+            streamingSources = []; streamingImages = [];
+            activeRunId = null;
+            pausedRunId = null;
+            if (selectedThreadId) {
+              refreshApprovals(selectedThreadId);
+              refreshQuestions(selectedThreadId);
+            }
             break;
           case "status":
             // Live status ring (thinking / running_tool / done → idle)
@@ -203,6 +378,31 @@
               sessionCost += payload.cost || 0;
             }
             break;
+          case "approval_requested":
+            // A tool parked for a decision: card appears, composer blocks.
+            if (payload?.approval && !pendingApprovals.some((a) => a.id === payload.approval.id)) {
+              pendingApprovals = [...pendingApprovals, payload.approval];
+              scrollToBottom();
+            }
+            break;
+          case "approval_decided":
+            // Card flips to its settled state.
+            if (payload?.approval_id) {
+              pendingApprovals = pendingApprovals.filter((a) => a.id !== payload.approval_id);
+            }
+            break;
+          case "question_asked":
+            // The agent parked to ask a question: show the answer card.
+            if (payload?.question && !pendingQuestions.some((q) => q.id === payload.question.id)) {
+              pendingQuestions = [...pendingQuestions, payload.question];
+              scrollToBottom();
+            }
+            break;
+          case "question_answered":
+            if (payload?.question_id) {
+              pendingQuestions = pendingQuestions.filter((q) => q.id !== payload.question_id);
+            }
+            break;
         }
       });
     } catch (e) {
@@ -217,12 +417,25 @@
   });
 
   $effect(() => {
+    loadChannelOptions();
+  });
+
+  // Load the bot's threads only when we switch to a DIFFERENT bot — never on
+  // a mere status/telemetry update. `selectedBot` is `$derived(bots.find(…))`,
+  // so every status event hands us a brand-new object; without this guard the
+  // effect re-ran mid-run, reset `messages` and reloaded `threads[0]`, making
+  // the user's just-sent message vanish after the answer.
+  let loadedBotId: string | null = null;
+  $effect(() => {
+    const botId = bot?.id;
+    if (!botId || botId === loadedBotId) return;
+    loadedBotId = botId;
     if (bot?.id) {
       threads = [];
       selectedThreadId = null;
       messages = [];
       streamingText = "";
-      streamingSources = [];
+      streamingSources = []; streamingImages = [];
       // Lifetime telemetry baseline (events keep it live afterwards)
       invoke("get_session_usage", { botId: bot.id })
         .then((res: any) => {
@@ -241,6 +454,22 @@
     }
   });
 
+  // Play base64 audio (WAV) via the Web Audio API.
+  function playAudioBase64(b64: string) {
+    try {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const blob = new Blob([bytes], { type: "audio/wav" });
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.play().catch((e) => console.error("Audio play failed:", e));
+      audio.onended = () => URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error("Failed to play audio:", e);
+    }
+  }
+
   async function scrollToBottom() {
     await tick();
     if (messagesContainer) {
@@ -253,7 +482,9 @@
     showThreadDropdown = false;
     streamingText = "";
     streamingTool = null;
-    streamingSources = [];
+    streamingSources = []; streamingImages = [];
+    refreshApprovals(threadId);
+    refreshQuestions(threadId);
     editingMessage = null;
     try {
       messages = await invoke("list_messages", { threadId });
@@ -269,6 +500,7 @@
         botId: bot.id,
         title: `Thread #${threads.length + 1}`,
         ephemeral: tempActive,
+        channelId: activeChannelId,
       });
       threads = [thread, ...threads];
       selectedThreadId = (thread as any).id;
@@ -287,13 +519,30 @@
     }
   }
 
+  // Active run id (from run_started) and the run we paused (for resume).
+  let activeRunId = $state<string | null>(null);
+  let pausedRunId = $state<string | null>(null);
+
   async function togglePause() {
     try {
       if (bot.status === "paused") {
-        await invoke("resume_all");
+        // Resume this thread's run from its checkpoint when we paused it,
+        // otherwise release the global kill switch.
+        if (pausedRunId) {
+          await invoke("resume_run", { runId: pausedRunId });
+          pausedRunId = null;
+          if (selectedThreadId) await loadMessages(selectedThreadId);
+        } else {
+          await invoke("resume_all");
+        }
         onBotUpdated?.({ ...bot, status: "idle" });
       } else {
-        await invoke("pause_all");
+        if (activeRunId) {
+          await invoke("pause_run", { runId: activeRunId });
+          pausedRunId = activeRunId;
+        } else {
+          await invoke("pause_all");
+        }
         onBotUpdated?.({ ...bot, status: "paused" });
       }
     } catch (e) {
@@ -348,8 +597,10 @@
   }
 
   async function sendMessage(textToSend?: string) {
-    const rawText = (textToSend || newMessage).trim();
-    if (!rawText || sending) return;
+    const typed = (textToSend || newMessage).trim();
+    const hasAttachments = pendingAttachments.length > 0;
+    if (sending || (!typed && !hasAttachments)) return;
+    const rawText = typed || "(shared files)";
 
     // Apply DeepSearch or Think prefixes if toggled
     let text = rawText;
@@ -372,20 +623,21 @@
           botId: bot.id,
           title: rawText.slice(0, 35) + (rawText.length > 35 ? "..." : ""),
           ephemeral: tempActive,
+          channelId: activeChannelId,
         });
         threads = [thread, ...threads];
         selectedThreadId = (thread as any).id;
       }
 
       // Optimistically show user message right away so it is NEVER lost
-      const tempAttachments = pendingImages.map((p) => ({
+      const tempAttachments = pendingAttachments.map((p) => ({
         id: "temp-att-" + Date.now() + "-" + p.name,
         name: p.name,
         mime_type: p.mime,
         size: p.data.length,
         path: "",
         data: p.data,
-        is_image: true,
+        is_image: p.isImage,
       }));
       const tempUserMsg = {
         id: "temp-" + Date.now(),
@@ -404,17 +656,17 @@
           threadId: selectedThreadId,
           messageId: editingMessage.id,
           content: text,
-          attachments: pendingImages.length ? pendingImages : undefined,
+          attachments: pendingAttachments.length ? pendingAttachments : undefined,
         });
         editingMessage = null;
       } else {
         await invoke("send_message", {
           threadId: selectedThreadId,
           content: text,
-          attachments: pendingImages.length ? pendingImages : undefined,
+          attachments: pendingAttachments.length ? pendingAttachments : undefined,
         });
       }
-      pendingImages = [];
+      pendingAttachments = [];
 
       if (selectedThreadId) {
         await loadMessages(selectedThreadId);
@@ -428,23 +680,26 @@
       sending = false;
       streamingText = "";
       streamingTool = null;
-      streamingSources = [];
+      streamingSources = []; streamingImages = [];
       editingMessage = null;
       scrollToBottom();
 
-      // Voice mode: speak the response, then resume hands-free listening
+      // Voice mode: speak the response, then resume hands-free listening.
+      // Otherwise, honour the bot's auto-read setting.
+      const last = messages[messages.length - 1];
+      const lastText = last
+        ? (typeof last.content === "string"
+          ? last.content
+          : last.content?.text || "")
+        : "";
       if (voiceMode) {
-        const last = messages[messages.length - 1];
-        const lastText = last
-          ? (typeof last.content === "string"
-            ? last.content
-            : last.content?.text || "")
-          : "";
         if (lastText) {
           speakForVoice(lastText);
         } else {
           startVoiceLoop();
         }
+      } else if (lastText) {
+        autoReadIfEnabled(lastText);
       }
     }
   }
@@ -471,16 +726,92 @@
     if (textareaRef) textareaRef.style.height = "auto";
   }
 
-  const modelPresets = [
-    { provider: "ollama", label: "Ollama (Local)", model: "llama3.1", badge: "Sovereign" },
-    { provider: "openrouter", label: "OpenRouter", model: "anthropic/claude-3.5-sonnet", badge: null },
-    { provider: "anthropic", label: "Anthropic", model: "claude-3-5-sonnet-20241022", badge: null },
-    { provider: "openai", label: "OpenAI", model: "gpt-4o", badge: null },
-  ];
+  // ——— Quick switcher: catalog rail + live models ———
+  let switcherRailProviders = $derived(switcherCatalog);
+  let switcherRailProvider = $derived(
+    providerById(switcherCatalog, switcherRail ?? bot?.config?.model_provider ?? "")
+    ?? switcherCatalog[0]
+  );
+  let switcherAvailable = $derived(
+    modelsFor(switcherRailProvider, switcherModels, switcherLoading)
+  );
+  let switcherVisible = $derived(
+    switcherSearch.trim()
+      ? switcherAvailable.filter((m) =>
+          m.id.toLowerCase().includes(switcherSearch.toLowerCase()) ||
+          m.name.toLowerCase().includes(switcherSearch.toLowerCase()),
+        )
+      : switcherAvailable.slice(0, 8)
+  );
+  let switcherShowingAll = $derived(
+    switcherSearch.trim() ? true : switcherAvailable.length <= 8
+  );
 
   function openModelSwitcher() {
     switcherModel = bot?.config?.model_id || "";
+    switcherSearch = "";
+    switcherRail = bot?.config?.model_provider || null;
     showModelSwitcher = !showModelSwitcher;
+    if (showModelSwitcher) refreshSwitcher();
+  }
+
+  async function refreshSwitcher() {
+    try {
+      switcherCatalog = await getCatalog();
+    } catch { /* minimal fallback cached in module */ }
+    try {
+      switcherConfigured = await invoke<string[]>("get_configured_providers");
+    } catch { switcherConfigured = []; }
+    try {
+      const def: any = await invoke("get_default_model");
+      switcherDefault = def?.provider ? { provider: def.provider, model: def.model } : null;
+    } catch { switcherDefault = null; }
+    // Local engine reachability (so "ollama" shows an honest reason when down)
+    switcherOllamaOk = null;
+    switcherOllamaError = null;
+    invoke("probe_ollama")
+      .then(() => { switcherOllamaOk = true; switcherOllamaError = null; })
+      .catch((e: any) => { switcherOllamaOk = false; switcherOllamaError = String(e); });
+    const rail = switcherRail ?? bot?.config?.model_provider;
+    if (rail) loadSwitcherModels(rail);
+  }
+
+  /// Why a provider can't be used right now (null = available).
+  function switcherRailReason(p: CatalogProvider): string | null {
+    const isLocal = p.keyless || p.id === "local" || p.id === "ollama";
+    if (isLocal) {
+      if (p.id === "ollama" && switcherOllamaOk === false) return "Ollama not reachable";
+      return null;
+    }
+    if (!switcherConfigured.includes(p.id)) return "API key needed";
+    return null;
+  }
+
+  /// Short badge text for a rail entry.
+  function switcherRailBadge(p: CatalogProvider): string | null {
+    const reason = switcherRailReason(p);
+    if (!reason) return null;
+    if (p.id === "ollama") return switcherOllamaOk === null ? "…" : "offline";
+    return "key?";
+  }
+
+  async function loadSwitcherModels(provider: string) {
+    switcherLoading = true;
+    switcherError = null;
+    try {
+      switcherModels = (await invoke<any[]>("fetch_provider_models", { provider })) || [];
+    } catch (e: any) {
+      switcherError = String(e);
+      switcherModels = [];
+    } finally {
+      switcherLoading = false;
+    }
+  }
+
+  function selectSwitcherRail(id: string) {
+    switcherRail = id;
+    switcherSearch = "";
+    loadSwitcherModels(id);
   }
 
   async function switchProvider(provider: string, model: string) {
@@ -518,7 +849,7 @@
     if (!selectedThreadId || sending || regenerating) return;
     regenerating = true;
     streamingText = "";
-    streamingSources = [];
+    streamingSources = []; streamingImages = [];
     try {
       await invoke("regenerate_message", { threadId: selectedThreadId });
       await loadMessages(selectedThreadId);
@@ -531,6 +862,13 @@
       regenerating = false;
       streamingText = "";
       scrollToBottom();
+      if (!voiceMode) {
+        const last = messages[messages.length - 1];
+        const lastText = last
+          ? (typeof last.content === "string" ? last.content : last.content?.text || "")
+          : "";
+        if (lastText) autoReadIfEnabled(lastText);
+      }
     }
   }
 
@@ -542,40 +880,50 @@
 
   // ---- Inline image attachments (paste / drag-drop) ----
 
-  const ACCEPTED_IMAGE_MIMES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
-  const TEXT_FILE_EXTS = ["txt", "md", "rs", "ts", "tsx", "js", "jsx", "py", "json", "toml", "yaml", "yml", "css", "html", "sh", "sql", "go", "java", "c", "cpp", "h", "rb", "php", "swift", "kt"];
+  // File classification/reading lives in the shared attachments module.
 
-  function attachFiles(files: FileList | File[]) {
+  async function attachFiles(files: FileList | File[]) {
     for (const file of Array.from(files)) {
-      // Images ride as inline attachments (vision)
-      if (ACCEPTED_IMAGE_MIMES.includes(file.type)) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl = String(reader.result || "");
-          const base64 = dataUrl.split(",")[1] || "";
-          if (base64) {
-            pendingImages = [...pendingImages, {
-              name: file.name || "pasted-image.png",
-              mime: file.type || "image/png",
-              data: base64,
-            }];
-          }
-        };
-        reader.readAsDataURL(file);
+      const mime = (file.type || "").toLowerCase();
+      const ext = (file.name?.split(".").pop() || "").toLowerCase();
+
+      // Images ride as inline attachments (vision).
+      if (ACCEPTED_IMAGE_MIMES.includes(mime)) {
+        const dataUrl = await readAsDataUrl(file);
+        const base64 = dataUrl.split(",")[1] || "";
+        if (base64) {
+          pendingAttachments = [...pendingAttachments, {
+            name: file.name || "pasted-image.png",
+            mime: mime || "image/png",
+            data: base64,
+            isImage: true,
+          }];
+        }
         continue;
       }
 
-      // Text files insert into the composer (paperclip-style)
-      const ext = (file.name?.split(".").pop() || "").toLowerCase();
-      if (!TEXT_FILE_EXTS.includes(ext)) continue;
-      const reader = new FileReader();
-      reader.onload = () => {
-        const text = String(reader.result || "");
-        if (!text) return;
+      // Text-like files insert their content into the composer so the model
+      // receives them directly (no size-risky binary transport).
+      if (isTextFile(file)) {
+        const text = await readAsText(file);
+        if (!text) continue;
         newMessage = (newMessage ? newMessage + "\n\n" : "") +
           `Attached file [${file.name}]:\n\`\`\`${ext}\n${text}\n\`\`\`\n`;
-      };
-      reader.readAsText(file);
+        continue;
+      }
+
+      // Everything else (PDF, DOCX, XLSX, archives, binaries) is attached as a
+      // document: the bytes are preserved and the model is told the file
+      // exists, instead of the file being silently dropped.
+      const dataUrl = await readAsDataUrl(file);
+      const base64 = dataUrl.split(",")[1] || "";
+      if (!base64) continue;
+      pendingAttachments = [...pendingAttachments, {
+        name: file.name || "attachment.bin",
+        mime: mime || "application/octet-stream",
+        data: base64,
+        isImage: false,
+      }];
     }
   }
 
@@ -593,24 +941,24 @@
     }
   }
 
-  function removePendingImage(idx: number) {
-    pendingImages = pendingImages.filter((_, i) => i !== idx);
+  function removePendingAttachment(idx: number) {
+    pendingAttachments = pendingAttachments.filter((_, i) => i !== idx);
   }
 
   function getStatusTheme(status: string) {
     switch (status) {
       case "idle":
-        return { dot: "bg-emerald-400", text: "text-emerald-400", label: "Ready" };
+        return { dot: "bg-success", text: "text-success", label: "Ready" };
       case "thinking":
-        return { dot: "bg-amber-400 animate-pulse", text: "text-amber-400", label: "Reasoning…" };
+        return { dot: "bg-warning animate-pulse", text: "text-warning", label: "Reasoning…" };
       case "running_tool":
-        return { dot: "bg-sky-400 animate-pulse", text: "text-sky-400", label: "Running Tool…" };
+        return { dot: "bg-[var(--status-running)] animate-pulse", text: "text-[var(--status-running)]", label: "Running Tool…" };
       case "waiting_on_user":
-        return { dot: "bg-rose-500", text: "text-rose-400", label: "Waiting on input" };
+        return { dot: "bg-danger", text: "text-danger", label: "Waiting on input" };
       case "paused":
-        return { dot: "bg-purple-400", text: "text-purple-400", label: "Paused" };
+        return { dot: "bg-[var(--status-paused)]", text: "text-[var(--status-paused)]", label: "Paused" };
       default:
-        return { dot: "bg-emerald-400", text: "text-zinc-400", label: status || "Ready" };
+        return { dot: "bg-success", text: "text-[var(--text-tertiary)]", label: status || "Ready" };
     }
   }
 
@@ -632,61 +980,51 @@
   }
 
   let isListening = $state(false);
-  let recognition: any = null;
+  // Handles to stop an in-flight recording / playback cleanly.
+  let activeRecorder: UtteranceRecorder | null = null;
+  let activeSpeech: SpeechHandle | null = null;
 
   function attachFile() {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = ".txt,.md,.rs,.ts,.js,.py,.json,.toml,.yaml,.yml,.css,.html,.sh";
+    input.multiple = true;
     input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) {
-        const text = await file.text();
-        const ext = file.name.split(".").pop() || "text";
-        newMessage = (newMessage ? newMessage + "\n\n" : "") + `Attached file [${file.name}]:\n\`\`\`${ext}\n${text}\n\`\`\`\n`;
-      }
+      const files = (e.target as HTMLInputElement).files;
+      if (files?.length) await attachFiles(files);
     };
     input.click();
   }
 
-  function toggleVoice() {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      alert("Speech recognition is not supported in this environment. You can type directly in the composer.");
-      return;
-    }
+  // ---- Voice: real backend STT / TTS (shared module) ----
+  // Recording → backend transcribe (Whisper / faster-whisper); playback →
+  // backend synthesize. Works on Linux WebKitGTK + macOS and reports honest
+  // errors when no engine is configured.
+
+  async function toggleVoice() {
     if (isListening) {
-      recognition?.stop();
+      activeRecorder?.stop();
       isListening = false;
       return;
     }
+    isListening = true;
     try {
-      recognition = new SpeechRecognition();
-      recognition.continuous = false;
-      recognition.interimResults = true;
-      recognition.lang = "en-US";
-      recognition.onstart = () => { isListening = true; };
-      recognition.onresult = (event: any) => {
-        let text = "";
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          text += event.results[i][0].transcript;
-        }
-        if (text) {
-          newMessage = (newMessage ? newMessage + " " : "") + text.trim();
-        }
-      };
-      recognition.onerror = () => { isListening = false; };
-      recognition.onend = () => { isListening = false; };
-      recognition.start();
-    } catch {
+      const rec = await recordUtterance({ maxMs: 25000, silenceMs: 1700 });
+      activeRecorder = rec;
+      const blob = await rec.result;
+      activeRecorder = null;
+      if (!blob) return;
+      const text = await transcribeBlob(blob);
+      if (text) newMessage = (newMessage ? newMessage + " " : "") + text;
+    } catch (e: any) {
+      console.error("Voice input failed:", e);
+      alert(voiceErrorMessage(e));
+    } finally {
       isListening = false;
     }
   }
 
-  // ---- Hands-free Voice Mode (STT → send → TTS loop) ----
+  // ---- Hands-free Voice Mode (record → transcribe → send → speak → repeat) ----
 
-  let voiceRecognition: any = null;
-  let voicePendingText = "";
   let voiceListening = false;
 
   function toggleVoiceMode() {
@@ -694,9 +1032,8 @@
       stopVoiceMode();
       return;
     }
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) {
-      alert("Voice mode needs the Web Speech API, which isn't available in this environment.");
+    if (!navigator.mediaDevices?.getUserMedia) {
+      alert("Voice mode needs microphone access, which is not available in this environment.");
       return;
     }
     voiceMode = true;
@@ -705,113 +1042,132 @@
 
   function stopVoiceMode() {
     voiceMode = false;
-    voicePendingText = "";
     voiceListening = false;
-    try {
-      voiceRecognition?.stop();
-    } catch {}
-    try {
-      window.speechSynthesis?.cancel();
-    } catch {}
+    activeRecorder?.stop();
+    activeSpeech?.stop();
+    activeSpeech = null;
     speaking = false;
   }
 
-  function startVoiceLoop() {
+  async function startVoiceLoop() {
     if (!voiceMode || voiceListening) return;
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SR) {
-      voiceMode = false;
-      return;
-    }
+    voiceListening = true;
     try {
-      voiceRecognition = new SR();
-    } catch {
-      voiceMode = false;
-      return;
-    }
-    voiceRecognition.continuous = false;
-    voiceRecognition.interimResults = true;
-    voiceRecognition.lang = "en-US";
-    voiceRecognition.onstart = () => {
-      voiceListening = true;
-    };
-    voiceRecognition.onresult = (event: any) => {
-      for (let i = event.resultIndex; i < event.results.length; ++i) {
-        if (event.results[i].isFinal) {
-          const transcript = event.results[i][0].transcript.trim();
-          if (transcript) {
-            voicePendingText = transcript;
-          }
-        }
-      }
-    };
-    voiceRecognition.onend = () => {
-      voiceListening = false;
+      const rec = await recordUtterance({ maxMs: 25000, silenceMs: 1500 });
+      activeRecorder = rec;
+      const blob = await rec.result;
+      activeRecorder = null;
       if (!voiceMode) return;
-      // Wait out an in-flight send/regenerate before looping
-      if (sending || regenerating) {
-        setTimeout(startVoiceLoop, 500);
+      if (!blob) {
+        voiceListening = false;
+        window.setTimeout(startVoiceLoop, 400);
         return;
       }
-      if (voicePendingText) {
-        const text = voicePendingText;
-        voicePendingText = "";
-        sendMessage(text);
-      } else {
-        startVoiceLoop();
-      }
-    };
-    voiceRecognition.onerror = () => {
+      const text = await transcribeBlob(blob);
       voiceListening = false;
-      if (voiceMode) {
-        setTimeout(startVoiceLoop, 800);
+      if (!voiceMode) return;
+      if (!text) {
+        window.setTimeout(startVoiceLoop, 400);
+        return;
       }
-    };
-    try {
-      voiceRecognition.start();
-    } catch {
+      await sendMessage(text);
+      // sendMessage's finally calls speakForVoice(), which resumes the loop.
+      // Safety net in case it returned early (e.g. a send was already running).
+      window.setTimeout(() => {
+        if (voiceMode && !speaking && !voiceListening) startVoiceLoop();
+      }, 800);
+    } catch (e: any) {
+      console.error("Voice mode error:", e);
+      voiceMode = false;
       voiceListening = false;
+      alert(voiceErrorMessage(e));
     }
   }
 
-  function speakForVoice(md: string) {
-    const synth = window.speechSynthesis;
-    if (!synth) {
-      if (voiceMode) startVoiceLoop();
+  /// Toggle auto-read for this bot (persisted via update_bot).
+  async function toggleAutoRead() {
+    if (!bot?.config) return;
+    const updated = {
+      ...bot,
+      config: { ...bot.config, auto_read: !bot.config.auto_read },
+    };
+    try {
+      await invoke("update_bot", { bot: updated });
+      onBotUpdated?.(updated);
+    } catch (e) {
+      console.error("Failed to toggle auto-read:", e);
+    }
+  }
+
+  /// Speak a specific message (per-reply speaker button). Toggles off.
+  async function speakMessage(id: string, text: string) {
+    if (speakingMessageId === id) {
+      activeSpeech?.stop();
+      activeSpeech = null;
+      speakingMessageId = null;
+      speaking = false;
       return;
     }
+    const clean = stripForSpeech(text);
+    if (!clean) return;
+    activeSpeech?.stop();
+    speakingMessageId = id;
+    speaking = true;
     try {
-      synth.cancel();
-    } catch {}
+      const handle = await speakText(clean, bot?.config?.voice_id || undefined);
+      activeSpeech = handle;
+      await handle.done;
+    } catch (e) {
+      console.error("Speak failed:", e);
+    } finally {
+      if (speakingMessageId === id) speakingMessageId = null;
+      activeSpeech = null;
+      speaking = false;
+    }
+  }
+
+  /// Read a reply aloud automatically when the bot has auto-read enabled.
+  async function autoReadIfEnabled(text: string) {
+    if (!bot?.config?.auto_read) return;
+    const clean = stripForSpeech(text);
+    if (!clean) return;
+    try {
+      activeSpeech?.stop();
+      speaking = true;
+      const handle = await speakText(clean, bot?.config?.voice_id || undefined);
+      activeSpeech = handle;
+      await handle.done;
+    } catch (e) {
+      console.error("Auto-read failed:", e);
+    } finally {
+      activeSpeech = null;
+      speaking = false;
+    }
+  }
+
+  async function speakForVoice(md: string) {
+    if (!voiceMode) return;
     const clean = stripForSpeech(md);
     if (!clean) {
-      if (voiceMode) startVoiceLoop();
+      startVoiceLoop();
       return;
     }
-    const utterance = new SpeechSynthesisUtterance(clean);
-    utterance.rate = 1.05;
-    utterance.onend = () => {
-      speaking = false;
-      if (voiceMode) startVoiceLoop();
-    };
-    utterance.onerror = () => {
-      speaking = false;
-      if (voiceMode) startVoiceLoop();
-    };
     speaking = true;
-    synth.speak(utterance);
-  }
-
-  function stripForSpeech(md: string): string {
-    return md
-      .replace(/([\s\S]*?)<\/think>/g, "")
-      .replace(/```[\s\S]*?```/g, " code omitted. ")
-      .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
-      .replace(/\[([^\]]*)\]\(([^)]*)\)/g, "$1")
-      .replace(/[#*_>`|~]+/g, " ")
-      .replace(/\s+/g, " ")
-      .trim()
-      .slice(0, 1200);
+    try {
+      const handle = await speakText(clean, bot?.config?.voice_id || undefined);
+      activeSpeech = handle;
+      if (!voiceMode) {
+        handle.stop();
+        return;
+      }
+      await handle.done;
+    } catch (e) {
+      console.error("TTS failed:", e);
+    } finally {
+      activeSpeech = null;
+      speaking = false;
+      if (voiceMode) startVoiceLoop();
+    }
   }
 </script>
 
@@ -819,9 +1175,9 @@
 
 {#snippet sourcesChips(sources: any[])}
   {#if sources && sources.length > 0}
-    <div class="rounded-xl border border-white/10 bg-[#0b0b10] p-2.5 space-y-1.5">
-      <div class="flex items-center gap-1.5 text-[10px] font-mono text-zinc-400 uppercase tracking-wider">
-        <Globe class="size-3 text-sky-400" />
+    <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-2.5 space-y-1.5">
+      <div class="flex items-center gap-1.5 text-[10px] font-mono text-[var(--text-tertiary)] uppercase tracking-wider">
+        <Globe class="size-3 text-[var(--brand-text)]" />
         <span>Sources ({sources.length})</span>
       </div>
       <div class="flex flex-wrap gap-1.5">
@@ -829,11 +1185,11 @@
           {@const label = domainOf(src.url)}
           <button
             type="button"
-            class="max-w-[220px] h-6 px-2 rounded-lg bg-white/5 border border-white/10 hover:bg-sky-500/15 hover:border-sky-500/40 flex items-center gap-1.5 text-[10px] text-zinc-300 hover:text-sky-300 transition-colors cursor-pointer"
+            class="max-w-[220px] h-6 px-2 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)] hover:bg-[var(--brand-soft)] hover:border-[var(--brand)]/40 flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--brand-hover)] transition-colors cursor-pointer"
             title={src.title || src.url}
             onclick={() => openSource(src.url)}
           >
-            <span class="size-3.5 rounded bg-sky-500/20 text-sky-400 font-mono flex items-center justify-center text-[8px] shrink-0">{idx + 1}</span>
+            <span class="size-3.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] font-mono flex items-center justify-center text-[8px] shrink-0">{idx + 1}</span>
             <span class="truncate font-mono">{label}</span>
           </button>
         {/each}
@@ -842,12 +1198,12 @@
   {/if}
 {/snippet}
 
-<div class="flex flex-col h-full overflow-hidden select-none bg-[#050507] text-zinc-100 font-sans relative">
+<div class="flex flex-col h-full overflow-hidden select-none bg-[var(--surface-0)] text-[var(--text-primary)] font-sans relative">
   <!-- Sleek Top Header Bar (Grok Style) -->
-  <header class="h-13 px-4 border-b border-[#1c1c24] bg-[#09090d]/90 backdrop-blur-md flex items-center justify-between z-20 shrink-0">
+  <header class="h-[46px] px-4 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between z-20 shrink-0">
     <!-- Left: Bot Avatar & Info + Thread Switcher Dropdown -->
     <div class="flex items-center gap-3 min-w-0">
-      <div class="relative size-8 rounded-xl overflow-hidden bg-[#14141c] border border-white/10 p-0.5 shrink-0 shadow-sm">
+      <div class="relative size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] p-0.5 shrink-0 shadow-sm">
         <img
           src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
           alt={bot.name}
@@ -859,11 +1215,20 @@
       <div class="flex items-center gap-2 min-w-0">
         <span class="font-bold text-sm text-white truncate">{bot.name}</span>
 
+        {#if bot?.config?.engine && bot.config.engine !== "native"}
+          <span
+            class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] hidden sm:inline-flex items-center gap-1"
+            title="This bot runs on an external agent CLI"
+          >
+            <Cpu class="size-2.5" /> {bot.config.engine}
+          </span>
+        {/if}
+
         <!-- Model Quick Switcher (clickable pill, Grok-style) -->
         <div class="relative">
           <button
             type="button"
-            class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-white/5 border border-white/10 text-zinc-400 hover:text-white hover:border-zinc-500 truncate cursor-pointer transition-colors hidden sm:inline-flex items-center gap-1 max-w-[220px]"
+            class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] truncate cursor-pointer transition-colors hidden sm:inline-flex items-center gap-1 max-w-[220px] {bot?.config?.engine && bot.config.engine !== 'native' ? 'opacity-40' : ''}"
             onclick={(e) => {
               e.stopPropagation();
               openModelSwitcher();
@@ -878,32 +1243,42 @@
             <!-- svelte-ignore a11y_click_events_have_key_events -->
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-              class="absolute left-0 top-7 z-50 w-72 bg-[#0e0e14] border border-[#262633] rounded-2xl shadow-2xl p-2 space-y-1 animate-in fade-in zoom-in-95 backdrop-blur-xl"
+              class="absolute left-0 top-7 z-50 w-[26rem] max-w-[calc(100vw-2rem)] bg-[var(--surface-1)] border border-[var(--hairline)] rounded-2xl shadow-2xl animate-in fade-in zoom-in-95  overflow-hidden"
               onclick={(e) => e.stopPropagation()}
             >
-              <span class="block px-2 py-1 text-[10px] font-bold text-zinc-400 uppercase tracking-wider font-mono border-b border-white/10">
-                Switch Model
+              <span class="block px-3 py-2 text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono border-b border-[var(--hairline)]">
+                Switch Model · {bot?.config?.model_provider}/{bot?.config?.model_id?.split("/").pop()}
               </span>
 
-              {#each modelPresets as preset}
-                {@const isActive = bot?.config?.model_provider === preset.provider}
-                <button
-                  type="button"
-                  class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs flex items-center justify-between transition-colors cursor-pointer {isActive ? 'bg-white/10 text-white border border-white/15' : 'text-zinc-400 hover:text-white hover:bg-white/5'}"
-                  onclick={() => switchProvider(preset.provider, preset.model)}
-                  title={`Switch to ${preset.model}`}
-                >
-                  <span class="font-medium">{preset.label}</span>
-                  <span class="text-[9px] font-mono text-zinc-500 truncate ml-2">{preset.model}</span>
-                </button>
-              {/each}
+              <div class="px-2.5 pt-2 pb-2">
+                <ModelPicker
+                  providers={switcherRailProviders}
+                  provider={switcherRailProvider?.id ?? ""}
+                  model={bot?.config?.model_id ?? ""}
+                  models={switcherAvailable}
+                  configured={switcherConfigured}
+                  loading={switcherLoading}
+                  error={switcherRailProvider && switcherRailReason(switcherRailProvider)
+                    ? `${switcherRailReason(switcherRailProvider)} — fallbacks shown.`
+                    : (switcherError && switcherAvailable.length === 0
+                        ? "Live list failed — catalog fallbacks shown."
+                        : null)}
+                  reasonFor={(p) => switcherRailReason(p)}
+                  onSelectProvider={selectSwitcherRail}
+                  onSelectModel={(id) => switcherRailProvider && switchProvider(switcherRailProvider.id, id)}
+                  heightClass="max-h-[18rem]"
+                  footerNote={switcherShowingAll
+                    ? undefined
+                    : `Showing suggested · search for all ${switcherAvailable.length}`}
+                />
+              </div>
 
               <!-- Custom model id -->
-              <div class="flex items-center gap-1.5 pt-1 border-t border-white/10 mt-1">
+              <div class="flex items-center gap-1.5 pt-1 border-t border-[var(--hairline)] mt-1">
                 <input
                   bind:value={switcherModel}
                   placeholder="model id…"
-                  class="flex-1 min-w-0 h-6 px-2 rounded-lg bg-[#07070a] border border-white/10 text-[10px] font-mono text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500/50"
+                  class="flex-1 min-w-0 h-6 px-2 rounded-lg bg-[var(--surface-0)] border border-[var(--hairline)] text-[10px] font-mono text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
                   onkeydown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -925,7 +1300,7 @@
         </div>
 
         {#if currentThread?.ephemeral}
-          <span class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-amber-500/15 border border-amber-500/30 text-amber-300 flex items-center gap-1 shrink-0" title="Temporary chat — not feeding agent memory">
+          <span class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-warning/15 border border-warning/30 text-warning flex items-center gap-1 shrink-0" title="Temporary chat — not feeding agent memory">
             <Ghost class="size-3" />
             <span>Temporary</span>
           </span>
@@ -936,32 +1311,32 @@
       <div class="relative ml-2">
         <button
           type="button"
-          class="h-7 px-2.5 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-zinc-300 flex items-center gap-1.5 cursor-pointer font-medium transition-colors"
+          class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-xs text-[var(--text-secondary)] flex items-center gap-1.5 cursor-pointer font-medium transition-colors"
           onclick={(e) => {
             e.stopPropagation();
             showThreadDropdown = !showThreadDropdown;
           }}
           title="Switch Thread"
         >
-          <MessageSquare class="size-3 text-sky-400" />
+          <MessageSquare class="size-3 text-[var(--brand-text)]" />
           <span class="max-w-[130px] truncate text-[11px] font-mono">
             {currentThread?.title || (threads.length > 0 ? "Threads (" + threads.length + ")" : "New Thread")}
           </span>
-          <ChevronDown class="size-3 text-zinc-400" />
+          <ChevronDown class="size-3 text-[var(--text-tertiary)]" />
         </button>
 
         {#if showThreadDropdown}
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
-            class="absolute left-0 top-9 z-50 w-64 bg-[#0e0e14] border border-[#262633] rounded-2xl shadow-2xl p-2 space-y-1 animate-in fade-in zoom-in-95 backdrop-blur-xl"
+            class="absolute left-0 top-9 z-50 w-64 bg-[var(--surface-1)] border border-[var(--hairline)] rounded-2xl shadow-2xl p-2 space-y-1 animate-in fade-in zoom-in-95 "
             onclick={(e) => e.stopPropagation()}
           >
-            <div class="flex items-center justify-between px-2 py-1 border-b border-white/10">
-              <span class="text-[10px] font-bold text-zinc-400 uppercase tracking-wider font-mono">Chat History</span>
+            <div class="flex items-center justify-between px-2 py-1 border-b border-[var(--hairline)]">
+              <span class="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono">Chat History</span>
               <button
                 type="button"
-                class="text-[10px] text-sky-400 hover:text-sky-300 flex items-center gap-1 cursor-pointer"
+                class="text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-hover)] flex items-center gap-1 cursor-pointer"
                 onclick={createNewThread}
               >
                 <Plus class="size-3" /> New
@@ -974,17 +1349,17 @@
                 <button
                   type="button"
                   class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs truncate transition-colors cursor-pointer flex items-center justify-between {isSelected
-                    ? 'bg-white/10 text-white font-medium border border-white/15'
-                    : 'text-zinc-400 hover:text-white hover:bg-white/5'}"
+                    ? 'bg-[var(--surface-3)] text-white font-medium border border-[var(--hairline-strong)]'
+                    : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                   onclick={() => loadMessages(thread.id)}
                 >
                   <span class="truncate">{thread.title || "Untitled"}</span>
                   {#if isSelected}
-                    <span class="size-1.5 rounded-full bg-sky-400 shrink-0 ml-2"></span>
+                    <span class="size-1.5 rounded-full bg-[var(--brand)] shrink-0 ml-2"></span>
                   {/if}
                 </button>
               {:else}
-                <div class="p-3 text-center text-xs text-zinc-500">No previous threads</div>
+                <div class="p-3 text-center text-xs text-[var(--text-muted)]">No previous threads</div>
               {/each}
             </div>
           </div>
@@ -994,7 +1369,7 @@
       <!-- Quick New Thread Button -->
       <button
         type="button"
-        class="h-7 px-2 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-xs text-zinc-300 flex items-center gap-1 cursor-pointer transition-colors"
+        class="h-7 px-2 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-xs text-[var(--text-secondary)] flex items-center gap-1 cursor-pointer transition-colors"
         onclick={createNewThread}
         title="Start fresh conversation"
       >
@@ -1008,39 +1383,83 @@
       <!-- Session Telemetry Pill -->
       <button
         type="button"
-        class="h-7 px-2.5 rounded-lg border border-white/10 bg-white/5 text-xs font-mono flex items-center gap-1.5 text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-xs font-mono flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={() => (showCostInfo = !showCostInfo)}
         title="Session Telemetry & Tokens"
       >
-        <DollarSign class="size-3 text-emerald-400" />
+        <DollarSign class="size-3 text-success" />
         <span>${sessionCost.toFixed(4)}</span>
       </button>
 
       <!-- Agent Intelligence / Skills Button -->
       <button
         type="button"
-        class="h-7 px-2.5 rounded-lg border border-white/10 bg-white/5 text-xs flex items-center gap-1.5 text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-xs flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={() => (showIntelligence = true)}
         title="Agent Intelligence & Memory"
       >
-        <Brain class="size-3 text-sky-400" />
+        <Brain class="size-3 text-[var(--brand-text)]" />
         <span class="hidden md:inline text-[11px]">{bot.name.split(" ")[0]} Intelligence</span>
       </button>
 
       <!-- Thread Drawer Toggle Button -->
       <button
         type="button"
-        class="size-7 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer {showThreadDrawer ? 'bg-sky-500/20 text-sky-300 border-sky-500/40' : ''}"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showThreadDrawer ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
         onclick={() => (showThreadDrawer = !showThreadDrawer)}
         title="Toggle Thread History Sidebar"
       >
         <History class="size-3.5" />
       </button>
 
+      <!-- Computer / Desktop Panel Button -->
+      <button
+        type="button"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showComputer ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
+        onclick={() => (showComputer = true)}
+        title="Computer — live screen & desktop control"
+      >
+        <Monitor class="size-3.5" />
+      </button>
+
+      <!-- Channel (context) picker for new threads -->
+      {#if channelOptions.length > 0}
+        <SimpleSelect
+          value={activeChannelId ?? ""}
+          options={[
+            { value: "", label: "No channel" },
+            ...channelOptions.map((c) => ({ value: c.id, label: c.name })),
+          ]}
+          onValueChange={(v) => (activeChannelId = v || null)}
+          placeholder="No channel"
+          class="h-7 w-32 rounded-lg text-[10px] font-mono"
+        />
+      {/if}
+
+      <!-- Channels manager -->
+      <button
+        type="button"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showChannels ? 'bg-success/20 text-success border-success/40' : ''}"
+        onclick={() => (showChannels = true)}
+        title="Channels — shared contexts"
+      >
+        <Hash class="size-3.5" />
+      </button>
+
+      <!-- Import a team -->
+      <button
+        type="button"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showTeamImport ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
+        onclick={() => (showTeamImport = true)}
+        title="Import a team from Markdown"
+      >
+        <Users class="size-3.5" />
+      </button>
+
       <!-- Routines / Scheduler Button -->
       <button
         type="button"
-        class="size-7 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer {showRoutines ? 'bg-sky-500/20 text-sky-300 border-sky-500/40' : ''}"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showRoutines ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
         onclick={() => (showRoutines = true)}
         title="Scheduled Routines (cron)"
       >
@@ -1050,7 +1469,7 @@
       <!-- Fleet Sync / Backup Button -->
       <button
         type="button"
-        class="size-7 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer {showSync ? 'bg-sky-500/20 text-sky-300 border-sky-500/40' : ''}"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showSync ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
         onclick={() => (showSync = true)}
         title="Fleet Sync & Backup (signed bundles)"
       >
@@ -1060,7 +1479,7 @@
       <!-- Settings Shortcut -->
       <button
         type="button"
-        class="size-7 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={triggerOpenSettings}
         title="Configure Model & API Keys (⌘,)"
       >
@@ -1070,12 +1489,12 @@
       <!-- Pause / Play Agent -->
       <button
         type="button"
-        class="size-7 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={togglePause}
         title={bot.status === "paused" ? "Resume agent" : "Pause all agents (kill switch)"}
       >
         {#if bot.status === "paused"}
-          <Play class="size-3.5 fill-current text-purple-400" />
+          <Play class="size-3.5 fill-current text-[var(--brand-text)]" />
         {:else}
           <Pause class="size-3.5" />
         {/if}
@@ -1085,13 +1504,13 @@
 
   <!-- Telemetry Strip Banner -->
   {#if showCostInfo}
-    <div class="px-4 py-2 bg-[#09090e] border-b border-[#1c1c24] flex items-center justify-between text-xs text-zinc-400 font-mono">
+    <div class="px-4 py-2 bg-[var(--surface-0)] border-b border-[var(--hairline)] flex items-center justify-between text-xs text-[var(--text-tertiary)] font-mono">
       <div class="flex items-center gap-6">
         <span>Tokens: <strong class="text-white">{sessionTokens.toLocaleString()}</strong></span>
-        <span>Cost: <strong class="text-emerald-400">${sessionCost.toFixed(4)}</strong></span>
-        <span>Model: <strong class="text-sky-300">{getModelDisplayName(bot)}</strong></span>
+        <span>Cost: <strong class="text-success">${sessionCost.toFixed(4)}</strong></span>
+        <span>Model: <strong class="text-[var(--brand-text)]">{getModelDisplayName(bot)}</strong></span>
       </div>
-      <span class="text-[10px] px-2 py-0.5 rounded bg-sky-950/60 border border-sky-800/40 text-sky-300 font-mono">
+      <span class="text-[10px] px-2 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-mono">
         LOCAL HARDWARE ENCLAVE
       </span>
     </div>
@@ -1101,15 +1520,15 @@
   <div class="flex flex-1 overflow-hidden relative">
     <!-- Optional Slide-out Thread History Drawer -->
     {#if showThreadDrawer}
-      <div class="w-60 border-r border-[#1c1c24] bg-[#07070a] flex flex-col overflow-hidden shrink-0 z-10 animate-in slide-in-from-left duration-200">
-        <div class="p-3 border-b border-[#1c1c24] flex items-center justify-between">
-          <span class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider font-mono flex items-center gap-1.5">
-            <History class="size-3.5 text-sky-400" />
+      <div class="w-60 border-r border-[var(--hairline)] bg-[var(--surface-0)] flex flex-col overflow-hidden shrink-0 z-10 animate-in slide-in-from-left duration-200">
+        <div class="p-3 border-b border-[var(--hairline)] flex items-center justify-between">
+          <span class="text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+            <History class="size-3.5 text-[var(--brand-text)]" />
             Thread History
           </span>
           <button
             type="button"
-            class="size-6 rounded-md bg-white/5 border border-white/10 text-zinc-400 hover:text-white flex items-center justify-center cursor-pointer"
+            class="size-6 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer"
             onclick={createNewThread}
             title="New thread"
           >
@@ -1118,16 +1537,16 @@
         </div>
 
         <!-- Cross-thread search -->
-        <div class="p-2 border-b border-[#1c1c24]">
+        <div class="p-2 border-b border-[var(--hairline)]">
           <div class="relative">
-            <Search class="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-zinc-500 pointer-events-none" />
+            <Search class="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-[var(--text-muted)] pointer-events-none" />
             <input
               bind:value={searchQuery}
               onkeydown={(e) => {
                 if (e.key === "Enter") { e.preventDefault(); runSearch(); }
               }}
               placeholder="Search all threads… (⏎)"
-              class="w-full h-7 pl-7 pr-2 rounded-lg bg-[#0e0e14] border border-white/10 text-[10px] text-white placeholder:text-zinc-500 focus:outline-none focus:border-sky-500/50"
+              class="w-full h-7 pl-7 pr-2 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[10px] text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
             />
           </div>
           {#if searchResults.length > 0}
@@ -1135,19 +1554,19 @@
               {#each searchResults as hit (hit.message_id)}
                 <button
                   type="button"
-                  class="w-full text-left px-2 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:border-sky-500/40 transition-colors cursor-pointer"
+                  class="w-full text-left px-2 py-1.5 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--brand)]/40 transition-colors cursor-pointer"
                   onclick={() => loadMessages(hit.thread_id)}
                 >
-                  <div class="flex items-center gap-1 text-[9px] font-mono text-zinc-500">
-                    <span class="text-sky-400 truncate max-w-[100px]">{hit.thread_title || "Thread"}</span>
+                  <div class="flex items-center gap-1 text-[9px] font-mono text-[var(--text-muted)]">
+                    <span class="text-[var(--brand-text)] truncate max-w-[100px]">{hit.thread_title || "Thread"}</span>
                     <span class="shrink-0">· {hit.role}</span>
                   </div>
-                  <p class="text-[10px] text-zinc-300 leading-snug line-clamp-2 mt-0.5">{hit.snippet}</p>
+                  <p class="text-[10px] text-[var(--text-secondary)] leading-snug line-clamp-2 mt-0.5">{hit.snippet}</p>
                 </button>
               {/each}
             </div>
           {:else if searchPerformed}
-            <div class="mt-1.5 text-[10px] text-zinc-500 text-center">No matches found</div>
+            <div class="mt-1.5 text-[10px] text-[var(--text-muted)] text-center">No matches found</div>
           {/if}
         </div>
 
@@ -1157,36 +1576,37 @@
             <button
               type="button"
               class="w-full text-left px-3 py-2 rounded-xl text-xs truncate transition-all block focus:outline-none cursor-pointer {isSelected
-                ? 'bg-white/10 border border-white/20 text-white font-medium shadow-sm'
-                : 'text-zinc-400 hover:text-white hover:bg-white/5'}"
+                ? 'bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-white font-medium shadow-sm'
+                : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
               onclick={() => loadMessages(thread.id)}
             >
               {thread.title || "Untitled thread"}
             </button>
           {:else}
-            <div class="p-4 text-center text-xs text-zinc-500">No threads yet</div>
+            <div class="p-4 text-center text-xs text-[var(--text-muted)]">No threads yet</div>
           {/each}
         </div>
       </div>
     {/if}
 
     <!-- Chat Messages Stream (+ optional Artifact split view) -->
-    <div class="flex flex-1 overflow-hidden bg-[#000000]">
+    <div class="flex flex-1 overflow-hidden bg-[var(--surface-0)]">
       <div class="flex flex-col overflow-hidden {openArtifact ? 'w-[54%] shrink-0' : 'flex-1'}">
       <div bind:this={messagesContainer} class="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-        <div class="max-w-3xl mx-auto space-y-6">
+        <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto space-y-6">
           {#each messages as message (message.id || message.created_at)}
-            {@const isUser = message.role === "user"}
+            {@const isUser = isUserMessage(message)}
             {@const isModelError = typeof message.content === "string" && message.content.includes("⚠️ **Model Error:**")}
             {@const rawContent = typeof message.content === "string" ? message.content : message.content?.text || JSON.stringify(message.content)}
             {@const hasChecklist = message.content?.type === "checklist" || (typeof message.content === "object" && message.content?.items)}
             {@const messageSources = Array.isArray(message.content?.sources) ? message.content.sources : []}
             {@const messageImages = Array.isArray(message.attachments) ? message.attachments.filter((a: any) => a?.is_image && a?.data) : []}
+            {@const toolAudioB64 = message.content?.type === "tool_result" && message.content?.result?.audio_b64 ? message.content.result.audio_b64 : null}
 
             <div class="flex gap-3.5 {isUser ? 'justify-end' : 'justify-start'} group">
               {#if !isUser}
                 <!-- Bot Avatar -->
-                <div class="size-8 rounded-xl overflow-hidden bg-[#121218] border border-white/10 shrink-0 mt-1 shadow-sm">
+                <div class="size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0 mt-1 shadow-sm">
                   <img
                     src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
                     alt={bot.name}
@@ -1198,13 +1618,13 @@
               <div class="max-w-[85%] sm:max-w-[78%] space-y-1.5">
                 {#if isModelError}
                   <!-- Model Configuration Required Card -->
-                  <div class="rounded-2xl p-4 bg-red-950/30 border border-red-800/40 text-zinc-200 space-y-3 shadow-xl">
+                  <div class="rounded-2xl p-4 bg-red-950/30 border border-red-800/40 text-[var(--text-secondary)] space-y-3 shadow-xl">
                     <div class="flex items-center gap-2 text-red-400 font-bold text-xs font-mono">
                       <AlertTriangle class="size-4 shrink-0" />
                       <span>Model Configuration Required</span>
                     </div>
 
-                    <p class="text-xs text-zinc-300 leading-relaxed font-sans">
+                    <p class="text-xs text-[var(--text-secondary)] leading-relaxed font-sans">
                       {rawContent.replace("⚠️ **Model Error:** ", "")}
                     </p>
 
@@ -1221,7 +1641,7 @@
                   </div>
                 {:else if isUser}
                   <!-- Grok User Message Bubble -->
-                  <div class="rounded-2xl px-4 py-3 text-xs leading-relaxed text-zinc-100 bg-[#1e1e24] border border-[#2f2f38] shadow-md selection:bg-sky-500/30">
+                  <div class="rounded-2xl px-4 py-3 text-xs leading-relaxed text-[var(--text-primary)] bg-[var(--surface-3)] border border-[var(--hairline)] shadow-md selection:bg-[var(--brand-soft)]">
                     <p class="whitespace-pre-wrap font-sans text-xs leading-relaxed">{rawContent}</p>
                     {#if messageImages.length}
                       <div class="flex flex-wrap gap-1.5 pt-1.5">
@@ -1229,7 +1649,7 @@
                           <img
                             src={`data:${att.mime_type};base64,${att.data}`}
                             alt={att.name || "attached image"}
-                            class="max-h-40 rounded-lg border border-white/10 object-contain bg-[#101016]"
+                            class="max-h-40 rounded-lg border border-[var(--hairline)] object-contain bg-[var(--surface-2)]"
                           />
                         {/each}
                       </div>
@@ -1240,30 +1660,30 @@
                   <div class="space-y-3">
                     {#if hasChecklist}
                       <!-- Signature Grok "Thought for X steps" Collapsible Accordion -->
-                      <details class="group rounded-xl border border-white/10 bg-[#0b0b10] overflow-hidden" open>
-                        <summary class="flex items-center justify-between px-3 py-2 text-[11px] font-mono text-zinc-400 cursor-pointer hover:text-zinc-200 hover:bg-white/5 transition-colors">
+                      <details class="group rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] overflow-hidden" open>
+                        <summary class="flex items-center justify-between px-3 py-2 text-[11px] font-mono text-[var(--text-tertiary)] cursor-pointer hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] transition-colors">
                           <div class="flex items-center gap-2">
-                            <Brain class="size-3.5 text-sky-400" />
+                            <Brain class="size-3.5 text-[var(--brand-text)]" />
                             <span>Reasoning & Task Execution ({message.content.items.length} steps)</span>
                           </div>
                           <ChevronDown class="size-3.5 group-open:rotate-180 transition-transform" />
                         </summary>
 
-                        <div class="p-3 border-t border-white/10 space-y-1.5 bg-[#07070a]">
+                        <div class="p-3 border-t border-[var(--hairline)] space-y-1.5 bg-[var(--surface-0)]">
                           {#each message.content.items as item}
-                            <div class="flex items-center gap-2.5 text-xs bg-[#101016] p-2.5 rounded-xl border border-white/5">
+                            <div class="flex items-center gap-2.5 text-xs bg-[var(--surface-2)] p-2.5 rounded-xl border border-[var(--hairline)]">
                               {#if item.status === "completed"}
-                                <CheckCircle2 class="size-4 text-emerald-400 shrink-0" />
+                                <CheckCircle2 class="size-4 text-success shrink-0" />
                               {:else if item.status === "failed"}
-                                <XCircle class="size-4 text-rose-400 shrink-0" />
+                                <XCircle class="size-4 text-danger shrink-0" />
                               {:else if item.status === "in_progress"}
-                                <Loader2 class="size-4 text-sky-400 animate-spin shrink-0" />
+                                <Loader2 class="size-4 text-[var(--brand-text)] animate-spin shrink-0" />
                               {:else}
-                                <Circle class="size-4 text-zinc-600 shrink-0" />
+                                <Circle class="size-4 text-[var(--text-muted)] shrink-0" />
                               {/if}
-                              <span class="font-medium text-zinc-200">{item.label}</span>
+                              <span class="font-medium text-[var(--text-secondary)]">{item.label}</span>
                               {#if item.result}
-                                <span class="text-zinc-400 ml-auto text-[11px] font-mono">{item.result}</span>
+                                <span class="text-[var(--text-tertiary)] ml-auto text-[11px] font-mono">{item.result}</span>
                               {/if}
                             </div>
                           {/each}
@@ -1272,7 +1692,7 @@
                     {/if}
 
                     <!-- Rich Markdown Formatted Text Output -->
-                    <div class="text-zinc-200 selection:bg-sky-500/30">
+                    <div class="text-[var(--text-secondary)] selection:bg-[var(--brand-soft)]">
                       <MarkdownRenderer
                         content={hasChecklist ? (message.content.text || "") : rawContent}
                         onOpenArtifact={(a) => (openArtifact = a)}
@@ -1285,13 +1705,18 @@
                 {/if}
 
                 <!-- Message Action Strip (Copy, Edit, Timestamp, Hover Actions) -->
-                <div class="flex items-center gap-3 text-[10px] text-zinc-500 px-1 {isUser ? 'justify-end' : 'justify-start'}">
+                <div class="flex items-center gap-3 text-[10px] text-[var(--text-muted)] px-1 {isUser ? 'justify-end' : 'justify-start'}">
+                  {#if toolAudioB64}
+                    <button type="button" onclick={() => playAudioBase64(toolAudioB64)} class="text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-hover)] flex items-center gap-1 cursor-pointer" title="Play response audio">
+                      🔊 Play
+                    </button>
+                  {/if}
                   <span>{formatTime(message.created_at)}</span>
 
                   {#if isUser && !sending && !regenerating}
                     <button
                       type="button"
-                      class="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-white flex items-center gap-1 cursor-pointer"
+                      class="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
                       onclick={() => startEditing(message.id || message.created_at, rawContent)}
                       title="Edit and resend (removes the response after this message)"
                     >
@@ -1303,13 +1728,13 @@
                   {#if !isModelError}
                     <button
                       type="button"
-                      class="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-white flex items-center gap-1 cursor-pointer"
+                      class="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
                       onclick={() => copyMessage(message.id || message.created_at, rawContent)}
                       title="Copy full message"
                     >
                       {#if copiedMessageId === (message.id || message.created_at)}
-                        <Check class="size-3 text-emerald-400" />
-                        <span class="text-emerald-400 font-mono">Copied</span>
+                        <Check class="size-3 text-success" />
+                        <span class="text-success font-mono">Copied</span>
                       {:else}
                         <Copy class="size-3" />
                         <span>Copy</span>
@@ -1317,10 +1742,22 @@
                     </button>
                   {/if}
 
+                  {#if !isModelError && !isUser}
+                    <button
+                      type="button"
+                      class="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer {speakingMessageId === (message.id || message.created_at) ? 'opacity-100 text-success' : ''}"
+                      onclick={() => speakMessage(message.id || message.created_at, rawContent)}
+                      title={speakingMessageId === (message.id || message.created_at) ? "Stop reading" : "Read this reply aloud"}
+                    >
+                      <Volume2 class="size-3" />
+                      <span>{speakingMessageId === (message.id || message.created_at) ? "Stop" : "Listen"}</span>
+                    </button>
+                  {/if}
+
                   {#if !isModelError && !isUser && (messages[messages.length - 1]?.id === message.id) && !sending && !regenerating}
                     <button
                       type="button"
-                      class="opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-white flex items-center gap-1 cursor-pointer"
+                      class="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
                       onclick={regenerate}
                       title="Regenerate response"
                     >
@@ -1333,17 +1770,17 @@
 
               {#if isUser}
                 <!-- User Avatar -->
-                <div class="size-8 rounded-full overflow-hidden bg-[#181820] border border-white/15 shrink-0 mt-1 shadow-sm">
+                <div class="size-8 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline-strong)] shrink-0 mt-1 shadow-sm">
                   <img src={userAvatar || getDiceBearUrl("You", "micah")} alt="You" class="size-full object-cover" />
                 </div>
               {/if}
             </div>
           {:else}
             <!-- Empty Thread State (Grok Style) -->
-            <div class="my-10 text-center space-y-6 max-w-xl mx-auto">
+            <div class="my-10 text-center space-y-6 max-w-xl mx-auto animate-rise-in">
               <!-- Bot Identity Emblem -->
               <div class="relative inline-block">
-                <div class="size-16 rounded-2xl overflow-hidden bg-[#121218] border border-white/15 mx-auto shadow-2xl p-0.5">
+                <div class="relative size-16 rounded-2xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] mx-auto shadow-2xl p-0.5">
                   <img
                     src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
                     alt={bot.name}
@@ -1357,25 +1794,25 @@
                 <h3 class="font-black text-xl text-white tracking-tight">
                   What would you like to explore?
                 </h3>
-                <p class="text-xs text-zinc-400 max-w-md mx-auto leading-relaxed">
+                <p class="text-xs text-[var(--text-tertiary)] max-w-md mx-auto leading-relaxed">
                   {bot.description || "Sovereign desktop agent ready to execute autonomous tasks, run code, or synthesize research."}
                 </p>
               </div>
 
-              <!-- Grok Prompt Suggestion Grid -->
+              <!-- Prompt Suggestion Grid -->
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-left pt-2">
                 {#each samplePrompts as p}
                   {@const Icon = p.icon}
                   <button
                     type="button"
-                    class="p-3.5 rounded-2xl border border-zinc-800/80 bg-[#0a0a0f] hover:bg-[#121218] hover:border-zinc-600 transition-all cursor-pointer group flex flex-col justify-between"
+                    class="p-3.5 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:bg-[var(--surface-2)] hover:border-[var(--brand)] hover:bg-[var(--surface-3)] transition-all duration-200 cursor-pointer group flex flex-col justify-between"
                     onclick={() => sendMessage(p.desc)}
                   >
                     <div class="flex items-center justify-between mb-1.5">
-                      <span class="font-bold text-xs text-white group-hover:text-sky-300 transition-colors">{p.title}</span>
-                      <Icon class="size-3.5 text-zinc-500 group-hover:text-sky-400 transition-colors" />
+                      <span class="font-bold text-xs text-white group-hover:text-[var(--brand)] transition-colors">{p.title}</span>
+                      <Icon class="size-3.5 text-[var(--text-muted)] group-hover:text-[var(--brand)] transition-colors" />
                     </div>
-                    <p class="text-[11px] text-zinc-400 leading-normal line-clamp-2">{p.desc}</p>
+                    <p class="text-[11px] text-[var(--text-tertiary)] leading-normal line-clamp-2">{p.desc}</p>
                   </button>
                 {/each}
               </div>
@@ -1385,7 +1822,7 @@
           <!-- Live Streaming Assistant Bubble -->
           {#if (sending || regenerating) && selectedThreadId}
             <div class="flex gap-3.5 justify-start">
-              <div class="size-8 rounded-xl overflow-hidden bg-[#121218] border border-white/10 shrink-0 mt-1 shadow-sm">
+              <div class="size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0 mt-1 shadow-sm">
                 <img
                   src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
                   alt={bot.name}
@@ -1395,15 +1832,15 @@
 
               <div class="max-w-[85%] sm:max-w-[78%] space-y-1.5">
                 {#if streamingText}
-                  <div class="rounded-2xl px-4 py-3 bg-[#1e1e24] border border-[#2f2f38] shadow-md selection:bg-sky-500/30">
-                    <div class="text-zinc-200">
+                  <div class="rounded-2xl px-4 py-3 bg-[var(--surface-3)] border border-[var(--hairline)] shadow-md selection:bg-[var(--brand-soft)]">
+                    <div class="text-[var(--text-secondary)]">
                       <MarkdownRenderer content={streamingText} />
                     </div>
-                    <span class="inline-block w-1.5 h-3.5 bg-sky-400 animate-pulse ml-0.5 align-middle rounded-sm"></span>
+                    <span class="inline-block w-1.5 h-3.5 bg-brand animate-pulse ml-0.5 align-middle rounded-sm"></span>
                   </div>
                 {:else}
                   <!-- Skeleton loading lines (GROK-style shimmer, pre-first-token) -->
-                  <div class="rounded-2xl px-4 py-3.5 bg-[#1e1e24] border border-[#2f2f38] shadow-md w-fit min-w-[280px]">
+                  <div class="rounded-2xl px-4 py-3.5 bg-[var(--surface-3)] border border-[var(--hairline)] shadow-md w-fit min-w-[280px]">
                     <div class="space-y-2.5">
                       <div class="shimmer h-3 rounded-full w-[85%]"></div>
                       <div class="shimmer h-3 rounded-full w-[70%] [animation-delay:120ms]"></div>
@@ -1414,8 +1851,8 @@
 
                 {#if streamingTool}
                   <!-- Tool execution skeleton row -->
-                  <div class="rounded-xl border border-white/10 bg-[#0b0b10] p-2.5 flex items-center gap-2.5 w-fit">
-                    <Loader2 class="size-3.5 text-sky-400 animate-spin shrink-0" />
+                  <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-2.5 flex items-center gap-2.5 w-fit">
+                    <Loader2 class="size-3.5 text-[var(--brand-text)] animate-spin shrink-0" />
                     <div class="space-y-1.5">
                       <div class="shimmer h-2.5 rounded-full w-40"></div>
                       <div class="shimmer h-2.5 rounded-full w-28 [animation-delay:120ms]"></div>
@@ -1423,12 +1860,12 @@
                   </div>
                 {/if}
 
-                <div class="flex items-center gap-2 text-[10px] text-zinc-500 px-1 font-mono">
+                <div class="flex items-center gap-2 text-[10px] text-[var(--text-muted)] px-1 font-mono">
                   {#if streamingTool}
-                    <Loader2 class="size-3 animate-spin text-sky-400" />
-                    <span class="text-sky-400">Running tool: {streamingTool}</span>
+                    <Loader2 class="size-3 animate-spin text-[var(--brand-text)]" />
+                    <span class="text-[var(--brand-text)]">Running tool: {streamingTool}</span>
                   {:else if streamingText}
-                    <span class="text-sky-400">Streaming…</span>
+                    <span class="text-[var(--brand-text)]">Streaming…</span>
                   {:else}
                     <span>{bot.name} is thinking…</span>
                   {/if}
@@ -1436,50 +1873,177 @@
 
                 <!-- Live source chips during streaming -->
                 {@render sourcesChips(streamingSources)}
+
+                <!-- Live tool images (e.g. screenshots) during streaming -->
+                {#if streamingImages.length}
+                  <div class="flex flex-wrap gap-2 pt-1">
+                    {#each streamingImages as img, i (i)}
+                      <img
+                        src={img.data_url}
+                        alt={img.name}
+                        class="max-h-64 max-w-full rounded-xl border border-[var(--hairline-strong)] shadow-md bg-[var(--surface-2)]"
+                      />
+                    {/each}
+                  </div>
+                {/if}
               </div>
             </div>
           {/if}
+
+          <!-- Approval cards: what the bot wants to do + Allow/Deny -->
+          {#each pendingApprovals as ap (ap.id)}
+            {@const deciding = decidingApproval === ap.id}
+            <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border {ap.risk === 'high' ? 'border-warning/40' : 'border-[var(--hairline)]'} bg-[var(--surface-1)] p-4 space-y-2.5 shadow-xl">
+              <div class="flex items-baseline justify-between gap-3">
+                <div class="text-[13px] font-semibold text-white">
+                  {bot.name} wants to {ap.tool_label || ap.tool_name}
+                </div>
+                <span class="shrink-0 font-mono text-[10px] text-[var(--text-muted)]">{ap.tool_name}</span>
+              </div>
+              {#if approvalSummary(ap.arguments)}
+                <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/50 border border-[var(--hairline)] px-3 py-2 font-mono text-[11.5px] leading-relaxed text-[var(--text-secondary)]">{approvalSummary(ap.arguments)}</pre>
+              {/if}
+              {#if ap.risk === 'high'}
+                <p class="text-[11px] text-warning/90">High-stakes action — it can change files, run commands, or reach other bots.</p>
+              {/if}
+              <div class="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={deciding}
+                  onclick={() => decideApproval(ap.id, true)}
+                  class="h-8 px-4 rounded-full bg-success text-white text-xs font-bold hover:bg-success transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  {deciding ? 'Allowing…' : 'Allow'}
+                </button>
+                <button
+                  type="button"
+                  disabled={deciding}
+                  onclick={() => decideApproval(ap.id, false)}
+                  class="h-8 px-4 rounded-full border border-danger/40 text-danger text-xs font-bold hover:bg-danger/15 transition-colors cursor-pointer disabled:opacity-50"
+                >
+                  Deny
+                </button>
+                <span class="text-[10px] font-mono text-[var(--text-muted)] ml-1">the run resumes after you decide</span>
+              </div>
+            </div>
+          {/each}
+
+          <!-- Question cards: the agent needs input to continue -->
+          {#each pendingQuestions as q (q.id)}
+            {@const answering = answeringQuestion === q.id}
+            <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border border-[var(--brand)]/40 bg-[var(--surface-1)] p-4 space-y-3 shadow-xl">
+              <div class="flex items-baseline justify-between gap-3">
+                <div class="text-[13px] font-semibold text-white">{q.header || 'Question'}</div>
+                <span class="shrink-0 font-mono text-[10px] text-[var(--brand-text)]/80">ask_user</span>
+              </div>
+              <p class="text-[12.5px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">{q.question}</p>
+              {#if q.options?.length}
+                <div class="flex flex-wrap gap-2">
+                  {#each q.options as opt}
+                    <button
+                      type="button"
+                      disabled={answering}
+                      onclick={() => answerQuestion(q.id, opt)}
+                      class="h-8 px-3.5 rounded-full border border-[var(--brand)]/40 text-[var(--brand-text)] text-xs font-semibold hover:bg-[var(--brand-soft)] transition-colors cursor-pointer disabled:opacity-50"
+                    >
+                      {opt}
+                    </button>
+                  {/each}
+                </div>
+              {/if}
+              {#if q.allow_custom !== false}
+                <div class="flex items-center gap-2">
+                  <input
+                    type="text"
+                    bind:value={questionDraft[q.id]}
+                    onkeydown={(e) => { if (e.key === 'Enter') answerQuestion(q.id, questionDraft[q.id] ?? ''); }}
+                    placeholder="Type your answer…"
+                    class="flex-1 h-9 rounded-xl border border-[var(--hairline)] bg-black/50 px-3 text-xs text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+                  />
+                  <button
+                    type="button"
+                    disabled={answering || !(questionDraft[q.id] ?? '').trim()}
+                    onclick={() => answerQuestion(q.id, questionDraft[q.id] ?? '')}
+                    class="h-9 px-4 rounded-full bg-[var(--brand)] text-white text-xs font-bold hover:bg-[var(--brand-hover)] transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {answering ? 'Sending…' : 'Answer'}
+                  </button>
+                </div>
+              {/if}
+            </div>
+          {/each}
         </div>
       </div>
 
       <!-- Grok Floating Capsule Composer -->
-      <div class="p-4 bg-gradient-to-t from-black via-black/90 to-transparent shrink-0">
+      <div class="p-4 bg-[var(--surface-0)] shrink-0">
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="max-w-3xl mx-auto rounded-2xl border border-zinc-800 bg-[#0d0d12]/95 backdrop-blur-xl p-3 shadow-2xl focus-within:border-zinc-600 transition-all"
+        <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]  p-3 shadow-2xl transition-all duration-200 focus-within:border-[var(--brand)]"
           ondragover={(e) => e.preventDefault()}
           ondrop={handleComposerDrop}
         >
-      <!-- Pending inline image attachments -->
-      {#if pendingImages.length}
+      <!-- Pending attachments (images as thumbnails, docs as chips) -->
+      {#if pendingAttachments.length}
         <div class="flex flex-wrap gap-1.5 pb-1.5">
-          {#each pendingImages as img, idx}
-            <div class="relative size-14 rounded-lg overflow-hidden border border-white/15 bg-[#101016] shadow-sm">
-              <img
-                src={`data:${img.mime};base64,${img.data}`}
-                alt={img.name}
-                class="size-full object-cover"
-              />
-              <button
-                type="button"
-                class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/70 text-white text-[9px] flex items-center justify-center cursor-pointer hover:bg-rose-500/80 transition-colors"
-                onclick={() => removePendingImage(idx)}
-                title="Remove attachment"
-              >
-                ✕
-              </button>
-            </div>
+          {#each pendingAttachments as att, idx}
+            {#if att.isImage}
+              <div class="relative size-14 rounded-lg overflow-hidden border border-[var(--hairline-strong)] bg-[var(--surface-2)] shadow-sm">
+                <img
+                  src={`data:${att.mime};base64,${att.data}`}
+                  alt={att.name}
+                  class="size-full object-cover"
+                />
+                <button
+                  type="button"
+                  class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/60 text-white text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
+                  onclick={() => removePendingAttachment(idx)}
+                  title="Remove attachment"
+                >
+                  ✕
+                </button>
+              </div>
+            {:else}
+              <div class="relative flex items-center gap-1.5 h-14 max-w-[220px] pl-2.5 pr-6 rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-2)] shadow-sm" title={att.name}>
+                <Paperclip class="size-3.5 text-[var(--brand-text)] shrink-0" />
+                <div class="min-w-0">
+                  <div class="text-[10px] text-[var(--text-secondary)] truncate">{att.name}</div>
+                  <div class="text-[9px] text-[var(--text-muted)] font-mono uppercase">{att.mime.split("/").pop()}</div>
+                </div>
+                <button
+                  type="button"
+                  class="absolute top-1 right-1 size-4 rounded-full bg-black/60 text-white text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
+                  onclick={() => removePendingAttachment(idx)}
+                  title="Remove attachment"
+                >
+                  ✕
+                </button>
+              </div>
+            {/if}
           {/each}
         </div>
       {/if}
 
+      {#if pendingApprovals.length > 0}
+        <div class="mb-2 flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
+          <ShieldAlert class="size-3.5 shrink-0" />
+          <span>Waiting on your approval — answer above to resume {bot.name}.</span>
+        </div>
+      {/if}
+      {#if pendingQuestions.length > 0}
+        <div class="mb-2 flex items-center gap-2 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-3 py-2 text-[11px] text-[var(--brand-text)]">
+          <span class="size-1.5 rounded-full bg-[var(--brand)] animate-pulse shrink-0"></span>
+          <span>{bot.name} is waiting for your answer — reply to the question above.</span>
+        </div>
+      {/if}
       <textarea
         bind:this={textareaRef}
         bind:value={newMessage}
         oninput={handleTextareaInput}
         onpaste={handleComposerPaste}
-        placeholder="Ask anything, run code, or attach images to {bot.name}..."
+        placeholder={pendingApprovals.length > 0 ? "Answer the approval above first…" : pendingQuestions.length > 0 ? "Answer the question above…" : `Ask anything, run code, or attach images to ${bot.name}...`}
+        disabled={pendingApprovals.length > 0 || pendingQuestions.length > 0}
         rows={1}
-        class="w-full bg-transparent text-xs sm:text-sm text-white placeholder:text-zinc-500 resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
+        class="w-full bg-transparent text-xs sm:text-sm text-white placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
         onkeydown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
@@ -1493,14 +2057,14 @@
 
       <!-- Edit-and-resend banner -->
       {#if editingMessage}
-        <div class="flex items-center justify-between pt-2 border-t border-amber-500/20 mt-1">
-          <div class="flex items-center gap-1.5 text-[10px] font-mono text-amber-300">
+        <div class="flex items-center justify-between pt-2 border-t border-warning/20 mt-1">
+          <div class="flex items-center gap-1.5 text-[10px] font-mono text-warning">
             <Pencil class="size-3" />
             <span>Editing message — Enter resends; responses after it are removed. Esc to cancel.</span>
           </div>
           <button
             type="button"
-            class="text-[10px] font-mono text-zinc-400 hover:text-white cursor-pointer"
+            class="text-[10px] font-mono text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
             onclick={cancelEditing}
             title="Cancel edit"
           >
@@ -1510,14 +2074,14 @@
       {/if}
 
           <!-- Action Toolbar Inside Capsule -->
-          <div class="flex items-center justify-between pt-2 border-t border-white/5 mt-1">
+          <div class="flex items-center justify-between pt-2 border-t border-[var(--hairline)] mt-1">
             <!-- Left Tool Toggles -->
             <div class="flex items-center gap-1.5">
               <button
                 type="button"
                 class="h-7 px-2.5 rounded-lg border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {deepSearchActive
-                  ? 'bg-sky-500/20 text-sky-300 border-sky-500/50 shadow-[0_0_10px_rgba(56,189,248,0.2)]'
-                  : 'border-white/10 text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}"
+                  ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/50 '
+                  : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 onclick={() => (deepSearchActive = !deepSearchActive)}
                 title="Toggle DeepSearch Web Intelligence"
               >
@@ -1528,8 +2092,8 @@
               <button
                 type="button"
                 class="h-7 px-2.5 rounded-lg border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {thinkActive
-                  ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50 shadow-[0_0_10px_rgba(99,102,241,0.2)]'
-                  : 'border-white/10 text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}"
+                  ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/50 '
+                  : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 onclick={() => (thinkActive = !thinkActive)}
                 title="Toggle Deep Reasoning Mode"
               >
@@ -1539,7 +2103,7 @@
 
               <button
                 type="button"
-                class="size-7 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-white/5 flex items-center justify-center transition-colors cursor-pointer"
+                class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center transition-colors cursor-pointer"
                 onclick={attachFile}
                 title="Attach workspace code or text file"
               >
@@ -1548,7 +2112,7 @@
 
               <button
                 type="button"
-                class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {isListening ? 'text-rose-400 bg-rose-500/20 border border-rose-500/50 animate-pulse shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}"
+                class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {isListening ? 'text-danger bg-danger/20 border border-danger/50 animate-pulse shadow-sm' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 onclick={toggleVoice}
                 title={isListening ? "Listening... (Click to stop speech-to-text)" : "Voice input (Speech-to-Text)"}
               >
@@ -1557,7 +2121,7 @@
 
               <button
                 type="button"
-                class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {voiceMode ? 'text-emerald-400 bg-emerald-500/20 border border-emerald-500/50 shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'} {speaking ? 'animate-pulse' : ''}"
+                class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {voiceMode ? 'text-success bg-success/20 border border-success/50 shadow-sm' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'} {speaking ? 'animate-pulse' : ''}"
                 onclick={toggleVoiceMode}
                 title={voiceMode ? "Voice mode on — click to stop (hands-free loop)" : "Voice mode: hands-free talk → response spoken aloud"}
               >
@@ -1566,7 +2130,19 @@
 
               <button
                 type="button"
-                class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {tempActive ? 'text-amber-400 bg-amber-500/15 border border-amber-500/40' : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}"
+                class="h-7 px-2.5 rounded-lg border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {bot?.config?.auto_read
+                  ? 'bg-success/15 text-success border-success/40'
+                  : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
+                onclick={toggleAutoRead}
+                title={bot?.config?.auto_read ? "Auto-read ON — replies are spoken aloud" : "Auto-read: speak every reply aloud"}
+              >
+                <Volume2 class="size-3" />
+                <span>Auto-read</span>
+              </button>
+
+              <button
+                type="button"
+                class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {tempActive ? 'text-warning bg-warning/15 border border-warning/40' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 onclick={() => (tempActive = !tempActive)}
                 title={tempActive ? "Temporary chat ON — new threads won't feed agent memory" : "Temporary chat: conversations won't feed agent memory"}
               >
@@ -1576,17 +2152,17 @@
 
             <!-- Right Controls: Model Pill & High-Contrast Send Button -->
             <div class="flex items-center gap-2">
-              <span class="text-[10px] font-mono text-zinc-500 px-2 py-0.5 rounded border border-white/5 bg-white/[0.02] hidden sm:inline">
+              <span class="text-[10px] font-mono text-[var(--text-muted)] px-2 py-0.5 rounded border border-[var(--hairline)] bg-[var(--surface-1)] hidden sm:inline">
                 {getModelDisplayName(bot)}
               </span>
 
               <button
                 type="button"
                 onclick={() => sendMessage()}
-                disabled={!newMessage.trim() || sending}
-                class="size-8 rounded-full flex items-center justify-center transition-all cursor-pointer {newMessage.trim() && !sending
-                  ? 'bg-white text-black hover:bg-zinc-200 shadow-md scale-105'
-                  : 'bg-zinc-800 text-zinc-500 cursor-not-allowed opacity-50'}"
+                disabled={(!newMessage.trim() && pendingAttachments.length === 0) || sending}
+                class="size-8 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer {(newMessage.trim() || pendingAttachments.length) && !sending
+                  ? 'btn-brand text-white hover:scale-105 active:scale-95'
+                  : 'bg-[var(--surface-3)] text-[var(--text-muted)] cursor-not-allowed'}"
                 title="Send message (Enter)"
               >
                 {#if sending}
@@ -1600,7 +2176,7 @@
         </div>
 
         <div class="text-center mt-2">
-          <span class="text-[10px] text-zinc-500 font-mono">
+          <span class="text-[10px] text-[var(--text-muted)] font-mono">
             RAVENBOT local enclave active • ⌘K for command palette • ⌘, for settings
           </span>
         </div>
@@ -1609,7 +2185,7 @@
 
       <!-- Artifact / Canvas Split Panel -->
       {#if openArtifact}
-        <div class="w-[46%] border-l border-[#1c1c24] shrink-0">
+        <div class="w-[46%] border-l border-[var(--hairline)] shrink-0">
           <ArtifactPanel artifact={openArtifact} onClose={() => (openArtifact = null)} />
         </div>
       {/if}
@@ -1622,21 +2198,21 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in"
+    class="fixed inset-0 z-50 bg-black/60  flex items-center justify-center p-4 animate-in fade-in"
     onclick={() => (showIntelligence = false)}
   >
     <div
-      class="w-full max-w-lg bg-[#0e0e14] border border-[#262633] rounded-3xl p-6 shadow-2xl relative space-y-4"
+      class="modal-panel w-full max-w-lg p-6 relative space-y-4"
       onclick={(e) => e.stopPropagation()}
     >
-      <div class="flex items-center justify-between border-b border-white/10 pb-3">
+      <div class="flex items-center justify-between border-b border-[var(--hairline)] pb-3">
         <div class="flex items-center gap-2">
-          <Brain class="size-4 text-sky-400" />
+          <Brain class="size-4 text-[var(--brand-text)]" />
           <span class="font-bold text-sm text-white">{bot.name} Intelligence</span>
         </div>
         <button
           type="button"
-          class="size-6 rounded-md hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center cursor-pointer text-xs font-mono"
+          class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono"
           onclick={() => (showIntelligence = false)}
         >
           ✕
@@ -1650,26 +2226,47 @@
   </div>
 {/if}
 
+<!-- Computer / Desktop Panel -->
+{#if showComputer}
+  <ComputerPanel botName={bot.name} botId={bot.id} onClose={() => (showComputer = false)} />
+{/if}
+
+<!-- Channels manager -->
+{#if showChannels}
+  <ChannelsPanel
+    onClose={() => (showChannels = false)}
+    onChanged={loadChannelOptions}
+  />
+{/if}
+
+<!-- Team import -->
+{#if showTeamImport}
+  <TeamImport
+    onClose={() => (showTeamImport = false)}
+    onImported={() => { loadChannelOptions(); }}
+  />
+{/if}
+
 <!-- Fleet Sync / Backup Modal -->
 {#if showSync}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in"
+    class="fixed inset-0 z-50 bg-black/60  flex items-center justify-center p-4 animate-in fade-in"
     onclick={() => (showSync = false)}
   >
     <div
-      class="w-full max-w-lg bg-[#0e0e14] border border-[#262633] rounded-3xl p-6 shadow-2xl relative space-y-4"
+      class="modal-panel w-full max-w-lg p-6 relative space-y-4"
       onclick={(e) => e.stopPropagation()}
     >
-      <div class="flex items-center justify-between border-b border-white/10 pb-3">
+      <div class="flex items-center justify-between border-b border-[var(--hairline)] pb-3">
         <div class="flex items-center gap-2">
-          <Boxes class="size-4 text-sky-400" />
+          <Boxes class="size-4 text-[var(--brand-text)]" />
           <span class="font-bold text-sm text-white">Fleet Sync & Backup</span>
         </div>
         <button
           type="button"
-          class="size-6 rounded-md hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center cursor-pointer text-xs font-mono"
+          class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono"
           onclick={() => (showSync = false)}
         >
           ✕
@@ -1685,21 +2282,21 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in"
+    class="fixed inset-0 z-50 bg-black/60  flex items-center justify-center p-4 animate-in fade-in"
     onclick={() => (showRoutines = false)}
   >
     <div
-      class="w-full max-w-lg bg-[#0e0e14] border border-[#262633] rounded-3xl p-6 shadow-2xl relative space-y-4"
+      class="modal-panel w-full max-w-lg p-6 relative space-y-4"
       onclick={(e) => e.stopPropagation()}
     >
-      <div class="flex items-center justify-between border-b border-white/10 pb-3">
+      <div class="flex items-center justify-between border-b border-[var(--hairline)] pb-3">
         <div class="flex items-center gap-2">
-          <Clock class="size-4 text-sky-400" />
+          <Clock class="size-4 text-[var(--brand-text)]" />
           <span class="font-bold text-sm text-white">{bot.name} Routines</span>
         </div>
         <button
           type="button"
-          class="size-6 rounded-md hover:bg-white/10 text-zinc-400 hover:text-white flex items-center justify-center cursor-pointer text-xs font-mono"
+          class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono"
           onclick={() => (showRoutines = false)}
         >
           ✕
@@ -1710,23 +2307,3 @@
   </div>
 {/if}
 
-<style>
-  .shimmer {
-    background: linear-gradient(
-      90deg,
-      rgba(255, 255, 255, 0.06) 25%,
-      rgba(255, 255, 255, 0.16) 50%,
-      rgba(255, 255, 255, 0.06) 75%
-    );
-    background-size: 200% 100%;
-    animation: shimmer-slide 1.4s ease-in-out infinite;
-  }
-  @keyframes shimmer-slide {
-    0% {
-      background-position: 200% 0;
-    }
-    100% {
-      background-position: -200% 0;
-    }
-  }
-</style>

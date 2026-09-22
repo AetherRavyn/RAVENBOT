@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { onMount } from "svelte";
   import { getDiceBearUrl } from "$lib/utils";
+  import { notify } from "$lib/toast";
   import { cn } from "$lib/utils.js";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -31,6 +33,11 @@
     Palette,
     UserCheck,
     Layers,
+    Pin,
+    MailOpen,
+    Copy,
+    Eye,
+    EyeOff,
   } from "@lucide/svelte";
 
   interface Props {
@@ -73,14 +80,114 @@
   let isCreating = $state(false);
   let activeActionMenuBotId = $state<string | null>(null);
 
+  // ── Contact state: pinned / hidden / unread ────────────────────────────
+  type Contact = { pinned: boolean; hidden: boolean };
+  let contacts = $state<Record<string, Contact>>({});
+  let unread = $state<Record<string, number>>({});
+  let showHidden = $state(false);
+
+  async function loadContacts() {
+    try {
+      const rows = (await invoke<any[]>("list_bot_contacts")) || [];
+      const map: Record<string, Contact> = {};
+      for (const row of rows) {
+        map[row.bot_id] = { pinned: Boolean(row.pinned), hidden: Boolean(row.hidden) };
+      }
+      contacts = map;
+    } catch (e) {
+      console.error("Failed to load contacts:", e);
+    }
+  }
+
+  async function loadUnread() {
+    try {
+      unread = (await invoke<Record<string, number>>("get_unread_counts")) || {};
+    } catch (e) {
+      console.error("Failed to load unread counts:", e);
+    }
+  }
+
+  async function refreshContacts() {
+    await Promise.all([loadContacts(), loadUnread()]);
+  }
+
+  onMount(() => {
+    refreshContacts();
+    const onBotsChanged = () => refreshContacts();
+    // New assistant messages → refresh badges (unless this bot is open).
+    const onStream = (e: Event) => {
+      const kind = (e as CustomEvent)?.detail?.kind;
+      if (kind === "done" || kind === "status") loadUnread();
+    };
+    window.addEventListener("bots-changed", onBotsChanged);
+    window.addEventListener("agent-stream", onStream);
+    return () => {
+      window.removeEventListener("bots-changed", onBotsChanged);
+      window.removeEventListener("agent-stream", onStream);
+    };
+  });
+
+  async function togglePinned(botId: string) {
+    const next = !contacts[botId]?.pinned;
+    contacts = { ...contacts, [botId]: { pinned: next, hidden: contacts[botId]?.hidden ?? false } };
+    try {
+      await invoke("set_bot_pinned", { botId, pinned: next });
+    } catch (e) {
+      console.error("Failed to pin bot:", e);
+    }
+  }
+
+  async function toggleHidden(botId: string) {
+    const next = !contacts[botId]?.hidden;
+    contacts = { ...contacts, [botId]: { pinned: contacts[botId]?.pinned ?? false, hidden: next } };
+    try {
+      await invoke("set_bot_hidden", { botId, hidden: next });
+    } catch (e) {
+      console.error("Failed to hide bot:", e);
+    }
+  }
+
+  async function markRead(botId: string) {
+    unread = { ...unread, [botId]: 0 };
+    try {
+      await invoke("mark_bot_read", { botId });
+    } catch (e) {
+      console.error("Failed to mark read:", e);
+    }
+  }
+
+  async function duplicateBot(botId: string) {
+    try {
+      const copy = await invoke<any>("duplicate_bot", { botId });
+      onBotCreated(copy);
+      notify(`Duplicated as “${copy.name}”`, "success");
+      await refreshContacts();
+    } catch (e) {
+      console.error("Failed to duplicate bot:", e);
+    }
+  }
+
+  function selectBot(botId: string) {
+    onSelectBot(botId);
+    if (unread[botId]) markRead(botId);
+  }
+
   let filteredBots = $derived(
-    bots.filter((bot) => {
-      const matchesSearch =
-        bot.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (bot.description && bot.description.toLowerCase().includes(searchQuery.toLowerCase()));
-      const matchesFilter = !showOnlyWaiting || bot.status === "waiting_on_user";
-      return matchesSearch && matchesFilter;
-    })
+    bots
+      .filter((bot) => {
+        const matchesSearch =
+          bot.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          (bot.description && bot.description.toLowerCase().includes(searchQuery.toLowerCase()));
+        const matchesFilter = !showOnlyWaiting || bot.status === "waiting_on_user";
+        const matchesHidden = showHidden || !contacts[bot.id]?.hidden;
+        return matchesSearch && matchesFilter && matchesHidden;
+      })
+      .sort((a, b) => {
+        const ap = contacts[a.id]?.pinned ? 1 : 0;
+        const bp = contacts[b.id]?.pinned ? 1 : 0;
+        if (ap !== bp) return bp - ap;
+        return 0;
+      })
   );
 
   let effectiveAvatarUrl = $derived(
@@ -114,17 +221,17 @@
   function getStatusTheme(status: string) {
     switch (status) {
       case "idle":
-        return { bg: "bg-emerald-500", text: "text-zinc-400", label: "Idle" };
+        return { bg: "bg-[var(--status-idle)]", text: "text-[var(--text-muted)]", label: "Idle" };
       case "thinking":
-        return { bg: "bg-amber-400", text: "text-amber-400", label: "Thinking..." };
+        return { bg: "bg-[var(--status-thinking)]", text: "text-[var(--status-thinking)]", label: "Thinking..." };
       case "running_tool":
-        return { bg: "bg-blue-400", text: "text-blue-400", label: "Running Tool" };
+        return { bg: "bg-[var(--status-running)]", text: "text-[var(--status-running)]", label: "Running Tool" };
       case "waiting_on_user":
-        return { bg: "bg-red-500", text: "text-red-400", label: "Waiting on you" };
+        return { bg: "bg-[var(--status-waiting)]", text: "text-[var(--status-waiting)]", label: "Waiting on you" };
       case "paused":
-        return { bg: "bg-purple-400", text: "text-purple-400", label: "Paused" };
+        return { bg: "bg-[var(--status-paused)]", text: "text-[var(--status-paused)]", label: "Paused" };
       default:
-        return { bg: "bg-emerald-500", text: "text-zinc-400", label: status };
+        return { bg: "bg-[var(--status-idle)]", text: "text-[var(--text-muted)]", label: status };
     }
   }
 </script>
@@ -136,25 +243,25 @@
   <div class="p-3 pb-1.5">
     <button
       type="button"
-      class="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-white font-semibold text-xs border border-white/15 shadow-sm transition-all cursor-pointer group"
+      class="btn-brand w-full flex items-center justify-between px-3.5 py-2.5 text-xs group"
       onclick={() => {
         if (onNewChat) onNewChat();
         else onSelectBot("");
       }}
     >
       <div class="flex items-center gap-2">
-        <Plus class="size-4 text-sky-400 group-hover:rotate-90 transition-transform" />
+        <Plus class="size-4 group-hover:rotate-90 transition-transform duration-300" />
         <span>New Chat</span>
       </div>
-      <span class="text-[10px] font-mono text-zinc-400 bg-white/10 px-1.5 py-0.5 rounded">⌘N</span>
+      <span class="text-[10px] font-mono text-black/60 bg-black/10 px-1.5 py-0.5 rounded">⌘N</span>
     </button>
   </div>
 
   <!-- Section Header: FLEET AGENTS + Actions -->
   <div class="px-3 pt-2 pb-1.5 flex items-center justify-between">
     <div class="flex items-center gap-2">
-      <span class="font-bold text-[10px] tracking-wider uppercase text-zinc-400 font-mono">Fleet Agents</span>
-      <span class="bg-white/5 text-zinc-400 text-[10px] font-mono font-medium px-2 py-0.5 rounded-full border border-white/10">
+      <span class="font-semibold text-[10px] tracking-wider uppercase text-[var(--text-muted)] font-mono">Fleet Agents</span>
+      <span class="bg-[var(--surface-2)] text-[var(--text-muted)] text-[10px] font-mono font-medium px-1.5 py-0.5 rounded border border-[var(--hairline)]">
         {bots.length}
       </span>
     </div>
@@ -162,7 +269,7 @@
     <div class="flex items-center gap-1">
       <button
         type="button"
-        class="size-6.5 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        class="icon-btn size-7 border border-[var(--hairline)] bg-[var(--surface-2)]"
         onclick={() => {
           showCreateModal = true;
           createModalTab = "profile";
@@ -173,7 +280,15 @@
       </button>
       <button
         type="button"
-        class="size-6.5 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        class="icon-btn size-7 border border-[var(--hairline)] bg-[var(--surface-2)] {showHidden ? 'text-[var(--brand-text)] border-[var(--brand)]' : ''}"
+        onclick={() => (showHidden = !showHidden)}
+        title={showHidden ? "Hide hidden agents" : "Show hidden agents"}
+      >
+        {#if showHidden}<Eye class="size-3.5" />{:else}<EyeOff class="size-3.5" />{/if}
+      </button>
+      <button
+        type="button"
+        class="icon-btn size-7 border border-[var(--hairline)] bg-[var(--surface-2)]"
         onclick={openSettings}
         title="Settings"
       >
@@ -184,13 +299,13 @@
 
   <!-- Search & Filter Controls -->
   <div class="px-3 py-1 space-y-1.5">
-    <div class="relative">
-      <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-500 pointer-events-none" />
+    <div class="relative group/search">
+      <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none transition-colors group-focus-within/search:text-[var(--text-secondary)]" />
       <input
         type="text"
         placeholder="Filter fleet..."
         bind:value={searchQuery}
-        class="w-full h-8 pl-8 pr-3 bg-[#0d0d12] border border-white/10 rounded-xl text-xs text-zinc-200 placeholder:text-zinc-500 focus:outline-none focus:border-zinc-500 transition-colors font-sans"
+        class="w-full h-8 pl-8 pr-3 bg-[var(--surface-2)] border border-[var(--hairline)] rounded-md text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/25 transition-all font-sans"
       />
     </div>
 
@@ -198,15 +313,15 @@
     {#if bots.some((b) => b.status === "waiting_on_user")}
       <button
         type="button"
-        class="flex items-center gap-2 text-xs text-zinc-400 hover:text-zinc-200 px-1 py-1 transition-colors cursor-pointer"
+        class="flex items-center gap-2 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-1 py-1 transition-colors cursor-pointer"
         onclick={() => (showOnlyWaiting = !showOnlyWaiting)}
       >
-        <div class="size-3.5 rounded-full border border-zinc-600 flex items-center justify-center {showOnlyWaiting ? 'border-rose-500 bg-rose-500/20' : ''}">
+        <div class="size-3.5 rounded-full border border-[var(--hairline-strong)] flex items-center justify-center {showOnlyWaiting ? 'border-danger bg-danger/20' : ''}">
           {#if showOnlyWaiting}
-            <div class="size-1.5 rounded-full bg-rose-500"></div>
+            <div class="size-1.5 rounded-full bg-danger"></div>
           {/if}
         </div>
-        <span class="text-[11px] font-medium {showOnlyWaiting ? 'text-rose-400' : 'text-zinc-400'}">
+        <span class="text-[11px] font-medium {showOnlyWaiting ? 'text-danger' : 'text-[var(--text-muted)]'}">
           Waiting on me
         </span>
       </button>
@@ -222,16 +337,16 @@
         <button
           type="button"
           class={cn(
-            "w-full text-left p-2.5 rounded-2xl border transition-all flex items-center gap-3 cursor-pointer focus:outline-none",
+            "w-full text-left px-2.5 py-2 min-h-[54px] rounded-xl border transition-all duration-150 flex items-center gap-3 cursor-pointer focus:outline-none",
             isSelected
-              ? "border-white/30 bg-white/10 shadow-[0_0_20px_rgba(255,255,255,0.06)] text-white"
-              : "border-white/5 bg-[#0e0e13]/60 hover:border-white/15 hover:bg-[#14141c] text-zinc-300"
+              ? "theme-selected text-[var(--text-primary)]"
+              : "border-transparent bg-transparent hover:bg-[var(--surface-2)] hover:border-[var(--hairline)] text-[var(--text-secondary)]"
           )}
-          onclick={() => onSelectBot(bot.id)}
+          onclick={() => selectBot(bot.id)}
         >
           <!-- Avatar Container -->
-          <div class="relative size-10 shrink-0">
-            <div class="size-10 rounded-xl overflow-hidden bg-[#14141c] border border-white/10">
+          <div class="relative size-9 shrink-0">
+            <div class="size-9 rounded-lg overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline)]">
               <img
                 src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "bottts")}
                 alt={bot.name}
@@ -243,7 +358,7 @@
             <!-- Status Dot Badge -->
             <div
               class={cn(
-                "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-black",
+                "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-1)]",
                 statusTheme.bg
               )}
             ></div>
@@ -251,13 +366,26 @@
 
           <!-- Name & Status -->
           <div class="flex-1 min-w-0">
-            <div class="flex items-center justify-between">
-              <span class="font-bold text-xs text-zinc-100 truncate">{bot.name}</span>
-              {#if bot.is_orchestrator}
-                <Crown class="size-3 text-amber-400" />
-              {/if}
+            <div class="flex items-center justify-between gap-1.5">
+              <span class="font-medium text-[13px] text-[var(--text-primary)] truncate">{bot.name}</span>
+              <span class="flex items-center gap-1 shrink-0">
+                {#if contacts[bot.id]?.pinned}
+                  <Pin class="size-3 text-[var(--brand-text)]" />
+                {/if}
+                {#if bot.is_orchestrator}
+                  <Crown class="size-3 text-warning" />
+                {/if}
+                {#if (unread[bot.id] ?? 0) > 0}
+                  <span
+                    class="min-w-4 h-4 px-1 rounded-full bg-[var(--brand)] text-white text-[9px] font-semibold flex items-center justify-center"
+                    title={`${unread[bot.id]} unread`}
+                  >
+                    {(unread[bot.id] ?? 0) > 99 ? "99+" : unread[bot.id]}
+                  </span>
+                {/if}
+              </span>
             </div>
-            <span class="text-[11px] text-zinc-500 truncate block mt-0.5">
+            <span class="text-[11px] text-[var(--text-muted)] truncate block mt-0.5">
               {statusTheme.label}
             </span>
           </div>
@@ -266,7 +394,7 @@
         <!-- Quick Action Menu Trigger -->
         <button
           type="button"
-          class="absolute right-2 top-2 size-6 rounded-lg bg-white/5 text-zinc-400 hover:text-white opacity-0 group-hover/item:opacity-100 transition-opacity flex items-center justify-center border border-white/10 cursor-pointer"
+          class="absolute right-2 top-2 size-6 rounded-md bg-[var(--surface-2)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] opacity-0 group-hover/item:opacity-100 transition-opacity flex items-center justify-center border border-[var(--hairline)] cursor-pointer"
           onclick={(e) => {
             e.stopPropagation();
             activeActionMenuBotId = activeActionMenuBotId === bot.id ? null : bot.id;
@@ -281,60 +409,109 @@
           <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
-            class="absolute right-2 top-8 z-40 w-40 bg-[#0e0e14] border border-white/10 rounded-2xl shadow-2xl p-1.5 space-y-0.5 animate-in fade-in zoom-in-95 text-xs backdrop-blur-xl"
+            class="absolute right-2 top-8 z-40 w-40 bg-[var(--surface-1)] border border-[var(--hairline-strong)] rounded-xl shadow-xl p-1 space-y-0.5 animate-in fade-in zoom-in-95 text-xs"
             onclick={(e) => e.stopPropagation()}
           >
             <button
               type="button"
-              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-zinc-200 hover:bg-white/10 text-left transition-colors cursor-pointer"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] text-left transition-colors cursor-pointer"
               onclick={() => {
                 selectedBotForSettings = bot;
                 showBotSettings = true;
                 activeActionMenuBotId = null;
               }}
             >
-              <Sliders class="size-3.5 text-zinc-400" />
+              <Sliders class="size-3.5 text-[var(--text-tertiary)]" />
               Settings
             </button>
             <button
               type="button"
-              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-zinc-200 hover:bg-white/10 text-left transition-colors cursor-pointer"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] text-left transition-colors cursor-pointer"
               onclick={() => {
                 selectedBotForSkills = bot;
                 showSkillManager = true;
                 activeActionMenuBotId = null;
               }}
             >
-              <Wrench class="size-3.5 text-zinc-400" />
+              <Wrench class="size-3.5 text-[var(--text-tertiary)]" />
               Skills
             </button>
             <button
               type="button"
-              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-sky-300 hover:bg-white/10 text-left transition-colors cursor-pointer"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--brand-text)] hover:bg-[var(--brand-soft)] text-left transition-colors cursor-pointer"
               onclick={() => {
                 onSelectBot(bot.id);
                 window.dispatchEvent(new CustomEvent("open-connectors"));
                 activeActionMenuBotId = null;
               }}
             >
-              <Layers class="size-3.5 text-sky-400" />
+              <Layers class="size-3.5 text-[var(--brand-text)]" />
               Connectors Hub
             </button>
             <button
               type="button"
-              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-sky-300 hover:bg-white/10 text-left transition-colors cursor-pointer"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--brand-text)] hover:bg-[var(--brand-soft)] text-left transition-colors cursor-pointer"
               onclick={() => {
                 selectedBotForMcp = bot;
                 showMcpManager = true;
                 activeActionMenuBotId = null;
               }}
             >
-              <Server class="size-3.5 text-sky-400" />
+              <Server class="size-3.5 text-[var(--brand-text)]" />
               MCP Tools
             </button>
             <button
               type="button"
-              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-rose-400 hover:bg-rose-500/10 text-left transition-colors cursor-pointer"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] text-left transition-colors cursor-pointer"
+              onclick={() => {
+                togglePinned(bot.id);
+                activeActionMenuBotId = null;
+              }}
+            >
+              <Pin class="size-3.5 text-[var(--brand-text)]" />
+              {contacts[bot.id]?.pinned ? "Unpin" : "Pin to top"}
+            </button>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] text-left transition-colors cursor-pointer"
+              onclick={() => {
+                markRead(bot.id);
+                activeActionMenuBotId = null;
+              }}
+            >
+              <MailOpen class="size-3.5 text-[var(--text-tertiary)]" />
+              Mark as read
+            </button>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] text-left transition-colors cursor-pointer"
+              onclick={() => {
+                duplicateBot(bot.id);
+                activeActionMenuBotId = null;
+              }}
+            >
+              <Copy class="size-3.5 text-[var(--text-tertiary)]" />
+              Duplicate agent
+            </button>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] text-left transition-colors cursor-pointer"
+              onclick={() => {
+                toggleHidden(bot.id);
+                activeActionMenuBotId = null;
+              }}
+            >
+              {#if contacts[bot.id]?.hidden}
+                <Eye class="size-3.5 text-[var(--text-tertiary)]" />
+                Unhide
+              {:else}
+                <EyeOff class="size-3.5 text-[var(--text-tertiary)]" />
+                Hide from list
+              {/if}
+            </button>
+            <button
+              type="button"
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-xl text-danger hover:bg-danger/10 text-left transition-colors cursor-pointer"
               onclick={() => {
                 activeActionMenuBotId = null;
                 selectedBotForSettings = bot;
@@ -348,51 +525,51 @@
         {/if}
       </div>
     {:else}
-      <div class="py-12 px-3 text-center text-zinc-500">
-        <Bot class="size-8 mx-auto mb-2 opacity-30 text-zinc-400" />
+      <div class="py-12 px-3 text-center text-[var(--text-muted)]">
+        <Bot class="size-8 mx-auto mb-2 opacity-30 text-[var(--text-tertiary)]" />
         <p class="text-xs">No agents found</p>
       </div>
     {/each}
   </div>
 
   <!-- Bottom Pause Fleet Bar -->
-  <div class="p-3 border-t border-white/10 bg-[#09090d]">
+  <div class="p-3 border-t border-[var(--hairline)] bg-[var(--surface-0)]">
     <button
       type="button"
-      class="w-full bg-white/5 border border-white/10 hover:border-zinc-500 hover:bg-white/10 rounded-xl py-2 px-3.5 flex items-center justify-between text-xs text-zinc-300 transition-all font-medium cursor-pointer"
+      class="w-full bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--hairline-strong)] hover:bg-[var(--surface-3)] rounded-md py-2 px-3 flex items-center justify-between text-xs text-[var(--text-secondary)] transition-colors font-medium cursor-pointer"
       onclick={() => invoke("pause_all")}
     >
       <div class="flex items-center gap-2">
-        <Pause class="size-3.5 fill-current text-zinc-400" />
+        <Pause class="size-3.5 fill-current text-[var(--text-tertiary)]" />
         <span>Pause Fleet</span>
       </div>
-      <span class="font-mono text-[10px] text-zinc-500 bg-white/5 px-1.5 py-0.5 rounded">⌘P</span>
+      <span class="font-mono text-[10px] text-[var(--text-muted)] bg-[var(--surface-3)] px-1.5 py-0.5 rounded">⌘P</span>
     </button>
   </div>
 </div>
 
 <!-- Create Bot Dialog (Clean, Responsive 2-Tab Design with Fixed Footer) -->
 <Dialog.Root open={showCreateModal} onOpenChange={(o) => (!o && (showCreateModal = false))}>
-  <Dialog.Content class="sm:max-w-xl max-h-[85vh] flex flex-col bg-[#0c0c14]/98 border border-purple-500/30 shadow-[0_0_50px_rgba(147,51,234,0.25)] backdrop-blur-2xl rounded-3xl p-0 overflow-hidden">
+  <Dialog.Content class="sm:max-w-xl max-h-[85vh] flex flex-col bg-[var(--surface-1)] border border-[var(--hairline-strong)] shadow-[var(--shadow-xl)] rounded-xl p-0 overflow-hidden">
     <!-- Fixed Dialog Header -->
-    <div class="px-6 pt-5 pb-3 border-b border-white/10 shrink-0">
+    <div class="px-6 pt-5 pb-3 border-b border-[var(--hairline)] shrink-0">
       <Dialog.Header class="gap-1">
-        <Dialog.Title class="text-base font-bold flex items-center gap-2 text-white">
-          <Bot class="size-5 text-purple-400" />
+        <Dialog.Title class="text-base font-semibold flex items-center gap-2 text-[var(--text-primary)]">
+          <Bot class="size-5 text-[var(--brand-text)]" />
           Provision New Fleet Agent
         </Dialog.Title>
-        <Dialog.Description class="text-xs text-zinc-400">
+        <Dialog.Description class="text-xs text-[var(--text-muted)]">
           Configure agent identity, mission, and customizable DiceBear look.
         </Dialog.Description>
       </Dialog.Header>
 
       <!-- Sub-tabs: Profile vs Avatar Picker -->
-      <div class="grid grid-cols-2 bg-[#12121e] border border-[#232336] p-1 rounded-xl mt-3">
+      <div class="grid grid-cols-2 bg-[var(--surface-2)] border border-[var(--hairline)] p-1 rounded-xl mt-3">
         <button
           type="button"
           class="flex items-center justify-center gap-1.5 py-1 px-3 rounded-lg text-xs font-medium transition-all cursor-pointer {createModalTab === 'profile'
-            ? 'bg-purple-600 text-white shadow-sm'
-            : 'text-zinc-400 hover:text-zinc-200'}"
+            ? 'bg-[var(--surface-3)] text-[var(--text-primary)] font-semibold shadow-sm'
+            : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
           onclick={() => (createModalTab = "profile")}
         >
           <UserCheck class="size-3.5" />
@@ -402,8 +579,8 @@
         <button
           type="button"
           class="flex items-center justify-center gap-1.5 py-1 px-3 rounded-lg text-xs font-medium transition-all cursor-pointer {createModalTab === 'avatar'
-            ? 'bg-purple-600 text-white shadow-sm'
-            : 'text-zinc-400 hover:text-zinc-200'}"
+            ? 'bg-[var(--surface-3)] text-[var(--text-primary)] font-semibold shadow-sm'
+            : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
           onclick={() => (createModalTab = "avatar")}
         >
           <Palette class="size-3.5" />
@@ -417,9 +594,9 @@
       <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         {#if createModalTab === "profile"}
           <!-- Live Avatar Preview Card -->
-          <div class="p-3.5 rounded-2xl bg-[#11111d] border border-purple-500/25 flex items-center justify-between shadow-inner">
+          <div class="p-3.5 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] flex items-center justify-between">
             <div class="flex items-center gap-3.5">
-              <div class="size-14 rounded-2xl overflow-hidden bg-[#181826] border-2 border-purple-500/50 p-0.5 shadow-md shrink-0">
+              <div class="size-14 rounded-xl overflow-hidden bg-[var(--surface-3)] border-2 border-[var(--brand)]/60 p-0.5 shrink-0">
                 <img
                   src={effectiveAvatarUrl}
                   alt="Agent Avatar"
@@ -427,10 +604,10 @@
                 />
               </div>
               <div class="flex flex-col">
-                <span class="text-sm font-bold text-white">
+                <span class="text-sm font-medium text-[var(--text-primary)]">
                   {newBotName || "New Agent"}
                 </span>
-                <span class="text-xs text-purple-300 capitalize font-mono mt-0.5">
+                <span class="text-xs text-[var(--brand-text)] capitalize font-mono mt-0.5">
                   Style: {newBotAvatarStyle}
                 </span>
               </div>
@@ -440,16 +617,16 @@
               type="button"
               variant="outline"
               size="sm"
-              class="h-8 gap-1.5 text-xs bg-[#171726] border-purple-500/30 text-purple-300 hover:bg-purple-950/40 hover:text-white"
+              class="h-8 gap-1.5 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
               onclick={() => (createModalTab = "avatar")}
             >
-              <Palette class="size-3.5 text-purple-400" />
+              <Palette class="size-3.5 text-[var(--brand-text)]" />
               Customize
             </Button>
           </div>
 
           <div class="space-y-1.5">
-            <Label for="new-bot-name" class="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+            <Label for="new-bot-name" class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
               Agent Name
             </Label>
             <Input
@@ -457,13 +634,13 @@
               type="text"
               bind:value={newBotName}
               placeholder="e.g. Bro, Chief of Staff, Architect, Sentinel..."
-              class="h-9 text-xs bg-[#141420] border-[#252538] text-white"
+              class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-primary)]"
               required
             />
           </div>
 
           <div class="space-y-1.5">
-            <Label for="new-bot-desc" class="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+            <Label for="new-bot-desc" class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
               Specialization & Mission
             </Label>
             <Textarea
@@ -471,7 +648,7 @@
               bind:value={newBotDescription}
               placeholder="What tasks, workflows, or roles does this agent handle?"
               rows={3}
-              class="text-xs bg-[#141420] border-[#252538] text-zinc-200 resize-none"
+              class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] resize-none"
             />
           </div>
         {:else}
@@ -492,14 +669,14 @@
       </div>
 
       <!-- Always Fixed Pinned Footer (Never gets pushed out of view) -->
-      <div class="px-6 py-3.5 border-t border-white/10 bg-[#0a0a12] flex items-center justify-end gap-2 shrink-0">
+      <div class="px-6 py-3.5 border-t border-[var(--hairline)] bg-[var(--surface-1)] flex items-center justify-end gap-2 shrink-0">
         <Button variant="outline" size="sm" type="button" onclick={() => (showCreateModal = false)}>
           Cancel
         </Button>
         <Button
           size="sm"
           type="submit"
-          class="gap-1.5 bg-purple-600 hover:bg-purple-500 text-white font-medium shadow-md shadow-purple-950/50"
+          class="gap-1.5 font-medium"
           disabled={!newBotName.trim() || isCreating}
         >
           <Plus class="size-3.5" />

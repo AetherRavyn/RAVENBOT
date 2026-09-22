@@ -2,18 +2,19 @@
   import { invoke } from "@tauri-apps/api/core";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import ThemeLogo from "$lib/components/ThemeLogo.svelte";
-  import ThemeBackground from "$lib/components/ThemeBackground.svelte";
   import Sidebar from "$lib/components/Sidebar.svelte";
   import ThreadView from "$lib/components/ThreadView.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import Settings from "$lib/components/Settings.svelte";
   import KillSwitch from "$lib/components/KillSwitch.svelte";
   import ScreenReader from "$lib/components/ScreenReader.svelte";
+  import Toaster from "$lib/components/Toaster.svelte";
   import "../app.css";
   import { initI18n, t } from "$lib/i18n";
   import { prefersReducedMotion, keyboardShortcuts, announce } from "$lib/a11y";
-  import { getStoredTheme, subscribeTheme, type ThemeDefinition } from "$lib/theme";
+  import { getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition } from "$lib/theme";
   import { onMount } from "svelte";
+  import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import type { Snippet } from "svelte";
   import ChatRoomList from "$lib/components/ChatRoomList.svelte";
   import ChatRoomView from "$lib/components/ChatRoomView.svelte";
@@ -171,6 +172,10 @@
   }
 
   onMount(() => {
+    // Apply the saved theme's palette to the design tokens before first paint
+    // (buttons, borders, focus rings and surfaces all follow the theme).
+    applyTheme(getStoredTheme().id);
+
     const unsubTheme = subscribeTheme((theme) => {
       currentTheme = theme;
     });
@@ -270,6 +275,17 @@
     };
     window.addEventListener("office-updated", handleOfficeUpdated);
 
+    // Bots may be created outside the sidebar (e.g. an office auto-hires its
+    // team). Reload the roster so new agents appear everywhere.
+    const handleBotsChanged = async () => {
+      try {
+        bots = await invoke("list_bots");
+      } catch (e) {
+        console.error("Failed to reload bots:", e);
+      }
+    };
+    window.addEventListener("bots-changed", handleBotsChanged);
+
     return () => {
       unsubTheme();
       unsubK();
@@ -281,6 +297,7 @@
       window.removeEventListener("open-connectors", handleOpenConnectors);
       window.removeEventListener("office-deleted", handleOfficeDeleted);
       window.removeEventListener("office-updated", handleOfficeUpdated);
+      window.removeEventListener("bots-changed", handleBotsChanged);
       mediaQuery.removeEventListener("change", handler);
     };
   });
@@ -323,8 +340,7 @@
 </svelte:head>
 
 <div
-  class="flex flex-col h-screen w-screen overflow-hidden select-none font-sans transition-colors duration-300"
-  style="background-color: {currentTheme.bgHex}; color: #f4f4f5;"
+  class="flex flex-col h-screen w-screen overflow-hidden select-none font-sans bg-[var(--surface-0)] text-[var(--text-primary)]"
   class:reduce-motion={prefersReducedMotion()}
   role="application"
   aria-label={currentTheme.brand.brandTitle}
@@ -338,45 +354,31 @@
   <!-- Screen Reader Announcements -->
   <ScreenReader message={srMessage} />
 
+  <!-- Global transient notifications -->
+  <Toaster />
+
   <!-- Main Body Content Area -->
   <div class="flex-1 flex overflow-hidden relative">
     <!-- Left Sidebar Panel -->
     <div
-      class="{sidebarCollapsed ? 'hidden' : 'w-72 shrink-0 flex flex-col border-r overflow-hidden z-20 transition-all duration-300'}"
-      style="background-color: {currentTheme.cardHex}; border-color: {currentTheme.borderHex};"
+      class="{sidebarCollapsed ? 'hidden' : 'w-[280px] shrink-0 flex flex-col border-r border-[var(--hairline)] overflow-hidden z-20 transition-all duration-300 bg-[var(--surface-1)]'}"
     >
-      <!-- Top Branding Row with Theme-specific Logo & Identity -->
-      <div class="p-3.5 border-b flex items-center justify-between transition-colors duration-300" style="border-color: {currentTheme.borderHex};">
-        <div class="flex items-center gap-3 min-w-0">
-          <!-- Dynamic Theme Logo Icon -->
-          <div class="size-10 flex items-center justify-center shrink-0">
-            <ThemeLogo theme={currentTheme} size="md" class="!size-10" />
-          </div>
-
-          <div class="flex flex-col min-w-0">
-            <div class="flex items-center gap-2">
-              <span class="font-black text-sm tracking-wider text-white truncate">
-                {currentTheme.brand.brandTitle}<span style="color: {currentTheme.primaryColor}">{currentTheme.brand.brandAccent}</span>
-              </span>
-            </div>
-            <div class="flex items-center gap-1.5 mt-0.5">
-              <span
-                class="text-[9px] font-bold px-1.5 py-0.2 rounded tracking-widest font-mono border truncate"
-                style="color: {currentTheme.accentColor}; background-color: {currentTheme.primaryColor}20; border-color: {currentTheme.borderHex};"
-              >
-                {currentTheme.brand.badgeLabel}
-              </span>
-            </div>
-            <span class="text-[10px] text-zinc-500 mt-0.5 truncate">
-              {currentTheme.brand.subtitle}
-            </span>
-          </div>
+      <!-- Sidebar topbar — 38px, flat neutral chrome (OpenBot) -->
+      <div class="h-[38px] shrink-0 px-3 flex items-center justify-between border-b border-[var(--hairline)]">
+        <div class="flex items-center gap-2 min-w-0">
+          <ThemeLogo theme={currentTheme} size="sm" class="!size-[18px] shrink-0" />
+          <span class="text-xs font-semibold tracking-tight text-[var(--text-primary)] truncate">
+            {currentTheme.brand.brandTitle}<span class="text-[var(--brand-text)]">{currentTheme.brand.brandAccent}</span>
+          </span>
+          <span class="text-[9px] font-mono uppercase px-1.5 py-px rounded border border-[var(--hairline)] text-[var(--text-muted)] truncate">
+            {currentTheme.brand.badgeLabel}
+          </span>
         </div>
 
-        <!-- Quick Command Shortcut Badge -->
+        <!-- Quick Command Shortcut -->
         <button
           type="button"
-          class="px-2 py-0.5 rounded-lg border border-white/10 bg-white/5 text-[11px] font-mono text-zinc-400 hover:text-zinc-200 hover:border-zinc-500 transition-colors cursor-pointer shrink-0 ml-1"
+          class="h-5 px-1.5 rounded border border-[var(--hairline)] bg-[var(--surface-2)] text-[10px] font-mono text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer shrink-0"
           onclick={() => (showCommandPalette = true)}
           title="Open Command Palette (⌘K)"
         >
@@ -384,14 +386,14 @@
         </button>
       </div>
 
-      <!-- Switcher Tabs: Agents / Offices -->
-      <div class="p-3 pb-1">
-        <div class="p-1 rounded-xl flex gap-1 border bg-black/20" style="border-color: {currentTheme.borderHex};">
+      <!-- Switcher Tabs: Agents / Offices — neutral segmented control -->
+      <div class="p-2.5 pb-1.5">
+        <div class="p-0.5 rounded-lg flex gap-0.5 border border-[var(--hairline)] bg-[var(--surface-0)]">
           <button
             type="button"
-            class="flex items-center justify-center gap-1.5 flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all cursor-pointer {activeTab === 'bots'
-              ? 'bg-white/15 border border-white/20 text-white shadow-sm font-bold'
-              : 'text-zinc-400 hover:text-zinc-200'}"
+            class="flex items-center justify-center gap-1.5 flex-1 py-1.5 px-3 rounded-md text-xs transition-all cursor-pointer {activeTab === 'bots'
+              ? 'bg-[var(--surface-3)] text-[var(--text-primary)] font-semibold'
+              : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
             onclick={() => (activeTab = "bots")}
           >
             <Briefcase class="size-3.5" />
@@ -400,9 +402,9 @@
 
           <button
             type="button"
-            class="flex items-center justify-center gap-1.5 flex-1 py-1.5 px-3 rounded-lg text-xs font-medium transition-all cursor-pointer {activeTab === 'offices'
-              ? 'bg-white/15 border border-white/20 text-white shadow-sm font-bold'
-              : 'text-zinc-400 hover:text-zinc-200'}"
+            class="flex items-center justify-center gap-1.5 flex-1 py-1.5 px-3 rounded-md text-xs transition-all cursor-pointer {activeTab === 'offices'
+              ? 'bg-[var(--surface-3)] text-[var(--text-primary)] font-semibold'
+              : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
             onclick={() => (activeTab = "offices")}
           >
             <Building2 class="size-3.5" />
@@ -451,8 +453,7 @@
 
     <!-- Main Workspace Area -->
     <main
-      class="flex-1 flex flex-col overflow-hidden relative transition-colors duration-300"
-      style="background-color: {currentTheme.bgHex};"
+      class="flex-1 flex flex-col overflow-hidden relative bg-[var(--surface-0)]"
       aria-label={t("a11y.thread")}
     >
       {@render children?.()}
@@ -465,7 +466,7 @@
       {/if}
 
       {#if loading}
-        <div class="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-zinc-500" role="status">
+        <div class="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-[var(--text-muted)]" role="status">
           <div
             class="size-12 rounded-2xl flex items-center justify-center ring-4 animate-pulse border"
             style="background-color: {currentTheme.primaryColor}20; color: {currentTheme.accentColor}; border-color: {currentTheme.primaryColor}40;"
@@ -473,10 +474,10 @@
             <Loader2 class="size-6 animate-spin" />
           </div>
           <div class="text-center space-y-0.5">
-            <p class="text-sm font-semibold text-zinc-200">
+            <p class="text-sm font-semibold text-[var(--text-primary)]">
               Initializing {currentTheme.brand.brandTitle} Runtime
             </p>
-            <p class="text-xs text-zinc-500">Connecting local engine and database...</p>
+            <p class="text-xs text-[var(--text-muted)]">Connecting local engine and database...</p>
           </div>
         </div>
       {:else if selectedRoom}
@@ -484,22 +485,20 @@
       {:else if selectedBot}
         <ThreadView bot={selectedBot} />
       {:else}
-        <!-- Grok Sovereign AI Welcome Hub -->
+        <!-- Flat neutral welcome hub (OpenBot) -->
         <div class="flex-1 relative overflow-y-auto flex flex-col justify-between p-6 sm:p-10 select-none">
-          <!-- Background Ambient Artwork / Horizon Glow -->
-          <ThemeBackground theme={currentTheme} />
 
           <!-- Top Status Strip -->
           <div class="flex items-center justify-between relative z-10 w-full max-w-4xl mx-auto">
             <div class="flex items-center gap-2">
-              <span class="size-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]"></span>
-              <span class="text-[11px] font-mono text-zinc-400 uppercase tracking-wider">
+              <span class="size-2 rounded-full bg-[var(--status-success)]"></span>
+              <span class="text-xs uppercase tracking-wider text-[var(--text-tertiary)]">
                 Sovereign Enclave Active
               </span>
             </div>
 
             <div class="flex items-center gap-2">
-              <span class="text-[11px] font-mono text-zinc-500">
+              <span class="text-xs text-[var(--text-muted)]">
                 Local-First • Zero Telemetry
               </span>
             </div>
@@ -507,31 +506,31 @@
 
           <!-- Central Grok Composer & Prompt Hub -->
           <div class="max-w-2xl mx-auto w-full my-auto space-y-6 relative z-10 py-8">
-            <!-- Dynamic Theme Emblem & Headline -->
+            <!-- Emblem & Headline -->
             <div class="text-center space-y-3">
               <div class="flex justify-center">
-                <div class="p-1.5 rounded-2xl bg-white/5 border border-white/10 shadow-2xl backdrop-blur-md">
+                <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-2">
                   <ThemeLogo theme={currentTheme} size="lg" class="!size-16 sm:!size-20" />
                 </div>
               </div>
 
               <div class="space-y-1">
-                <h1 class="text-2xl sm:text-4xl font-black text-white tracking-tight">
+                <h1 class="text-2xl font-semibold text-[var(--text-primary)] tracking-tight">
                   What's on your mind today?
                 </h1>
-                <p class="text-xs sm:text-sm text-zinc-400">
+                <p class="text-sm text-[var(--text-tertiary)]">
                   {currentTheme.brand.subtitle} — {currentTheme.brand.tagline}
                 </p>
               </div>
             </div>
 
-            <!-- Grok Signature Floating Capsule Composer -->
-            <div class="rounded-3xl border border-zinc-800 bg-[#0c0c11]/95 backdrop-blur-2xl p-3.5 shadow-2xl focus-within:border-zinc-500 transition-all">
+            <!-- Composer card (OpenBot: #212121 fill, hairline border, r12) -->
+            <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-3.5 shadow-sm focus-within:border-[var(--brand)] transition-colors">
               <textarea
                 bind:value={homePrompt}
                 placeholder="Ask anything, analyze repository, run code, or delegate tasks..."
                 rows={2}
-                class="w-full bg-transparent text-sm text-white placeholder:text-zinc-500 resize-none focus:outline-none min-h-[52px] leading-relaxed font-sans"
+                class="w-full bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[52px] leading-relaxed font-sans"
                 onkeydown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) {
                     e.preventDefault();
@@ -540,15 +539,15 @@
                 }}
               ></textarea>
 
-              <!-- Toolbar inside Home Capsule -->
-              <div class="flex items-center justify-between pt-3 border-t border-white/5 mt-1">
+              <!-- Toolbar inside Home Composer -->
+              <div class="flex items-center justify-between pt-3 border-t border-[var(--hairline)] mt-1">
                 <div class="flex items-center gap-2 flex-wrap">
-                  <!-- DeepSearch Toggle Pill -->
+                  <!-- DeepSearch Toggle -->
                   <button
                     type="button"
-                    class="h-7 px-2.5 rounded-full border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {homeDeepSearch
-                      ? 'bg-sky-500/20 text-sky-300 border-sky-500/50 shadow-[0_0_10px_rgba(56,189,248,0.25)]'
-                      : 'border-white/10 text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}"
+                    class="h-7 px-2.5 rounded-md border text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer {homeDeepSearch
+                      ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]'
+                      : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                     onclick={() => (homeDeepSearch = !homeDeepSearch)}
                     title="Toggle DeepSearch Web Intelligence"
                   >
@@ -556,12 +555,12 @@
                     <span>DeepSearch</span>
                   </button>
 
-                  <!-- Think Mode Toggle Pill -->
+                  <!-- Think Mode Toggle -->
                   <button
                     type="button"
-                    class="h-7 px-2.5 rounded-full border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {homeThink
-                      ? 'bg-indigo-500/20 text-indigo-300 border-indigo-500/50 shadow-[0_0_10px_rgba(99,102,241,0.25)]'
-                      : 'border-white/10 text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}"
+                    class="h-7 px-2.5 rounded-md border text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer {homeThink
+                      ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]'
+                      : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                     onclick={() => (homeThink = !homeThink)}
                     title="Toggle Deep Reasoning Mode"
                   >
@@ -571,20 +570,18 @@
 
                   <!-- Target Agent Picker (if bots exist) -->
                   {#if bots.length > 0}
-                    <select
-                      bind:value={homeSelectedBotId}
-                      class="h-7 text-[11px] font-mono bg-[#14141d] border border-white/10 text-zinc-300 rounded-full px-2.5 py-0 focus:outline-none cursor-pointer"
-                    >
-                      {#each bots as bot}
-                        <option value={bot.id}>{bot.name}</option>
-                      {/each}
-                    </select>
+                    <SimpleSelect
+                      value={homeSelectedBotId ?? ""}
+                      options={bots.map((bot: any) => ({ value: bot.id, label: bot.name }))}
+                      onValueChange={(v) => (homeSelectedBotId = v || null)}
+                      class="h-7 w-40 rounded-md text-xs"
+                    />
                   {/if}
 
                   <!-- Attach File Button -->
                   <button
                     type="button"
-                    class="size-7 rounded-full text-zinc-400 hover:text-zinc-200 hover:bg-white/5 flex items-center justify-center transition-colors cursor-pointer"
+                    class="size-7 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center transition-colors cursor-pointer"
                     onclick={attachHomeFile}
                     title="Attach workspace code or text file"
                   >
@@ -594,7 +591,7 @@
                   <!-- Voice STT Button -->
                   <button
                     type="button"
-                    class="size-7 rounded-full flex items-center justify-center transition-all cursor-pointer {homeListening ? 'text-rose-400 bg-rose-500/20 border border-rose-500/50 animate-pulse shadow-sm' : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}"
+                    class="size-7 rounded-md flex items-center justify-center transition-all cursor-pointer {homeListening ? 'text-[var(--status-danger)] bg-[var(--brand-soft)] animate-pulse' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                     onclick={toggleHomeVoice}
                     title={homeListening ? "Listening... (Click to stop speech-to-text)" : "Voice input (Speech-to-Text)"}
                   >
@@ -602,14 +599,14 @@
                   </button>
                 </div>
 
-                <!-- Circular Grok Send Button -->
+                <!-- Send Button (light primary, OpenBot) -->
                 <button
                   type="button"
                   onclick={() => sendHomePrompt()}
                   disabled={!homePrompt.trim() || homeSending}
-                  class="size-8 rounded-full flex items-center justify-center transition-all cursor-pointer {homePrompt.trim() && !homeSending
-                    ? 'bg-white text-black hover:bg-zinc-200 shadow-md scale-105'
-                    : 'bg-zinc-800 text-zinc-500 cursor-not-allowed opacity-50'}"
+                  class="size-8 rounded-md flex items-center justify-center transition-all cursor-pointer {homePrompt.trim() && !homeSending
+                    ? 'bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white shadow-sm'
+                    : 'bg-[var(--surface-3)] text-[var(--text-muted)] cursor-not-allowed opacity-60'}"
                   title="Dispatch prompt (Enter)"
                 >
                   {#if homeSending}
@@ -625,73 +622,73 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-left">
               <button
                 type="button"
-                class="p-3 rounded-2xl border border-white/5 bg-[#0e0e13]/80 hover:bg-[#15151e] hover:border-white/20 transition-all cursor-pointer text-left group"
+                class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:bg-[var(--surface-2)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer text-left group"
                 onclick={() => sendHomePrompt("Analyze this codebase repository and identify optimization points")}
               >
-                <div class="flex items-center gap-2 text-xs font-bold text-white group-hover:text-sky-300">
-                  <Terminal class="size-3.5 text-sky-400" />
+                <div class="flex items-center gap-2 text-xs font-semibold text-[var(--text-primary)] group-hover:text-[var(--brand-text)]">
+                  <Terminal class="size-3.5 text-[var(--brand-text)]" />
                   <span>Analyze Codebase</span>
                 </div>
-                <p class="text-[11px] text-zinc-400 mt-1">Inspect repo architecture, performance & bottlenecks</p>
+                <p class="text-[11px] text-[var(--text-muted)] mt-1">Inspect repo architecture, performance & bottlenecks</p>
               </button>
 
               <button
                 type="button"
-                class="p-3 rounded-2xl border border-white/5 bg-[#0e0e13]/80 hover:bg-[#15151e] hover:border-white/20 transition-all cursor-pointer text-left group"
+                class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:bg-[var(--surface-2)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer text-left group"
                 onclick={() => sendHomePrompt("Draft a parallel multi-agent execution strategy")}
               >
-                <div class="flex items-center gap-2 text-xs font-bold text-white group-hover:text-sky-300">
-                  <Brain class="size-3.5 text-sky-400" />
+                <div class="flex items-center gap-2 text-xs font-semibold text-[var(--text-primary)] group-hover:text-[var(--brand-text)]">
+                  <Brain class="size-3.5 text-[var(--brand-text)]" />
                   <span>Multi-Agent Strategy</span>
                 </div>
-                <p class="text-[11px] text-zinc-400 mt-1">Orchestrate task graph across persistent specialist fleet</p>
+                <p class="text-[11px] text-[var(--text-muted)] mt-1">Orchestrate task graph across persistent specialist fleet</p>
               </button>
 
               <button
                 type="button"
-                class="p-3 rounded-2xl border border-white/5 bg-[#0e0e13]/80 hover:bg-[#15151e] hover:border-white/20 transition-all cursor-pointer text-left group"
+                class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:bg-[var(--surface-2)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer text-left group"
                 onclick={() => sendHomePrompt("Audit system security, local sandboxes and resource quotas")}
               >
-                <div class="flex items-center gap-2 text-xs font-bold text-white group-hover:text-sky-300">
-                  <Shield class="size-3.5 text-sky-400" />
+                <div class="flex items-center gap-2 text-xs font-semibold text-[var(--text-primary)] group-hover:text-[var(--brand-text)]">
+                  <Shield class="size-3.5 text-[var(--brand-text)]" />
                   <span>Security & Sandbox Audit</span>
                 </div>
-                <p class="text-[11px] text-zinc-400 mt-1">Verify zero-telemetry hardware enclave isolation</p>
+                <p class="text-[11px] text-[var(--text-muted)] mt-1">Verify zero-telemetry hardware enclave isolation</p>
               </button>
 
               <button
                 type="button"
-                class="p-3 rounded-2xl border border-white/5 bg-[#0e0e13]/80 hover:bg-[#15151e] hover:border-white/20 transition-all cursor-pointer text-left group"
+                class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:bg-[var(--surface-2)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer text-left group"
                 onclick={() => sendHomePrompt("DeepSearch technical documentation and APIs")}
               >
-                <div class="flex items-center gap-2 text-xs font-bold text-white group-hover:text-sky-300">
-                  <Globe class="size-3.5 text-sky-400" />
+                <div class="flex items-center gap-2 text-xs font-semibold text-[var(--text-primary)] group-hover:text-[var(--brand-text)]">
+                  <Globe class="size-3.5 text-[var(--brand-text)]" />
                   <span>DeepSearch & RAG</span>
                 </div>
-                <p class="text-[11px] text-zinc-400 mt-1">Search web knowledge & query local vector embeddings</p>
+                <p class="text-[11px] text-[var(--text-muted)] mt-1">Search web knowledge & query local vector embeddings</p>
               </button>
             </div>
           </div>
 
           <!-- Bottom Actions & Fleet Safety Protocol Card -->
           <div class="max-w-4xl mx-auto w-full space-y-3 relative z-10 pt-4">
-            <div class="w-full p-3.5 rounded-2xl border border-white/10 bg-[#0e0e13]/80 flex items-center justify-between shadow-xl">
-              <div class="flex items-center gap-3">
+            <div class="w-full p-2.5 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] flex items-center justify-between shadow-sm">
+              <div class="flex items-center gap-2">
                 <button
                   type="button"
-                  class="flex items-center gap-1.5 text-zinc-400 hover:text-white px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-2.5 py-1.5 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--hairline-strong)] text-xs transition-colors cursor-pointer"
                   onclick={() => (showCommandPalette = true)}
                 >
-                  <span class="font-mono text-[10px] text-zinc-500">⌘K</span>
+                  <span class="font-mono text-[10px] text-[var(--text-muted)]">⌘K</span>
                   <span>Command Palette</span>
                 </button>
 
                 <button
                   type="button"
-                  class="flex items-center gap-1.5 text-zinc-400 hover:text-white px-2.5 py-1 rounded-lg bg-white/5 border border-white/10 text-xs transition-colors cursor-pointer"
+                  class="flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-2.5 py-1.5 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--hairline-strong)] text-xs transition-colors cursor-pointer"
                   onclick={openSettings}
                 >
-                  <span class="font-mono text-[10px] text-zinc-500">⌘,</span>
+                  <span class="font-mono text-[10px] text-[var(--text-muted)]">⌘,</span>
                   <span>Settings & Keys</span>
                 </button>
               </div>
@@ -739,5 +736,5 @@
     announce("");
   }}
   {bots}
-  initialTab={settingsInitialTab}
+  initialSection={settingsInitialTab}
 />

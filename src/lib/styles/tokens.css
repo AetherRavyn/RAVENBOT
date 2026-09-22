@@ -1,94 +1,225 @@
 /**
- * RAVENBOT Design Tokens
- * Intentional dark-first theme — not templated defaults
- * Frameless window, functional native controls, system tray
+ * RAVENBOT Design Tokens — OpenBot neutral-dark, dark-first, intentional.
+ *
+ * The palette, type scale, control sizes and radii follow the OpenBot design
+ * system: a Grok-inspired neutral greyscale canvas (#1a1a1a) with #212121
+ * surfaces, near-invisible hairline borders, a single blue accent (#007cf7)
+ * for focus/selection, and a light (#f0f0f0) primary button with dark text.
+ *
+ * Two kinds of tokens live here:
+ *  1. HSL triplets (`--background`, `--border`, …) consumed as `hsl(var(--x))`
+ *     by Tailwind's `@theme` mapping and the shadcn-style primitives. These
+ *     MUST stay bare triplets (`H S% L%`) — never put a hex or a border
+ *     shorthand in one of these names.
+ *  2. Semantic hex/var tokens (`--surface-*`, `--brand-*`, `--shadow-*`, …)
+ *     used directly by app chrome.
+ *
+ * These are the static defaults (what paints before / without JS). At runtime
+ * `lib/theme.ts#applyTheme()` overwrites them from the active theme, so the
+ * values below are both the fallback and the source of truth for the default
+ * OpenBot look.
  */
 
 :root {
-  /* Surfaces */
-  --surface-0: #0a0a0b;        /* app background, header */
-  --surface-1: #111113;        /* main content */
-  --surface-2: #18181b;        /* cards, inputs, modals */
-  --surface-3: #27272a;        /* borders, hovers */
-  --surface-4: #3f3f46;        /* active, dividers */
+  color-scheme: dark;
 
-  /* Text */
-  --text-primary: #e4e4e7;
-  --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
-  --text-muted: #52525b;
-  --text-faint: #3f3f46;
+  /* ── Theme triplets (hsl(var(--x))) ─────────────────────────────────── */
+  /* Canvas #1a1a1a */
+  --background: 0 0% 10%;
+  --foreground: 0 0% 100%;
 
-  /* Accent — Raven indigo */
-  --accent: #6366f1;
-  --accent-hover: #5558e6;
-  --accent-muted: #6366f110;
-  --accent-ring: #6366f133;
+  /* Surface #212121 */
+  --card: 0 0% 13%;
+  --card-foreground: 0 0% 100%;
 
-  /* Status */
-  --status-idle: #52525b;
-  --status-thinking: #f59e0b;
-  --status-running: #3b82f6;
-  --status-waiting: #ef4444;
-  --status-paused: #8b5cf6;
-  --status-success: #22c55e;
-  --status-danger: #ef4444;
+  --popover: 0 0% 13%;
+  --popover-foreground: 0 0% 100%;
 
-  /* Borders */
-  --border: 1px solid var(--surface-3);
-  --border-strong: 1px solid var(--surface-4);
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  /* Primary BUTTON fill — OpenBot's light #f0f0f0 with dark #141414 text.
+   * This is deliberately *not* the blue accent: OpenBot draws primary actions
+   * as a light Apple-style button and keeps blue for focus/selection. */
+  --primary: 0 0% 94%;
+  --primary-foreground: 0 0% 8%;
+
+  /* Neutral control fills (#2a2a2a / #242424) */
+  --secondary: 0 0% 16%;
+  --secondary-foreground: 0 0% 93%;
+
+  --muted: 0 0% 15%;
+  --muted-foreground: 0 0% 60%;
+
+  /* Hover surface — kept neutral, not blue */
+  --accent: 0 0% 16%;
+  --accent-foreground: 0 0% 100%;
+
+  --destructive: 356 98% 59%;
+  --destructive-foreground: 0 0% 100%;
+
+  /* Hairline #2a2a2a — quiet, barely-there dividers */
+  --border: 0 0% 16%;
+  --input: 0 0% 16%;
+  /* Focus ring — OpenBot blue #007cf7 */
+  --ring: 210 100% 49%;
+
+  /* Semantic status (hsl triplets) — OpenBot's retuned status family */
+  --success: 146 62% 50%; /* #31cf76 */
+  --warning: 33 100% 53%; /* #ff9412 */
+  --danger: 356 98% 59%; /* #fd2f3b */
+  --info: 210 100% 63%; /* #42a0ff */
+
+  /* ── Surfaces (app chrome, direct hex) ──────────────────────────────── */
+  --surface-0: #1a1a1a; /* app background / canvas */
+  --surface-1: #212121; /* panels, cards, composer */
+  --surface-2: #242424; /* raised */
+  --surface-3: #2a2a2a; /* hover / inputs */
+  --surface-4: #333333; /* active / stronger divider */
+  --surface-elevated: #242424;
+
+  /* ── Text (OpenBot neutral ramp) ────────────────────────────────────── */
+  --text-primary: #ffffff;
+  --text-secondary: #dcdcdc;
+  --text-tertiary: #979797;
+  --text-muted: #6a6a6a;
+  --text-faint: #4a4a4a;
+  --text-placeholder: #bfbfbf;
+  /* Text on light surfaces (the light primary button / user bubble) */
+  --text-on-light: #141414;
+  --text-muted-on-light: rgba(20, 20, 20, 0.52);
+
+  /* ── Brand / accent (blue — focus, selection, icons, links) ─────────── */
+  --brand: #007cf7;
+  --brand-hover: #1f8fff;
+  --brand-text: #42a0ff;
+  --brand-soft: rgba(0, 124, 247, 0.16);
+  --brand-strong: rgba(0, 124, 247, 0.34);
+  --brand-2: #42a0ff;
+  --brand-3: #31cf76;
+  --brand-glow: none;
+  /* The light primary-button fill (kept separate from the blue accent) */
+  --surface-light: #f0f0f0;
+
+  /* ── Status (flat solids) ───────────────────────────────────────────── */
+  --status-idle: #6a6a6a;
+  --status-thinking: #ff9412;
+  --status-running: #007cf7;
+  --status-waiting: #fd2f3b;
+  --status-paused: #979797;
+  --status-success: #31cf76;
+  --status-danger: #fd2f3b;
+
+  /* ── Hairlines ──────────────────────────────────────────────────────── */
+  --hairline: #2a2a2a;
+  --hairline-strong: #383838;
+  --hairline-faint: rgba(255, 255, 255, 0.035);
+
+  /* ── Radii (OpenBot scale: 4 / 6 / 8 / 12 / 14) ────────────────────── */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+  --radius-2xl: 20px;
+  --radius-card: 14px;
+  --radius-bubble: 22px;
+  --radius-modal: 18px;
   --radius-full: 999px;
+  --radius: 0.75rem;
 
-  /* Typography */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --text-xs: 0.75rem;
-  --text-sm: 0.875rem;
-  --text-base: 1rem;
-  --text-lg: 1.125rem;
-  --text-xl: 1.25rem;
-  --text-2xl: 1.5rem;
+  /* ── Control heights (OpenBot scale) ────────────────────────────────── */
+  --control-xs: 24px;
+  --control-sm: 28px;
+  --control-md: 32px;
+  --control-lg: 36px;
+  --control-xl: 40px;
 
-  /* Spacing */
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 0.75rem;
-  --space-4: 1rem;
-  --space-5: 1.25rem;
-  --space-6: 1.5rem;
+  /* ── Typography ─────────────────────────────────────────────────────── */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI",
+    Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Monaco,
+    Consolas, monospace;
 
-  /* Motion */
-  --duration-fast: 100ms;
-  --duration-normal: 150ms;
-  --duration-slow: 300ms;
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* OpenBot's compact six-step scale (12 / 13 / 14 / 16 / 18 / 24) */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 24px;
+  --text-3xl: 32px;
 
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
-  --shadow-lg: 0 10px 25px rgba(0,0,0,0.5);
-  --shadow-xl: 0 25px 50px -12px rgba(0,0,0,0.6);
+  --leading-sm: 16px;
+  --leading-md: 18px;
+  --leading-lg: 20px;
+  --leading-xl: 22px;
+  --leading-2xl: 30px;
 
-  /* Window chrome */
-  --titlebar-height: 28px;
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --tracking-tight: -0.1px;
+
+  /* ── Spacing ────────────────────────────────────────────────────────── */
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ── Icons ──────────────────────────────────────────────────────────── */
+  --icon-xs: 12px;
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 20px;
+  --icon-stroke: 1.5;
+
+  /* ── Motion ─────────────────────────────────────────────────────────── */
+  --duration-fast: 120ms;
+  --duration-normal: 160ms;
+  --duration-slow: 200ms;
+  --duration-overlay: 240ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── Elevation (quiet — OpenBot leans on borders, not shadows) ─────── */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.36), 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 24px 60px -20px rgba(0, 0, 0, 0.7);
+  --shadow-raised: 0 12px 32px rgba(0, 0, 0, 0.4);
+  --focus-ring: 0 0 0 3px var(--brand-soft);
+
+  /* ── Layers ─────────────────────────────────────────────────────────── */
+  --layer-dropdown: 40;
+  --layer-popover: 60;
+  --layer-dialog: 100;
+  --layer-toast: 120;
+
+  /* ── Layout ─────────────────────────────────────────────────────────── */
+  --titlebar-height: 38px;
+  --header-height: 46px;
   --sidebar-width: 280px;
-  --header-height: 56px;
+  --chat-width: 760px;
 }
 
 /* High contrast overrides */
 @media (prefers-contrast: high) {
   :root {
     --surface-0: #000;
-    --surface-1: #000;
-    --surface-2: #111;
-    --surface-3: #fff;
+    --surface-1: #0a0a0a;
+    --surface-2: #141414;
+    --surface-3: #2a2a2a;
     --text-primary: #fff;
-    --text-secondary: #fff;
-    --accent: #00f;
+    --text-secondary: #eee;
+    --border: 0 0% 40%;
+    --hairline: #666666;
+    --hairline-strong: #999999;
   }
 }
 
@@ -98,5 +229,6 @@
     --duration-fast: 1ms;
     --duration-normal: 1ms;
     --duration-slow: 1ms;
+    --duration-overlay: 1ms;
   }
 }
