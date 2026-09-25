@@ -232,6 +232,176 @@
 - [x] **Telemetry that survives restarts**: `get_session_usage(bot_id)` sums `runs.tokens_consumed`/`cost_estimate` over the bot's threads — ThreadView loads the lifetime baseline on bot switch; live `Usage` events keep it current afterwards (was: session pill reset to $0 on every restart)
 - [x] Runtime tests still green with the extended event payloads
 
+## Phase 25 - Grok-Bot Parity: Live Agent Broker, Native Tool Loop & Agent Engines ✅
+
+### 25.1 Permission broker made real ⬜
+- [x] Registered the missing `list_pending_approvals` / `decide_approval` IPC — the DB queries, runtime parking, and UI cards existed but no Tauri command could write the decision, so every high-risk tool hung for 10 min then timed out
+- [x] `ask_user` human-in-the-loop question tool end to end: `QuestionRequest` domain type, migration 013 `questions`, `QuestionQueries`, runtime parking + answer polling, `question_asked`/`question_answered` stream events, IPC `list_pending_questions`/`answer_question`, and an inline answer card (option buttons + free text) in ThreadView
+- [x] Cooperative cancellation: `request_cancel` flag observed at the run's step boundaries; `cancel_run` IPC; engine processes cancelled immediately
+
+### 25.2 Native agent loop ⬜
+- [x] Native tool-message round-trip: `models::Message` now carries `tool_calls` + `tool_call_id`; OpenAI/OpenRouter/openai_compat/MiMo/CommandCode emit native `tool_calls` and `tool` results, Anthropic emits `tool_use`/`tool_result` blocks (was: results flattened into fake `user` text, ids lost)
+- [x] Configurable model↔tool rounds (`BotConfig.max_tool_rounds` / `RAVENBOT_MAX_TOOL_ROUNDS`, default 12, was hardcoded 5)
+- [x] Parallel tool execution for allowed calls (`futures::join_all`), results fed back in call order
+- [x] Ollama tool calls fixed — the default sovereign provider previously dropped them entirely
+- [x] Tests: native round-trip asserted in the E2E test, plus parallel-tools, cancellation, and `ask_user` park/resume
+
+### 25.3 Agent engines — run on the CLIs users already have ⬜
+- [x] New `ravenbot-engines` crate: an `AgentEngine` SPI that spawns a locally-installed agent CLI and normalizes its native protocol into one event stream (`EngineEvent`), with `CancelToken`, `kill_on_drop`, stderr capture, and honest auth/timeout errors
+- [x] **Claude Code driver**: real `stream-json` parsing (init/stream_event/assistant/user/result), session-id capture + `--resume`, effort levels, fail-closed `--permission-prompts none` for Ask/Auto, tokenization/cost; verified against a fake CLI in tests and detected live (2.1.263)
+- [x] **Codex driver**: tolerant `item.*`/`turn.completed` parser, approval-mode sandbox flags, detection
+- [x] **Generic ACP driver**: covers any Agent Client Protocol CLI (JSON-RPC stdio: initialize / session/new / session/prompt, permission requests); configure via `RAVENBOT_ACP_ENGINES`
+- [x] Runtime engine path: per-bot `config.engine`, engine turns stream over the same `StreamEvent` channel, persist the assistant message, record budget usage, honour kill switch/cancel; `<think>` reasoning blocks render in the existing Reasoning panel
+- [x] IPC `list_engines` / `set_bot_engine`; BotSettings execution-engine picker (Native / Claude Code / Codex / ACP, dimmed when not installed); chat header shows the active engine
+- [x] 17 engine tests incl. a deterministic fake-CLI stream test, plus a full runtime↔engine integration test
+
+## Phase 26 - Resilience: Fallback, Compaction, Resumable Runs ✅
+
+### 26.1 Provider fallback ⬜
+- [x] `Runtime::provider_chain` builds primary + configured `fallback_provider`/`fallback_model`; `call_model` tries each in order with one transient-retry per provider and returns the winning index so later rounds stay on the working provider
+- [x] BotSettings "Fallback Provider" selector + persisted config
+- [x] Test: failing primary transparently falls back to the secondary
+
+### 26.2 Context compaction ⬜
+- [x] Token estimator (chars/4) + per-model context window (Gemini 1M, Claude 200k, GPT/o 128k, Llama/Qwen 32k; overridable via `RAVENBOT_CONTEXT_TOKENS`)
+- [x] Deterministic sliding-window compaction before every model call: keeps the system prompt + newest messages that fit, replaces the dropped middle with an explicit "compacted" marker, and never starts the kept tail on an orphaned tool result
+- [x] Test: over-budget history is compacted while preserving system + latest turn
+
+### 26.3 Resumable pause/checkpoint ⬜
+- [x] The tool loop checkpoints the full in-flight message state (native tool results live only here, not in the transcript) after every round
+- [x] `request_pause` observed at the round boundary: parks the run as `Paused` with its checkpoint instead of failing; `pause_run` no longer clobbers the checkpoint
+- [x] `execute_run` restores a paused run's checkpoint (messages + rounds used) and continues; IPC `pause_run` / `resume_run`; UI Pause/Play targets the active run (from `run_started`) and resumes it, falling back to the global kill switch when no run is tracked
+- [x] `BotConfig.max_tool_rounds` + BotSettings "Max Tool Rounds" control
+- [x] Test: a run parks on pause with a checkpoint, then resumes to completion
+
+## Phase 27 - Real Sandbox Isolation ✅
+
+The `ravenbot-sandbox` crate was a policy object the runtime never used (`Sandbox::start` just flipped an enum; quotas/network were computed, never enforced). This phase makes isolation real and actually applies it.
+
+- [x] `SandboxRunner` (`crates/sandbox/src/runner.rs`): turns a `SandboxConfig` into an actual isolated `tokio::process::Command`
+  - **Filesystem**: bubblewrap mounts the system read-only, hides `$HOME` (so `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, `~/.netrc` are simply absent), never binds `/etc/shadow`/sudoers, and binds only the configured allowed paths + working directory read-write
+  - **Toolchain caches** (`.cargo`, `.rustup`, `.npm`, `.cache`, `.local/share/{pnpm,uv}`, …) are bound rw so `cargo`/`npm`/`pip` keep working without exposing credentials
+  - **Namespaces**: `--unshare-pid/uts/ipc`, `--unshare-net` when the network policy is blocked, `--die-with-parent`
+  - **Resource limits**: a POSIX `ulimit` shim (CPU time, address space, file size, process count) inherited by the whole process tree
+  - **Honest reporting**: `SandboxReport` names the backend actually used and whether filesystem/network isolation was applied; `Host` tier and missing `bwrap` degrade to limits-only and say so
+- [x] Per-bot tier flows through `SkillContext.sandbox_tier` (from `BotConfig.sandbox_tier`, `RAVENBOT_SANDBOX_TIER` for headless)
+- [x] `shell_exec` now runs every command through the runner and reports the sandbox in its result
+- [x] IPC `get_sandbox_report`; BotSettings "Command Isolation" tier picker with the live backend report
+- [x] Tests (all passing against real bubblewrap on this host): command runs, secrets hidden, network unreachable when blocked, vmem ulimit applied, toolchain caches reachable; plus shell_exec skill tests
+
+Verification on this machine: `bwrap 0.12.0` detected; `~/.ssh`-style paths hidden, external DNS blocked under `NetworkPolicy::blocked()`, `ulimit -v` capped, `cargo` reachable inside the sandbox.
+
+## Phase 28 - Real Computer Use ✅
+
+The desktop-control functions (`perform_click`/`type_text`/`key_press`/`scroll`/`move_mouse`) previously just logged and returned `success: true` without touching the machine. This phase makes them real and gives the bot a live screen.
+
+### 28.1 Real input injection ⬜
+- [x] `ravenbot_vision::input::InputInjector` — runtime backend detection: `xdotool` (X11/XWayland: click/move/scroll/type/key), `ydotool` (Wayland pointer), `wtype` (Wayland typing/keys), chosen per capability
+- [x] Command **planning is separated from execution**, so tests assert exact argv without moving the user's real cursor; `RAVENBOT_INPUT_DRY_RUN=1` makes execution a logged no-op
+- [x] Honest failure: with no backend the plan is `None` and the caller gets a descriptive error, never a fake success; `backend_summary()` reports which tools are live
+- [x] `ComputerController` now performs real actions and returns a post-action screenshot (capture failure never fails the action)
+- [x] Detected on this Wayland host: `pointer=ydotool typing=wtype keys=wtype`
+
+### 28.2 Computer-control skill ⬜
+- [x] `computer_control` skill exposes click / double_click / right_click / move / type / key / scroll / screenshot to the model, with a JSON schema and screen-pixel coordinates
+- [x] High risk → every action is gated by the approval broker (Allow/Deny) unless the bot is in Full mode; `ask_user`/`screenshot` stay ungated appropriately
+- [x] Auto-equipped when the request mentions desktop/click/mouse/keyboard/GUI/computer
+- [x] Tests: unknown action, missing text, real screenshot frame
+
+### 28.3 Desktop panel ⬜
+- [x] IPC `capture_screen` (returns a real PNG data-URL frame) and `get_input_backend` (availability + tool summary)
+- [x] `ComputerPanel.svelte`: live screen preview (polls every 1.5s, pausable), manual capture, backend status banner, and honest "no backend" guidance
+- [x] Header Monitor button in ThreadView opens the panel
+
+## Phase 29 - Teams, Channels, Webhooks & Marketplace ✅
+
+### 29.1 Install a team from one Markdown file ⬜
+- [x] `ravenbot_core::team::TeamPackage` — parses YAML frontmatter (bots with title/rank/specialty/prompt/model, optional office, optional routines) plus the human Markdown playbook; also accepts bare YAML/JSON. Validates: at least one bot, named bots, routines reference real bots
+- [x] `import_team_into(pool, md)` core (testable): creates bots (rank/title/prompt/model applied), an optional office with every bot as a member, and routines **created disabled** so an import never runs work unattended
+- [x] IPC `preview_team` / `fetch_and_preview_team` (URL) / `import_team`; `TeamImport.svelte` review screen (paste or URL) — nothing is created until Import, and the summary lists bots/office/paused routines
+- [x] Marketplace install = import a team file from a public URL (the BotMRR flow), on top of the existing 135-connector catalog
+- [x] Tests: parser (valid/missing-frontmatter/no-bots/unknown-bot/routine/summary) + import integration asserting paused routines
+
+### 29.2 Channels — named working contexts ⬜
+- [x] `Channel` domain type + migration 014 (`channels`, `channel_bots`, `threads.channel_id`); `ChannelQueries` (CRUD, roster)
+- [x] Threads can be filed under a channel; the runtime injects the channel's **shared instructions** and **working folder** into the system prompt for those threads
+- [x] IPC list/create/update/delete/set_channel_bots; `ChannelsPanel.svelte` (CRUD, instructions, folder, bot roster); ThreadView header channel picker for new threads
+- [x] `create_thread` accepts `channel_id`; Thread + ThreadRow carry it
+- [x] Tests: channel round-trip (instructions, folder, roster)
+
+### 29.3 Webhook triggers ⬜
+- [x] `ravenbot_scheduler::WebhookServer` — a deliberately minimal HTTP/1.1 receiver on **loopback only**: `GET /health` plus `POST /hooks/<secret>`; secret accepted from the path or `Authorization: Bearer`; body never parsed or trusted; responds 202 and runs the routine through the same executor cron uses
+- [x] Migration 014 adds `routines.webhook_secret` + `webhook_enabled`; `WebhookQueries` (set/rotate, lookup-by-secret, enabled-only)
+- [x] IPC `enable_routine_webhook` (returns URL+secret once) / `disable_routine_webhook` / `get_routine_webhook_status`; server started in app setup (best-effort; port conflict degrades to disabled, app still runs)
+- [x] RoutinesPanel: per-routine webhook toggle + one-time URL reveal with copy
+- [x] Tests: webhook server (health open, unknown secret 404, wrong method 405, missing secret 401, valid path + bearer 202 and executor ran) + secret-lookup enabled-only
+
+## Phase 30 - Real Office Orchestration + DAG Fixes ✅
+
+Offices previously routed by keyword substring matching or broadcast the same
+task to every member, and the graph executor had two correctness bugs.
+
+### 30.1 DAG correctness ⬜
+- [x] **Deadlock bug**: `has_deadlock` required a *running* node, so a graph with permanently-blocked (e.g. cyclic) pending nodes reported `false` and the executor spun forever. Now `!complete && ready.is_empty && running.is_empty`, and the error reports the state counts
+- [x] **Failed-dependency bug**: a node whose dependency failed/skipped stayed `Pending` forever, stalling the graph. Added `propagate_skips()` (cascades `Skipped` downstream), called each executor tick
+- [x] **DAG data flow**: dependent nodes now receive their dependencies' actual outputs via `input_for()` instead of only a value captured at creation time
+- [x] Tests: failed-dependency skip cascade, true-cycle deadlock detection, running-is-not-deadlock
+
+### 30.2 LLM orchestrator ⬜
+- [x] `ravenbot_runtime::orchestrator`: `plan_prompt` / `parse_plan` (tolerant of code fences + prose, balanced-brace extraction, capped at 6 tasks, drops out-of-range/forward dependencies) / `synthesis_prompt` / `resolve_member`
+- [x] `Runtime::plan_office` asks a **lead bot** (explicit orchestrator flag → "lead"/"chief"/"manager" rank → first member) for a JSON task DAG; `Runtime::synthesize_office` has the lead write the final integrated answer, with a concatenation fallback
+- [x] `send_to_chatroom` now: plans → builds a graph with real dependency edges → streams the run live → synthesizes via the lead → persists one coherent answer. Falls back to the previous member fan-out when planning fails, so an office always does *something*
+- [x] Tests: plan parsing, plan→runtime parse, synthesis via the lead provider, graceful fallback on unparseable output
+
+## Phase 31 - Honest Core Tools: DB Path, Read-Only Queries, Real Browser Input ✅
+
+### 31.1 Headless processes opened the wrong database ⬜
+- [x] `ravenbot_mcp::server::default_db_path()` resolved to `~/.local/share/ravenbot/ravenbot.db`, but the desktop app uses Tauri's `app_data_dir()` = `~/.local/share/com.ravenbot.desktop/ravenbot.db`. So `ravenbot run` / `list-bots` / `mcp-serve` operated on a **different, empty** database (verified: the CLI saw 0 bots while the app had 2)
+- [x] New `ravenbot_core::paths` — single source of truth (`APP_IDENTIFIER`, `data_dir`, `app_data_dir`, `default_db_path`), reproducing Tauri's layout on macOS/Windows/Linux; the MCP server and tools now delegate to it
+- [x] Verified live: `./target/debug/ravenbot list-bots` now lists the app's real bots; the old wrong-path directory is never created
+- [x] Test: resolved path is under the app identifier and the `RAVENBOT_DB` override wins
+
+### 31.2 `db_query` was injectable and returned prose ⬜
+- [x] The old skill shelled out to `sqlite3` with hand-rolled, broken quoting (mangled legitimate queries) and a prefix-only guard that let `SELECT 1; DROP TABLE bots` execute the drop
+- [x] Rewritten on **sqlx with a read-only connection**: a single statement per call (sqlx rejects chaining), SQLite itself refuses writes, the `path` argument is honored, and rows come back as **structured JSON** with column names, a row count, and a truncation flag
+- [x] Tests: structured select, write statements rejected, the `SELECT 1; DROP TABLE` chain leaves the table intact, prefix classifier is conservative
+
+### 31.3 Browser click/fill/scroll were fabricated successes ⬜
+- [x] Coordinate clicks, typing, and scrolling now use the real desktop input backend (`xdotool`/`ydotool`/`wtype`); `wait` is implemented
+- [x] Selector-only clicks/fills need a live browser DOM we don't own, so they now **fail honestly** with guidance instead of returning `success: true`
+- [x] Tests: selector click refused, coordinate click reports the real backend (or its absence)
+
+## Phase 32 - Fix: Dev Server Crash on Svelte `<style>` Blocks ✅
+
+Symptom: `[vite] Internal server error: Invalid declaration: \`invoke\`` from
+`@tailwindcss/vite:generate:serve`, on `ThreadView.svelte?svelte&type=style&lang.css`.
+
+Root cause (traced in `@tailwindcss/vite/dist/index.mjs`):
+- Tailwind's `enforce:"pre"` transform filter `include` list contains `/&lang\.css/`, so it matches Svelte's compiled-style virtual module ids.
+- `vite-plugin-svelte`'s `load` only returns that module's CSS **after** the component has been compiled and its CSS cached. When the style module is requested first (fresh server/HMR ordering), `load` returns nothing, Vite falls back to reading the raw `.svelte` file, and Tailwind parses the whole component — `<script>` included — as CSS, erroring on the first JS token (`invoke`).
+
+Fix (deterministic, no dependency patching):
+- Moved every component `<style>` block into one global stylesheet, `src/lib/styles/components.css` (imported by `app.css`): `.shimmer`/keyframes, `.no-scrollbar`, the full `.markdown-content` + `.think-*` set, and `.sr-only`/`.focus-trap-sr`. With no `<style>` blocks, Svelte emits no `&lang.css` modules and Tailwind never sees one.
+- Added `src/lib/styles/no-component-styles.test.ts` — a vitest guard that fails if any `.svelte` file reintroduces a `<style>` block.
+- Verified: fresh `vite dev` serves the page and components with **no** errors, Tailwind utilities are still generated, `svelte-check` clean, `npm test` 18/18, production build succeeds.
+
+## Phase 33 - Fix: Slow First Reply + Vanishing User Message + Flaky Test ✅
+
+### 33.1 A simple "hi" took ~50 seconds ⬜
+- [x] Cause: `McpRegistry::skills_for_bot` ran **synchronously** before the model call, spawning every globally-enabled MCP server (`npx -y …` / `uvx …`) with a 25s init timeout. With 8 enabled servers that is two waves of cold starts (measured: user message at 10:55:50, reply at 10:56:43 = **53s**)
+- [x] Fix: build the per-bot tool list from the fresh cache when present, otherwise use the **instant synthesized descriptors** and warm the real discovery in a **detached background task** (deduped by an in-flight set). The run never blocks on server spawn; the real tools land in the 10-min cache for the next turn
+- [x] Measured: `ravenbot run --message "hi"` dropped from ~53s to **3.8s**
+
+### 33.2 The user's message disappeared after the answer ⬜
+- [x] Cause: `selectedBot` is `$derived(bots.find(…))`, and every `status`/`usage` stream event calls `onBotUpdated`, which replaces that object. ThreadView's thread-loading `$effect` depended on the whole `bot`, so it re-ran mid-run, cleared `messages`, set `selectedThreadId = null`, and reloaded `threads[0]` — dropping the active thread (and its user message) once the run finished
+- [x] Fix: the effect is now guarded by `loadedBotId` and only reloads when the **bot id actually changes**; status/telemetry updates no longer touch the transcript
+- [x] Persistence itself was already correct (verified: user + assistant rows both present, correct order) — this was purely a UI reset
+
+### 33.3 Flaky engine test (`Text file busy`) ⬜
+- [x] `parses_fake_stream_json_into_events_and_outcome` failed ~15% of the time under parallel load: `failed to spawn … Text file busy (os error 26)` — ETXTBSY, a fork/exec race on a just-written script
+- [x] Fix (production, not just test): `process::spawn_with_stdin` now retries briefly on ETXTBSY, which also protects real users who point `RAVENBOT_CLAUDE_CMD`/`_CODEX_CMD` at a generated wrapper script
+- [x] Stress-verified: 0 failures in 25 runs at `--test-threads=16` (was 3/20)
+
 ## Performance Targets
 
 Measured via `scripts/bench.sh` (release build):
