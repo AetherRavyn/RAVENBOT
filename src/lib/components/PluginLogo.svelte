@@ -200,7 +200,7 @@
     </div>
   {:else}
     <!-- Generic Fallback with Beautiful Neon Initial Badge -->
-    <div class="size-full bg-gradient-to-br from-purple-900/60 to-indigo-900/60 border border-purple-500/40 p-1 flex items-center justify-center rounded-xl font-mono font-bold text-white shadow">
+    <div class="size-full bg-[#1a1430] border border-purple-500/40 p-1 flex items-center justify-center rounded-xl font-mono font-bold text-[var(--text-primary)] shadow">
       <span>{(name || id || "PL").slice(0, 2).toUpperCase()}</span>
     </div>
   {/if}

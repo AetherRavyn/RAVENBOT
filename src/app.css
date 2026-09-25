@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+@import "@fontsource-variable/fira-code";
 @import "./lib/styles/tokens.css";
 @import "./lib/styles/components.css";
 
@@ -178,10 +179,6 @@ textarea {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.55; }
 }
-@keyframes rb-typing {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.45; }
-  30% { transform: translateY(-3px); opacity: 1; }
-}
 @keyframes rb-spin {
   to { transform: rotate(360deg); }
 }
@@ -207,4 +204,25 @@ textarea {
   .shimmer {
     animation: none !important;
   }
+  /* Tailwind's own animate-spin/pulse/ping/bounce and tailwindcss-animate
+     utilities are not covered by the rules above — neutralize everything. */
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* In-app "reduce motion" setting mirrors the media query above —
+   Workspace.svelte toggles this class on <html>. */
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
 }

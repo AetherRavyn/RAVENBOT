@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { THEMES, getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition } from "$lib/theme";
+  import { t } from "$lib/i18n";
   import ThemeLogo from "$lib/components/ThemeLogo.svelte";
   import {
     Minus,
@@ -104,23 +105,13 @@
         type="button"
         class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/[0.06] transition-colors cursor-pointer"
         onclick={onToggleSidebar}
-        title="Toggle Sidebar (⌘B)"
+        title={t("titlebar.toggleSidebar")}
       >
         <PanelLeft class="size-3.5" />
       </button>
     {/if}
-    <div class="size-4.5 flex items-center justify-center pointer-events-none">
-      <ThemeLogo theme={currentTheme} size="sm" class="!size-4.5" />
-    </div>
     <span data-tauri-drag-region class="font-semibold tracking-tight text-[11px] text-[var(--text-primary)]">
       {currentTheme.brand.brandTitle}<span class="text-[var(--brand-text)]">{currentTheme.brand.brandAccent}</span>
-    </span>
-    <span
-      data-tauri-drag-region
-      class="text-[9px] font-mono uppercase px-1.5 py-0.2 rounded border hidden sm:inline-block"
-      style="color: {currentTheme.accentColor}; background-color: {currentTheme.primaryColor}15; border-color: {currentTheme.borderHex};"
-    >
-      {currentTheme.brand.badgeLabel}
     </span>
   </div>
 
@@ -147,10 +138,10 @@
           e.stopPropagation();
           showThemeDropdown = !showThemeDropdown;
         }}
-        title="Switch UI Theme"
+        title={t("titlebar.switchTheme")}
       >
         <span class="size-2.5 rounded-full ring-1 ring-white/30" style="background-color: {currentTheme.primaryColor}"></span>
-        <span class="hidden md:inline text-[10px] font-medium text-[var(--text-secondary)]">Theme</span>
+        <span class="hidden md:inline text-[10px] font-medium text-[var(--text-secondary)]">{t("titlebar.theme")}</span>
       </button>
 
       <!-- Theme Switcher Popover -->
@@ -162,11 +153,11 @@
           onclick={(e) => e.stopPropagation()}
         >
           <div class="flex items-center justify-between pb-1.5 border-b px-1" style="border-color: {currentTheme.borderHex};">
-            <span class="text-xs font-bold text-white flex items-center gap-1.5">
+            <span class="text-xs font-bold text-[var(--text-primary)] flex items-center gap-1.5">
               <Palette class="size-3.5" style="color: {currentTheme.primaryColor}" />
-              Switch Visual World
+              {t("titlebar.visualWorld")}
             </span>
-            <span class="text-[10px] text-[var(--text-muted)] font-mono">{THEMES.length} Worlds</span>
+            <span class="text-[10px] text-[var(--text-muted)] font-mono">{t("titlebar.worlds", { n: THEMES.length })}</span>
           </div>
 
           <div class="space-y-1 max-h-72 overflow-y-auto pr-0.5">
@@ -185,7 +176,7 @@
                     <ThemeLogo theme={t} size="sm" class="!size-6" />
                   </div>
                   <div class="min-w-0">
-                    <div class="font-bold text-xs text-white truncate">{t.name}</div>
+                    <div class="font-bold text-xs text-[var(--text-primary)] truncate">{t.name}</div>
                     <div class="text-[10px] text-[var(--text-muted)] truncate">{t.category}</div>
                   </div>
                 </div>
@@ -208,8 +199,8 @@
       type="button"
       class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/[0.06] active:scale-90 transition-all duration-150 cursor-pointer"
       onclick={handleMinimize}
-      title="Minimize Window"
-      aria-label="Minimize Window"
+      title={t("titlebar.minimize")}
+      aria-label={t("titlebar.minimize")}
     >
       <Minus class="size-3.5 stroke-[2.5]" />
     </button>
@@ -219,8 +210,8 @@
       type="button"
       class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/[0.06] active:scale-90 transition-all duration-150 cursor-pointer"
       onclick={handleToggleMaximize}
-      title={isMaximized ? "Restore Window" : "Maximize Window"}
-      aria-label={isMaximized ? "Restore Window" : "Maximize Window"}
+      title={isMaximized ? t("titlebar.restore") : t("titlebar.maximize")}
+      aria-label={isMaximized ? t("titlebar.restore") : t("titlebar.maximize")}
     >
       {#if isMaximized}
         <Copy class="size-3 stroke-[2.5]" />
@@ -232,10 +223,10 @@
     <!-- Window Close Button -->
     <button
       type="button"
-      class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-white hover:bg-[var(--status-danger)] active:scale-90 transition-all duration-150 cursor-pointer"
+      class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--status-danger)] active:scale-90 transition-all duration-150 cursor-pointer"
       onclick={handleClose}
-      title="Close Window"
-      aria-label="Close Window"
+      title={t("titlebar.close")}
+      aria-label={t("titlebar.close")}
     >
       <X class="size-3.5 stroke-[2.5]" />
     </button>

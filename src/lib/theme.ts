@@ -157,16 +157,16 @@ export const THEMES: ThemeDefinition[] = [
     id: "openbot",
     name: "OpenBot",
     category: "Neutral",
-    primaryColor: "#007cf7",
-    accentColor: "#42a0ff",
-    secondaryAccent: "#31cf76",
+    primaryColor: "#79b8ff",
+    accentColor: "#a6d2ff",
+    secondaryAccent: "#9ae6b4",
     buttonHex: "#f0f0f0",
     buttonForegroundHex: "#141414",
-    bgHex: "#1a1a1a",
+    bgHex: "#141414",
     cardHex: "#212121",
     borderHex: "#2a2a2a",
     textColor: "#ffffff",
-    mutedTextColor: "#979797",
+    mutedTextColor: "#9a9aa0",
     description: "OpenBot's neutral dark system — greyscale canvas, blue accent, light primary button",
     brand: flatBrand("RAVEN", "BOT", "LOCAL OS", "Sovereign Local-First Agent OS", "A persistent fleet of agents that live on your machine"),
   },
@@ -425,10 +425,10 @@ export function applyTheme(themeId: string) {
     root.style.setProperty("--surface-3", mixHex(card, text, 0.1));
     root.style.setProperty("--surface-4", mixHex(card, text, 0.16));
     root.style.setProperty("--text-primary", text);
-    root.style.setProperty("--text-secondary", muted);
-    root.style.setProperty("--text-tertiary", mixHex(muted, bg, 0.35));
-    root.style.setProperty("--text-muted", mixHex(muted, bg, 0.55));
-    root.style.setProperty("--text-faint", mixHex(muted, bg, 0.75));
+    root.style.setProperty("--text-secondary", mixHex(text, muted, 0.18));
+    root.style.setProperty("--text-tertiary", muted);
+    root.style.setProperty("--text-muted", mixHex(muted, bg, 0.28));
+    root.style.setProperty("--text-faint", mixHex(muted, bg, 0.45));
     root.style.setProperty("--hairline", border);
     root.style.setProperty("--hairline-strong", mixHex(border, text, 0.14));
 
@@ -450,8 +450,8 @@ export function applyTheme(themeId: string) {
     // hover); focus/selection come from --ring below.
     root.style.setProperty("--accent", hexToHslTriplet(mixHex(card, text, 0.08)));
     root.style.setProperty("--accent-foreground", hexToHslTriplet(text));
-    root.style.setProperty("--destructive", hexToHslTriplet("#ef4444"));
-    root.style.setProperty("--destructive-foreground", hexToHslTriplet("#ffffff"));
+    root.style.setProperty("--destructive", hexToHslTriplet("#ff96a0"));
+    root.style.setProperty("--destructive-foreground", hexToHslTriplet("#141414"));
     root.style.setProperty("--border", hexToHslTriplet(border));
     root.style.setProperty("--input", hexToHslTriplet(border));
     // Focus ring = the BLUE accent (or the theme's accent colour).

@@ -1,1 +1,5 @@
-<!-- RAVENBOT page — layout owns the app shell; this page is intentionally empty for SPA fallback -->
+<script lang="ts">
+  import Workspace from "$lib/components/workspace/Workspace.svelte";
+</script>
+
+<Workspace />

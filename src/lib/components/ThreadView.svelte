@@ -5,7 +5,7 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { Button } from "$lib/components/ui/button";
   import AgentIntelligence from "$lib/components/AgentIntelligence.svelte";
-  import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
+  import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
   import ArtifactPanel from "$lib/components/ArtifactPanel.svelte";
   import RoutinesPanel from "$lib/components/RoutinesPanel.svelte";
@@ -33,7 +33,7 @@
     type PendingAttachment,
   } from "$lib/attachments";
   import {
-    getCatalog, providerById, modelsFor,
+    getCatalog, providerById, modelsFor, modelSummary, modelMetaFor,
     type CatalogProvider,
   } from "$lib/model-catalog";
   import {
@@ -59,6 +59,7 @@
     Settings,
     ShieldAlert,
     ArrowUp,
+    ArrowDown,
     ChevronDown,
     Copy,
     Check,
@@ -125,6 +126,15 @@
   let switcherError = $state<string | null>(null);
   // Availability: global default model + local engine reachability (with reason)
   let switcherDefault = $state<{ provider: string; model: string } | null>(null);
+  // Load the owner's global default once at mount so the header pill labels
+  // honestly before the switcher has ever been opened.
+  $effect(() => {
+    invoke<any>("get_default_model")
+      .then((def: any) => {
+        if (def?.provider && !switcherDefault) switcherDefault = { provider: def.provider, model: def.model };
+      })
+      .catch(() => {});
+  });
   let switcherOllamaOk = $state<boolean | null>(null);
   let switcherOllamaError = $state<string | null>(null);
 
@@ -215,14 +225,54 @@
   let sessionCost = $state(0.0);
   let userAvatar = $state<string | null>(null);
   let messagesContainer = $state<HTMLDivElement | null>(null);
+  // OpenBot scroll behavior: auto-follow only while the reader is already at
+  // the bottom (within 80px); scrolling up during a run unsticks and reveals
+  // the jump-to-latest pill. `staticEntries` flags bulk history loads so row
+  // entrances animate only live appends (see $lib/chat/entrance).
+  let stickToLatest = $state(true);
+  let staticEntries = $state(true);
+  import { StreamReveal } from "$lib/chat/streamReveal.svelte";
+  import { prefersReducedMotion, announce } from "$lib/a11y";
+  import ChatActionMarker from "$lib/components/chat/ChatActionMarker.svelte";
+  import { t } from "$lib/i18n";
+
   let textareaRef = $state<HTMLTextAreaElement | null>(null);
+
+  // OpenBot ghost variant: replies that are only a code block or only a table
+  // render edge-to-edge with no bubble chrome.
+  function isGhostContent(text: string): boolean {
+    const t = (text || "").trim();
+    return /^```[\s\S]*```\s*$/.test(t) || /^\|.+\n\|[-| :]+\n/.test(t);
+  }
   let deepSearchActive = $state(false);
   let thinkActive = $state(false);
   let copiedMessageId = $state<string | null>(null);
 
   // Live streaming state (tokens arrive over the agent-stream event channel)
   let streamingText = $state("");
+  // Word-by-word reveal decoupled from token arrival (OpenBot streaming feel)
+  const reveal = new StreamReveal();
+  $effect(() => reveal.track(streamingText));
+  // OpenBot AgentActivity: a playful line is picked per run while no tokens show yet
+  const ACTIVITY_LINES = [
+    "activity.thinking",
+    "activity.working",
+    "activity.dots",
+    "activity.fleet",
+    "activity.gears",
+  ] as const;
+  let activityLine = $state<(typeof ACTIVITY_LINES)[number]>(ACTIVITY_LINES[0]);
+  let wasSending = false;
+  $effect(() => {
+    if (sending && !wasSending) {
+      activityLine = ACTIVITY_LINES[Math.floor(Math.random() * ACTIVITY_LINES.length)];
+    }
+    wasSending = sending;
+  });
   let streamingTool = $state<string | null>(null);
+  // OpenBot ChatActionMarker feed: one quiet mini-row per tool call in this run
+  let actionMarkers = $state<{ id: number; name: string; done: boolean }[]>([]);
+  let markerSeq = 0;
   let streamingSources = $state<any[]>([]);
   // Live images produced by tools during the run (e.g. screenshots)
   let streamingImages = $state<{ name: string; data_url: string }[]>([]);
@@ -331,10 +381,27 @@
             break;
           case "tool_started":
             streamingTool = payload.name;
+            actionMarkers = [
+              ...actionMarkers,
+              { id: markerSeq++, name: payload.name || "tool", done: false },
+            ];
+            scrollToBottom();
             break;
-          case "tool_finished":
+          case "tool_finished": {
             streamingTool = null;
+            const nm = payload.name || "tool";
+            let flipped = false;
+            for (let i = actionMarkers.length - 1; i >= 0; i--) {
+              if (!actionMarkers[i].done && actionMarkers[i].name === nm) {
+                actionMarkers[i].done = true;
+                flipped = true;
+                break;
+              }
+            }
+            if (!flipped) actionMarkers = [...actionMarkers, { id: markerSeq++, name: nm, done: true }];
+            actionMarkers = actionMarkers.slice();
             break;
+          }
           case "sources":
             for (const src of payload?.sources || []) {
               if (src?.url && !streamingSources.some((s) => s.url === src.url)) {
@@ -352,9 +419,11 @@
             }
             break;
           case "done":
-            streamingText = "";
+            // OpenBot: snap the reveal sharp-full and HOLD the streamed text
+            // until sendMessage's finally reloads history — clearing here is
+            // what flashed the activity shimmer between `done` and the commit.
+            reveal.finish();
             streamingTool = null;
-            streamingSources = []; streamingImages = [];
             activeRunId = null;
             pausedRunId = null;
             if (selectedThreadId) {
@@ -368,6 +437,9 @@
               const nextStatus = payload.state === "done" ? "idle" : payload.state;
               if (bot.status !== nextStatus) {
                 onBotUpdated?.({ ...bot, status: nextStatus });
+                if (nextStatus === "emulating_tools" || nextStatus === "waiting_on_user" || nextStatus === "paused") {
+                  announce(getStatusTheme(nextStatus).label);
+                }
               }
             }
             break;
@@ -382,6 +454,7 @@
             // A tool parked for a decision: card appears, composer blocks.
             if (payload?.approval && !pendingApprovals.some((a) => a.id === payload.approval.id)) {
               pendingApprovals = [...pendingApprovals, payload.approval];
+              announce("Tool approval needed");
               scrollToBottom();
             }
             break;
@@ -413,6 +486,7 @@
   onDestroy(() => {
     unlisten?.();
     unlisten = null;
+    reveal.stop();
     stopVoiceMode();
   });
 
@@ -470,7 +544,25 @@
     }
   }
 
-  async function scrollToBottom() {
+  function handleFeedScroll() {
+    const el = messagesContainer;
+    if (!el) return;
+    stickToLatest = el.scrollHeight - el.scrollTop - el.clientHeight <= 80;
+  }
+
+  function jumpToLatest() {
+    stickToLatest = true;
+    messagesContainer?.scrollTo({
+      top: messagesContainer.scrollHeight,
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  }
+
+  // Tokens follow the feed only while the reader is stuck to the bottom;
+  // explicit actions (send, thread open) force back to stuck.
+  async function scrollToBottom(force = false) {
+    if (!force && !stickToLatest) return;
+    stickToLatest = true;
     await tick();
     if (messagesContainer) {
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -480,16 +572,21 @@
   async function loadMessages(threadId: string) {
     selectedThreadId = threadId;
     showThreadDropdown = false;
+    staticEntries = true;
     streamingText = "";
     streamingTool = null;
+    actionMarkers = [];
     streamingSources = []; streamingImages = [];
     refreshApprovals(threadId);
     refreshQuestions(threadId);
     editingMessage = null;
     try {
       messages = await invoke("list_messages", { threadId });
-      scrollToBottom();
+      await tick();
+      staticEntries = false;
+      scrollToBottom(true);
     } catch (e) {
+      staticEntries = false;
       console.error("Failed to load messages:", e);
     }
   }
@@ -613,6 +710,7 @@
 
     sending = true;
     newMessage = "";
+    actionMarkers = [];
     if (textareaRef) {
       textareaRef.style.height = "auto";
     }
@@ -648,7 +746,8 @@
         created_at: new Date().toISOString(),
       };
       messages = [...messages, tempUserMsg];
-      scrollToBottom();
+      // An explicit send always returns the feed to the bottom (OpenBot).
+      scrollToBottom(true);
 
       if (editingMessage) {
         // Edit-and-resend: backend removes this turn + everything after it
@@ -861,6 +960,9 @@
     } finally {
       regenerating = false;
       streamingText = "";
+      // `done` no longer clears the live side-buffers (it holds them until
+      // commit); this is where a regenerate run drops them.
+      streamingSources = []; streamingImages = [];
       scrollToBottom();
       if (!voiceMode) {
         const last = messages[messages.length - 1];
@@ -953,6 +1055,8 @@
         return { dot: "bg-warning animate-pulse", text: "text-warning", label: "Reasoning…" };
       case "running_tool":
         return { dot: "bg-[var(--status-running)] animate-pulse", text: "text-[var(--status-running)]", label: "Running Tool…" };
+      case "emulating_tools":
+        return { dot: "bg-[var(--brand)] animate-pulse", text: "text-[var(--brand-text)]", label: t("runtime.emulatingTools") };
       case "waiting_on_user":
         return { dot: "bg-danger", text: "text-danger", label: "Waiting on input" };
       case "paused":
@@ -963,10 +1067,16 @@
   }
 
   function getModelDisplayName(b: any) {
-    if (!b?.config) return "claude-3.5-sonnet";
-    const p = b.config.model_provider || "openrouter";
-    const m = b.config.model_id || "claude-3-5-sonnet";
-    return `${p}/${m.split("/").pop()}`;
+    // No invented fallbacks: show what's configured, else the owner's global
+    // default (get_default_model), else an honest "?".
+    const p = b?.config?.model_provider || switcherDefault?.provider || "?";
+    const m = b?.config?.model_id || switcherDefault?.model || "?";
+    return `${p}/${String(m).split("/").pop()}`;
+  }
+
+  function currentModelFacts(b: any): string {
+    if (!b?.config?.model_provider || !b?.config?.model_id) return "";
+    return modelSummary(modelMetaFor(b.config.model_provider, b.config.model_id));
   }
 
   function formatTime(isoStr: string) {
@@ -1213,12 +1323,12 @@
       </div>
 
       <div class="flex items-center gap-2 min-w-0">
-        <span class="font-bold text-sm text-white truncate">{bot.name}</span>
+        <span class="font-bold text-sm text-[var(--text-primary)] truncate">{bot.name}</span>
 
         {#if bot?.config?.engine && bot.config.engine !== "native"}
           <span
             class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] hidden sm:inline-flex items-center gap-1"
-            title="This bot runs on an external agent CLI"
+            title={t("thread.cliBot")}
           >
             <Cpu class="size-2.5" /> {bot.config.engine}
           </span>
@@ -1233,7 +1343,9 @@
               e.stopPropagation();
               openModelSwitcher();
             }}
-            title="Switch model (per-conversation)"
+            aria-expanded={showModelSwitcher}
+            aria-haspopup="dialog"
+            title={`${t("thread.switchModel")}${currentModelFacts(bot) ? " · " + currentModelFacts(bot) : ""}`}
           >
             <span class="truncate">{getModelDisplayName(bot)}</span>
             <ChevronDown class="size-2.5 shrink-0" />
@@ -1277,8 +1389,9 @@
               <div class="flex items-center gap-1.5 pt-1 border-t border-[var(--hairline)] mt-1">
                 <input
                   bind:value={switcherModel}
+                  aria-label="Custom model id"
                   placeholder="model id…"
-                  class="flex-1 min-w-0 h-6 px-2 rounded-lg bg-[var(--surface-0)] border border-[var(--hairline)] text-[10px] font-mono text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+                  class="flex-1 min-w-0 h-6 px-2 rounded-lg bg-[var(--surface-0)] border border-[var(--hairline)] text-[10px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
                   onkeydown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -1300,9 +1413,9 @@
         </div>
 
         {#if currentThread?.ephemeral}
-          <span class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-warning/15 border border-warning/30 text-warning flex items-center gap-1 shrink-0" title="Temporary chat — not feeding agent memory">
+          <span class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-warning/15 border border-warning/30 text-warning flex items-center gap-1 shrink-0" title={t("thread.tempTip")}>
             <Ghost class="size-3" />
-            <span>Temporary</span>
+            <span>{t("thread.temp")}</span>
           </span>
         {/if}
       </div>
@@ -1316,7 +1429,8 @@
             e.stopPropagation();
             showThreadDropdown = !showThreadDropdown;
           }}
-          title="Switch Thread"
+          aria-expanded={showThreadDropdown}
+          title={t("thread.switchThread")}
         >
           <MessageSquare class="size-3 text-[var(--brand-text)]" />
           <span class="max-w-[130px] truncate text-[11px] font-mono">
@@ -1333,7 +1447,7 @@
             onclick={(e) => e.stopPropagation()}
           >
             <div class="flex items-center justify-between px-2 py-1 border-b border-[var(--hairline)]">
-              <span class="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono">Chat History</span>
+              <span class="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono">{t("thread.chatHistory")}</span>
               <button
                 type="button"
                 class="text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-hover)] flex items-center gap-1 cursor-pointer"
@@ -1349,9 +1463,10 @@
                 <button
                   type="button"
                   class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs truncate transition-colors cursor-pointer flex items-center justify-between {isSelected
-                    ? 'bg-[var(--surface-3)] text-white font-medium border border-[var(--hairline-strong)]'
+                    ? 'bg-[var(--surface-3)] text-[var(--text-primary)] font-medium border border-[var(--hairline-strong)]'
                     : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                   onclick={() => loadMessages(thread.id)}
+                  aria-pressed={isSelected}
                 >
                   <span class="truncate">{thread.title || "Untitled"}</span>
                   {#if isSelected}
@@ -1359,7 +1474,7 @@
                   {/if}
                 </button>
               {:else}
-                <div class="p-3 text-center text-xs text-[var(--text-muted)]">No previous threads</div>
+                <div class="p-3 text-center text-xs text-[var(--text-muted)]">{t("thread.noPrev")}</div>
               {/each}
             </div>
           </div>
@@ -1371,10 +1486,10 @@
         type="button"
         class="h-7 px-2 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-xs text-[var(--text-secondary)] flex items-center gap-1 cursor-pointer transition-colors"
         onclick={createNewThread}
-        title="Start fresh conversation"
+        title={t("thread.newThread")}
       >
         <Plus class="size-3.5" />
-        <span class="hidden md:inline text-[11px]">New</span>
+        <span class="hidden md:inline text-[11px]">{t("thread.new")}</span>
       </button>
     </div>
 
@@ -1385,7 +1500,8 @@
         type="button"
         class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-xs font-mono flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={() => (showCostInfo = !showCostInfo)}
-        title="Session Telemetry & Tokens"
+        aria-pressed={showCostInfo}
+        title={t("thread.telemetry")}
       >
         <DollarSign class="size-3 text-success" />
         <span>${sessionCost.toFixed(4)}</span>
@@ -1396,7 +1512,7 @@
         type="button"
         class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-xs flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={() => (showIntelligence = true)}
-        title="Agent Intelligence & Memory"
+        title={t("thread.intelligence")}
       >
         <Brain class="size-3 text-[var(--brand-text)]" />
         <span class="hidden md:inline text-[11px]">{bot.name.split(" ")[0]} Intelligence</span>
@@ -1407,7 +1523,9 @@
         type="button"
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showThreadDrawer ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
         onclick={() => (showThreadDrawer = !showThreadDrawer)}
-        title="Toggle Thread History Sidebar"
+        aria-pressed={showThreadDrawer}
+        aria-label={t("thread.historyToggle")}
+        title={t("thread.historyToggle")}
       >
         <History class="size-3.5" />
       </button>
@@ -1417,7 +1535,9 @@
         type="button"
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showComputer ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
         onclick={() => (showComputer = true)}
-        title="Computer — live screen & desktop control"
+        aria-pressed={showComputer}
+        aria-label={t("thread.computer")}
+        title={t("thread.computer")}
       >
         <Monitor class="size-3.5" />
       </button>
@@ -1431,7 +1551,7 @@
             ...channelOptions.map((c) => ({ value: c.id, label: c.name })),
           ]}
           onValueChange={(v) => (activeChannelId = v || null)}
-          placeholder="No channel"
+          placeholder={t("thread.noChannel")}
           class="h-7 w-32 rounded-lg text-[10px] font-mono"
         />
       {/if}
@@ -1441,7 +1561,9 @@
         type="button"
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showChannels ? 'bg-success/20 text-success border-success/40' : ''}"
         onclick={() => (showChannels = true)}
-        title="Channels — shared contexts"
+        aria-pressed={showChannels}
+        aria-label={t("thread.channels")}
+        title={t("thread.channels")}
       >
         <Hash class="size-3.5" />
       </button>
@@ -1451,7 +1573,9 @@
         type="button"
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showTeamImport ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
         onclick={() => (showTeamImport = true)}
-        title="Import a team from Markdown"
+        aria-pressed={showTeamImport}
+        aria-label={t("thread.importTeam")}
+        title={t("thread.importTeam")}
       >
         <Users class="size-3.5" />
       </button>
@@ -1461,7 +1585,9 @@
         type="button"
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showRoutines ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
         onclick={() => (showRoutines = true)}
-        title="Scheduled Routines (cron)"
+        aria-pressed={showRoutines}
+        aria-label={t("routines.title")}
+        title={t("routines.title")}
       >
         <Clock class="size-3.5" />
       </button>
@@ -1471,7 +1597,9 @@
         type="button"
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showSync ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
         onclick={() => (showSync = true)}
-        title="Fleet Sync & Backup (signed bundles)"
+        aria-pressed={showSync}
+        aria-label={t("thread.fleetSync")}
+        title={t("thread.fleetSync")}
       >
         <Boxes class="size-3.5" />
       </button>
@@ -1481,7 +1609,8 @@
         type="button"
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={triggerOpenSettings}
-        title="Configure Model & API Keys (⌘,)"
+        aria-label={t("thread.settingsKeys")}
+        title={t("thread.settingsKeys")}
       >
         <Settings class="size-3.5" />
       </button>
@@ -1491,6 +1620,8 @@
         type="button"
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={togglePause}
+        aria-label={bot.status === "paused" ? "Resume agent" : "Pause all agents"}
+        aria-pressed={bot.status === "paused"}
         title={bot.status === "paused" ? "Resume agent" : "Pause all agents (kill switch)"}
       >
         {#if bot.status === "paused"}
@@ -1506,12 +1637,12 @@
   {#if showCostInfo}
     <div class="px-4 py-2 bg-[var(--surface-0)] border-b border-[var(--hairline)] flex items-center justify-between text-xs text-[var(--text-tertiary)] font-mono">
       <div class="flex items-center gap-6">
-        <span>Tokens: <strong class="text-white">{sessionTokens.toLocaleString()}</strong></span>
-        <span>Cost: <strong class="text-success">${sessionCost.toFixed(4)}</strong></span>
-        <span>Model: <strong class="text-[var(--brand-text)]">{getModelDisplayName(bot)}</strong></span>
+        <span>{t("thread.tokens")}: <strong class="text-[var(--text-primary)]">{sessionTokens.toLocaleString()}</strong></span>
+        <span>{t("thread.cost")}: <strong class="text-success">${sessionCost.toFixed(4)}</strong></span>
+        <span>{t("thread.model")}: <strong class="text-[var(--brand-text)]">{getModelDisplayName(bot)}</strong></span>
       </div>
-      <span class="text-[10px] px-2 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-mono">
-        LOCAL HARDWARE ENCLAVE
+      <span class="text-[10px] px-2 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-mono uppercase">
+        {t("thread.enclaveBadge")}
       </span>
     </div>
   {/if}
@@ -1524,13 +1655,13 @@
         <div class="p-3 border-b border-[var(--hairline)] flex items-center justify-between">
           <span class="text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
             <History class="size-3.5 text-[var(--brand-text)]" />
-            Thread History
+            {t("thread.historyToggle")}
           </span>
           <button
             type="button"
             class="size-6 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer"
             onclick={createNewThread}
-            title="New thread"
+            title={t("thread.newThread")}
           >
             <Plus class="size-3.5" />
           </button>
@@ -1542,11 +1673,12 @@
             <Search class="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-[var(--text-muted)] pointer-events-none" />
             <input
               bind:value={searchQuery}
+              aria-label={t("thread.searchThreads")}
               onkeydown={(e) => {
                 if (e.key === "Enter") { e.preventDefault(); runSearch(); }
               }}
-              placeholder="Search all threads… (⏎)"
-              class="w-full h-7 pl-7 pr-2 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[10px] text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+              placeholder={t("thread.searchThreads")}
+              class="w-full h-7 pl-7 pr-2 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[10px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
             />
           </div>
           {#if searchResults.length > 0}
@@ -1566,7 +1698,7 @@
               {/each}
             </div>
           {:else if searchPerformed}
-            <div class="mt-1.5 text-[10px] text-[var(--text-muted)] text-center">No matches found</div>
+            <div class="mt-1.5 text-[10px] text-[var(--text-muted)] text-center">{t("thread.noMatches")}</div>
           {/if}
         </div>
 
@@ -1575,15 +1707,16 @@
             {@const isSelected = selectedThreadId === thread.id}
             <button
               type="button"
-              class="w-full text-left px-3 py-2 rounded-xl text-xs truncate transition-all block focus:outline-none cursor-pointer {isSelected
-                ? 'bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-white font-medium shadow-sm'
+              class="w-full text-left px-3 py-2 rounded-xl text-xs truncate transition-all block focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 cursor-pointer {isSelected
+                ? 'bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-[var(--text-primary)] font-medium shadow-sm'
                 : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
               onclick={() => loadMessages(thread.id)}
+              aria-pressed={isSelected}
             >
               {thread.title || "Untitled thread"}
             </button>
           {:else}
-            <div class="p-4 text-center text-xs text-[var(--text-muted)]">No threads yet</div>
+            <div class="p-4 text-center text-xs text-[var(--text-muted)]">{t("thread.noThreads")}</div>
           {/each}
         </div>
       </div>
@@ -1592,9 +1725,10 @@
     <!-- Chat Messages Stream (+ optional Artifact split view) -->
     <div class="flex flex-1 overflow-hidden bg-[var(--surface-0)]">
       <div class="flex flex-col overflow-hidden {openArtifact ? 'w-[54%] shrink-0' : 'flex-1'}">
-      <div bind:this={messagesContainer} class="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-        <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto space-y-6">
-          {#each messages as message (message.id || message.created_at)}
+      <div class="relative flex-1 min-h-0">
+      <div bind:this={messagesContainer} onscroll={handleFeedScroll} class="h-full overflow-y-auto px-3 pt-2 pb-6 {staticEntries ? 'entries-static' : ''}">
+        <div class="max-w-[720px] mx-auto">
+          {#each messages as message, mi (message.id || message.created_at)}
             {@const isUser = isUserMessage(message)}
             {@const isModelError = typeof message.content === "string" && message.content.includes("⚠️ **Model Error:**")}
             {@const rawContent = typeof message.content === "string" ? message.content : message.content?.text || JSON.stringify(message.content)}
@@ -1602,179 +1736,150 @@
             {@const messageSources = Array.isArray(message.content?.sources) ? message.content.sources : []}
             {@const messageImages = Array.isArray(message.attachments) ? message.attachments.filter((a: any) => a?.is_image && a?.data) : []}
             {@const toolAudioB64 = message.content?.type === "tool_result" && message.content?.result?.audio_b64 ? message.content.result.audio_b64 : null}
+            {@const grouped = mi > 0 && isUserMessage(messages[mi - 1]) === isUser}
+            {@const continuesRun = mi < messages.length - 1 && isUserMessage(messages[mi + 1]) === isUser}
+            {@const ghost = !isUser && !hasChecklist && isGhostContent(rawContent)}
 
-            <div class="flex gap-3.5 {isUser ? 'justify-end' : 'justify-start'} group">
-              {#if !isUser}
-                <!-- Bot Avatar -->
-                <div class="size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0 mt-1 shadow-sm">
-                  <img
-                    src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
-                    alt={bot.name}
-                    class="size-full object-cover"
-                  />
+            <ChatMessageRow
+              {isUser}
+              text={hasChecklist ? (message.content.text || "") : rawContent}
+              time={formatTime(message.created_at)}
+              {grouped}
+              showMeta={!continuesRun}
+              {ghost}
+              fullWidthAgent={true}
+              onOpenArtifact={(a) => (openArtifact = a)}
+            >
+              {#snippet errorCard()}
+                <!-- Model Configuration Required Card -->
+                <div class="rounded-2xl p-4 bg-red-950/30 border border-red-800/40 text-[var(--text-secondary)] space-y-3 shadow-xl">
+                  <div class="flex items-center gap-2 text-red-400 font-bold text-xs font-mono">
+                    <AlertTriangle class="size-4 shrink-0" />
+                    <span>{t("thread.modelNeeded")}</span>
+                  </div>
+
+                  <p class="text-xs text-[var(--text-secondary)] leading-relaxed font-sans">
+                    {rawContent.replace("⚠️ **Model Error:** ", "")}
+                  </p>
+
+                  <div class="pt-1 flex items-center gap-2">
+                    <Button
+                      size="sm"
+                      class="h-8 gap-1.5 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] font-medium cursor-pointer"
+                      onclick={triggerOpenSettings}
+                    >
+                      <Key class="size-3.5" />
+                      {t("thread.configureApiKey")}
+                    </Button>
+                  </div>
                 </div>
-              {/if}
+              {/snippet}
 
-              <div class="max-w-[85%] sm:max-w-[78%] space-y-1.5">
-                {#if isModelError}
-                  <!-- Model Configuration Required Card -->
-                  <div class="rounded-2xl p-4 bg-red-950/30 border border-red-800/40 text-[var(--text-secondary)] space-y-3 shadow-xl">
-                    <div class="flex items-center gap-2 text-red-400 font-bold text-xs font-mono">
-                      <AlertTriangle class="size-4 shrink-0" />
-                      <span>Model Configuration Required</span>
-                    </div>
-
-                    <p class="text-xs text-[var(--text-secondary)] leading-relaxed font-sans">
-                      {rawContent.replace("⚠️ **Model Error:** ", "")}
-                    </p>
-
-                    <div class="pt-1 flex items-center gap-2">
-                      <Button
-                        size="sm"
-                        class="h-8 gap-1.5 text-xs bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white font-medium shadow cursor-pointer"
-                        onclick={triggerOpenSettings}
-                      >
-                        <Key class="size-3.5" />
-                        Configure API Key in Settings (⌘,)
-                      </Button>
-                    </div>
-                  </div>
-                {:else if isUser}
-                  <!-- Grok User Message Bubble -->
-                  <div class="rounded-2xl px-4 py-3 text-xs leading-relaxed text-[var(--text-primary)] bg-[var(--surface-3)] border border-[var(--hairline)] shadow-md selection:bg-[var(--brand-soft)]">
-                    <p class="whitespace-pre-wrap font-sans text-xs leading-relaxed">{rawContent}</p>
-                    {#if messageImages.length}
-                      <div class="flex flex-wrap gap-1.5 pt-1.5">
-                        {#each messageImages as att}
-                          <img
-                            src={`data:${att.mime_type};base64,${att.data}`}
-                            alt={att.name || "attached image"}
-                            class="max-h-40 rounded-lg border border-[var(--hairline)] object-contain bg-[var(--surface-2)]"
-                          />
-                        {/each}
-                      </div>
-                    {/if}
-                  </div>
-                {:else}
-                  <!-- Grok Assistant Message (Clean Markdown + Expandable Thought Block) -->
-                  <div class="space-y-3">
-                    {#if hasChecklist}
-                      <!-- Signature Grok "Thought for X steps" Collapsible Accordion -->
-                      <details class="group rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] overflow-hidden" open>
-                        <summary class="flex items-center justify-between px-3 py-2 text-[11px] font-mono text-[var(--text-tertiary)] cursor-pointer hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] transition-colors">
-                          <div class="flex items-center gap-2">
-                            <Brain class="size-3.5 text-[var(--brand-text)]" />
-                            <span>Reasoning & Task Execution ({message.content.items.length} steps)</span>
-                          </div>
-                          <ChevronDown class="size-3.5 group-open:rotate-180 transition-transform" />
-                        </summary>
-
-                        <div class="p-3 border-t border-[var(--hairline)] space-y-1.5 bg-[var(--surface-0)]">
-                          {#each message.content.items as item}
-                            <div class="flex items-center gap-2.5 text-xs bg-[var(--surface-2)] p-2.5 rounded-xl border border-[var(--hairline)]">
-                              {#if item.status === "completed"}
-                                <CheckCircle2 class="size-4 text-success shrink-0" />
-                              {:else if item.status === "failed"}
-                                <XCircle class="size-4 text-danger shrink-0" />
-                              {:else if item.status === "in_progress"}
-                                <Loader2 class="size-4 text-[var(--brand-text)] animate-spin shrink-0" />
-                              {:else}
-                                <Circle class="size-4 text-[var(--text-muted)] shrink-0" />
-                              {/if}
-                              <span class="font-medium text-[var(--text-secondary)]">{item.label}</span>
-                              {#if item.result}
-                                <span class="text-[var(--text-tertiary)] ml-auto text-[11px] font-mono">{item.result}</span>
-                              {/if}
-                            </div>
-                          {/each}
-                        </div>
-                      </details>
-                    {/if}
-
-                    <!-- Rich Markdown Formatted Text Output -->
-                    <div class="text-[var(--text-secondary)] selection:bg-[var(--brand-soft)]">
-                      <MarkdownRenderer
-                        content={hasChecklist ? (message.content.text || "") : rawContent}
-                        onOpenArtifact={(a) => (openArtifact = a)}
+              {#snippet userExtras()}
+                {#if messageImages.length}
+                  <div class="flex flex-wrap gap-1.5 pt-1.5 whitespace-normal">
+                    {#each messageImages as att}
+                      <img
+                        src={`data:${att.mime_type};base64,${att.data}`}
+                        alt={att.name || "attached image"}
+                        class="max-h-40 rounded-lg object-contain bg-[var(--surface-1)]"
                       />
-                    </div>
-
-                    <!-- Persisted Web Sources / Citations -->
-                    {@render sourcesChips(messageSources)}
+                    {/each}
                   </div>
                 {/if}
+              {/snippet}
 
-                <!-- Message Action Strip (Copy, Edit, Timestamp, Hover Actions) -->
-                <div class="flex items-center gap-3 text-[10px] text-[var(--text-muted)] px-1 {isUser ? 'justify-end' : 'justify-start'}">
-                  {#if toolAudioB64}
-                    <button type="button" onclick={() => playAudioBase64(toolAudioB64)} class="text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-hover)] flex items-center gap-1 cursor-pointer" title="Play response audio">
-                      🔊 Play
-                    </button>
-                  {/if}
-                  <span>{formatTime(message.created_at)}</span>
+              {#snippet aboveBubble()}
+                {#if hasChecklist}
+                  <!-- Signature Grok "Thought for X steps" Collapsible Accordion -->
+                  <details class="group rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] overflow-hidden" open>
+                    <summary class="flex items-center justify-between px-3 py-2 text-[11px] font-mono text-[var(--text-tertiary)] cursor-pointer hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] transition-colors">
+                      <div class="flex items-center gap-2">
+                        <Brain class="size-3.5 text-[var(--brand-text)]" />
+                        <span>Reasoning & Task Execution ({message.content.items.length} steps)</span>
+                      </div>
+                      <ChevronDown class="size-3.5 group-open:rotate-180 transition-transform" />
+                    </summary>
 
-                  {#if isUser && !sending && !regenerating}
-                    <button
-                      type="button"
-                      class="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
-                      onclick={() => startEditing(message.id || message.created_at, rawContent)}
-                      title="Edit and resend (removes the response after this message)"
-                    >
-                      <Pencil class="size-3" />
-                      <span>Edit</span>
-                    </button>
-                  {/if}
+                    <div class="p-3 border-t border-[var(--hairline)] space-y-1.5 bg-[var(--surface-0)]">
+                      {#each message.content.items as item}
+                        <div class="flex items-center gap-2.5 text-xs bg-[var(--surface-2)] p-2.5 rounded-xl border border-[var(--hairline)]">
+                          {#if item.status === "completed"}
+                            <CheckCircle2 class="size-4 text-success shrink-0" />
+                          {:else if item.status === "failed"}
+                            <XCircle class="size-4 text-danger shrink-0" />
+                          {:else if item.status === "in_progress"}
+                            <Loader2 class="size-4 text-[var(--brand-text)] animate-spin shrink-0" />
+                          {:else}
+                            <Circle class="size-4 text-[var(--text-muted)] shrink-0" />
+                          {/if}
+                          <span class="font-medium text-[var(--text-secondary)]">{item.label}</span>
+                          {#if item.result}
+                            <span class="text-[var(--text-tertiary)] ml-auto text-[11px] font-mono">{item.result}</span>
+                          {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  </details>
+                {/if}
+              {/snippet}
 
-                  {#if !isModelError}
-                    <button
-                      type="button"
-                      class="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
-                      onclick={() => copyMessage(message.id || message.created_at, rawContent)}
-                      title="Copy full message"
-                    >
-                      {#if copiedMessageId === (message.id || message.created_at)}
-                        <Check class="size-3 text-success" />
-                        <span class="text-success font-mono">Copied</span>
-                      {:else}
-                        <Copy class="size-3" />
-                        <span>Copy</span>
-                      {/if}
-                    </button>
-                  {/if}
+              {#snippet belowBubble()}
+                {@render sourcesChips(messageSources)}
+              {/snippet}
 
-                  {#if !isModelError && !isUser}
-                    <button
-                      type="button"
-                      class="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer {speakingMessageId === (message.id || message.created_at) ? 'opacity-100 text-success' : ''}"
-                      onclick={() => speakMessage(message.id || message.created_at, rawContent)}
-                      title={speakingMessageId === (message.id || message.created_at) ? "Stop reading" : "Read this reply aloud"}
-                    >
-                      <Volume2 class="size-3" />
-                      <span>{speakingMessageId === (message.id || message.created_at) ? "Stop" : "Listen"}</span>
-                    </button>
-                  {/if}
-
-                  {#if !isModelError && !isUser && (messages[messages.length - 1]?.id === message.id) && !sending && !regenerating}
-                    <button
-                      type="button"
-                      class="opacity-0 group-hover:opacity-100 transition-opacity text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center gap-1 cursor-pointer"
-                      onclick={regenerate}
-                      title="Regenerate response"
-                    >
-                      <RotateCcw class="size-3" />
-                      <span>Regenerate</span>
-                    </button>
-                  {/if}
-                </div>
-              </div>
-
-              {#if isUser}
-                <!-- User Avatar -->
-                <div class="size-8 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline-strong)] shrink-0 mt-1 shadow-sm">
-                  <img src={userAvatar || getDiceBearUrl("You", "micah")} alt="You" class="size-full object-cover" />
-                </div>
-              {/if}
-            </div>
+              {#snippet actions()}
+                {#if toolAudioB64}
+                  <button type="button" onclick={() => playAudioBase64(toolAudioB64)} class="message-action-button" title={t("thread.playAudio")}>
+                    <Volume2 class="size-[17px]" />
+                  </button>
+                {/if}
+                {#if isUser && !sending && !regenerating}
+                  <button
+                    type="button"
+                    class="message-action-button"
+                    onclick={() => startEditing(message.id || message.created_at, rawContent)}
+                    title={t("thread.editResend")}
+                  >
+                    <Pencil class="size-[17px]" />
+                  </button>
+                {/if}
+                {#if !isModelError}
+                  <button
+                    type="button"
+                    class="message-action-button"
+                    onclick={() => copyMessage(message.id || message.created_at, rawContent)}
+                    title={t("thread.copyFull")}
+                  >
+                    {#if copiedMessageId === (message.id || message.created_at)}
+                      <Check class="size-[17px] text-[var(--success-text)]" />
+                    {:else}
+                      <Copy class="size-[17px]" />
+                    {/if}
+                  </button>
+                {/if}
+                {#if !isModelError && !isUser}
+                  <button
+                    type="button"
+                    class="message-action-button {speakingMessageId === (message.id || message.created_at) ? 'text-[var(--text-primary)]' : ''}"
+                    onclick={() => speakMessage(message.id || message.created_at, rawContent)}
+                    title={speakingMessageId === (message.id || message.created_at) ? "Stop reading" : "Read this reply aloud"}
+                  >
+                    <Volume2 class="size-[17px]" />
+                  </button>
+                {/if}
+                {#if !isModelError && !isUser && (messages[messages.length - 1]?.id === message.id) && !sending && !regenerating}
+                  <button
+                    type="button"
+                    class="message-action-button"
+                    onclick={regenerate}
+                    title={t("thread.regenerate")}
+                  >
+                    <RotateCcw class="size-[17px]" />
+                  </button>
+                {/if}
+              {/snippet}
+            </ChatMessageRow>
           {:else}
             <!-- Empty Thread State (Grok Style) -->
             <div class="my-10 text-center space-y-6 max-w-xl mx-auto animate-rise-in">
@@ -1791,11 +1896,11 @@
               </div>
 
               <div class="space-y-1.5">
-                <h3 class="font-black text-xl text-white tracking-tight">
-                  What would you like to explore?
+                <h3 class="font-black text-xl text-[var(--text-primary)] tracking-tight">
+                  {t("thread.exploreTitle")}
                 </h3>
                 <p class="text-xs text-[var(--text-tertiary)] max-w-md mx-auto leading-relaxed">
-                  {bot.description || "Sovereign desktop agent ready to execute autonomous tasks, run code, or synthesize research."}
+                  {bot.description || t("thread.defaultBotDesc")}
                 </p>
               </div>
 
@@ -1809,7 +1914,7 @@
                     onclick={() => sendMessage(p.desc)}
                   >
                     <div class="flex items-center justify-between mb-1.5">
-                      <span class="font-bold text-xs text-white group-hover:text-[var(--brand)] transition-colors">{p.title}</span>
+                      <span class="font-bold text-xs text-[var(--text-primary)] group-hover:text-[var(--brand)] transition-colors">{p.title}</span>
                       <Icon class="size-3.5 text-[var(--text-muted)] group-hover:text-[var(--brand)] transition-colors" />
                     </div>
                     <p class="text-[11px] text-[var(--text-tertiary)] leading-normal line-clamp-2">{p.desc}</p>
@@ -1819,75 +1924,69 @@
             </div>
           {/each}
 
-          <!-- Live Streaming Assistant Bubble -->
+          {#snippet liveMarkers()}
+            {#if actionMarkers.length}
+              <!-- OpenBot action markers: quiet per-tool status rows -->
+              <div class="chat-action-markers">
+                {#each actionMarkers as m (m.id)}
+                  <ChatActionMarker name={m.name} done={m.done} />
+                {/each}
+              </div>
+            {/if}
+          {/snippet}
+
+          {#snippet liveExtras()}
+            <!-- Live source chips during streaming -->
+            {@render sourcesChips(streamingSources)}
+            <!-- Live tool images (e.g. screenshots) during streaming -->
+            {#if streamingImages.length}
+              <div class="flex flex-wrap gap-2 pt-1">
+                {#each streamingImages as img, i (i)}
+                  <img
+                    src={img.data_url}
+                    alt={img.name}
+                    class="max-h-64 max-w-full rounded-lg object-contain bg-[var(--surface-1)]"
+                  />
+                {/each}
+              </div>
+            {/if}
+          {/snippet}
+
+          <!-- Live Streaming Assistant Row (OpenBot: activity line, then tail-revealed
+               bubble). Once tokens show it reuses ChatMessageRow so the bubble shell,
+               ghost handling, smooth height, and entrance match committed rows exactly. -->
           {#if (sending || regenerating) && selectedThreadId}
-            <div class="flex gap-3.5 justify-start">
-              <div class="size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0 mt-1 shadow-sm">
-                <img
-                  src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
-                  alt={bot.name}
-                  class="size-full object-cover"
-                />
-              </div>
-
-              <div class="max-w-[85%] sm:max-w-[78%] space-y-1.5">
-                {#if streamingText}
-                  <div class="rounded-2xl px-4 py-3 bg-[var(--surface-3)] border border-[var(--hairline)] shadow-md selection:bg-[var(--brand-soft)]">
-                    <div class="text-[var(--text-secondary)]">
-                      <MarkdownRenderer content={streamingText} />
-                    </div>
-                    <span class="inline-block w-1.5 h-3.5 bg-brand animate-pulse ml-0.5 align-middle rounded-sm"></span>
-                  </div>
-                {:else}
-                  <!-- Skeleton loading lines (GROK-style shimmer, pre-first-token) -->
-                  <div class="rounded-2xl px-4 py-3.5 bg-[var(--surface-3)] border border-[var(--hairline)] shadow-md w-fit min-w-[280px]">
-                    <div class="space-y-2.5">
-                      <div class="shimmer h-3 rounded-full w-[85%]"></div>
-                      <div class="shimmer h-3 rounded-full w-[70%] [animation-delay:120ms]"></div>
-                      <div class="shimmer h-3 rounded-full w-[45%] [animation-delay:240ms]"></div>
-                    </div>
-                  </div>
-                {/if}
-
-                {#if streamingTool}
-                  <!-- Tool execution skeleton row -->
-                  <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-2.5 flex items-center gap-2.5 w-fit">
-                    <Loader2 class="size-3.5 text-[var(--brand-text)] animate-spin shrink-0" />
-                    <div class="space-y-1.5">
-                      <div class="shimmer h-2.5 rounded-full w-40"></div>
-                      <div class="shimmer h-2.5 rounded-full w-28 [animation-delay:120ms]"></div>
-                    </div>
-                  </div>
-                {/if}
-
-                <div class="flex items-center gap-2 text-[10px] text-[var(--text-muted)] px-1 font-mono">
-                  {#if streamingTool}
-                    <Loader2 class="size-3 animate-spin text-[var(--brand-text)]" />
-                    <span class="text-[var(--brand-text)]">Running tool: {streamingTool}</span>
-                  {:else if streamingText}
-                    <span class="text-[var(--brand-text)]">Streaming…</span>
-                  {:else}
-                    <span>{bot.name} is thinking…</span>
-                  {/if}
-                </div>
-
-                <!-- Live source chips during streaming -->
-                {@render sourcesChips(streamingSources)}
-
-                <!-- Live tool images (e.g. screenshots) during streaming -->
-                {#if streamingImages.length}
-                  <div class="flex flex-wrap gap-2 pt-1">
-                    {#each streamingImages as img, i (i)}
+            {#if reveal.shown}
+              <ChatMessageRow
+                isUser={false}
+                text={reveal.body}
+                streamTail={reveal.tail}
+                showMeta={false}
+                ghost={isGhostContent(reveal.shown)}
+                fullWidthAgent={true}
+              >
+                {#snippet aboveBubble()}{@render liveMarkers()}{/snippet}
+                {#snippet belowBubble()}{@render liveExtras()}{/snippet}
+              </ChatMessageRow>
+            {:else}
+              <!-- Pre-first-token: AgentActivity row (32px avatar + shimmer label) -->
+              <div class="message-entry flex gap-3.5 justify-start">
+                <div class="min-w-0 w-full space-y-1.5">
+                  {@render liveMarkers()}
+                  <div class="agent-activity-row flex items-center gap-2.5 min-h-[44px]">
+                    <div class="size-8 rounded-full overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0">
                       <img
-                        src={img.data_url}
-                        alt={img.name}
-                        class="max-h-64 max-w-full rounded-xl border border-[var(--hairline-strong)] shadow-md bg-[var(--surface-2)]"
+                        src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
+                        alt={bot.name}
+                        class="size-full object-cover"
                       />
-                    {/each}
+                    </div>
+                    <span class="agent-activity-label">{t(activityLine)}</span>
                   </div>
-                {/if}
+                  {@render liveExtras()}
+                </div>
               </div>
-            </div>
+            {/if}
           {/if}
 
           <!-- Approval cards: what the bot wants to do + Allow/Deny -->
@@ -1895,7 +1994,7 @@
             {@const deciding = decidingApproval === ap.id}
             <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border {ap.risk === 'high' ? 'border-warning/40' : 'border-[var(--hairline)]'} bg-[var(--surface-1)] p-4 space-y-2.5 shadow-xl">
               <div class="flex items-baseline justify-between gap-3">
-                <div class="text-[13px] font-semibold text-white">
+                <div class="text-[13px] font-semibold text-[var(--text-primary)]">
                   {bot.name} wants to {ap.tool_label || ap.tool_name}
                 </div>
                 <span class="shrink-0 font-mono text-[10px] text-[var(--text-muted)]">{ap.tool_name}</span>
@@ -1904,14 +2003,14 @@
                 <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/50 border border-[var(--hairline)] px-3 py-2 font-mono text-[11.5px] leading-relaxed text-[var(--text-secondary)]">{approvalSummary(ap.arguments)}</pre>
               {/if}
               {#if ap.risk === 'high'}
-                <p class="text-[11px] text-warning/90">High-stakes action — it can change files, run commands, or reach other bots.</p>
+                <p class="text-[11px] text-warning/90">{t("thread.highStakes")}</p>
               {/if}
               <div class="flex items-center gap-2">
                 <button
                   type="button"
                   disabled={deciding}
                   onclick={() => decideApproval(ap.id, true)}
-                  class="h-8 px-4 rounded-full bg-success text-white text-xs font-bold hover:bg-success transition-colors cursor-pointer disabled:opacity-50"
+                  class="h-8 px-4 rounded-full bg-success text-[var(--text-primary)] text-xs font-bold hover:bg-success transition-colors cursor-pointer disabled:opacity-50"
                 >
                   {deciding ? 'Allowing…' : 'Allow'}
                 </button>
@@ -1933,7 +2032,7 @@
             {@const answering = answeringQuestion === q.id}
             <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border border-[var(--brand)]/40 bg-[var(--surface-1)] p-4 space-y-3 shadow-xl">
               <div class="flex items-baseline justify-between gap-3">
-                <div class="text-[13px] font-semibold text-white">{q.header || 'Question'}</div>
+                <div class="text-[13px] font-semibold text-[var(--text-primary)]">{q.header || 'Question'}</div>
                 <span class="shrink-0 font-mono text-[10px] text-[var(--brand-text)]/80">ask_user</span>
               </div>
               <p class="text-[12.5px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">{q.question}</p>
@@ -1955,16 +2054,17 @@
                 <div class="flex items-center gap-2">
                   <input
                     type="text"
+                    aria-label="Answer"
                     bind:value={questionDraft[q.id]}
                     onkeydown={(e) => { if (e.key === 'Enter') answerQuestion(q.id, questionDraft[q.id] ?? ''); }}
-                    placeholder="Type your answer…"
-                    class="flex-1 h-9 rounded-xl border border-[var(--hairline)] bg-black/50 px-3 text-xs text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+                    placeholder={t("thread.answerPlaceholder")}
+                    class="flex-1 h-9 rounded-xl border border-[var(--hairline)] bg-black/50 px-3 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
                   />
                   <button
                     type="button"
                     disabled={answering || !(questionDraft[q.id] ?? '').trim()}
                     onclick={() => answerQuestion(q.id, questionDraft[q.id] ?? '')}
-                    class="h-9 px-4 rounded-full bg-[var(--brand)] text-white text-xs font-bold hover:bg-[var(--brand-hover)] transition-colors cursor-pointer disabled:opacity-50"
+                    class="h-9 px-4 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] text-xs font-bold hover:bg-[var(--brand-hover)] transition-colors cursor-pointer disabled:opacity-50"
                   >
                     {answering ? 'Sending…' : 'Answer'}
                   </button>
@@ -1973,6 +2073,19 @@
             </div>
           {/each}
         </div>
+        </div>
+        {#if !stickToLatest}
+          <button
+            type="button"
+            class="jump-latest"
+            onclick={jumpToLatest}
+            title={t("thread.jumpLatest")}
+            aria-label={t("thread.jumpLatest")}
+          >
+            <ArrowDown class="size-3.5" />
+            <span>{t("thread.jumpLatest")}</span>
+          </button>
+        {/if}
       </div>
 
       <!-- Grok Floating Capsule Composer -->
@@ -1995,9 +2108,10 @@
                 />
                 <button
                   type="button"
-                  class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/60 text-white text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
+                  class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
                   onclick={() => removePendingAttachment(idx)}
-                  title="Remove attachment"
+                  aria-label={t("room.removeAttachment")}
+                  title={t("room.removeAttachment")}
                 >
                   ✕
                 </button>
@@ -2011,9 +2125,10 @@
                 </div>
                 <button
                   type="button"
-                  class="absolute top-1 right-1 size-4 rounded-full bg-black/60 text-white text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
+                  class="absolute top-1 right-1 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
                   onclick={() => removePendingAttachment(idx)}
-                  title="Remove attachment"
+                  aria-label={t("room.removeAttachment")}
+                  title={t("room.removeAttachment")}
                 >
                   ✕
                 </button>
@@ -2024,13 +2139,13 @@
       {/if}
 
       {#if pendingApprovals.length > 0}
-        <div class="mb-2 flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
+        <div role="alert" class="mb-2 flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
           <ShieldAlert class="size-3.5 shrink-0" />
           <span>Waiting on your approval — answer above to resume {bot.name}.</span>
         </div>
       {/if}
       {#if pendingQuestions.length > 0}
-        <div class="mb-2 flex items-center gap-2 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-3 py-2 text-[11px] text-[var(--brand-text)]">
+        <div role="status" class="mb-2 flex items-center gap-2 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-3 py-2 text-[11px] text-[var(--brand-text)]">
           <span class="size-1.5 rounded-full bg-[var(--brand)] animate-pulse shrink-0"></span>
           <span>{bot.name} is waiting for your answer — reply to the question above.</span>
         </div>
@@ -2038,12 +2153,13 @@
       <textarea
         bind:this={textareaRef}
         bind:value={newMessage}
+        aria-label="Message"
         oninput={handleTextareaInput}
         onpaste={handleComposerPaste}
         placeholder={pendingApprovals.length > 0 ? "Answer the approval above first…" : pendingQuestions.length > 0 ? "Answer the question above…" : `Ask anything, run code, or attach images to ${bot.name}...`}
         disabled={pendingApprovals.length > 0 || pendingQuestions.length > 0}
         rows={1}
-        class="w-full bg-transparent text-xs sm:text-sm text-white placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
+        class="w-full bg-transparent text-xs sm:text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
         onkeydown={(e) => {
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
@@ -2060,13 +2176,13 @@
         <div class="flex items-center justify-between pt-2 border-t border-warning/20 mt-1">
           <div class="flex items-center gap-1.5 text-[10px] font-mono text-warning">
             <Pencil class="size-3" />
-            <span>Editing message — Enter resends; responses after it are removed. Esc to cancel.</span>
+            <span>{t("thread.editingHint")}</span>
           </div>
           <button
             type="button"
             class="text-[10px] font-mono text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
             onclick={cancelEditing}
-            title="Cancel edit"
+            title={t("thread.cancelEdit")}
           >
             Cancel
           </button>
@@ -2083,7 +2199,8 @@
                   ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/50 '
                   : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 onclick={() => (deepSearchActive = !deepSearchActive)}
-                title="Toggle DeepSearch Web Intelligence"
+                aria-pressed={deepSearchActive}
+                title={t("home.deepSearch")}
               >
                 <Globe class="size-3" />
                 <span>DeepSearch</span>
@@ -2095,17 +2212,19 @@
                   ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/50 '
                   : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 onclick={() => (thinkActive = !thinkActive)}
-                title="Toggle Deep Reasoning Mode"
+                aria-pressed={thinkActive}
+                title={t("home.think")}
               >
                 <Brain class="size-3" />
-                <span>Think</span>
+                <span>{t("home.thinkPill")}</span>
               </button>
 
               <button
                 type="button"
                 class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center transition-colors cursor-pointer"
                 onclick={attachFile}
-                title="Attach workspace code or text file"
+                aria-label={t("home.attach")}
+                title={t("home.attach")}
               >
                 <Paperclip class="size-3.5" />
               </button>
@@ -2114,6 +2233,8 @@
                 type="button"
                 class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {isListening ? 'text-danger bg-danger/20 border border-danger/50 animate-pulse shadow-sm' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 onclick={toggleVoice}
+                aria-pressed={isListening}
+                aria-label="Voice input"
                 title={isListening ? "Listening... (Click to stop speech-to-text)" : "Voice input (Speech-to-Text)"}
               >
                 <Mic class="size-3.5" />
@@ -2123,6 +2244,8 @@
                 type="button"
                 class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {voiceMode ? 'text-success bg-success/20 border border-success/50 shadow-sm' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'} {speaking ? 'animate-pulse' : ''}"
                 onclick={toggleVoiceMode}
+                aria-pressed={voiceMode}
+                aria-label="Voice mode"
                 title={voiceMode ? "Voice mode on — click to stop (hands-free loop)" : "Voice mode: hands-free talk → response spoken aloud"}
               >
                 <Volume2 class="size-3.5" />
@@ -2134,16 +2257,19 @@
                   ? 'bg-success/15 text-success border-success/40'
                   : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 onclick={toggleAutoRead}
+                aria-pressed={Boolean(bot?.config?.auto_read)}
                 title={bot?.config?.auto_read ? "Auto-read ON — replies are spoken aloud" : "Auto-read: speak every reply aloud"}
               >
                 <Volume2 class="size-3" />
-                <span>Auto-read</span>
+                <span>{t("thread.autoRead")}</span>
               </button>
 
               <button
                 type="button"
                 class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {tempActive ? 'text-warning bg-warning/15 border border-warning/40' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 onclick={() => (tempActive = !tempActive)}
+                aria-pressed={tempActive}
+                aria-label="Temporary chat"
                 title={tempActive ? "Temporary chat ON — new threads won't feed agent memory" : "Temporary chat: conversations won't feed agent memory"}
               >
                 <Ghost class="size-3.5" />
@@ -2160,10 +2286,11 @@
                 type="button"
                 onclick={() => sendMessage()}
                 disabled={(!newMessage.trim() && pendingAttachments.length === 0) || sending}
+                aria-label={t("home.send")}
                 class="size-8 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer {(newMessage.trim() || pendingAttachments.length) && !sending
-                  ? 'btn-brand text-white hover:scale-105 active:scale-95'
+                  ? 'btn-brand text-[var(--text-primary)] hover:scale-105 active:scale-95'
                   : 'bg-[var(--surface-3)] text-[var(--text-muted)] cursor-not-allowed'}"
-                title="Send message (Enter)"
+                title={t("home.send")}
               >
                 {#if sending}
                   <Loader2 class="size-3.5 animate-spin" />
@@ -2208,7 +2335,7 @@
       <div class="flex items-center justify-between border-b border-[var(--hairline)] pb-3">
         <div class="flex items-center gap-2">
           <Brain class="size-4 text-[var(--brand-text)]" />
-          <span class="font-bold text-sm text-white">{bot.name} Intelligence</span>
+          <span class="font-bold text-sm text-[var(--text-primary)]">{bot.name} Intelligence</span>
         </div>
         <button
           type="button"
@@ -2259,11 +2386,8 @@
       class="modal-panel w-full max-w-lg p-6 relative space-y-4"
       onclick={(e) => e.stopPropagation()}
     >
-      <div class="flex items-center justify-between border-b border-[var(--hairline)] pb-3">
-        <div class="flex items-center gap-2">
-          <Boxes class="size-4 text-[var(--brand-text)]" />
-          <span class="font-bold text-sm text-white">Fleet Sync & Backup</span>
-        </div>
+      <!-- SyncPanel's own compact header carries the title; close-only row. -->
+      <div class="flex items-center justify-end border-b border-[var(--hairline)] pb-2">
         <button
           type="button"
           class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono"
@@ -2289,11 +2413,9 @@
       class="modal-panel w-full max-w-lg p-6 relative space-y-4"
       onclick={(e) => e.stopPropagation()}
     >
-      <div class="flex items-center justify-between border-b border-[var(--hairline)] pb-3">
-        <div class="flex items-center gap-2">
-          <Clock class="size-4 text-[var(--brand-text)]" />
-          <span class="font-bold text-sm text-white">{bot.name} Routines</span>
-        </div>
+      <!-- RoutinesPanel's own compact header carries the title; this row is
+           just the close affordance now (raw "{bot.name} Routines" removed). -->
+      <div class="flex items-center justify-end border-b border-[var(--hairline)] pb-2">
         <button
           type="button"
           class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono"

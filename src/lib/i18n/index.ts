@@ -12,6 +12,11 @@ import fr from './locales/fr.json';
 import de from './locales/de.json';
 import ja from './locales/ja.json';
 import zh from './locales/zh.json';
+import { localeState, type Locale } from './state.svelte';
+
+// Re-export so existing `import type { Locale } from '$lib/i18n'` keeps working.
+export type { Locale };
+export { localeState };
 
 // Type definitions for translation keys
 type NestedKeyOf<T> = T extends object
@@ -19,9 +24,6 @@ type NestedKeyOf<T> = T extends object
   : never;
 
 export type TranslationKey = NestedKeyOf<typeof en>;
-
-// Supported locales
-export type Locale = 'en' | 'es' | 'fr' | 'de' | 'ja' | 'zh';
 
 // Translation dictionaries
 const locales: Record<Locale, Record<string, any>> = {
@@ -33,8 +35,7 @@ const locales: Record<Locale, Record<string, any>> = {
   zh,
 };
 
-// Current locale state
-let currentLocale: Locale = 'en';
+// Current locale lives in localeState (state.svelte.ts) for template reactivity.
 
 /**
  * Get a nested value from an object using dot notation
@@ -47,7 +48,7 @@ function getNestedValue(obj: any, path: string): string | undefined {
  * Set the current locale
  */
 export function setLocale(locale: Locale): void {
-  currentLocale = locale;
+  localeState.current = locale;
 
   // Safe in non-DOM contexts (tests, workers)
   if (typeof document !== "undefined") {
@@ -64,7 +65,7 @@ export function setLocale(locale: Locale): void {
  * Get the current locale
  */
 export function getLocale(): Locale {
-  return currentLocale;
+  return localeState.current;
 }
 
 /**
@@ -72,7 +73,7 @@ export function getLocale(): Locale {
  */
 export function t(key: TranslationKey, params?: Record<string, string | number>): string {
   // Try current locale first, fallback to English
-  let translation = getNestedValue(locales[currentLocale], key)
+  let translation = getNestedValue(locales[localeState.current], key)
     ?? getNestedValue(locales.en, key)
     ?? key;
 

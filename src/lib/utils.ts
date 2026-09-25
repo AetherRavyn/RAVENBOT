@@ -11,6 +11,34 @@ export type WithoutChildrenOrChild<T> = WithoutChildren<WithoutChild<T>>;
 export type WithElementRef<T, U extends HTMLElement = HTMLElement> = T & { ref?: U | null };
 export type WithoutChildOrChildren<T> = WithoutChildrenOrChild<T>;
 
+// Backend parity uses lowercase roles, but earlier Tauri payloads and
+// locally constructed messages can use capitalized variants.
+export type ChatRole = "user" | "assistant" | "system" | "tool";
+
+export function normalizeMessageRole(role: unknown): ChatRole | null {
+  if (typeof role !== "string") return null;
+  const normalized = role.trim().toLowerCase();
+  if (
+    normalized === "user" ||
+    normalized === "assistant" ||
+    normalized === "system" ||
+    normalized === "tool"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+export function isUserMessage(message: { role?: unknown } | null | undefined): boolean {
+  return normalizeMessageRole(message?.role) === "user";
+}
+
+export function isAssistantMessage(
+  message: { role?: unknown } | null | undefined,
+): boolean {
+  return normalizeMessageRole(message?.role) === "assistant";
+}
+
 // DiceBear & Native Raven Asset helpers
 export function getDiceBearUrl(seed: string, style: string = "avataaars", extra: string = ""): string {
   if (style === "raven-native" || style === "ravenicon" || style === "raven-avatar" || style === "raven-brandmark" || style === "raven-logo-hex") {

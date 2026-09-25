@@ -12,10 +12,10 @@
  * Do NOT add a `<style>` block to a component in this project — add the rules
  * here instead. `src/lib/styles/no-component-styles.test.ts` enforces this.
  *
- * Visual language (OpenBot): flat neutral surfaces (#1a1a1a canvas / #212121
- * panels), near-invisible hairline borders, blue (#007cf7) reserved for focus,
- * selection, links and status — and a LIGHT primary button. No glass blur, no
- * gradients, no purple.
+ * Visual language (OpenBot): flat neutral surfaces (#141414 canvas / #212121
+ * panels), near-invisible hairline borders, a pastel-blue accent reserved for
+ * focus/selection/links, 8-bit pastel status colors, and a LIGHT primary
+ * button. No glass blur, no gradients, no purple.
  */
 
 /* ── ThreadView: loading shimmer ─────────────────────────────────────── */
@@ -37,136 +37,228 @@
   scrollbar-width: none;
 }
 
-/* ── MarkdownRenderer: rendered markdown ─────────────────────────────── */
+/* ── MarkdownRenderer: rendered markdown (OpenBot .message-markdown spec) ─
+ * Body 14px/20px, blocks separated by a uniform 12px rhythm, headings 600
+ * with -0.1px tracking, links inherit color with a muted underline. */
 .markdown-content {
-  color: var(--text-secondary);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 20px;
+  white-space: normal;
 }
-.markdown-content p {
-  margin-bottom: 0.65rem;
-  line-height: 1.6;
+.markdown-content > * {
+  margin: 0;
 }
-.markdown-content p:last-child {
-  margin-bottom: 0;
+.markdown-content > :not(:first-child) {
+  margin-top: 12px;
 }
 .markdown-content h1 {
-  font-size: var(--text-xl);
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-top: 1rem;
-  margin-bottom: 0.5rem;
-  letter-spacing: var(--tracking-tight);
+  font-size: 18px;
+  line-height: 24px;
 }
 .markdown-content h2 {
-  font-size: var(--text-lg);
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-top: 0.85rem;
-  margin-bottom: 0.4rem;
+  font-size: 16px;
+  line-height: 22px;
 }
-.markdown-content h3 {
-  font-size: var(--text-base);
-  font-weight: 600;
-  color: var(--text-primary);
-  margin-top: 0.75rem;
-  margin-bottom: 0.35rem;
-}
+.markdown-content h3,
 .markdown-content h4,
 .markdown-content h5,
 .markdown-content h6 {
-  font-size: var(--text-sm);
+  font-size: 14px;
+  line-height: 20px;
+}
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
   font-weight: 600;
   color: var(--text-primary);
-  margin-top: 0.7rem;
-  margin-bottom: 0.3rem;
+  letter-spacing: -0.1px;
+}
+.markdown-content strong {
+  font-weight: 600;
+}
+.markdown-content del {
+  color: var(--text-secondary);
 }
 .markdown-content ul {
   list-style-type: disc;
-  padding-left: 1.25rem;
-  margin-bottom: 0.65rem;
+  padding-left: 24px;
+}
+.markdown-content ul ul {
+  list-style-type: circle;
 }
 .markdown-content ol {
   list-style-type: decimal;
-  padding-left: 1.25rem;
-  margin-bottom: 0.65rem;
+  padding-left: 24px;
 }
-.markdown-content li {
-  margin-bottom: 0.25rem;
-  line-height: 1.55;
+.markdown-content li + li,
+.markdown-content li > ul,
+.markdown-content li > ol {
+  margin-top: 4px;
 }
 .markdown-content li::marker {
   color: var(--text-muted);
 }
-.markdown-content code:not(pre code) {
-  font-family: var(--font-mono, monospace);
-  font-size: 0.725rem;
-  padding: 0.15rem 0.35rem;
-  border-radius: var(--radius-xs);
-  background-color: rgba(255, 255, 255, 0.06);
-  color: var(--brand-text);
-  border: 1px solid var(--hairline-faint);
-}
 .markdown-content blockquote {
-  border-left: 2px solid var(--brand);
-  background: rgba(0, 124, 247, 0.05);
-  padding: 0.4rem 0.8rem;
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-  margin: 0.65rem 0;
-  color: var(--text-tertiary);
-  font-style: italic;
+  border-left: 2px solid var(--hairline-strong);
+  padding-left: 12px;
+  color: var(--text-secondary);
+}
+.markdown-content code:not(pre code) {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+  background-color: var(--surface-1);
+  color: var(--text-primary);
+  border: 1px solid var(--hairline);
+  white-space: break-spaces;
 }
 .markdown-content hr {
   border: 0;
-  border-top: 1px solid var(--hairline);
-  margin: 1rem 0;
+  height: 1px;
+  background: var(--hairline-strong);
 }
 .markdown-content a {
-  color: var(--brand-text);
+  font-weight: 560;
+  color: inherit;
   text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--text-muted);
   text-underline-offset: 2px;
 }
 .markdown-content a:hover {
-  color: var(--brand-hover);
-}
-.markdown-content table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 0.75rem 0;
-  font-size: var(--text-xs);
+  color: var(--text-primary);
 }
 .markdown-content img {
   max-width: 100%;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--hairline);
-  margin: 0.5rem 0;
-  background: var(--surface-1);
+  max-height: 360px;
+  border-radius: var(--radius-md);
+  object-fit: contain;
+  display: block;
+}
+/* Tables — ringed rounded panel, inner grid lines, raised header. */
+.markdown-content table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+  line-height: 20px;
+  background: var(--surface-0);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--dialog-ring);
+  overflow: hidden;
+}
+.markdown-content th,
+.markdown-content td {
+  border-right: 1px solid var(--data-table-border);
+  border-bottom: 1px solid var(--data-table-border);
+  padding: 8px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+.markdown-content th:last-child,
+.markdown-content td:last-child {
+  border-right: 0;
+}
+.markdown-content tr:last-child td {
+  border-bottom: 0;
 }
 .markdown-content th {
-  border: 1px solid var(--hairline);
-  background-color: var(--surface-2);
-  padding: 0.4rem 0.65rem;
-  text-align: left;
-  font-weight: 600;
-  color: var(--text-primary);
+  background: var(--surface-2);
+  color: var(--data-table-header-text);
+  font-weight: 500;
 }
 .markdown-content td {
-  border: 1px solid var(--hairline);
-  padding: 0.35rem 0.65rem;
-  color: var(--text-secondary);
+  color: var(--data-table-text);
 }
 
-/* Reasoning panel (rendered from <think> blocks) — blue-tinted, quiet. */
+/* Code blocks — OpenBot .message-code spec: hairline card, 34px header,
+ * canvas-dark body at 12px/19px mono, quiet 26px copy button. */
+.md-code-wrapper {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+.md-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+.md-code-lang {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--hairline);
+  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+}
+.md-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.md-code-copy,
+.md-code-artifact {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding-inline: 7px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+.md-code-copy:hover,
+.md-code-artifact:hover {
+  background: var(--hairline);
+  color: var(--text-secondary);
+}
+.md-code-pre {
+  margin: 0;
+  background: var(--surface-0);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 19px;
+  padding: 8px 0 10px;
+  max-height: 420px;
+  overflow: auto;
+  color: var(--text-secondary);
+  white-space: pre;
+}
+.md-code-pre code {
+  display: block;
+  padding-inline: 12px;
+  font: inherit;
+  background: transparent;
+  border: 0;
+}
+
+/* Reasoning panel (rendered from <think> blocks) — brand-tinted, quiet. */
 .think-details {
   margin-bottom: 0.75rem;
-  border: 1px solid rgba(0, 124, 247, 0.24);
-  background: rgba(0, 124, 247, 0.05);
-  border-radius: var(--radius-lg);
+  border: 1px solid var(--brand-strong);
+  background: var(--brand-soft);
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 .think-summary {
   cursor: pointer;
-  padding: 0.5rem 0.8rem;
-  font-family: var(--font-mono, monospace);
-  font-size: 11px;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
   font-weight: 600;
   color: var(--brand-text);
   user-select: none;
@@ -176,16 +268,16 @@
   display: none;
 }
 .think-body {
-  padding: 0.6rem 0.9rem;
+  padding: 8px 10px;
   margin: 0;
-  border-top: 1px solid rgba(0, 124, 247, 0.18);
+  border-top: 1px solid var(--brand-soft);
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(--font-mono, monospace);
-  font-size: 10.5px;
-  line-height: 1.55;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 19px;
   color: var(--text-tertiary);
-  background: rgba(0, 0, 0, 0.25);
+  background: var(--surface-0);
 }
 
 /* ── ScreenReader / FocusTrap: visually hidden ───────────────────────── */
@@ -292,17 +384,7 @@
 .status-dot--paused { background: var(--status-paused); }
 .status-dot--done { background: var(--status-success); }
 
-/* Typing indicator */
-.typing-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 999px;
-  background: var(--text-tertiary);
-  display: inline-block;
-  animation: rb-typing 1.2s var(--ease-in-out) infinite;
-}
-.typing-dot:nth-child(2) { animation-delay: 0.15s; }
-.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+/* Typing indicator — see OpenBot TypingDots spec at the bottom of this file. */
 
 /* Slim scroll container */
 .scroll-slim {
@@ -355,6 +437,11 @@
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
   overflow: hidden;
+  animation: rb-modal-in var(--duration-dialog) cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes rb-modal-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
 }
 .modal-header {
   padding: 1.25rem 1.5rem 0.75rem;
@@ -366,4 +453,260 @@
 .modal-footer {
   padding: 0.875rem 1.5rem;
   border-top: 1px solid var(--hairline);
+}
+
+/* ── Workspace app frame (OpenBot grid shell) ────────────────────────────
+   Rail (64px) · sidebar (--frame-sidebar, animates to 0 when hidden) · pane.
+   grid-template-columns animation + container queries like OpenBot's shell. */
+.app-frame {
+  display: grid;
+  grid-template-columns: var(--rail-width) var(--frame-sidebar, 0px) minmax(0, 1fr);
+  container-type: inline-size;
+  transition: grid-template-columns var(--duration-overlay) var(--ease-panel);
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-frame {
+    transition: none !important;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Message entries — OpenBot ChatMessageRow spec
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Row shell: 12px between authors, 4px inside a consecutive-author run.
+   The live-append entrance (OpenBot message-in) is a WAAPI action in
+   $lib/chat/entrance.ts — it skips rows mounting inside a container flagged
+   `.entries-static` (set by the views while (re)loading history) and
+   reduced-motion. CSS must NOT animate .message-entry: a class-based CSS
+   entrance would re-fire on every history load the moment the suppressor is
+   removed. */
+.message-entry {
+  padding-top: 12px;
+}
+.message-entry[data-grouped] {
+  padding-top: 4px;
+}
+
+/* Bubbles: uniform 22px radius (OpenBot never varies corners per group),
+ * 8px/12px padding, -0.15px tracking. User = raised surface, right-aligned,
+ * capped at 420px. Assistant = surface panel, capped at 720px. */
+.msg-bubble {
+  border-radius: var(--radius-bubble);
+  padding: 8px 12px;
+  letter-spacing: -0.15px;
+  border: 1px solid transparent;
+  overflow-wrap: anywhere;
+}
+.msg-bubble-user {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 20px;
+  white-space: pre-line;
+  max-width: min(420px, calc(100% - 81px));
+}
+.msg-bubble-agent {
+  background: var(--surface-1);
+  color: var(--text-primary);
+  max-width: min(720px, calc(100% - 81px));
+}
+/* Ghost variant: code/table/image-only replies render edge-to-edge, no bubble. */
+.msg-bubble-ghost {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+  max-width: min(720px, calc(100% - 81px));
+}
+
+/* Hover-revealed metadata: timestamp + action toolbar. */
+.message-meta {
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.message-entry:hover .message-meta,
+.message-entry:focus-within .message-meta {
+  opacity: 1;
+}
+.message-time {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-muted);
+  padding-inline: 12px;
+}
+.message-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.message-action-button:hover {
+  background: var(--hairline);
+  color: var(--text-secondary);
+}
+
+/* Streaming tail: only the newest word animates in (opacity + defocus). */
+.stream-tail {
+  display: inline;
+  animation: rb-tail-in var(--stream-fade) cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Container being height-tweened by smoothHeight(): clip the overshoot. */
+[data-resizing="true"] {
+  overflow: hidden;
+  will-change: height;
+}
+@keyframes rb-tail-in {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stream-tail {
+    animation: none;
+  }
+}
+
+/* Agent activity line (pre-first-token + tool running): avatar + shimmer label. */
+.agent-activity-label {
+  font-size: 12px;
+  line-height: 20px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  background-image: linear-gradient(
+    90deg,
+    var(--text-primary) 0%,
+    var(--text-primary) 30%,
+    var(--text-muted) 45%,
+    var(--text-muted) 55%,
+    var(--text-primary) 70%,
+    var(--text-primary) 100%
+  );
+  background-size: 300% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: rb-shine 2.25s cubic-bezier(0.25, 0.1, 0.25, 1) infinite;
+}
+@keyframes rb-shine {
+  0%, 18% { background-position: 100% 0; }
+  82%, 100% { background-position: 0% 0; }
+}
+.agent-activity-row {
+  animation: rb-activity-in var(--duration-overlay) var(--ease-out);
+}
+/* ChatActionMarker mini-rows: quiet tool-feed inside the streaming column. */
+.chat-action-markers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 10px;
+}
+.chat-action-marker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 18px;
+  color: var(--text-tertiary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-action-marker svg {
+    animation: none;
+  }
+}
+@keyframes rb-activity-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-activity-label,
+  .agent-activity-row {
+    animation: none;
+    color: var(--text-secondary);
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* OpenBot TypingDots: 3px dots, 900ms pulse, 120ms stagger, -1px travel. */
+.typing-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: currentColor;
+  display: inline-block;
+  animation: rb-typing 900ms ease-in-out infinite;
+}
+.typing-dot + .typing-dot {
+  margin-left: 2px;
+}
+.typing-dot:nth-child(2) { animation-delay: 120ms; }
+.typing-dot:nth-child(3) { animation-delay: 240ms; }
+@keyframes rb-typing {
+  0%, 60%, 100% { opacity: 0.34; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-1px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+  .modal-panel {
+    animation: none;
+  }
+}
+
+/* Jump-to-latest pill: shown while the reader is scrolled up during a run. */
+.jump-latest {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  animation: rb-scale-in var(--duration-normal) cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+.jump-latest:hover {
+  color: var(--text-primary);
+  border-color: var(--brand);
+}
+@media (prefers-reduced-motion: reduce) {
+  .jump-latest {
+    animation: none;
+  }
 }

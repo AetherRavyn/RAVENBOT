@@ -10,6 +10,7 @@
   import { ScrollArea } from "$lib/components/ui/scroll-area";
   import { getDiceBearUrl, isUserMessage, OFFICE_TEMPLATES } from "$lib/utils";
   import { cn } from "$lib/utils.js";
+  import { t } from "$lib/i18n";
   import { recordUtterance, transcribeBlob, voiceErrorMessage } from "$lib/voice";
   import {
     ACCEPTED_IMAGE_MIMES,
@@ -21,7 +22,17 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { notify } from "$lib/toast";
   import OfficeSettings from "$lib/components/OfficeSettings.svelte";
+  import OfficeMemoryPanel from "$lib/components/OfficeMemoryPanel.svelte";
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
+  import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
+  import PlanDag from "$lib/components/chat/PlanDag.svelte";
+  import RunTimelineStrip from "$lib/components/chat/RunTimeline.svelte";
+  import { RunTimeline as RunTimelineState } from "$lib/chat/runTimeline.svelte";
+  import { showAuthorHeader, authorHue } from "$lib/chat/grouping";
+  import { fleetActivity } from "$lib/fleetActivity.svelte";
+  import { StreamReveal } from "$lib/chat/streamReveal.svelte";
+  import { smoothHeight } from "$lib/chat/smoothHeight";
+  import { prefersReducedMotion } from "$lib/a11y";
   import {
     Building2,
     Users,
@@ -47,8 +58,10 @@
     Terminal,
     Settings,
     ArrowUp,
+    ArrowDown,
     Copy,
     Check,
+    Brain,
   } from "@lucide/svelte";
 
   interface Props {
@@ -65,6 +78,8 @@
   let sending = $state(false);
   let chatContainer = $state<HTMLDivElement | null>(null);
   let showOfficeSettings = $state(false);
+  // Office Brain drawer — memory is a first-class room surface, not a settings tab only
+  let showOfficeMemory = $state(false);
   // Plan mode
   let showPlanModal = $state(false);
   let planGoal = $state("");
@@ -98,7 +113,6 @@
   let manageBot = $state<any>(null);
   let showBotSettings = $state(false);
   let showSkillManager = $state(false);
-  let showMcpManager = $state(false);
   let notice = $state<string | null>(null);
   let noticeTimer: number | undefined;
 
@@ -180,7 +194,7 @@
     try {
       const res: any = await invoke("draft_office_org", {
         chatroomId: room.id,
-        brief: hireBrief || room.goal || room.description || "Staff this office.",
+        brief: hireBrief || room.goal || room.description || t("room.staffBrief"),
       });
       hireSource = res?.source || "ceo";
       if (res?.question) {
@@ -243,6 +257,32 @@
   let lanes = $state<Record<string, string>>({});
   // Current tool each agent is running (live)
   let agentTool = $state<Record<string, string>>({});
+  // Live activity strip: what each agent is doing right now (P5).
+  const runTimeline = new RunTimelineState();
+  // Word-by-word reveal per agent lane (same engine as ThreadView streaming)
+  const laneReveals = new Map<string, StreamReveal>();
+  // Rows without a resolvable bot id share this inert reveal instead of
+  // poisoning the map with a ""-keyed live lane.
+  const inertReveal = new StreamReveal();
+  function laneRevealOf(botId: string): StreamReveal {
+    if (!botId) return inertReveal;
+    let r = laneReveals.get(botId);
+    if (!r) {
+      r = new StreamReveal();
+      laneReveals.set(botId, r);
+    }
+    return r;
+  }
+  $effect(() => {
+    const live = new Set<string>();
+    for (const [botId, text] of Object.entries(lanes)) {
+      live.add(botId);
+      laneRevealOf(botId).track(text);
+    }
+    for (const [botId, r] of laneReveals) {
+      if (!live.has(botId)) r.track("");
+    }
+  });
   let officeTokens = $state(0);
   let officeCost = $state(0.0);
   let unlisten: UnlistenFn | null = null;
@@ -309,7 +349,30 @@
     OFFICE_TEMPLATES[room?.office_template as keyof typeof OFFICE_TEMPLATES] || OFFICE_TEMPLATES.custom
   );
 
-  async function scrollToBottom() {
+  // OpenBot scroll behavior: follow the feed only while stuck to the bottom
+  // (within 80px); scrolling up during a run unsticks and reveals the jump
+  // pill. `staticEntries` flags bulk history loads so row entrances animate
+  // only live appends (see $lib/chat/entrance).
+  let stickToLatest = $state(true);
+  let staticEntries = $state(true);
+
+  function handleFeedScroll() {
+    const el = chatContainer;
+    if (!el) return;
+    stickToLatest = el.scrollHeight - el.scrollTop - el.clientHeight <= 80;
+  }
+
+  function jumpToLatest() {
+    stickToLatest = true;
+    chatContainer?.scrollTo({
+      top: chatContainer.scrollHeight,
+      behavior: prefersReducedMotion() ? "auto" : "smooth",
+    });
+  }
+
+  async function scrollToBottom(force = false) {
+    if (!force && !stickToLatest) return;
+    stickToLatest = true;
     await tick();
     if (chatContainer) {
       chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -317,6 +380,7 @@
   }
 
   async function load() {
+    staticEntries = true;
     try {
       const mems = (await invoke("list_chatroom_members", { chatroomId: room.id })) as any[];
       members = mems.map((m) => ({ ...m, bot: bots.find((b: any) => b.id === m.bot_id) }));
@@ -328,9 +392,12 @@
         threadId = null;
         messages = [];
       }
-      scrollToBottom();
+      await tick();
+      scrollToBottom(true);
     } catch (e) {
       console.error(e);
+    } finally {
+      staticEntries = false;
     }
   }
 
@@ -341,6 +408,7 @@
       agentStatus = {};
       lanes = {};
       agentTool = {};
+      runTimeline.reset();
       officeTokens = 0;
       officeCost = 0;
       load();
@@ -351,6 +419,7 @@
     listen<any>("agent-stream", (event) => {
         const p = event.payload;
         if (!p) return;
+        runTimeline.track(p);
         if (p.kind === "status") {
           const state = p.state === "done" ? "idle" : p.state;
           agentStatus = { ...agentStatus, [p.bot_id]: state };
@@ -393,6 +462,7 @@
   onDestroy(() => {
     unlisten?.();
     unlisten = null;
+    for (const r of laneReveals.values()) r.stop();
   });
 
   function openPlanModal() {
@@ -480,7 +550,8 @@
       created_at: new Date().toISOString(),
     };
     messages = [...messages, tempUserMsg];
-    scrollToBottom();
+    // An explicit dispatch always returns the feed to the bottom (OpenBot).
+    scrollToBottom(true);
     // Close the modal immediately: the room streams live lanes while the DAG
     // runs, so the user watches progress instead of a frozen button.
     showPlanModal = false;
@@ -507,8 +578,11 @@
       const tid = res.thread_id || threadId;
       if (tid) {
         threadId = tid;
+        staticEntries = true;
         messages = (await invoke("list_messages", { threadId: tid })) as any[];
-        scrollToBottom();
+        await tick();
+        staticEntries = false;
+        scrollToBottom(true);
       }
     } catch (e: any) {
       notify(`Plan dispatch failed: ${String(e)}`, "error");
@@ -544,7 +618,8 @@
       created_at: new Date().toISOString(),
     };
     messages = [...messages, tempUserMsg];
-    scrollToBottom();
+    // An explicit dispatch always returns the feed to the bottom (OpenBot).
+    scrollToBottom(true);
 
     try {
       const res: any = await invoke("send_to_chatroom", {
@@ -553,9 +628,13 @@
         attachments: attachments.length ? attachments : undefined,
       });
       threadId = res.thread_id;
+      staticEntries = true;
       messages = (await invoke("list_messages", { threadId })) as any[];
+      await tick();
+      staticEntries = false;
     } catch (e) {
       console.error("Office dispatch error:", e);
+      staticEntries = false;
     } finally {
       sending = false;
       lanes = {};
@@ -570,6 +649,24 @@
       case "waiting_on_user": return "bg-danger";
       case "paused": return "bg-[var(--brand)]";
       default: return "bg-success";
+    }
+  }
+
+  // Header roster: live per-member activity from the global fleet state machine
+  function rosterRing(act: "working" | "attention" | "responded" | "idle"): string {
+    switch (act) {
+      case "working": return "ring-2 ring-[var(--brand)]";
+      case "attention": return "ring-2 ring-warning";
+      case "responded": return "ring-2 ring-success";
+      default: return "ring-1 ring-[var(--brand)]/40";
+    }
+  }
+  function rosterDot(act: "working" | "attention" | "responded" | "idle"): string {
+    switch (act) {
+      case "working": return "bg-[var(--brand)] animate-pulse";
+      case "attention": return "bg-warning animate-pulse";
+      case "responded": return "bg-success";
+      default: return "";
     }
   }
 
@@ -662,10 +759,10 @@
 
 <div class="flex flex-col h-full overflow-hidden select-none bg-[var(--surface-0)] text-[var(--text-primary)] font-sans">
   <!-- Top Office Header Bar -->
-  <header class="h-15 px-4 border-[var(--hairline)] border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between z-10 shrink-0">
+  <header class="h-15 px-4 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between z-10 shrink-0">
     <div class="flex items-center gap-3">
       <!-- Office Avatar -->
-      <div class="size-10 rounded-2xl overflow-hidden bg-[var(--surface-3)] border-[var(--hairline)] border-[var(--brand)]/40 p-0.5 shrink-0 shadow-md">
+      <div class="size-10 rounded-2xl overflow-hidden bg-[var(--surface-3)] border border-[var(--brand)]/40 p-0.5 shrink-0 shadow-md">
         <img
           src={room.avatar_url || getDiceBearUrl(room.name, room.avatar_style || "bottts")}
           alt={room.name}
@@ -675,16 +772,16 @@
 
       <div class="flex flex-col">
         <div class="flex items-center gap-2">
-          <span class="font-bold text-sm text-white">{room.name}</span>
-          <span class="font-mono text-[10px] py-0.2 px-2 rounded-md bg-[var(--surface-3)] border border-[var(--hairline)] text-[var(--brand-text)] capitalize">
+          <span class="font-bold text-sm text-[var(--text-primary)]">{room.name}</span>
+          <span class="font-mono text-[10px] py-[2px] px-2 rounded-md bg-[var(--surface-3)] border border-[var(--hairline)] text-[var(--brand-text)] capitalize">
             {room.office_template.replace("-", " ")}
           </span>
           <button
             type="button"
             class="icon-btn size-6"
             onclick={() => (showOfficeSettings = true)}
-            title="Edit office name, description & avatar"
-            aria-label="Edit office details"
+            title={t("room.editOffice")}
+            aria-label={t("room.editOffice")}
           >
             <Pencil class="size-3.5" />
           </button>
@@ -692,12 +789,12 @@
         <div class="flex items-center gap-2 text-[11px] text-[var(--text-tertiary)] mt-0.5">
           <span class="text-success font-mono flex items-center gap-1">
             <Radio class="size-2.5" />
-            Parallel Lane
+            {t("room.parallelLane")}
           </span>
           <span class="text-[var(--text-muted)]">·</span>
-          <span>{members.length} {members.length === 1 ? 'Specialist' : 'Specialists'} Assigned</span>
+          <span>{members.length === 1 ? t("room.specialistAssigned", { n: members.length }) : t("room.specialistsAssigned", { n: members.length })}</span>
           <span class="text-[var(--text-muted)]">·</span>
-          <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-success/10 border border-success/30 text-success" title="Live office telemetry (tokens / cost this session)">
+          <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-success/10 border border-success/30 text-success" title={t("room.telemetry")}>
             ${officeCost.toFixed(4)} · {officeTokens.toLocaleString()} tok
           </span>
         </div>
@@ -707,31 +804,37 @@
     <!-- Assigned Bot Roster Avatars -->
     <div class="flex items-center gap-3">
       <div class="flex -space-x-2">
-        {#each members.slice(0, 5) as m, i}
-          <div
-            class="size-8 rounded-full overflow-hidden bg-[var(--surface-3)] border-[var(--hairline)] border-[var(--surface-0)] ring-1 ring-[var(--brand)]/40 shadow-sm transition-transform hover:scale-110 hover:z-10"
-            title={`${m.bot?.name || m.rank} (${m.specialty})`}
-          >
-            <img
-              src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, m.bot?.avatar_style || "avataaars")}
-              alt={m.rank}
-              class="size-full object-cover"
-            />
+        {#each members.slice(0, 5) as m}
+          {@const act = fleetActivity.get(m.bot?.id ?? "")}
+          <div class="relative size-8 shrink-0 transition-transform hover:scale-110 hover:z-10" title={`${m.bot?.name || m.rank} (${m.specialty})`}>
+            <div class={cn("size-full rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline)] shadow-sm", rosterRing(act))}>
+              <img
+                src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, m.bot?.avatar_style || "avataaars")}
+                alt={m.rank}
+                class="size-full object-cover"
+              />
+            </div>
+            {#if act !== "idle"}
+              <span class={cn("absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-0)]", rosterDot(act))}></span>
+            {/if}
           </div>
         {/each}
         {#if members.length > 5}
-          <div class="size-8 rounded-full bg-[var(--surface-3)] border-[var(--hairline)] border-[var(--surface-0)] ring-1 ring-[var(--brand)]/40 flex items-center justify-center text-[10px] font-bold text-[var(--brand-text)]">
+          <div class="size-8 rounded-full bg-[var(--surface-3)] border border-[var(--hairline)] ring-1 ring-[var(--brand)]/40 flex items-center justify-center text-[10px] font-bold text-[var(--brand-text)]">
             +{members.length - 5}
           </div>
         {/if}
       </div>
-      <button type="button" onclick={() => openHireModal()} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-success/50 flex items-center justify-center shrink-0 ml-1" title="Hire team — CEO proposes the agents this office needs" aria-label="Hire team">
+      <button type="button" onclick={() => openHireModal()} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-success/50 flex items-center justify-center shrink-0 ml-1" title={t("room.hire")} aria-label={t("room.hire")}>
         <Users class="size-4" />
       </button>
-      <button type="button" onclick={() => (showOfficeSettings = true)} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] flex items-center justify-center shrink-0 ml-1" title="Office settings — name, avatar, goal, policy, members, tools & budget" aria-label="Office settings">
+      <button type="button" onclick={() => (showOfficeSettings = true)} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] flex items-center justify-center shrink-0 ml-1" title={t("room.settings")} aria-label={t("room.settings")}>
         <Settings class="size-4" />
       </button>
-      <button type="button" onclick={() => openPlanModal()} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] flex items-center justify-center shrink-0 ml-1" title="Plan mode — break a goal into specialist tasks" aria-label="Open plan mode">
+      <button type="button" onclick={() => (showOfficeMemory = true)} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] flex items-center justify-center shrink-0 ml-1" title={t("memory.title")} aria-label={t("memory.title")}>
+        <Brain class="size-4" />
+      </button>
+      <button type="button" onclick={() => openPlanModal()} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] flex items-center justify-center shrink-0 ml-1" title={t("room.plan")} aria-label={t("room.plan")}>
         <Workflow class="size-4" />
       </button>
     </div>
@@ -739,7 +842,7 @@
 
   <!-- Team strip: stable chips (no layout shift, status as a dot) -->
   {#if members.length > 0}
-    <div class="px-4 py-2.5 bg-[var(--surface-1)] border-[var(--hairline)] border-[var(--hairline)] flex items-center gap-3 shrink-0">
+    <div class="px-4 py-2.5 bg-[var(--surface-1)] border-b border-[var(--hairline)] flex items-center gap-3 shrink-0">
       <span class="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] shrink-0 flex items-center gap-1.5">
         <Workflow class="size-3 text-[var(--brand)]" />
         Team
@@ -773,19 +876,28 @@
     </div>
   {/if}
 
+  <!-- Run timeline: live "who is doing what" pills from agent-stream -->
+  {#if runTimeline.events.length > 0}
+    <RunTimelineStrip
+      events={runTimeline.events}
+      nameFor={(id: string) => members.find((m: any) => m.bot_id === id)?.bot?.name || t("ui.fallbackAgent")}
+    />
+  {/if}
+
   <!-- Transient notice (hiring / agent updates) -->
   {#if notice}
-    <div class="px-4 py-1.5 bg-[var(--brand-soft)] border-[var(--hairline)] border-[var(--brand)]/40 text-[11px] text-[var(--text-secondary)] flex items-center justify-between gap-3 shrink-0 animate-fade-in">
+    <div role="status" class="px-4 py-1.5 bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[11px] text-[var(--text-secondary)] flex items-center justify-between gap-3 shrink-0 animate-fade-in">
       <span>{notice}</span>
-      <button type="button" onclick={() => (notice = null)} class="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer" aria-label="Dismiss">✕</button>
+      <button type="button" onclick={() => (notice = null)} class="text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer" aria-label={t("room.dismiss")}>✕</button>
     </div>
   {/if}
 
   <!-- Main Chat & Task Feed -->
   <div class="flex-1 flex flex-col overflow-hidden bg-[var(--surface-0)]">
-    <div bind:this={chatContainer} class="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+    <div class="relative flex-1 min-h-0">
+    <div bind:this={chatContainer} onscroll={handleFeedScroll} class="h-full overflow-y-auto p-4 sm:p-6 space-y-6 {staticEntries ? 'entries-static' : ''}">
       <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto space-y-6">
-        {#each messages as msg (msg.id || msg.created_at)}
+        {#each messages as msg, mi (msg.id || msg.created_at)}
           {@const isUser = isUserMessage(msg)}
           {@const isError = typeof msg.content === "string" && msg.content.includes("⚠️ **Model Error:**")}
           {@const rawText = typeof msg.content === "string" ? msg.content : msg.content?.text || JSON.stringify(msg.content)}
@@ -793,57 +905,31 @@
           {@const senderName = senderBot?.name || msg.sender_name || room.name}
           {@const senderAvatar = senderBot?.avatar_url || getDiceBearUrl(senderName, senderBot?.avatar_style || "bottts")}
 
-          <div class="flex gap-3.5 {isUser ? 'justify-end' : 'justify-start'} group">
-            {#if !isUser}
-              <div class="size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0 mt-1 shadow-sm">
-                <img
-                  src={senderAvatar}
-                  alt={senderName}
-                  class="size-full object-cover"
-                />
+          <ChatMessageRow
+            {isUser}
+            text={rawText}
+            time={formatTime(msg.created_at)}
+            grouped={!showAuthorHeader(messages, mi)}
+            gutter={!isUser}
+            gutterAvatar={showAuthorHeader(messages, mi) ? senderAvatar : ""}
+            author={!isUser && !isError && showAuthorHeader(messages, mi)
+              ? { name: senderName, specialty: senderBot?.specialty }
+              : null}
+            authorColor={`hsl(${authorHue(msg.sender_bot_id || senderName)} 55% 68%)`}
+            userAvatar={userAvatar || getDiceBearUrl("You", "micah")}
+          >
+            {#snippet errorCard()}
+              <div class="rounded-2xl p-4 bg-[var(--danger-soft)] border border-[var(--danger-border)] text-[var(--text-secondary)] space-y-2">
+                <div class="flex items-center gap-2 text-[var(--danger-text)] font-semibold text-xs">
+                  <Shield class="size-4 shrink-0" />
+                  <span>{t("room.pipelineError")}</span>
+                </div>
+                <p class="text-xs text-[var(--text-secondary)] leading-relaxed font-sans">
+                  {rawText.replace("⚠️ **Model Error:** ", "")}
+                </p>
               </div>
-            {/if}
-
-            <div class="max-w-[85%] sm:max-w-[78%] space-y-1.5">
-              {#if !isUser && !isError}
-                <div class="text-[10px] font-mono px-1 flex items-center gap-1.5">
-                  <span class="font-bold text-[var(--text-secondary)]">{senderName}</span>
-                  {#if senderBot?.specialty}
-                    <span class="text-[var(--text-muted)]">· {senderBot.specialty}</span>
-                  {/if}
-                </div>
-              {/if}
-              {#if isError}
-                <div class="rounded-2xl p-4 bg-red-950/30 border border-red-800/40 text-[var(--text-secondary)] space-y-2 shadow-xl">
-                  <div class="flex items-center gap-2 text-red-400 font-bold text-xs font-mono">
-                    <Shield class="size-4 shrink-0" />
-                    <span>Office Pipeline Error</span>
-                  </div>
-                  <p class="text-xs text-[var(--text-secondary)] leading-relaxed font-sans">
-                    {rawText.replace("⚠️ **Model Error:** ", "")}
-                  </p>
-                </div>
-              {:else if isUser}
-                <div class="rounded-2xl px-4 py-3 text-xs leading-relaxed text-[var(--text-primary)] bg-[var(--surface-3)] border border-[var(--hairline)] shadow-md selection:bg-[var(--brand-soft)]">
-                  <p class="whitespace-pre-wrap font-sans text-xs leading-relaxed">{rawText}</p>
-                </div>
-              {:else}
-                <div class="rounded-2xl px-4 py-3.5 lg:px-5 bg-[var(--surface-1)] border border-[var(--hairline)] shadow-sm space-y-2 text-[var(--text-secondary)] text-[13px] lg:text-sm leading-relaxed selection:bg-[var(--brand)]/30">
-                  <MarkdownRenderer content={rawText} />
-                </div>
-              {/if}
-
-              <div class="text-[10px] text-[var(--text-muted)] px-1 {isUser ? 'text-right' : 'text-left'}">
-                {formatTime(msg.created_at)}
-              </div>
-            </div>
-
-            {#if isUser}
-              <div class="size-8 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline-strong)] shrink-0 mt-1 shadow-sm">
-                <img src={userAvatar || getDiceBearUrl("You", "micah")} alt="You" class="size-full object-cover" />
-              </div>
-            {/if}
-          </div>
+            {/snippet}
+          </ChatMessageRow>
         {:else}
           <!-- Empty State: Modern Office Mission Control -->
           <div class="p-8 text-center border border-dashed border-[var(--hairline)] rounded-xl bg-[var(--surface-0)]/80 max-w-xl mx-auto my-6 shadow-xl space-y-4">
@@ -852,11 +938,11 @@
             </div>
 
             <div>
-              <h3 class="font-bold text-base text-white tracking-tight">
-                {room.name} Workspace
+              <h3 class="font-bold text-base text-[var(--text-primary)] tracking-tight">
+                {t("room.workspaceTitle", { name: room.name })}
               </h3>
               <p class="text-xs text-[var(--text-tertiary)] mt-1 max-w-md mx-auto leading-relaxed">
-                {room.description || "Multi-agent collaborative pipeline. Directives are automatically orchestrated across assigned team specialists in parallel."}
+                {room.description || t("room.defaultDesc")}
               </p>
             </div>
 
@@ -878,21 +964,19 @@
               </div>
             {:else}
               <!-- No team yet: let the CEO staff the office -->
-              <div class="p-4 mt-2 rounded-2xl border border-success/30 bg-success/20 text-left space-y-2">
+              <div class="p-4 mt-2 rounded-2xl border border-success/50 bg-success/15 text-left space-y-2">
                 <div class="text-xs font-bold text-success flex items-center gap-1.5">
-                  <Users class="size-3.5" /> This office has no team yet
+                  <Users class="size-3.5" /> {t("room.noTeam")}
                 </div>
                 <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed">
-                  Give the CEO this office's mission and it will propose exactly which agents it needs
-                  (planner, builders, testers, QA…). Approve the roster and they're hired instantly —
-                  no manual bot setup.
+                  {t("room.ceoStaffDesc")}
                 </p>
                 <button
                   type="button"
                   onclick={() => openHireModal()}
-                  class="h-8 px-3 rounded-xl bg-success hover:bg-success text-white text-xs font-medium flex items-center gap-1.5 cursor-pointer"
+                  class="h-8 px-3 rounded-xl bg-success/15 border border-success/40 text-success hover:bg-success/25 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                 >
-                  <Sparkles class="size-3.5" /> Staff this office
+                  <Sparkles class="size-3.5" /> {t("room.staffOffice")}
                 </button>
               </div>
             {/if}
@@ -907,7 +991,7 @@
                 {#each roomTasks as task}
                   <button
                     type="button"
-                    class="text-left text-xs p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--hairline-strong)] hover:bg-[#13131c] transition-all text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-between group cursor-pointer"
+                    class="text-left text-xs p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--hairline-strong)] hover:bg-[var(--surface-2)] transition-all text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-between group cursor-pointer"
                     onclick={() => send(task)}
                   >
                     <span class="truncate">{task}</span>
@@ -929,7 +1013,8 @@
 
             {#each activeMembers as m (m.bot?.id)}
               {@const st = agentStatus[m.bot?.id] || "idle"}
-              {@const laneText = lanes[m.bot?.id] || ""}
+              {@const laneReveal = laneRevealOf(m.bot?.id ?? "")}
+              {@const laneText = laneReveal.shown}
               {@const toolName = agentTool[m.bot?.id]}
               <div class="flex gap-3 justify-start animate-rise-in">
                 <div class="relative size-8 shrink-0 mt-1">
@@ -941,9 +1026,9 @@
                   <span class="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-0)] {statusDot(st)}"></span>
                 </div>
 
-                <div class="min-w-0 flex-1 max-w-[85%] space-y-1.5">
+                <div class="min-w-0 flex-1 max-w-[min(80%,720px)] space-y-1.5">
                   <div class="flex items-center gap-2 min-w-0">
-                    <span class="text-[11px] font-bold text-white truncate">{m.bot?.name || m.rank}</span>
+                    <span class="text-[11px] font-bold truncate" style={`color: hsl({authorHue(m.bot?.id || m.rank)} 55% 68%)`}>{m.bot?.name || m.rank}</span>
                     <span class="text-[10px] text-[var(--text-muted)] truncate hidden sm:inline">{m.rank}</span>
                     <span class="ml-auto shrink-0">
                       {#if toolName}
@@ -959,14 +1044,11 @@
                   </div>
 
                   {#if laneText}
-                    <div class="rounded-2xl rounded-tl-md px-4 py-3 bg-[var(--surface-1)] border border-[var(--hairline)] shadow-sm">
-                      <div class="text-[13px] lg:text-sm text-[var(--text-secondary)]">
-                        <MarkdownRenderer content={laneText} />
-                      </div>
-                      <span class="inline-block w-1.5 h-3.5 bg-[var(--brand)] animate-pulse ml-0.5 align-middle rounded-sm"></span>
+                    <div use:smoothHeight class="msg-bubble msg-bubble-agent">
+                      <MarkdownRenderer content={laneReveal.body} streamTail={laneReveal.tail} />
                     </div>
                   {:else}
-                    <div class="rounded-2xl rounded-tl-md px-4 py-3 bg-[var(--surface-1)] border border-[var(--hairline)] w-fit">
+                    <div class="rounded-[var(--radius-bubble)] px-3.5 py-2 bg-[var(--surface-1)] w-fit">
                       <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
                     </div>
                   {/if}
@@ -984,6 +1066,19 @@
         {/if}
       </div>
     </div>
+      {#if !stickToLatest}
+        <button
+          type="button"
+          class="jump-latest"
+          onclick={jumpToLatest}
+          title={t("room.jumpLatest")}
+          aria-label={t("room.jumpLatest")}
+        >
+          <ArrowDown class="size-3.5" />
+          <span>{t("room.jumpLatest")}</span>
+        </button>
+      {/if}
+    </div>
 
     <!-- Grok Floating Capsule Compose Bar -->
     <div class="p-4 bg-[var(--surface-0)] shrink-0">
@@ -994,7 +1089,7 @@
               {#if att.isImage}
                 <div class="relative size-12 rounded-lg overflow-hidden border border-[var(--hairline-strong)] bg-[var(--surface-2)]">
                   <img src={`data:${att.mime};base64,${att.data}`} alt={att.name} class="size-full object-cover" />
-                  <button type="button" class="absolute top-0.5 right-0.5 size-4 rounded-full bg-[var(--surface-2)]lack/60 text-white text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} title="Remove attachment">✕</button>
+                  <button type="button" class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} title={t("room.removeAttachment")}>✕</button>
                 </div>
               {:else}
                 <div class="relative flex items-center gap-1.5 h-12 max-w-[200px] pl-2.5 pr-6 rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-2)]" title={att.name}>
@@ -1003,7 +1098,7 @@
                     <div class="text-[10px] text-[var(--text-secondary)] truncate">{att.name}</div>
                     <div class="text-[9px] text-[var(--text-muted)] font-mono uppercase">{att.mime.split("/").pop()}</div>
                   </div>
-                  <button type="button" class="absolute top-1 right-1 size-4 rounded-full bg-[var(--surface-2)]lack/60 text-white text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} title="Remove attachment">✕</button>
+                  <button type="button" class="absolute top-1 right-1 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} aria-label={t("room.removeAttachment")} title={t("room.removeAttachment")}>✕</button>
                 </div>
               {/if}
             {/each}
@@ -1011,11 +1106,12 @@
         {/if}
         <textarea
           bind:value={newMessage}
+          aria-label="Message"
           placeholder={members.length === 0
-            ? "Hire the team first (Users button) — the CEO will staff this office"
-            : `Describe task for ${room.name} — will orchestrate across ${members.length} specialists...`}
+            ? t("room.hireFirstPh")
+            : t("room.taskPh", { name: room.name, n: members.length })}
           rows={1}
-          class="w-full bg-transparent text-xs sm:text-sm text-white placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
+          class="w-full bg-transparent text-xs sm:text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
           onkeydown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
@@ -1031,7 +1127,7 @@
               type="button"
               class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center transition-colors cursor-pointer"
               onclick={attachFile}
-              title="Attach workspace code or text file"
+              title={t("home.attach")}
             >
               <Paperclip class="size-3.5" />
             </button>
@@ -1055,15 +1151,15 @@
             onclick={() => send()}
             disabled={((!newMessage.trim() && pendingAttachments.length === 0) || sending || members.length === 0)}
             class="h-8 px-4 rounded-full flex items-center gap-1.5 transition-all duration-200 cursor-pointer font-semibold text-xs {(newMessage.trim() || pendingAttachments.length) && !sending && members.length > 0
-              ? 'btn-brand text-white hover:scale-[1.03] active:scale-95'
+              ? 'btn-brand text-[var(--text-primary)] hover:scale-[1.03] active:scale-95'
               : 'bg-[var(--surface-3)] text-[var(--text-muted)] cursor-not-allowed'}"
           >
             {#if sending}
               <Loader2 class="size-3.5 animate-spin" />
-              <span>Splitting…</span>
+              <span>{t("room.splitting")}</span>
             {:else}
               <ArrowUp class="size-3.5 stroke-[2.5]" />
-              <span>Dispatch</span>
+              <span>{t("room.dispatch")}</span>
             {/if}
           </button>
         </div>
@@ -1089,41 +1185,68 @@
   />
 {/if}
 
+<!-- Office Brain drawer: shared memory at home in the room -->
+{#if showOfficeMemory}
+  <div
+    class="fixed inset-0 z-50 bg-black/60"
+    role="button"
+    tabindex="0"
+    aria-label={t("room.close")}
+    onclick={(e) => { if (e.target === e.currentTarget) showOfficeMemory = false; }}
+    onkeydown={(e) => { if (e.key === "Escape") showOfficeMemory = false; }}
+  >
+    <div class="absolute top-0 right-0 h-full w-[440px] max-w-[92vw] bg-[var(--surface-0)] border-l border-[var(--hairline)] flex flex-col shadow-2xl animate-fade-in" role="dialog" aria-label={t("memory.title")}>
+      <div class="flex items-center justify-between gap-3 px-4 py-3 border-b border-[var(--hairline)] bg-[var(--surface-1)] shrink-0">
+        <span class="flex items-center gap-2 min-w-0 text-xs font-bold uppercase tracking-wider font-mono text-[var(--text-primary)]">
+          <Brain class="size-4 text-[var(--brand-text)] shrink-0" />
+          <span class="truncate">{room.name}</span>
+        </span>
+        <button type="button" onclick={() => (showOfficeMemory = false)} class="size-7 rounded-lg bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center shrink-0 cursor-pointer" title={t("room.close")} aria-label={t("room.close")}>
+          ✕
+        </button>
+      </div>
+      <div class="flex-1 overflow-y-auto p-4 overscroll-contain">
+        <OfficeMemoryPanel chatroomId={room.id} />
+      </div>
+    </div>
+  </div>
+{/if}
+
 <!-- Plan Mode Modal -->
 {#if showPlanModal}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--surface-2)]lack/60 " role="button" tabindex="0" aria-label="Close plan modal" onclick={(e) => { if (e.target === e.currentTarget) showPlanModal = false; }} onkeydown={(e) => { if (e.key === "Escape") showPlanModal = false; }}>
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 " role="button" tabindex="0" aria-label={t("room.close")} onclick={(e) => { if (e.target === e.currentTarget) showPlanModal = false; }} onkeydown={(e) => { if (e.key === "Escape") showPlanModal = false; }}>
     <div class="modal-panel w-full max-w-2xl max-h-[85vh] flex flex-col">
-      <div class="px-6 pt-5 pb-3 border-[var(--hairline)] border-[var(--hairline)] shrink-0">
-        <h3 class="text-base font-bold text-white">Plan Mode — {room.name}</h3>
-        <p class="text-xs text-[var(--text-tertiary)]">Break a goal into specialist tasks, set dependencies, dispatch as a DAG.</p>
+      <div class="px-6 pt-5 pb-3 border-b border-[var(--hairline)] shrink-0">
+        <h3 class="text-base font-bold text-[var(--text-primary)]">{t("room.plan")} — {room.name}</h3>
+        <p class="text-xs text-[var(--text-tertiary)]">{t("room.planDesc")}</p>
       </div>
 
       <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         <div class="space-y-1.5">
           <div class="flex items-center justify-between">
-            <label for="plan-goal" class="text-xs font-bold text-white">Goal</label>
+            <label for="plan-goal" class="text-xs font-bold text-[var(--text-primary)]">{t("room.goal")}</label>
             <button
               type="button"
               onclick={draftPlan}
               disabled={draftingPlan || !planGoal.trim()}
               class="h-6 px-2.5 text-[10px] rounded-lg border border-[var(--brand)]/40 bg-[var(--brand-soft)] text-[var(--brand-text)] hover:bg-[var(--brand-soft)] cursor-pointer disabled:opacity-40 flex items-center gap-1"
-              title="Ask the office lead to break this goal into tasks"
+              title={t("room.draftTitle")}
             >
               {#if draftingPlan}
-                <Loader2 class="size-3 animate-spin" /> Drafting…
+                <Loader2 class="size-3 animate-spin" /> {t("room.drafting")}
               {:else}
-                <Sparkles class="size-3" /> Draft with lead
+                <Sparkles class="size-3" /> {t("room.draftWithLead")}
               {/if}
             </button>
           </div>
-          <textarea id="plan-goal" bind:value={planGoal} rows={2} placeholder="What should the team accomplish?" class="w-full px-3 py-2 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] text-sm text-white placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus:border-[var(--brand)]/50"></textarea>
+          <textarea id="plan-goal" bind:value={planGoal} rows={2} placeholder={t("room.planGoalPlaceholder")} class="w-full px-3 py-2 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus:border-[var(--brand)]/50"></textarea>
         </div>
 
         {#if planQuestion}
           <div class="p-3 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-xs text-[var(--brand-text)] space-y-1">
-            <div class="font-bold flex items-center gap-1.5">❓ The lead needs clarification</div>
+            <div class="font-bold flex items-center gap-1.5">❓ {t("room.leadClarify")}</div>
             <p>{planQuestion}</p>
-            <p class="text-[10px] text-[var(--brand-text)]/70">Refine the goal above, then draft again — or add tasks manually.</p>
+            <p class="text-[10px] text-[var(--brand-text)]/70">{t("room.refineHint")}</p>
           </div>
         {/if}
 
@@ -1137,8 +1260,8 @@
 
         <div class="space-y-2">
           <div class="flex items-center justify-between">
-            <p class="text-xs font-bold text-white">Tasks ({planTasks.length})</p>
-            <span onclick={addPlanTask} class="text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-text)] cursor-pointer" role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addPlanTask(); } }}>+ Add task</span>
+            <p class="text-xs font-bold text-[var(--text-primary)]">{t("room.tasks")} ({planTasks.length})</p>
+            <span onclick={addPlanTask} class="text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-text)] cursor-pointer" role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addPlanTask(); } }}>{t("room.addTask")}</span>
           </div>
           {#each planTasks as task, idx}
             <div class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] space-y-2">
@@ -1149,14 +1272,41 @@
                   onValueChange={(v) => updateTaskBot(idx, v)}
                   class="h-7 w-44 text-[10px] rounded-lg"
                 />
-                <input bind:value={task.label} oninput={(e) => updatePlanTaskLabel(idx, (e.target as HTMLInputElement).value)} class="flex-1 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-[var(--brand)]/50" placeholder="Task description..." />
-                <button type="button" onclick={() => removePlanTask(idx)} class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
+                <input bind:value={task.label} oninput={(e) => updatePlanTaskLabel(idx, (e.target as HTMLInputElement).value)} class="flex-1 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-[var(--brand)]/50" placeholder={t("room.taskPlaceholder")} />
+                <button type="button" onclick={() => removePlanTask(idx)} aria-label="Remove task" class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
               </div>
+              {#if idx > 0}
+                <div class="flex items-center gap-1 flex-wrap">
+                  <span class="text-[9px] font-mono text-[var(--text-muted)] uppercase tracking-wider">{t("room.dependsOn")}</span>
+                  {#each planTasks as _, oidx}
+                    {#if oidx < idx}
+                      {@const depOn = task.dependsOn.includes(oidx)}
+                      <button
+                        type="button"
+                        onclick={() => togglePlanDep(idx, oidx)}
+                        aria-pressed={depOn}
+                        class="h-5 px-1.5 text-[9px] font-mono rounded-md border cursor-pointer {depOn
+                          ? 'border-[var(--brand)]/60 bg-[var(--brand-soft)] text-[var(--brand-text)]'
+                          : 'border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}"
+                      >#{oidx + 1}</button>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
             </div>
           {:else}
-            <div class="py-6 text-center text-xs text-[var(--text-muted)] border-[var(--hairline)] border-dashed border-[var(--hairline)] rounded-xl">No tasks yet — add one to start.</div>
+            <div class="py-6 text-center text-xs text-[var(--text-muted)] border border-dashed border-[var(--hairline)] rounded-xl">{t("room.noTasks")}</div>
           {/each}
         </div>
+
+        {#if planTasks.length > 0}
+          <div class="space-y-1.5">
+            <p class="text-xs font-bold text-[var(--text-primary)]">{t("room.dagTitle")}</p>
+            <div class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-0)]">
+              <PlanDag tasks={planTasks} {members} />
+            </div>
+          </div>
+        {/if}
 
         {#if planError}
           <div class="p-3 rounded-xl bg-danger/40 border border-danger/40 text-xs text-danger">{planError}</div>
@@ -1164,12 +1314,12 @@
       </div>
 
       <div class="px-6 py-3 border-t border-[var(--hairline)] flex justify-end gap-2 shrink-0">
-        <button type="button" onclick={() => (showPlanModal = false)} class="h-8 px-4 text-xs bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-xl cursor-pointer">Cancel</button>
-        <button type="button" onclick={dispatchPlan} disabled={planGenerating} class="h-8 px-4 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium rounded-xl cursor-pointer disabled:opacity-50">
+        <button type="button" onclick={() => (showPlanModal = false)} class="h-8 px-4 text-xs bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-xl cursor-pointer">{t("ui.cancel")}</button>
+        <button type="button" onclick={dispatchPlan} disabled={planGenerating} class="h-8 px-4 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] font-medium rounded-xl cursor-pointer disabled:opacity-50">
           {#if planGenerating}
-            <span>Dispatching...</span>
+            <span>{t("room.dispatching")}</span>
           {:else}
-            <span>Dispatch Plan</span>
+            <span>{t("room.dispatchPlan")}</span>
           {/if}
         </button>
       </div>
@@ -1179,32 +1329,31 @@
 
 <!-- Hire Team Modal — CEO proposes the office org -->
 {#if showHireModal}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--surface-2)]lack/60 " role="button" tabindex="0" aria-label="Close hire modal" onclick={(e) => { if (e.target === e.currentTarget) showHireModal = false; }} onkeydown={(e) => { if (e.key === "Escape") showHireModal = false; }}>
+  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 " role="button" tabindex="0" aria-label={t("room.close")} onclick={(e) => { if (e.target === e.currentTarget) showHireModal = false; }} onkeydown={(e) => { if (e.key === "Escape") showHireModal = false; }}>
     <div class="modal-panel w-full max-w-3xl max-h-[88vh] flex flex-col">
-      <div class="px-6 pt-5 pb-3 border-[var(--hairline)] border-[var(--hairline)] shrink-0">
-        <h3 class="text-base font-bold text-white flex items-center gap-2">
-          <Users class="size-4 text-success" /> Hire Team — {room.name}
+      <div class="px-6 pt-5 pb-3 border-b border-[var(--hairline)] shrink-0">
+        <h3 class="text-base font-bold text-[var(--text-primary)] flex items-center gap-2">
+          <Users class="size-4 text-success" /> {t("room.hire")} — {room.name}
         </h3>
         <p class="text-xs text-[var(--text-tertiary)] mt-0.5">
-          The CEO proposes the agents this office needs. Edit the roster, then hire them — each agent
-          is created with its role prompt and skills.
+          {t("room.hireDesc")}
         </p>
       </div>
 
       <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         <div class="space-y-1.5">
           <div class="flex items-center justify-between">
-            <label for="hire-brief" class="text-xs font-bold text-white">What is this office for?</label>
+            <label for="hire-brief" class="text-xs font-bold text-[var(--text-primary)]">{t("room.hireQuestion")}</label>
             <span class="text-[10px] text-[var(--text-muted)]">
-              {#if hireSource === "ceo"}CEO-proposed{:else if hireSource === "template"}Template blueprint{:else}Manual{/if}
+              {#if hireSource === "ceo"}{t("room.ceoProposed")}{:else if hireSource === "template"}{t("room.templateBlueprint")}{:else}{t("room.manual")}{/if}
             </span>
           </div>
           <textarea
             id="hire-brief"
             bind:value={hireBrief}
             rows={2}
-            placeholder="e.g. Build and ship a production REST API with tests and a QA pass"
-            class="w-full px-3 py-2 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] text-sm text-white placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus:border-success/50"
+            placeholder={t("room.hirePlaceholder")}
+            class="w-full px-3 py-2 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus:border-success/50"
           ></textarea>
           <button
             type="button"
@@ -1213,70 +1362,70 @@
             class="h-7 px-3 text-[11px] rounded-lg border border-success/40 bg-success/40 text-success hover:bg-success/50 cursor-pointer disabled:opacity-40 flex items-center gap-1.5"
           >
             {#if hireDrafting}
-              <Loader2 class="size-3 animate-spin" /> Asking the CEO…
+              <Loader2 class="size-3 animate-spin" /> {t("room.askingCeo")}
             {:else}
-              <Sparkles class="size-3" /> Let the CEO propose the team
+              <Sparkles class="size-3" /> {t("room.ceoProposeBtn")}
             {/if}
           </button>
           <p class="text-[10px] text-[var(--text-muted)] leading-relaxed pt-0.5">
-            The CEO checks your whole fleet first — existing agents that match a role are reused
-            (and just added to this office), so the same agent is never created twice. Every agent's
-            model, skills, MCP servers and connectors stay editable by you from the roster above.
+            {t("room.reuseHint")}
           </p>
         </div>
 
         {#if hireQuestion}
           <div class="p-3 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-xs text-[var(--brand-text)] space-y-1">
-            <div class="font-bold">❓ The CEO needs clarification</div>
+            <div class="font-bold">❓ {t("room.ceoNeedsClarify")}</div>
             <p>{hireQuestion}</p>
           </div>
         {/if}
 
         <div class="space-y-2">
           <div class="flex items-center justify-between">
-            <p class="text-xs font-bold text-white">Roster ({hireRoles.length})</p>
-            <span onclick={addHireRole} class="text-[10px] text-success hover:text-success cursor-pointer" role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addHireRole(); } }}>+ Add role</span>
+            <p class="text-xs font-bold text-[var(--text-primary)]">{t("room.roster")} ({hireRoles.length})</p>
+            <span onclick={addHireRole} class="text-[10px] text-success hover:text-success cursor-pointer" role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addHireRole(); } }}>{t("room.addRole")}</span>
           </div>
 
           {#each hireRoles as role, idx}
             <div class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] space-y-2">
               <div class="flex items-center gap-2">
-                <label class="flex items-center gap-1 text-[10px] text-[var(--text-tertiary)] shrink-0 cursor-pointer" title="Make this the office lead (CEO)">
+                <label class="flex items-center gap-1 text-[10px] text-[var(--text-tertiary)] shrink-0 cursor-pointer" title={t("room.makeLead")}>
                   <input type="radio" name="hire-lead" checked={role.is_lead} onchange={() => setHireLead(idx)} class="accent-[var(--brand)] cursor-pointer" />
-                  Lead
+                  {t("room.lead")}
                 </label>
-                <input bind:value={role.name} placeholder="Name" class="w-28 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
-                <input bind:value={role.rank} placeholder="Rank" class="w-24 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
-                <input bind:value={role.specialty} placeholder="Specialty" class="flex-1 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
-                <button type="button" onclick={() => removeHireRole(idx)} class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
+                <input bind:value={role.name} aria-label={t("room.name")} placeholder={t("room.name")} class="w-28 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
+                <input bind:value={role.rank} aria-label={t("room.rank")} placeholder={t("room.rank")} class="w-24 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
+                <input bind:value={role.specialty} aria-label={t("room.specialty")} placeholder={t("room.specialty")} class="flex-1 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
+                <button type="button" onclick={() => removeHireRole(idx)} aria-label="Remove role" class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
               </div>
               <div class="flex items-center gap-2">
                 <button
                   type="button"
                   onclick={() => (openRolePrompt = openRolePrompt === idx ? null : idx)}
+                  aria-expanded={openRolePrompt === idx}
                   class="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
                 >
-                  {openRolePrompt === idx ? "▾ Hide instructions" : "▸ Role instructions"}
+                  {openRolePrompt === idx ? `▾ ${t("room.hideInstructions")}` : `▸ ${t("room.roleInstructions")}`}
                 </button>
                 {#if role.is_lead}
-                  <span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-bold">CEO / ORCHESTRATOR</span>
+                  <span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-bold">{t("room.ceoBadge")}</span>
                 {/if}
                 {#if role.skills.length}
-                  <span class="text-[9px] text-[var(--text-muted)] truncate">{role.skills.length} skills</span>
+                  <span class="text-[9px] text-[var(--text-muted)] truncate">{t("room.skillsCount", { n: role.skills.length })}</span>
                 {/if}
               </div>
               {#if openRolePrompt === idx}
                 <textarea
                   bind:value={role.system_prompt}
+                  aria-label={t("room.roleInstructions")}
                   rows={3}
-                  placeholder="Operating instructions for this agent…"
+                  placeholder={t("room.instructionsPlaceholder")}
                   class="w-full px-2 py-1.5 text-[11px] bg-[var(--surface-1)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg resize-none focus:outline-none focus:border-success/50"
                 ></textarea>
               {/if}
             </div>
           {:else}
-            <div class="py-6 text-center text-xs text-[var(--text-muted)] border-[var(--hairline)] border-dashed border-[var(--hairline)] rounded-xl">
-              No roles yet — ask the CEO to propose a team, or add roles manually.
+            <div class="py-6 text-center text-xs text-[var(--text-muted)] border border-dashed border-[var(--hairline)] rounded-xl">
+              {t("room.noRoles")}
             </div>
           {/each}
         </div>
@@ -1295,19 +1444,19 @@
 
       <div class="px-6 py-3 border-t border-[var(--hairline)] flex justify-end gap-2 shrink-0">
         {#if hireResult}
-          <button type="button" onclick={() => (showHireModal = false)} class="h-8 px-4 text-xs bg-success hover:bg-success text-white font-medium rounded-xl cursor-pointer">Done</button>
+          <button type="button" onclick={() => (showHireModal = false)} class="h-8 px-4 text-xs bg-success/15 border border-success/40 text-success hover:bg-success/25 font-bold rounded-xl cursor-pointer">{t("ui.done")}</button>
         {:else}
-          <button type="button" onclick={() => (showHireModal = false)} class="h-8 px-4 text-xs bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-xl cursor-pointer">Cancel</button>
+          <button type="button" onclick={() => (showHireModal = false)} class="h-8 px-4 text-xs bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-xl cursor-pointer">{t("ui.cancel")}</button>
           <button
             type="button"
             onclick={provisionHiredTeam}
             disabled={hireProvisioning || hireRoles.length === 0}
-            class="h-8 px-4 text-xs bg-success hover:bg-success text-white font-medium rounded-xl cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+            class="h-8 px-4 text-xs bg-success/15 border border-success/40 text-success hover:bg-success/25 font-bold rounded-xl cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
           >
             {#if hireProvisioning}
-              <Loader2 class="size-3.5 animate-spin" /> Hiring…
+              <Loader2 class="size-3.5 animate-spin" /> {t("room.hiring")}
             {:else}
-              Hire {hireRoles.length} agent{hireRoles.length === 1 ? "" : "s"}
+              {hireRoles.length === 1 ? t("room.hire1") : t("room.hireN", { n: hireRoles.length })}
             {/if}
           </button>
         {/if}
@@ -1318,12 +1467,12 @@
 
 
 <!-- Manage Agent chooser — owner can edit model, skills, MCP & connectors -->
-{#if manageBot && !showBotSettings && !showSkillManager && !showMcpManager}
+{#if manageBot && !showBotSettings && !showSkillManager}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--surface-2)]lack/60 "
+    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 "
     role="button"
     tabindex="0"
-    aria-label="Close manage agent"
+    aria-label={t("room.close")}
     onclick={(e) => { if (e.target === e.currentTarget) manageBot = null; }}
     onkeydown={(e) => { if (e.key === "Escape") manageBot = null; }}
   >
@@ -1337,12 +1486,12 @@
           />
         </div>
         <div class="min-w-0">
-          <div class="font-bold text-sm text-white truncate flex items-center gap-1.5">
+          <div class="font-bold text-sm text-[var(--text-primary)] truncate flex items-center gap-1.5">
             {manageBot.name}
-            {#if manageBot.is_orchestrator}<span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-bold">LEAD</span>{/if}
+            {#if manageBot.is_orchestrator}<span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-bold uppercase">{t("room.leadBadge")}</span>{/if}
           </div>
           <div class="text-[11px] text-[var(--text-tertiary)] truncate">
-            {manageBot.rank || "Agent"} · {manageBot.specialty || "Generalist"}
+            {manageBot.rank || t("ui.fallbackAgent")} · {manageBot.specialty || t("ui.fallbackGeneralist")}
           </div>
           <div class="text-[10px] font-mono text-[var(--text-muted)] truncate mt-0.5">
             {manageBot.config?.model_provider || "?"}/{manageBot.config?.model_id || "?"}
@@ -1358,8 +1507,8 @@
         >
           <Cpu class="size-4 text-[var(--brand)] shrink-0" />
           <span class="min-w-0">
-            <span class="block text-xs font-bold text-white">Model & Engine</span>
-            <span class="block text-[10px] text-[var(--text-tertiary)]">Provider, model id, temperature, sandbox, system prompt</span>
+            <span class="block text-xs font-bold text-[var(--text-primary)]">{t("room.manageModel")}</span>
+            <span class="block text-[10px] text-[var(--text-tertiary)]">{t("room.manageModelDesc")}</span>
           </span>
         </button>
 
@@ -1370,26 +1519,29 @@
         >
           <Wrench class="size-4 text-[var(--brand)] shrink-0" />
           <span class="min-w-0">
-            <span class="block text-xs font-bold text-white">Skills</span>
-            <span class="block text-[10px] text-[var(--text-tertiary)]">Enable tools and workflow skills for this agent</span>
+            <span class="block text-xs font-bold text-[var(--text-primary)]">{t("room.manageSkills")}</span>
+            <span class="block text-[10px] text-[var(--text-tertiary)]">{t("room.manageSkillsDesc")}</span>
           </span>
         </button>
 
         <button
           type="button"
           class="w-full flex items-center gap-3 p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--brand)] hover:bg-[var(--surface-2)] transition-colors cursor-pointer text-left"
-          onclick={() => (showMcpManager = true)}
+          onclick={() => {
+            window.dispatchEvent(new CustomEvent("open-connectors", { detail: { botId: manageBot.id } }));
+            manageBot = null;
+          }}
         >
           <Server class="size-4 text-[var(--brand)] shrink-0" />
           <span class="min-w-0">
-            <span class="block text-xs font-bold text-white">MCP Tools & Connectors</span>
-            <span class="block text-[10px] text-[var(--text-tertiary)]">Assign connectors and MCP servers to this agent</span>
+            <span class="block text-xs font-bold text-[var(--text-primary)]">{t("room.manageMcp")}</span>
+            <span class="block text-[10px] text-[var(--text-tertiary)]">{t("room.manageMcpDesc")}</span>
           </span>
         </button>
       </div>
 
       <div class="flex justify-end">
-        <button type="button" onclick={() => (manageBot = null)} class="h-8 px-4 text-xs bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-xl cursor-pointer">Close</button>
+        <button type="button" onclick={() => (manageBot = null)} class="h-8 px-4 text-xs bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-xl cursor-pointer">{t("room.close")}</button>
       </div>
     </div>
   </div>
@@ -1413,16 +1565,6 @@
       open={showSkillManager}
       onClose={() => { showSkillManager = false; manageBot = null; }}
       onUpdated={(updated: any) => { handleAgentUpdated(updated); }}
-    />
-  {/await}
-{/if}
-
-{#if showMcpManager && manageBot}
-  {#await import("$lib/components/McpManager.svelte") then McpManager}
-    <McpManager.default
-      bot={manageBot}
-      open={showMcpManager}
-      onClose={() => { showMcpManager = false; manageBot = null; }}
     />
   {/await}
 {/if}

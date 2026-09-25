@@ -1,15 +1,18 @@
 <script lang="ts">
   import { marked } from "marked";
   import { onMount } from "svelte";
+  import { t } from "$lib/i18n";
   import { qualifiesAsArtifact, makeArtifact, artifactKindFor, type Artifact } from "$lib/artifact";
 
   interface Props {
     content: string;
     class?: string;
+    /** Last revealed word — appended with the OpenBot blur-in tail animation. */
+    streamTail?: string;
     onOpenArtifact?: (artifact: Artifact) => void;
   }
 
-  let { content = "", class: customClass = "", onOpenArtifact }: Props = $props();
+  let { content = "", class: customClass = "", streamTail = "", onOpenArtifact }: Props = $props();
 
   let containerEl = $state<HTMLDivElement | null>(null);
   let renderedHtml = $state("");
@@ -50,7 +53,7 @@
       .replace(/>/g, "&gt;");
     const thinkHtml =
       `<details class="think-details" open>` +
-      `<summary class="think-summary">🧠 Reasoning</summary>` +
+      `<summary class="think-summary">${t("markdown.reasoning")}</summary>` +
       `<pre class="think-body">${escaped}</pre>` +
       `</details>`;
     return { text: text.replace(match[0], ""), thinkHtml };
@@ -58,20 +61,20 @@
 
   // Handle copy + artifact buttons inside rendered code blocks
   function handleClick(e: MouseEvent) {
-    const artifactBtn = (e.target as HTMLElement).closest(".artifact-open-btn");
+    const artifactBtn = (e.target as HTMLElement).closest(".md-code-artifact");
     if (artifactBtn) {
       if (!onOpenArtifact) return;
-      const codeBlock = artifactBtn.closest(".code-block-wrapper")?.querySelector("code");
+      const codeBlock = artifactBtn.closest(".md-code-wrapper")?.querySelector("code");
       const codeText = codeBlock?.textContent || "";
       const lang = artifactBtn.getAttribute("data-artifact-lang") || "";
       onOpenArtifact(makeArtifact(codeText, lang));
       return;
     }
 
-    const target = (e.target as HTMLElement).closest(".code-copy-btn");
+    const target = (e.target as HTMLElement).closest(".md-code-copy");
     if (!target) return;
 
-    const codeBlock = target.closest(".code-block-wrapper")?.querySelector("code");
+    const codeBlock = target.closest(".md-code-wrapper")?.querySelector("code");
     if (!codeBlock) return;
 
     const codeText = codeBlock.textContent || "";
@@ -80,12 +83,12 @@
       const checkIcon = target.querySelector(".copy-check-icon");
       const copyIcon = target.querySelector(".copy-default-icon");
 
-      if (span) span.textContent = "Copied!";
+      if (span) span.textContent = t("markdown.copied");
       if (checkIcon) checkIcon.classList.remove("hidden");
       if (copyIcon) copyIcon.classList.add("hidden");
 
       setTimeout(() => {
-        if (span) span.textContent = "Copy";
+        if (span) span.textContent = t("markdown.copy");
         if (checkIcon) checkIcon.classList.add("hidden");
         if (copyIcon) copyIcon.classList.remove("hidden");
       }, 2000);
@@ -96,7 +99,7 @@
     if (!containerEl) return;
     const pres = containerEl.querySelectorAll("pre:not(.enhanced)");
     pres.forEach((pre) => {
-      if (pre.parentElement?.classList.contains("code-block-wrapper")) return;
+      if (pre.parentElement?.classList.contains("md-code-wrapper")) return;
       pre.classList.add("enhanced");
 
       const code = pre.querySelector("code");
@@ -104,30 +107,30 @@
       if (code) {
         const langClass = Array.from(code.classList).find((c) => c.startsWith("language-"));
         if (langClass) {
-          lang = langClass.replace("language-", "");
+          lang = langClass.replace("language-", "").replace(/[^a-zA-Z0-9+#._-]/g, "") || "code";
         }
       }
 
       const wrapper = document.createElement("div");
-      wrapper.className = "code-block-wrapper my-3 rounded-xl overflow-hidden border border-[var(--hairline)] bg-[var(--surface-0)] shadow-lg text-xs";
+      wrapper.className = "md-code-wrapper my-3";
 
       const artifactBtn = onOpenArtifact && code && qualifiesAsArtifact(code.textContent || "")
-        ? `<button type="button" class="artifact-open-btn flex items-center gap-1 text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-hover)] px-2 py-0.5 rounded hover:bg-[var(--brand-soft)] transition-colors cursor-pointer" data-artifact-lang="${lang}" title="Open in artifact panel (canvas)">
+        ? `<button type="button" class="md-code-artifact" data-artifact-lang="${lang}" title="${t("markdown.artifactTip")}">
             <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
-            <span>Artifact</span>
+            <span>${t("markdown.artifact")}</span>
           </button>`
         : "";
 
       const header = document.createElement("div");
-      header.className = "flex items-center justify-between px-3.5 py-1.5 bg-[#0f0f16] border-[var(--hairline)] border-[var(--hairline)] text-[11px] font-mono text-[var(--text-tertiary)]";
+      header.className = "md-code-header";
       header.innerHTML = `
-        <span class="font-bold text-[var(--text-secondary)] uppercase tracking-wider text-[10px]">${lang}</span>
-        <div class="flex items-center gap-1">
+        <span class="md-code-lang">${lang}</span>
+        <div class="md-code-actions">
           ${artifactBtn}
-          <button type="button" class="code-copy-btn flex items-center gap-1 text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-2 py-0.5 rounded hover:bg-[var(--surface-3)] transition-colors cursor-pointer" title="Copy code">
+          <button type="button" class="md-code-copy" title="${t("markdown.copyTitle")}">
             <svg class="copy-default-icon size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>
             <svg class="copy-check-icon size-3 hidden text-success" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-            <span class="copy-status-text">Copy</span>
+            <span class="copy-status-text">${t("markdown.copy")}</span>
           </button>
         </div>
       `;
@@ -136,8 +139,40 @@
       wrapper.appendChild(header);
       wrapper.appendChild(pre);
 
-      pre.className = "p-3.5 overflow-x-auto text-[11.5px] font-mono leading-relaxed text-[var(--text-secondary)] bg-transparent";
+      pre.className = "md-code-pre";
     });
+  }
+
+  // OpenBot StreamingTailText: the newest word animates in (blur→sharp) at the
+  // end of the last rendered block. Recreating the span per word retriggers it.
+  // The target must be an inline-safe host: a <td> (span directly in <table>
+  // is hoisted out and the tail vanishes) or a code block's <code> node.
+  const TEXTY = new Set(["P", "LI", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6"]);
+  function resolveTailTarget(root: HTMLElement): HTMLElement | null {
+    let node = root.querySelector(":scope > :last-child") as HTMLElement | null;
+    if (!node) return root; // partial render with no wrapping block yet
+    while (node) {
+      if (TEXTY.has(node.tagName)) return node;
+      if (node.tagName === "TABLE") {
+        return node.querySelector(
+          "tbody tr:last-child > td:last-child, tbody tr:last-child > th:last-child, tr:last-child > td:last-child, tr:last-child > th:last-child",
+        ) as HTMLElement | null;
+      }
+      if (node.tagName === "PRE") return (node.querySelector("code") ?? node) as HTMLElement;
+      node = node.querySelector(":scope > :last-child") as HTMLElement | null;
+    }
+    return null;
+  }
+  function applyStreamTail() {
+    if (!containerEl) return;
+    containerEl.querySelector(".stream-tail")?.remove();
+    if (!streamTail) return;
+    const target = resolveTailTarget(containerEl);
+    if (!target) return;
+    const span = document.createElement("span");
+    span.className = "stream-tail";
+    span.textContent = " " + streamTail;
+    target.appendChild(span);
   }
 
   onMount(() => {
@@ -146,7 +181,11 @@
 
   $effect(() => {
     renderedHtml;
-    setTimeout(enhanceCodeBlocks, 10);
+    streamTail;
+    setTimeout(() => {
+      enhanceCodeBlocks();
+      applyStreamTail();
+    }, 0);
   });
 </script>
 
@@ -155,7 +194,7 @@
 <div
   bind:this={containerEl}
   onclick={handleClick}
-  class="markdown-content text-[var(--text-secondary)] text-xs leading-relaxed font-sans select-text {customClass}"
+  class="markdown-content font-sans select-text {customClass}"
 >
   {@html renderedHtml}
 </div>

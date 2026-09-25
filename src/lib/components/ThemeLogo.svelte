@@ -17,7 +17,7 @@
 <div class="relative flex items-center justify-center shrink-0 {sizeClass} {customClass}">
   {#if theme.brand.logoType === "svg-grok"}
     <!-- Grok Sovereign: Minimalist Geometric Titanium & Cyan Blade Emblem -->
-    <svg viewBox="0 0 120 120" class="size-full drop-shadow-[0_0_25px_rgba(56,189,248,0.45)]" fill="none">
+    <svg viewBox="0 0 120 120" class="size-full" fill="none">
       <polygon points="60,6 110,32 110,88 60,114 10,88 10,32" stroke="#27272a" stroke-width="1.5" />
       <polygon points="60,16 100,38 100,82 60,104 20,82 20,38" stroke="rgba(255,255,255,0.15)" stroke-width="1" stroke-dasharray="3 3" />
       <!-- Grok Slash / Raven Geometric Wings -->
@@ -32,7 +32,7 @@
     </div>
   {:else if theme.brand.logoType === "svg-rot"}
     <!-- The Rot Archive: Occult Grimoire Skull & Alchemical Transmutation Sigil -->
-    <svg viewBox="0 0 120 120" class="size-full drop-shadow-[0_0_20px_rgba(139,30,30,0.6)]" fill="none">
+    <svg viewBox="0 0 120 120" class="size-full" fill="none">
       <!-- Dark Aged Parchment Seal Base -->
       <polygon points="60,8 108,35 108,85 60,112 12,85 12,35" fill="#16120e" stroke="#5C3B2E" stroke-width="2.5" />
       <polygon points="60,16 100,39 100,81 60,104 20,81 20,39" stroke="#8B1E1E" stroke-width="1.5" stroke-dasharray="3 3" />
@@ -52,7 +52,7 @@
     </svg>
   {:else if theme.brand.logoType === "svg-cyber"}
     <!-- Cyber Cyan: Holographic Quantum Hex-Core -->
-    <svg viewBox="0 0 120 120" class="size-full drop-shadow-[0_0_25px_rgba(6,182,212,0.7)]" fill="none">
+    <svg viewBox="0 0 120 120" class="size-full" fill="none">
       <polygon points="60,6 110,33 110,87 60,114 10,87 10,33" fill="#040c1a" stroke="#06b6d4" stroke-width="2" />
       <polygon points="60,18 98,40 98,80 60,102 22,80 22,40" stroke="#38bdf8" stroke-width="1" stroke-dasharray="4 2" />
       <!-- Concentric Quantum Rings -->
@@ -67,7 +67,7 @@
     </svg>
   {:else if theme.brand.logoType === "svg-matrix"}
     <!-- Emerald Matrix: Phosphor Terminal CRT Daemon Sigil -->
-    <svg viewBox="0 0 120 120" class="size-full drop-shadow-[0_0_20px_rgba(16,185,129,0.7)]" fill="none">
+    <svg viewBox="0 0 120 120" class="size-full" fill="none">
       <rect x="10" y="10" width="100" height="100" rx="16" fill="#031006" stroke="#10b981" stroke-width="2.5" />
       <rect x="18" y="18" width="84" height="84" rx="10" stroke="#34d399" stroke-width="1" stroke-dasharray="2 4" />
       <!-- Phosphor Prompt Glyph -->
@@ -81,7 +81,7 @@
     </svg>
   {:else if theme.brand.logoType === "svg-crimson"}
     <!-- Crimson Sovereign: Iron Vanguard Combat Shield -->
-    <svg viewBox="0 0 120 120" class="size-full drop-shadow-[0_0_25px_rgba(244,63,94,0.7)]" fill="none">
+    <svg viewBox="0 0 120 120" class="size-full" fill="none">
       <path d="M60,6 L108,24 L108,72 Q108,102 60,116 Q12,102 12,72 L12,24 Z" fill="#18040a" stroke="#f43f5e" stroke-width="2.5" />
       <path d="M60,16 L98,30 L98,68 Q98,92 60,104 Q22,92 22,68 L22,30 Z" stroke="#fb7185" stroke-width="1.5" stroke-dasharray="4 2" />
       <!-- Vanguard Eagle / Chevron Blade -->
@@ -89,7 +89,7 @@
     </svg>
   {:else if theme.brand.logoType === "svg-amber"}
     <!-- Amber Sunset: Solar Fusion Reactor Core -->
-    <svg viewBox="0 0 120 120" class="size-full drop-shadow-[0_0_25px_rgba(245,158,11,0.7)]" fill="none">
+    <svg viewBox="0 0 120 120" class="size-full" fill="none">
       <circle cx="60" cy="60" r="50" fill="#140b03" stroke="#f59e0b" stroke-width="2.5" />
       <circle cx="60" cy="60" r="38" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="6 3" />
       <circle cx="60" cy="60" r="24" fill="#f59e0b" fill-opacity="0.2" stroke="#f59e0b" stroke-width="2" />
@@ -99,7 +99,7 @@
     </svg>
   {:else if theme.brand.logoType === "svg-onyx"}
     <!-- Onyx AMOLED: Pure Geometric Minimalist Titanium Wireframe -->
-    <svg viewBox="0 0 120 120" class="size-full drop-shadow-[0_0_20px_rgba(255,255,255,0.4)]" fill="none">
+    <svg viewBox="0 0 120 120" class="size-full" fill="none">
       <rect x="12" y="12" width="96" height="96" fill="#000000" stroke="#e4e4e7" stroke-width="2" />
       <rect x="24" y="24" width="72" height="72" stroke="#71717a" stroke-width="1" stroke-dasharray="4 4" />
       <!-- Precision Crosshair Wireframe -->

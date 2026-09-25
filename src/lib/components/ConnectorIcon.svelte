@@ -28,6 +28,11 @@
     Compass,
     Eye,
     CheckCircle,
+    Link2,
+    Palette,
+    Radar,
+    Boxes,
+    Clapperboard,
   } from "@lucide/svelte";
 
   interface Props {
@@ -132,7 +137,7 @@
     <div class="size-full bg-[#362D59]/40 border border-[#FF4081]/35 flex items-center justify-center rounded-md text-[#FF4081]">
       <Shield class="size-full" />
     </div>
-  {:else if cleanId.includes("git")}
+  {:else if cleanId.startsWith("git")}
     <!-- Git SVG -->
     <div class="size-full bg-[#F05032]/15 border border-[#F05032]/40 flex items-center justify-center rounded-md">
       <svg viewBox="0 0 24 24" class="size-full fill-[#F05032]">
@@ -157,7 +162,7 @@
     </div>
   {:else if cleanId.includes("duckdb")}
     <!-- DuckDB Official Yellow Duck SVG -->
-    <div class="size-full bg-[#FFF000]/15 border border-[#FFF000]/40 flex items-center justify-center rounded-md text-amber-300">
+    <div class="size-full bg-[#FFF000]/15 border border-[#FFF000]/40 flex items-center justify-center rounded-md text-warning">
       <svg viewBox="0 0 24 24" class="size-full fill-[#FFF000]">
         <path d="M12 2a5 5 0 0 0-5 5c0 1.4.6 2.7 1.5 3.6C6.1 11.5 4 13.9 4 17a5 5 0 0 0 5 5h6a5 5 0 0 0 5-5c0-3.1-2.1-5.5-4.5-6.4.9-.9 1.5-2.2 1.5-3.6a5 5 0 0 0-5-5zm-1.5 4a1 1 0 1 1 0 2 1 1 0 0 1 0-2z" />
       </svg>
@@ -248,10 +253,13 @@
       </svg>
     </div>
   {:else if cleanId.includes("anthropic") || cleanId.includes("claude")}
-    <!-- Anthropic Claude SVG -->
+    <!-- Anthropic / Claude starburst -->
     <div class="size-full bg-[#D97706]/15 border border-[#D97706]/40 flex items-center justify-center rounded-md">
       <svg viewBox="0 0 24 24" class="size-full fill-[#D97706]">
-        <path d="M17.3 3H6.7l-4.7 9 4.7 9h10.6l4.7-9-4.7-9zm-5.3 14.5l-3.8-3.8 1.4-1.4 2.4 2.4 5.4-5.4 1.4 1.4-6.8 6.8z" />
+        <rect x="10.8" y="2.5" width="2.4" height="19" rx="1.2" />
+        <rect x="10.8" y="2.5" width="2.4" height="19" rx="1.2" transform="rotate(45 12 12)" />
+        <rect x="10.8" y="2.5" width="2.4" height="19" rx="1.2" transform="rotate(90 12 12)" />
+        <rect x="10.8" y="2.5" width="2.4" height="19" rx="1.2" transform="rotate(135 12 12)" />
       </svg>
     </div>
   {:else if cleanId.includes("huggingface")}
@@ -263,10 +271,35 @@
     </div>
   {:else if cleanId.includes("pinecone")}
     <!-- Pinecone SVG -->
-    <div class="size-full bg-[#000000] border border-[#047857]/40 flex items-center justify-center rounded-md text-[#10B981]">
+    <div class="size-full bg-[var(--surface-0)] border border-[#047857]/40 flex items-center justify-center rounded-md text-[#10B981]">
       <svg viewBox="0 0 24 24" class="size-full fill-[#10B981]">
         <path d="M12 2L4 9l2 3h12l2-3-8-7zm0 6l-5 5 1.5 2h7l1.5-2-5-5zm0 6l-3 4h6l-3-4z"/>
       </svg>
+    </div>
+
+  {:else if cleanId.includes("langchain")}
+    <div class="size-full bg-[#12B76A]/15 border border-[#12B76A]/40 flex items-center justify-center rounded-md text-[#12B76A]">
+      <Link2 class="size-full" />
+    </div>
+  {:else if cleanId.includes("chroma")}
+    <div class="size-full bg-[#FB4E5C]/15 border border-[#FB4E5C]/40 flex items-center justify-center rounded-md text-[#FB4E5C]">
+      <Palette class="size-full" />
+    </div>
+  {:else if cleanId.includes("qdrant")}
+    <div class="size-full bg-[#F59E0B]/15 border border-[#F59E0B]/40 flex items-center justify-center rounded-md text-[#F59E0B]">
+      <Radar class="size-full" />
+    </div>
+  {:else if cleanId.includes("milvus")}
+    <div class="size-full bg-[#2DD4BF]/15 border border-[#2DD4BF]/40 flex items-center justify-center rounded-md text-[#2DD4BF]">
+      <Boxes class="size-full" />
+    </div>
+  {:else if cleanId.includes("replicate")}
+    <div class="size-full bg-[#F472B6]/15 border border-[#F472B6]/40 flex items-center justify-center rounded-md text-[#F472B6]">
+      <Clapperboard class="size-full" />
+    </div>
+  {:else if cleanId.includes("weaviate")}
+    <div class="size-full bg-[#C4FA77]/15 border border-[#C4FA77]/40 flex items-center justify-center rounded-md text-[#C4FA77]">
+      <Boxes class="size-full" />
     </div>
 
   <!-- PRODUCTIVITY -->
@@ -415,7 +448,7 @@
         <path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.245 2.248 3.481 5.236 3.48 8.414-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448L.057 24zm6.597-3.807c1.676.995 3.276 1.591 5.392 1.592 5.448 0 9.886-4.434 9.889-9.885.002-5.462-4.415-9.89-9.881-9.892-5.452 0-9.887 4.434-9.889 9.884-.001 2.225.651 3.891 1.746 5.634l-.999 3.648 3.742-.981z" />
       </svg>
     </div>
-  {:else if cleanId.includes("twitter") || cleanId.includes("x")}
+  {:else if cleanId.includes("twitter") || cleanId === "x" || cleanId.startsWith("x_") || cleanId.startsWith("xtwitter")}
     <!-- X / Twitter SVG -->
     <div class="size-full bg-white/10 border border-white/20 flex items-center justify-center rounded-md">
       <svg viewBox="0 0 24 24" class="size-full fill-white">
@@ -475,7 +508,7 @@
     </div>
   {:else if cleanId.includes("shell") || cleanId.includes("ssh") || cleanId.includes("terminal")}
     <!-- Terminal Shell SVG -->
-    <div class="size-full bg-emerald-950/40 border border-emerald-500/40 flex items-center justify-center rounded-md text-emerald-400">
+    <div class="size-full bg-success/40 border border-success/40 flex items-center justify-center rounded-md text-success">
       <Terminal class="size-full" />
     </div>
   {:else if cleanId.includes("wolfram")}

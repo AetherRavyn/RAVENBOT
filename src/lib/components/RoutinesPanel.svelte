@@ -1,7 +1,9 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { t } from "$lib/i18n";
   import { Button } from "$lib/components/ui/button";
+  import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import {
     Plus,
     Clock,
@@ -18,9 +20,12 @@
 
   interface Props {
     bot: any;
+    /** Fleet for the in-header bot switcher (Workspace pane). Modal hosts omit it. */
+    bots?: any[];
+    onBotChange?: (id: string) => void;
   }
 
-  let { bot }: Props = $props();
+  let { bot, bots = [], onBotChange }: Props = $props();
 
   interface Routine {
     id: string;
@@ -46,13 +51,13 @@
   let newSchedule = $state("0 9 * * 1-5");
   let newInstruction = $state("");
 
-  const schedulePresets = [
-    { label: "Every hour", value: "0 * * * *" },
-    { label: "Weekdays 9am", value: "0 9 * * 1-5" },
-    { label: "Daily midnight", value: "0 0 * * *" },
-    { label: "Every Monday 9am", value: "0 9 * * 1" },
-    { label: "Every 5 min", value: "*/5 * * * *" },
-  ];
+  const schedulePresets = $derived([
+    { label: t("routines.p1"), value: "0 * * * *" },
+    { label: t("routines.p2"), value: "0 9 * * 1-5" },
+    { label: t("routines.p3"), value: "0 0 * * *" },
+    { label: t("routines.p4"), value: "0 9 * * 1" },
+    { label: t("routines.p5"), value: "*/5 * * * *" },
+  ]);
 
   let schedulerStatus = $state<{ running: boolean } | null>(null);
 
@@ -174,7 +179,7 @@
   }
 
   function formatLastRun(iso: string | null) {
-    if (!iso) return "never";
+    if (!iso) return t("routines.never");
     try {
       return new Date(iso).toLocaleString([], {
         month: "short",
@@ -189,32 +194,46 @@
 </script>
 
 <div class="space-y-3">
-  <!-- Header -->
-  <div class="flex items-center justify-between">
-    <div class="flex items-center gap-2">
-      <Clock class="size-3.5 text-[var(--brand-text)]" />
-      <span class="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider font-mono">
-        Scheduled Routines
+  <!-- Compact pane header (OpenBot ConnectorCenter pattern): icon + bold title
+       + chips on the left, bot switcher + New on the right. This header is the
+       panel's ONLY title — hosts (Workspace pane, thread modal) must not add
+       a second one. -->
+  <div class="flex items-center justify-between gap-2">
+    <div class="flex items-center gap-2 min-w-0">
+      <Clock class="size-4 text-[var(--brand-text)] shrink-0" />
+      <span class="text-[13px] font-bold text-[var(--text-primary)] truncate">{t("routines.title")}</span>
+      <span class="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)] font-mono">
+        {routines.length}
       </span>
       {#if schedulerStatus}
         <span class="text-[9px] font-mono px-1.5 py-0.5 rounded {schedulerStatus.running ? 'bg-success/15 text-success border border-success/30' : 'bg-[var(--surface-2)] text-[var(--text-muted)] border border-[var(--hairline)]'}">
-          {schedulerStatus.running ? "scheduler running" : "scheduler idle"}
+          {schedulerStatus.running ? t("routines.running") : t("routines.idle")}
         </span>
       {/if}
     </div>
-    <Button
-      size="sm"
-      variant="outline"
-      class="h-6 px-2 text-[10px] gap-1 cursor-pointer"
-      onclick={() => (showCreate = !showCreate)}
-    >
-      <Plus class="size-3" />
-      New
-    </Button>
+    <div class="flex items-center gap-2 shrink-0">
+      {#if onBotChange && bots.length > 1}
+        <SimpleSelect
+          value={bot.id}
+          options={bots.map((b: any) => ({ value: b.id, label: b.name }))}
+          onValueChange={(v) => onBotChange(v)}
+          class="h-7 w-40 rounded-md text-xs"
+        />
+      {/if}
+      <Button
+        size="sm"
+        variant="outline"
+        class="h-7 px-2.5 text-[11px] gap-1 cursor-pointer"
+        onclick={() => (showCreate = !showCreate)}
+      >
+        <Plus class="size-3.5" />
+        {t("routines.new")}
+      </Button>
+    </div>
   </div>
 
   {#if error}
-    <div class="flex items-center gap-2 text-[10px] text-danger font-mono">
+    <div class="flex items-center gap-2 text-[10px] text-danger font-mono" role="alert">
       <AlertTriangle class="size-3 shrink-0" />
       <span>{error}</span>
     </div>
@@ -226,14 +245,16 @@
       <div class="grid grid-cols-2 gap-2">
         <input
           bind:value={newName}
-          placeholder="Routine name"
-          class="h-7 px-2.5 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+          aria-label="Routine name"
+          placeholder={t("routines.name")}
+          class="h-7 px-2.5 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
         />
         <div class="relative">
           <input
             bind:value={newSchedule}
-            placeholder="cron schedule"
-            class="w-full h-7 px-2.5 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] font-mono text-white placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+            aria-label="Schedule (cron expression)"
+            placeholder={t("routines.schedule")}
+            class="w-full h-7 px-2.5 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
           />
         </div>
       </div>
@@ -242,6 +263,7 @@
         {#each schedulePresets as preset}
           <button
             type="button"
+            aria-pressed={newSchedule === preset.value}
             class="h-5 px-1.5 rounded-md text-[9px] font-mono text-[var(--text-tertiary)] hover:text-[var(--brand-hover)] bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--brand)]/40 cursor-pointer transition-colors {newSchedule === preset.value ? 'text-[var(--brand-text)] border-[var(--brand)]/50' : ''}"
             onclick={() => (newSchedule = preset.value)}
           >
@@ -252,22 +274,23 @@
 
       <textarea
         bind:value={newInstruction}
-        placeholder="Instruction the agent should execute on schedule…"
+        aria-label="Instruction"
+        placeholder={t("routines.instruction")}
         rows={2}
-        class="w-full px-2.5 py-2 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] text-white placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus:border-[var(--brand)]/50"
+        class="w-full px-2.5 py-2 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
       ></textarea>
 
       <div class="flex justify-end">
         <Button
           size="sm"
-          class="h-7 px-3 text-[10px] gap-1 bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white cursor-pointer"
+          class="h-7 px-3 text-[10px] gap-1 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] cursor-pointer"
           disabled={!newName.trim() || !newInstruction.trim() || creating}
           onclick={createRoutine}
         >
           {#if creating}
             <Loader2 class="size-3 animate-spin" />
           {/if}
-          Create
+          {t("routines.create")}
         </Button>
       </div>
     </div>
@@ -280,10 +303,10 @@
     </div>
   {:else if routines.length === 0}
     <div class="text-center py-5 text-[11px] text-[var(--text-muted)] font-mono">
-      No routines yet — schedule {bot.name} to work on a cron.
+      {t("routines.empty", { name: bot.name })}
     </div>
   {:else}
-    <div class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+    <div class="space-y-1.5 max-h-56 overflow-y-auto pr-1 no-scrollbar">
       {#each routines as routine (routine.id)}
         <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-2.5 space-y-1.5">
           <div class="flex items-center justify-between gap-2">
@@ -293,30 +316,34 @@
               {:else}
                 <Circle class="size-3 text-[var(--text-muted)] shrink-0" />
               {/if}
-              <span class="text-[11px] font-bold text-white truncate">{routine.name}</span>
+              <span class="text-[11px] font-bold text-[var(--text-primary)] truncate">{routine.name}</span>
             </div>
             <div class="flex items-center gap-1 shrink-0">
               <button
                 type="button"
+                aria-label="Run now"
                 class="size-5 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--brand-hover)] hover:border-[var(--brand)]/40 flex items-center justify-center cursor-pointer transition-colors"
                 onclick={() => runNow(routine)}
-                title="Run now"
+                title={t("routines.runNow")}
               >
                 <Play class="size-2.5" />
               </button>
               <button
                 type="button"
+                aria-label="Toggle webhook"
+                aria-pressed={!!webhookEnabled[routine.id]}
                 class="size-5 rounded-md border flex items-center justify-center cursor-pointer transition-colors {webhookEnabled[routine.id] ? 'bg-success/15 border-success/40 text-success' : 'bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-success hover:border-success/40'}"
                 onclick={() => toggleWebhook(routine)}
-                title={webhookEnabled[routine.id] ? "Webhook enabled — click to disable" : "Enable inbound webhook"}
+                title={webhookEnabled[routine.id] ? t("routines.webhookOn") : t("routines.webhookOff")}
               >
                 <Webhook class="size-2.5" />
               </button>
               <button
                 type="button"
+                aria-label="Delete routine"
                 class="size-5 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-danger hover:border-danger/40 flex items-center justify-center cursor-pointer transition-colors"
                 onclick={() => deleteRoutine(routine)}
-                title="Delete routine"
+                title={t("routines.delete")}
               >
                 <Trash2 class="size-2.5" />
               </button>
@@ -327,29 +354,31 @@
             <span class="px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)]">
               {routine.schedule}
             </span>
-            <span>last run: {formatLastRun(routine.last_run_at)}</span>
+            <span>{t("routines.lastRun", { when: formatLastRun(routine.last_run_at) })}</span>
           </div>
 
           <p class="text-[10px] text-[var(--text-tertiary)] leading-relaxed line-clamp-2">{routine.instruction}</p>
 
           <button
             type="button"
+            aria-pressed={routine.is_enabled}
             class="text-[9px] font-mono text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer transition-colors"
             onclick={() => toggleRoutine(routine)}
           >
-            {routine.is_enabled ? "Disable" : "Enable"}
+            {routine.is_enabled ? t("routines.disable") : t("routines.enable")}
           </button>
 
           {#if webhookUrl?.routineId === routine.id}
             <div class="mt-1.5 rounded-lg border border-success/30 bg-success/20 p-2 space-y-1">
-              <div class="text-[9px] text-success">POST to this URL (copy it now — shown once):</div>
+              <div class="text-[9px] text-success">{t("routines.webhookHint")}</div>
               <div class="flex items-center gap-1.5">
                 <code class="flex-1 text-[9px] font-mono text-success break-all">{webhookUrl.url}</code>
                 <button
                   type="button"
+                  aria-label="Copy webhook URL"
                   class="size-5 shrink-0 rounded-md bg-success/15 border border-success/40 text-success flex items-center justify-center cursor-pointer"
                   onclick={copyWebhook}
-                  title="Copy URL"
+                  title={t("routines.copyUrl")}
                 >
                   {#if copied}<Check class="size-2.5" />{:else}<Copy class="size-2.5" />{/if}
                 </button>

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "$lib/i18n";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -137,13 +138,13 @@
   }
 </script>
 
-<div class="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--surface-2)]lack/60  p-4">
+<div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60  p-4">
   <div class="modal-panel w-full max-w-3xl flex flex-col max-h-[88vh]">
     <div class="modal-header flex items-center justify-between shrink-0">
       <div class="flex items-center gap-2">
         <Hash class="size-4 text-success" />
-        <span class="font-bold text-sm text-white">Channels</span>
-        <span class="text-[10px] text-[var(--text-muted)]">contexts with their own instructions, folder &amp; roster</span>
+        <span class="font-bold text-sm text-[var(--text-primary)]">{t("channel.title")}</span>
+        <span class="text-[10px] text-[var(--text-muted)]">{t("channel.subtitle")}</span>
       </div>
       <div class="flex items-center gap-2">
         <button
@@ -151,11 +152,12 @@
           onclick={addChannel}
           class="h-7 px-3 rounded-full bg-success/15 border border-success/40 text-success text-[11px] font-bold flex items-center gap-1 cursor-pointer hover:bg-success/25"
         >
-          <Plus class="size-3" /> New
+          <Plus class="size-3" /> {t("channel.new")}
         </button>
         <button
           type="button"
           onclick={onClose}
+          aria-label="Close"
           class="size-7 rounded-full bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer"
         >
           <X class="size-3.5" />
@@ -167,21 +169,22 @@
       <!-- List -->
       <div class="w-52 border-r border-[var(--hairline)] overflow-y-auto shrink-0">
         {#if loading && channels.length === 0}
-          <div class="p-4 text-[var(--text-muted)] text-xs flex items-center gap-2"><Loader2 class="size-3.5 animate-spin" /> Loading…</div>
+          <div class="p-4 text-[var(--text-muted)] text-xs flex items-center gap-2"><Loader2 class="size-3.5 animate-spin" /> {t("ui.loading")}</div>
         {:else if channels.length === 0}
-          <div class="p-4 text-[var(--text-muted)] text-xs">No channels yet. Create one to give a group of bots a shared context.</div>
+          <div class="p-4 text-[var(--text-muted)] text-xs">{t("channel.empty")}</div>
         {/if}
         {#each channels as c (c.id)}
           <button
             type="button"
             onclick={() => (selected = c)}
-            class="w-full text-left px-3.5 py-2.5 border-[var(--hairline)] border-[var(--hairline)] transition-colors cursor-pointer {selected?.id === c.id ? 'bg-success/10' : 'hover:bg-[var(--surface-3)]'}"
+            aria-current={selected?.id === c.id ? "true" : undefined}
+            class="w-full text-left px-3.5 py-2.5 border-b border-[var(--hairline)] transition-colors cursor-pointer {selected?.id === c.id ? 'bg-success/10' : 'hover:bg-[var(--surface-3)]'}"
           >
             <div class="flex items-center gap-1.5 text-xs font-semibold text-[var(--text-primary)]">
               <Hash class="size-3 text-success shrink-0" style={c.color ? `color:${c.color}` : ''} />
               <span class="truncate">{c.name}</span>
             </div>
-            <div class="text-[10px] text-[var(--text-muted)] mt-0.5 truncate">{c.bot_ids.length} bot(s)</div>
+            <div class="text-[10px] text-[var(--text-muted)] mt-0.5 truncate">{t("channel.botsN", { n: c.bot_ids.length })}</div>
           </button>
         {/each}
       </div>
@@ -190,48 +193,51 @@
       <div class="flex-1 overflow-y-auto p-5">
         {#if !selected}
           <div class="h-full flex items-center justify-center text-[var(--text-muted)] text-xs">
-            Select a channel to edit it.
+            {t("channel.selectHint")}
           </div>
         {:else}
           <div class="space-y-4">
             {#if error}
-              <div class="rounded-lg border border-danger/30 bg-danger/20 px-3 py-2 text-[11px] text-danger">{error}</div>
+              <div class="rounded-lg border border-danger/30 bg-danger/20 px-3 py-2 text-[11px] text-danger" role="alert">{error}</div>
             {/if}
             <div class="space-y-1.5">
-              <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">Name</Label>
-              <Input bind:value={selected.name} class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)]" />
+              <Label for="channel-name" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">{t("room.name")}</Label>
+              <Input id="channel-name" bind:value={selected.name} class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)]" />
             </div>
             <div class="space-y-1.5">
-              <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">Description</Label>
-              <Input bind:value={selected.description} class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)]" />
+              <Label for="channel-description" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">{t("channel.description")}</Label>
+              <Input id="channel-description" bind:value={selected.description} class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)]" />
             </div>
             <div class="space-y-1.5">
-              <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">Shared Instructions</Label>
+              <Label for="channel-instructions" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">{t("channel.instructions")}</Label>
               <Textarea
+                id="channel-instructions"
                 bind:value={selected.instructions}
                 rows={5}
-                placeholder="Injected into every bot's system prompt for threads in this channel…"
+                placeholder={t("channel.instructionsPh")}
                 class="text-xs bg-[var(--surface-2)] border-[var(--hairline)]"
               />
             </div>
             <div class="space-y-1.5">
-              <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)] flex items-center gap-1.5">
-                <FolderOpen class="size-3.5" /> Working Folder
+              <Label for="channel-folder" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)] flex items-center gap-1.5">
+                <FolderOpen class="size-3.5" /> {t("channel.folder")}
               </Label>
-              <Input bind:value={selected.working_folder} placeholder="/home/you/project" class="h-9 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]" />
+              <Input id="channel-folder" bind:value={selected.working_folder} placeholder="/home/you/project" class="h-9 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]" />
             </div>
             <div class="space-y-1.5">
               <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)] flex items-center gap-1.5">
-                <Users class="size-3.5" /> Responder Rules
+                <Users class="size-3.5" /> {t("channel.rules")}
               </Label>
               <p class="text-[10px] text-[var(--text-muted)]">
-                Who reacts when a message is posted in this channel.
+                {t("channel.rulesHint")}
               </p>
-              <div class="grid grid-cols-3 gap-2">
-                {#each [["all", "Everyone"], ["lead", "Lead only"], ["manual", "@mentions"]] as [mode, label]}
+              <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label={t("channel.rules")}>
+                {#each [["all", t("channel.modeAll")], ["lead", t("channel.modeLead")], ["manual", t("channel.modeManual")]] as [mode, label]}
                   <button
                     type="button"
                     onclick={() => setResponderMode(mode as string)}
+                    role="radio"
+                    aria-checked={(selected!.responder_rules?.mode ?? 'all') === mode}
                     class="h-8 rounded-lg border text-[11px] transition-colors cursor-pointer {(selected!.responder_rules?.mode ?? 'all') === mode ? 'bg-success/20 border-success/40 text-success' : 'bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
                   >
                     {label}
@@ -242,30 +248,31 @@
                 <SimpleSelect
                   value={selected!.responder_rules?.lead_bot_id ?? ""}
                   options={[
-                    { value: "", label: "Auto (orchestrator / ranked lead)" },
+                    { value: "", label: t("channel.autoLead") },
                     ...bots
                       .filter((b) => selected!.bot_ids.includes(b.id))
                       .map((b) => ({ value: b.id, label: b.name })),
                   ]}
                   onValueChange={setResponderLead}
-                  placeholder="Auto"
+                  placeholder={t("channel.auto")}
                   class="h-8 mt-1"
                 />
               {/if}
               {#if (selected!.responder_rules?.mode ?? "all") === "manual"}
-                <p class="text-[10px] text-[var(--text-muted)]">Bots reply only when their name is @mentioned.</p>
+                <p class="text-[10px] text-[var(--text-muted)]">{t("channel.manualHint")}</p>
               {/if}
             </div>
 
             <div class="space-y-1.5">
               <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)] flex items-center gap-1.5">
-                <Users class="size-3.5" /> Bot Roster
+                <Users class="size-3.5" /> {t("channel.roster")}
               </Label>
               <div class="flex flex-wrap gap-1.5">
                 {#each bots as b (b.id)}
                   <button
                     type="button"
                     onclick={() => toggleBot(b.id)}
+                    aria-pressed={selected.bot_ids.includes(b.id)}
                     class="h-7 px-2.5 rounded-full text-[11px] border transition-colors cursor-pointer {selected.bot_ids.includes(b.id) ? 'bg-success/20 border-success/40 text-success' : 'bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
                   >
                     {b.name}
@@ -275,11 +282,11 @@
             </div>
             <div class="flex items-center justify-between pt-1">
               <Button variant="destructive" size="sm" onclick={removeChannel} class="gap-1.5 bg-red-950/40 text-red-400 hover:bg-red-900/60 border border-red-800/40">
-                <Trash2 class="size-3.5" /> Delete
+                <Trash2 class="size-3.5" /> {t("ui.delete")}
               </Button>
               <Button size="sm" onclick={save} disabled={saving} class="gap-1.5">
                 {#if saving}<Loader2 class="size-3.5 animate-spin" />{:else}<Save class="size-3.5" />{/if}
-                Save Channel
+                {t("channel.save")}
               </Button>
             </div>
           </div>

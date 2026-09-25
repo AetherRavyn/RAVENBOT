@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "$lib/i18n";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import * as Dialog from "$lib/components/ui/dialog";
   import * as Tabs from "$lib/components/ui/tabs";
@@ -14,7 +15,7 @@
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
   import {
-    getCatalog, providerById, modelsFor, temperatureMax,
+    getCatalog, providerById, modelsFor, temperatureMax, modelMetaFor, modelSummary,
     type CatalogProvider,
   } from "$lib/model-catalog";
   import {
@@ -51,8 +52,11 @@
   let avatarStyle = $state("bottts");
   let showAvatarPicker = $state(false);
 
-  let modelProvider = $state("openrouter");
-  let modelId = $state("anthropic/claude-3-5-sonnet");
+  // Seed from the owner's global default (Settings → Models) — never a
+  // hard-coded provider/model pair.
+  let modelProvider = $state("");
+  let modelId = $state("");
+  let globalDefault = $state<{ provider: string; model: string } | null>(null);
   let temperature = $state(0.7);
   let maxTokens = $state(4096);
   let customPrompt = $state("");
@@ -111,10 +115,13 @@
   let providers = $derived(catalog);
   let activeProvider = $derived(providerById(catalog, modelProvider));
 
-  // Load the catalog once per dialog open
+  // Load the catalog once per dialog open (+ the global default seed).
   $effect(() => {
     if (open && catalog.length === 0) {
       getCatalog().then((list) => { catalog = list; }).catch(() => {});
+      invoke<any>("get_default_model")
+        .then((d) => { if (d?.provider) globalDefault = { provider: d.provider, model: d.model }; })
+        .catch(() => {});
     }
   });
 
@@ -156,6 +163,14 @@
 
   // Live list wins; catalog fallbacks otherwise (never a blank picker).
   let availableModels = $derived(modelsFor(activeProvider, discoveredModels, isLoadingModels));
+
+  // Honest facts for the selected model (context window, $/1M) — empty when
+  // we genuinely have no data rather than a guess.
+  let currentModelFacts = $derived.by(() => {
+    if (!modelId) return "";
+    const meta = availableModels.find((m) => m.id === modelId) ?? modelMetaFor(modelProvider, modelId);
+    return meta ? modelSummary(meta) : "";
+  });
 
   // Provider temperature ceiling (CommandCode ≤ 1) — clamp the slider value
   // on switch so a saved 2.0 can't 400 the next run.
@@ -225,11 +240,11 @@
       const picked = await openDialog({
         directory: true,
         multiple: false,
-        title: "Select project folder",
+        title: t("bot.selectFolder"),
       });
       if (typeof picked === "string") workingFolder = picked;
     } catch (e) {
-      notify(`Could not open folder picker: ${String(e)}`, "error");
+      notify(t("bot.folderPickerFailed") + String(e), "error");
     }
   }
 
@@ -279,7 +294,7 @@
         console.error("Failed to set approval mode:", e);
       }
       savedSnapshot = currentSnapshot;
-      notify("Agent saved", "success");
+      notify(t("bot.saved"), "success");
       onUpdated(updatedBot);
       onClose();
     } catch (e) {
@@ -315,7 +330,7 @@
         })
         .catch(() => {
           ttsInfo = null;
-          ttsVoices = [{ id: "default", name: "Engine default", provider: "auto" }];
+          ttsVoices = [{ id: "default", name: t("bot.engineDefault"), provider: "auto" }];
         });
     }
   });
@@ -334,7 +349,7 @@
   let dirty = $derived(savedSnapshot !== "" && currentSnapshot !== savedSnapshot);
 
   function requestClose() {
-    if (dirty && !confirm("Discard unsaved changes?")) return;
+    if (dirty && !confirm(t("bot.discardConfirm"))) return;
     onClose();
   }
 
@@ -344,8 +359,8 @@
       description = bot.description || "";
       avatarUrl = bot.avatar_url || null;
       avatarStyle = bot.avatar_style || "bottts";
-      modelProvider = bot.config?.model_provider || "openrouter";
-      modelId = bot.config?.model_id || "anthropic/claude-3-5-sonnet";
+      modelProvider = bot.config?.model_provider || globalDefault?.provider || "ollama";
+      modelId = bot.config?.model_id || (bot.config?.model_provider ? "" : globalDefault?.model) || "";
       temperature = bot.config?.temperature ?? 0.7;
       maxTokens = bot.config?.max_tokens || 4096;
       customPrompt = bot.config?.custom_prompt || "";
@@ -371,19 +386,19 @@
 
 {#if open && bot}
   <Dialog.Root {open} onOpenChange={(o) => !o && requestClose()}>
-    <Dialog.Content class="sm:max-w-2xl max-h-[85vh] flex flex-col bg-[var(--surface-1)] border border-[var(--brand)]/30 ]  rounded-xl p-0 overflow-hidden">
+    <Dialog.Content class="sm:max-w-2xl max-h-[85vh] flex flex-col bg-[var(--surface-1)] border-[var(--hairline-strong)] rounded-xl p-0 overflow-hidden">
       <!-- Fixed Header -->
-      <div class="px-6 pt-5 pb-3 border-[var(--hairline)] border-[var(--hairline)] shrink-0">
+      <div class="px-6 pt-5 pb-3 border-b border-[var(--hairline)] shrink-0">
         <div class="flex items-center justify-between">
           <div class="flex items-center gap-3">
             <button
               type="button"
-              class="size-12 rounded-2xl overflow-hidden bg-[var(--surface-3)] border-[var(--hairline)] border-[var(--brand)]/40 p-0.5 shadow-md group hover:border-[var(--hairline-strong)] transition-all cursor-pointer relative shrink-0"
+              class="size-12 rounded-2xl overflow-hidden bg-[var(--surface-3)] border border-[var(--brand)]/40 p-0.5 shadow-md group hover:border-[var(--hairline-strong)] transition-all cursor-pointer relative shrink-0"
               onclick={() => {
                 activeTab = "identity";
                 showAvatarPicker = true;
               }}
-              title="Click to change avatar"
+              title={t("bot.changeAvatar")}
             >
               <img
                 src={currentAvatarUrl}
@@ -392,17 +407,17 @@
               />
             </button>
             <div>
-              <Dialog.Title class="text-base font-bold flex items-center gap-2 text-white">
+              <Dialog.Title class="text-base font-bold flex items-center gap-2 text-[var(--text-primary)]">
                 <span>{name || bot.name}</span>
                 {#if isOrchestrator}
                   <span class="text-[9px] font-bold text-[var(--brand-text)] bg-[var(--brand-soft)] border border-[var(--brand)]/50 px-1.5 py-0.5 rounded-md font-mono flex items-center gap-1">
                     <Crown class="size-3" />
-                    Orchestrator
+                    {t("bot.orchestrator")}
                   </span>
                 {/if}
               </Dialog.Title>
               <Dialog.Description class="text-xs text-[var(--text-tertiary)]">
-                Configure identity, DiceBear avatar, model routing and system prompt
+                {t("bot.configHint")}
               </Dialog.Description>
             </div>
           </div>
@@ -410,59 +425,61 @@
 
         <Tabs.Root bind:value={activeTab} class="w-full mt-3">
           <Tabs.List class="grid w-full grid-cols-3 bg-[var(--surface-2)] border border-[var(--hairline)] p-1 rounded-xl">
-            <Tabs.Trigger value="model" class="gap-1.5 text-xs font-medium data-[state=active]:bg-[var(--brand)] data-[state=active]:text-white">
+            <Tabs.Trigger value="model" class="gap-1.5 text-xs font-medium data-[state=active]:bg-[var(--brand)] data-[state=active]:text-[var(--text-on-light)]">
               <Cpu class="size-3.5" />
-              Model & Engine
+              {t("bot.tabModel")}
             </Tabs.Trigger>
-            <Tabs.Trigger value="identity" class="gap-1.5 text-xs font-medium data-[state=active]:bg-[var(--brand)] data-[state=active]:text-white">
+            <Tabs.Trigger value="identity" class="gap-1.5 text-xs font-medium data-[state=active]:bg-[var(--brand)] data-[state=active]:text-[var(--text-on-light)]">
               <Bot class="size-3.5" />
-              Identity & Avatar
+              {t("bot.tabIdentity")}
             </Tabs.Trigger>
-            <Tabs.Trigger value="prompt" class="gap-1.5 text-xs font-medium data-[state=active]:bg-[var(--brand)] data-[state=active]:text-white">
+            <Tabs.Trigger value="prompt" class="gap-1.5 text-xs font-medium data-[state=active]:bg-[var(--brand)] data-[state=active]:text-[var(--text-on-light)]">
               <FileCode class="size-3.5" />
-              System Prompt
+              {t("bot.tabPrompt")}
             </Tabs.Trigger>
           </Tabs.List>
         </Tabs.Root>
       </div>
 
       <!-- Scrollable Tabs Content -->
-      <div class="flex-1 overflow-y-auto px-6 py-4 pb-10">
+      <div class="flex-1 overflow-y-auto no-scrollbar px-6 py-4 pb-10">
         {#if activeTab === "model"}
           <div class="space-y-4">
             <!-- Execution engine: native loop vs an installed agent CLI -->
             <div class="space-y-2">
               <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-                Execution Engine
+                {t("bot.execEngine")}
               </Label>
               <div class="grid grid-cols-2 gap-2">
                 <button
                   type="button"
+                  aria-pressed={engine === 'native'}
                   class="flex flex-col text-left p-3 rounded-xl border transition-all text-xs {engine === 'native' ? 'border-[var(--brand)] bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/50' : 'border-[var(--hairline)] bg-[var(--surface-1)]/80 hover:border-[var(--brand)]/40'} cursor-pointer"
                   onclick={() => (engine = "native")}
                 >
-                  <span class="font-bold text-white flex items-center gap-1.5"><Server class="size-3.5" /> Native</span>
-                  <span class="text-[11px] text-[var(--text-tertiary)] mt-1">Built-in tool loop</span>
-                  <span class="text-[10px] font-mono mt-1 text-success">always available</span>
+                  <span class="font-bold text-[var(--text-primary)] flex items-center gap-1.5"><Server class="size-3.5" /> {t("bot.native")}</span>
+                  <span class="text-[11px] text-[var(--text-tertiary)] mt-1">{t("bot.builtInLoop")}</span>
+                  <span class="text-[10px] font-mono mt-1 text-success">{t("bot.alwaysAvailable")}</span>
                 </button>
                 {#each engineOptions as e (e.id)}
                   <button
                     type="button"
+                    aria-pressed={engine === e.id}
                     disabled={!e.available}
-                    title={e.available ? `${e.command} ${e.version ?? ''}` : (e.install_hint ?? 'not installed')}
+                    title={e.available ? `${e.command} ${e.version ?? ''}` : (e.install_hint ?? t("bot.notInstalled"))}
                     class="flex flex-col text-left p-3 rounded-xl border transition-all text-xs {engine === e.id ? 'border-[var(--brand)] bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/50' : 'border-[var(--hairline)] bg-[var(--surface-1)]/80 hover:border-[var(--brand)]/40'} cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                     onclick={() => (engine = e.id)}
                   >
                     <span class="flex items-center justify-between w-full gap-2">
-                      <span class="font-bold text-white flex items-center gap-1.5 min-w-0">
+                      <span class="font-bold text-[var(--text-primary)] flex items-center gap-1.5 min-w-0">
                         <Cpu class="size-3.5 shrink-0" />
                         <span class="truncate">{e.display_name}</span>
                       </span>
                       {#if engine === e.id}<Check class="size-3.5 text-[var(--brand-text)] shrink-0" />{/if}
                     </span>
-                    <span class="text-[11px] text-[var(--text-tertiary)] mt-1 line-clamp-2">{e.available ? (e.version || e.command) : (e.install_hint || 'not installed')}</span>
+                    <span class="text-[11px] text-[var(--text-tertiary)] mt-1 line-clamp-2">{e.available ? (e.version || e.command) : (e.install_hint || t("bot.notInstalled"))}</span>
                     <span class="text-[10px] font-mono mt-1 {e.available ? 'text-success' : 'text-warning'}">
-                      {e.available ? 'detected' : 'not installed'}
+                      {e.available ? t("bot.detected") : t("bot.notInstalled")}
                     </span>
                   </button>
                 {/each}
@@ -471,23 +488,22 @@
                 {@const activeEngine = engineOptions.find((e) => e.id === engine)}
                 <div class="space-y-2.5 rounded-xl border border-[var(--brand)]/25 bg-[var(--brand-soft)] p-3">
                   <p class="text-[11px] text-[var(--brand-text)] leading-relaxed">
-                    This agent runs on the <span class="font-mono">{activeEngine?.display_name ?? engine}</span> CLI — it owns the tool loop,
-                    model and sign-in. The provider and model below only apply when you switch back to Native.
+                    {t("bot.runsOnCli1")}<span class="font-mono">{activeEngine?.display_name ?? engine}</span>{t("bot.runsOnCli2")}
                     {#if activeEngine?.sign_in_hint}
                       <span class="block text-[var(--text-tertiary)] mt-1">{activeEngine.sign_in_hint}</span>
                     {/if}
                   </p>
                   <div class="space-y-1">
                     <Label for="engine-model" class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-                      Engine model (optional)
+                      {t("bot.engineModel")}
                     </Label>
                     <Input
                       id="engine-model"
                       bind:value={engineModel}
-                      placeholder={activeEngine?.models?.length ? activeEngine.models[0] : "engine default"}
+                      placeholder={activeEngine?.models?.length ? activeEngine.models[0] : t("bot.engineDefault")}
                       class="h-8 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
                     />
-                    <p class="text-[10px] text-[var(--text-muted)]">Leave blank to use the CLI's own configured default.</p>
+                    <p class="text-[10px] text-[var(--text-muted)]">{t("bot.cliDefaultHint")}</p>
                   </div>
                 </div>
               {/if}
@@ -495,8 +511,8 @@
 
             <div class="space-y-2 {engine !== 'native' ? 'opacity-50 pointer-events-none' : ''}">
               <div class="flex items-center justify-between">
-                <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">Model Provider</Label>
-                <span class="text-[10px] font-mono text-[var(--text-muted)]">{visibleProviders.length} providers</span>
+                <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">{t("bot.provider")}</Label>
+                <span class="text-[10px] font-mono text-[var(--text-muted)]">{t("bot.providersN", { n: visibleProviders.length })}</span>
               </div>
 
               <ModelPicker
@@ -507,24 +523,31 @@
                 configured={configuredIds}
                 loading={isLoadingModels}
                 error={missingKey
-                  ? `Add an API key to unlock the live ${activeProvider?.name} list — catalog fallbacks shown.`
+                  ? t("bot.unlockKey", { name: activeProvider?.name ?? modelProvider })
                   : (modelLoadError
                       ? (activeProvider?.id === "ollama"
-                          ? "Ollama isn't reachable — start it with ollama serve."
-                          : "Couldn't fetch the live model list.")
+                          ? t("bot.ollamaDown")
+                          : t("bot.fetchFailed"))
                       : null)}
                 onSelectProvider={selectProvider}
                 onSelectModel={(id) => (modelId = id)}
                 onRefresh={refreshModels}
                 onAddKey={openProvidersSettings}
                 footerNote={discoveredModels.length > 0
-                  ? `Live list · ${discoveredModels.length} models`
-                  : "Catalog fallbacks · add a key for the live list"}
+                  ? t("bot.liveList", { n: discoveredModels.length })
+                  : t("bot.catalogFallbacks")}
               />
 
               {#if modelId && !availableModels.some((m) => m.id === modelId)}
                 <p class="text-[10px] text-[var(--text-muted)]">
-                  Current model: <span class="font-mono text-[var(--text-secondary)]">{modelId}</span> (not listed here — kept as-is)
+                  {t("model.notListed", { id: modelId })}
+                </p>
+              {/if}
+              {#if modelId && currentModelFacts}
+                <p class="text-[10px] font-mono text-[var(--text-tertiary)] flex items-center gap-1.5">
+                  <span class="text-[var(--brand-text)]">{modelId}</span>
+                  <span>·</span>
+                  <span>{currentModelFacts}</span>
                 </p>
               {/if}
             </div>
@@ -533,10 +556,10 @@
             <div class="space-y-2 p-3.5 rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)]">
               <div class="flex items-center justify-between">
                 <Label class="text-xs font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
-                  <Volume2 class="size-3.5 text-[var(--brand-text)]" /> Voice & Auto-read
+                  <Volume2 class="size-3.5 text-[var(--brand-text)]" /> {t("bot.voiceTitle")}
                 </Label>
                 <span class="text-[10px] font-mono {ttsInfo?.multi_voice ? 'text-success' : 'text-[var(--text-muted)]'}">
-                  {ttsInfo?.engine || "local"} engine
+                  {t("bot.engineActive", { engine: ttsInfo?.engine || "local" })}
                 </span>
               </div>
               <SimpleSelect
@@ -546,31 +569,31 @@
                   label: v.provider !== "auto" ? `${v.name} · ${v.provider}` : v.name,
                 }))}
                 onValueChange={(v) => (voiceId = v)}
-                placeholder="Engine default"
+                placeholder={t("bot.engineDefault")}
                 class="h-9 rounded-xl"
               />
               {#if ttsInfo && !ttsInfo.multi_voice}
                 <p class="text-[10px] text-warning leading-relaxed">
-                  Single-voice engine active. Add an OpenAI key in Settings → Providers to unlock per-bot voices.
+                  {t("bot.singleVoice")}
                 </p>
               {/if}
               <label class="flex items-center gap-2 text-xs text-[var(--text-secondary)] cursor-pointer">
                 <input type="checkbox" bind:checked={autoRead} class="accent-[var(--brand)]" />
-                Read this bot's replies aloud automatically
+                {t("bot.autoRead")}
               </label>
             </div>
 
             <!-- Host computer control -->
             <div class="space-y-2 p-3.5 rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)]">
               <Label class="text-xs font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
-                <Monitor class="size-3.5 text-[var(--brand-text)]" /> Computer control
+                <Monitor class="size-3.5 text-[var(--brand-text)]" /> {t("bot.computerControl")}
               </Label>
               <label class="flex items-start gap-2 text-xs text-[var(--text-secondary)] cursor-pointer">
                 <input type="checkbox" bind:checked={hostControl} class="mt-0.5 accent-[var(--brand)]" />
                 <span>
-                  Allow this agent to control this computer (mouse &amp; keyboard)
+                  {t("bot.allowControl")}
                   <span class="block text-[10px] text-warning/90 mt-0.5">
-                    Off by default. Blocked on Wayland sessions unless explicitly overridden. Prefer the agent's isolated desktop for risky work.
+                    {t("bot.controlWarn")}
                   </span>
                 </span>
               </label>
@@ -579,30 +602,29 @@
             <!-- Project folder (per-agent override) -->
             <div class="space-y-2 p-3.5 rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)]">
               <Label for="working-folder" class="text-xs font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
-                <FolderOpen class="size-3.5 text-[var(--brand-text)]" /> Project Folder
+                <FolderOpen class="size-3.5 text-[var(--brand-text)]" /> {t("bot.projectFolder")}
               </Label>
               <div class="flex items-center gap-2">
                 <Input
                   id="working-folder"
                   bind:value={workingFolder}
-                  placeholder="~/RAVENBOT/projects/my-app (blank = inherit office)"
+                  placeholder={t("bot.folderPh")}
                   class="h-8 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
                 />
                 <Button type="button" size="sm" variant="outline" class="h-8 shrink-0 gap-1.5 border-[var(--hairline)]" onclick={browseWorkingFolder}>
-                  <FolderOpen class="size-3.5" /> Browse…
+                  <FolderOpen class="size-3.5" /> {t("bot.browse")}
                 </Button>
               </div>
               <p class="text-[10px] text-[var(--text-muted)]">
-                All file and shell work for this agent stays inside this folder. Leave blank to use the
-                office's project folders (or an auto-created default).
+                {t("bot.folderDesc")}
               </p>
             </div>
 
             <div class="grid grid-cols-2 gap-4 pt-1">
               <div class="space-y-2 p-3.5 rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)]">
                 <div class="flex items-center justify-between text-xs">
-                  <Label for="temp-slider" class="font-bold text-[var(--text-secondary)]">Temperature</Label>
-                  <span class="font-mono text-[11px] px-1.5 py-0.2 rounded bg-[var(--surface-3)] text-[var(--brand-text)] border border-[var(--brand)]/25">{temperature.toFixed(2)}</span>
+                  <Label for="temp-slider" class="font-bold text-[var(--text-secondary)]">{t("bot.temperature")}</Label>
+                  <span class="font-mono text-[11px] px-1.5 py-[2px] rounded bg-[var(--surface-3)] text-[var(--brand-text)] border border-[var(--brand)]/25">{temperature.toFixed(2)}</span>
                 </div>
                 <input
                   id="temp-slider"
@@ -614,15 +636,15 @@
                   class="w-full accent-[var(--brand)] h-1.5 bg-[var(--hairline)] rounded-lg cursor-pointer"
                 />
                 <div class="flex justify-between text-[10px] text-[var(--text-muted)]">
-                  <span>Deterministic (0.0)</span>
-                  <span>Creative ({tempMax.toFixed(1)}){tempMax < 2 ? ' · capped by provider' : ''}</span>
+                  <span>{t("bot.deterministic")}</span>
+                  <span>{t("bot.creative", { max: tempMax.toFixed(1) })}{tempMax < 2 ? t("bot.cappedByProvider") : ''}</span>
                 </div>
               </div>
 
               <div class="space-y-2 p-3.5 rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)]">
                 <div class="flex items-center justify-between text-xs">
-                  <Label for="max-tokens-input" class="font-bold text-[var(--text-secondary)]">Max Tokens</Label>
-                  <span class="font-mono text-[11px] px-1.5 py-0.2 rounded bg-[var(--surface-3)] text-[var(--brand-text)] border border-[var(--brand)]/25">{maxTokens}</span>
+                  <Label for="max-tokens-input" class="font-bold text-[var(--text-secondary)]">{t("bot.maxTokens")}</Label>
+                  <span class="font-mono text-[11px] px-1.5 py-[2px] rounded bg-[var(--surface-3)] text-[var(--brand-text)] border border-[var(--brand)]/25">{maxTokens}</span>
                 </div>
                 <Input
                   id="max-tokens-input"
@@ -634,7 +656,7 @@
                   class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
                 />
                 <div class="text-[10px] text-[var(--text-muted)]">
-                  Max response length in tokens
+                  {t("bot.maxTokensDesc")}
                 </div>
               </div>
             </div>
@@ -642,24 +664,24 @@
             <!-- Resilience: fallback provider + tool-round budget -->
             <div class="grid grid-cols-2 gap-4">
               <div class="space-y-2 p-3.5 rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)]">
-                <Label for="fallback-provider" class="text-xs font-bold text-[var(--text-secondary)]">Fallback Provider</Label>
+                <Label for="fallback-provider" class="text-xs font-bold text-[var(--text-secondary)]">{t("bot.fallbackProvider")}</Label>
                 <SimpleSelect
                   id="fallback-provider"
                   value={fallbackProvider}
-                  options={[{ value: "", label: "None" }, ...catalog.map((p) => ({ value: p.id, label: p.name, icon: p.icon }))]}
+                  options={[{ value: "", label: t("bot.none") }, ...catalog.map((p) => ({ value: p.id, label: p.name, icon: p.icon }))]}
                   onValueChange={(v) => (fallbackProvider = v)}
-                  placeholder="None"
+                  placeholder={t("bot.none")}
                   class="h-8"
                 />
                 <div class="text-[10px] text-[var(--text-muted)]">
-                  Used automatically if the primary provider fails
+                  {t("bot.fallbackDesc")}
                 </div>
               </div>
 
               <div class="space-y-2 p-3.5 rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)]">
                 <div class="flex items-center justify-between text-xs">
-                  <Label for="max-rounds-input" class="font-bold text-[var(--text-secondary)]">Max Tool Rounds</Label>
-                  <span class="font-mono text-[11px] px-1.5 py-0.2 rounded bg-[var(--surface-3)] text-[var(--brand-text)] border border-[var(--brand)]/25">{maxToolRounds}</span>
+                  <Label for="max-rounds-input" class="font-bold text-[var(--text-secondary)]">{t("bot.maxToolRounds")}</Label>
+                  <span class="font-mono text-[11px] px-1.5 py-[2px] rounded bg-[var(--surface-3)] text-[var(--brand-text)] border border-[var(--brand)]/25">{maxToolRounds}</span>
                 </div>
                 <Input
                   id="max-rounds-input"
@@ -671,7 +693,7 @@
                   class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
                 />
                 <div class="text-[10px] text-[var(--text-muted)]">
-                  Model↔tool round-trip budget per run
+                  {t("bot.roundsDesc")}
                 </div>
               </div>
             </div>
@@ -681,19 +703,19 @@
             <!-- Avatar Customization Box -->
             <div class="p-3.5 rounded-2xl bg-[var(--surface-2)] border border-[var(--brand)]/25 flex items-center justify-between">
               <div class="flex items-center gap-3.5">
-                <div class="size-14 rounded-2xl overflow-hidden bg-[var(--surface-3)] border-[var(--hairline)] border-[var(--brand)]/40 p-0.5 shadow-md shrink-0">
+                <div class="size-14 rounded-2xl overflow-hidden bg-[var(--surface-3)] border border-[var(--brand)]/40 p-0.5 shadow-md shrink-0">
                   <img
                     src={currentAvatarUrl}
-                    alt="Current Avatar"
+                    alt={t("bot.avatarAlt")}
                     class="size-full rounded-xl object-cover"
                   />
                 </div>
                 <div class="flex flex-col">
-                  <span class="text-sm font-bold text-white">
-                    Agent Avatar
+                  <span class="text-sm font-bold text-[var(--text-primary)]">
+                    {t("bot.agentAvatar")}
                   </span>
                   <span class="text-xs text-[var(--brand-text)] capitalize font-mono mt-0.5">
-                    Current Style: {avatarStyle}
+                    {t("bot.currentStyle", { style: avatarStyle })}
                   </span>
                 </div>
               </div>
@@ -703,10 +725,11 @@
                 variant="outline"
                 size="sm"
                 class="h-8 gap-1.5 text-xs bg-[var(--surface-3)] border-[var(--brand)]/30 text-[var(--brand-text)] hover:bg-[var(--brand-soft)] hover:text-[var(--text-primary)]"
+                aria-pressed={showAvatarPicker}
                 onclick={() => (showAvatarPicker = !showAvatarPicker)}
               >
                 <Palette class="size-3.5 text-[var(--brand-text)]" />
-                {showAvatarPicker ? "Hide Picker" : "Change Look"}
+                {showAvatarPicker ? t("bot.hidePicker") : t("bot.changeLook")}
               </Button>
             </div>
 
@@ -727,97 +750,100 @@
 
             <div class="space-y-1.5">
               <Label for="bot-name" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-                Agent Name
+                {t("sidebar.agentName")}
               </Label>
-              <Input id="bot-name" bind:value={name} placeholder="e.g. Bro, Chief, Analyst..." class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]" />
+              <Input id="bot-name" bind:value={name} placeholder={t("bot.namePlaceholder")} class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]" />
             </div>
 
             <div class="space-y-1.5">
               <Label for="bot-desc" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-                Specialization & Mission
+                {t("sidebar.mission")}
               </Label>
               <Input
                 id="bot-desc"
                 bind:value={description}
-                placeholder="What does this agent specialize in?"
+                placeholder={t("bot.specialtyPlaceholder")}
                 class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
               />
             </div>
 
             <div class="p-3.5 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]/80 flex items-center justify-between">
               <div class="space-y-0.5">
-                <div class="flex items-center gap-1.5 font-bold text-xs text-white">
+                <div class="flex items-center gap-1.5 font-bold text-xs text-[var(--text-primary)]">
                   <Crown class="size-3.5 text-[var(--brand-text)]" />
-                  Orchestrator Mode
+                  {t("bot.orchestratorMode")}
                 </div>
                 <p class="text-[11px] text-[var(--text-tertiary)]">
-                  Allows this agent to spawn sub-tasks, delegate work, and coordinate other bots
+                  {t("bot.orchestratorDesc")}
                 </p>
               </div>
               <input
                 type="checkbox"
                 bind:checked={isOrchestrator}
+                aria-label="Orchestrator mode"
                 class="size-4 accent-[var(--brand)] rounded cursor-pointer"
               />
             </div>
 
             <!-- Approval mode: ask / auto / full (OpenMausBot-style gate) -->
             <div class="p-3.5 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]/80 space-y-2.5">
-              <div class="flex items-center gap-1.5 font-bold text-xs text-white">
+              <div class="flex items-center gap-1.5 font-bold text-xs text-[var(--text-primary)]">
                 <ShieldCheck class="size-3.5 text-warning" />
-                Approval Mode
+                {t("bot.approvalMode")}
               </div>
               <div class="grid grid-cols-3 gap-2">
                 {#each [
-                  { id: "ask", name: "Ask", desc: "Approve every risky action" },
-                  { id: "auto", name: "Auto", desc: "Only high-stakes asks" },
-                  { id: "full", name: "Full", desc: "Never ask (explicit)" },
+                  { id: "ask", name: t("bot.modeAsk"), desc: t("bot.modeAskDesc") },
+                  { id: "auto", name: t("bot.modeAuto"), desc: t("bot.modeAutoDesc") },
+                  { id: "full", name: t("bot.modeFull"), desc: t("bot.modeFullDesc") },
                 ] as opt}
                   <button
                     type="button"
+                    aria-pressed={approvalMode === opt.id}
                     onclick={() => (approvalMode = opt.id as ApprovalModeId)}
                     class="p-2.5 rounded-xl border text-left transition-all cursor-pointer {approvalMode === opt.id ? 'border-warning bg-warning/30 ring-1 ring-warning/40' : 'border-[var(--hairline)] bg-[var(--surface-2)] hover:border-warning/40'}"
                   >
-                    <div class="text-xs font-bold text-white">{opt.name}</div>
+                    <div class="text-xs font-bold text-[var(--text-primary)]">{opt.name}</div>
                     <div class="text-[10px] text-[var(--text-tertiary)] mt-0.5">{opt.desc}</div>
                   </button>
                 {/each}
               </div>
               {#if approvalMode === "full"}
-                <p class="text-[11px] text-warning bg-warning/30 border border-warning/20 rounded-lg px-2.5 py-2">
-                  Full access: shell, file writes, git, and delegation run without asking. Only for agents you fully trust.
+                <p class="text-[11px] text-warning bg-warning/15 border border-warning/50 rounded-lg px-2.5 py-2">
+                  {t("bot.fullAccessWarn")}
                 </p>
               {:else if approvalMode === "auto"}
-                <p class="text-[11px] text-[var(--text-tertiary)]">Low-risk writes (notes, todos, memories) run free. Shell, file edits, git, and delegation still ask.</p>
+                <p class="text-[11px] text-[var(--text-tertiary)]">{t("bot.autoEditLow")}</p>
               {:else}
-                <p class="text-[11px] text-[var(--text-tertiary)]">Read-only tools run free. Everything else pauses for your Allow / Deny.</p>
+                <p class="text-[11px] text-[var(--text-tertiary)]">{t("bot.readOnlyFree")}</p>
               {/if}
             </div>
 
             <!-- Command isolation tier (real OS sandbox for shell/tools) -->
             <div class="p-3.5 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]/80 space-y-2.5">
-              <div class="flex items-center gap-1.5 font-bold text-xs text-white">
+              <div class="flex items-center gap-1.5 font-bold text-xs text-[var(--text-primary)]">
                 <ShieldCheck class="size-3.5 text-[var(--brand-text)]" />
-                Command Isolation
+                {t("bot.commandIsolation")}
               </div>
               <div class="grid grid-cols-3 gap-2">
                 {#each [
-                  { id: "OsLevel", name: "OS Sandbox", desc: "Namespaces + limits" },
-                  { id: "Docker", name: "Container", desc: "Namespaces (docker n/a)" },
-                  { id: "Host", name: "Host", desc: "No isolation" },
+                  { id: "OsLevel", name: t("bot.isoOsName"), desc: t("bot.isoOsDesc") },
+                  { id: "Docker", name: t("bot.isoDockerName"), desc: t("bot.isoDockerDesc") },
+                  { id: "Host", name: t("bot.isoHostName"), desc: t("bot.isoHostDesc") },
                 ] as opt}
                   <button
                     type="button"
+                    aria-pressed={sandboxTier === opt.id}
                     onclick={() => { sandboxTier = opt.id as any; refreshSandboxReport(opt.id); }}
                     class="p-2.5 rounded-xl border text-left transition-all cursor-pointer {sandboxTier === opt.id ? 'border-[var(--brand)] bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/40' : 'border-[var(--hairline)] bg-[var(--surface-2)] hover:border-[var(--brand)]/40'}"
                   >
-                    <div class="text-xs font-bold text-white">{opt.name}</div>
+                    <div class="text-xs font-bold text-[var(--text-primary)]">{opt.name}</div>
                     <div class="text-[10px] text-[var(--text-tertiary)] mt-0.5">{opt.desc}</div>
                   </button>
                 {/each}
               </div>
               {#if sandboxReport}
-                <div class="text-[11px] rounded-lg px-2.5 py-2 flex items-start gap-2 {sandboxReport.filesystem_isolated ? 'text-success bg-success/20 border border-success/20' : 'text-warning bg-warning/30 border border-warning/20'}">
+                <div class="text-[11px] rounded-lg px-2.5 py-2 flex items-start gap-2 {sandboxReport.filesystem_isolated ? 'text-success bg-success/15 border border-success/50' : 'text-warning bg-warning/15 border border-warning/50'}" role="status">
                   <span class="font-mono shrink-0">[{sandboxReport.backend}]</span>
                   <span>{sandboxReport.note}</span>
                 </div>
@@ -829,21 +855,21 @@
             <div class="space-y-1.5">
               <div class="flex items-center justify-between">
                 <Label for="system-prompt" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-                  Custom System Directive
+                  {t("bot.directiveTitle")}
                 </Label>
                 <span class="text-[10px] text-[var(--text-muted)] font-mono">
-                  {customPrompt.length} chars
+                  {t("bot.charsN", { n: customPrompt.length })}
                 </span>
               </div>
               <Textarea
                 id="system-prompt"
                 bind:value={customPrompt}
-                placeholder="Enter custom instructions, behavioral guidelines, constraints, and system persona..."
+                placeholder={t("bot.instructionsPlaceholder")}
                 rows={8}
                 class="font-mono text-xs leading-relaxed bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
               />
               <p class="text-[11px] text-[var(--text-muted)]">
-                Leave blank to use default RAVEN sovereign desktop agent instructions.
+                {t("bot.directiveHint")}
               </p>
             </div>
           </div>
@@ -855,25 +881,25 @@
         <Button
           variant="destructive"
           size="sm"
-          class="gap-1.5 text-xs bg-red-950/40 text-red-400 hover:bg-red-900/60 border border-red-800/40"
+          class="gap-1.5 text-xs"
           onclick={() => (showDeleteConfirm = true)}
         >
           <Trash2 class="size-3.5" />
-          Delete Agent
+          {t("bot.deleteAgent")}
         </Button>
 
         <div class="flex items-center gap-2">
           {#if dirty}
-            <span class="text-[10px] text-warning flex items-center gap-1" title="You have unsaved edits">
-              <span class="size-1.5 rounded-full bg-warning"></span> Unsaved changes
+            <span class="text-[10px] text-warning flex items-center gap-1" title={t("bot.unsaved")}>
+              <span class="size-1.5 rounded-full bg-warning"></span> {t("bot.unsavedChanges")}
             </span>
           {/if}
           <Button variant="outline" size="sm" class="bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)]" onclick={requestClose}>
-            Cancel
+            {t("ui.cancel")}
           </Button>
-          <Button size="sm" class="gap-1.5 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium shadow-md " onclick={save} disabled={isSaving || !name.trim() || !dirty}>
+          <Button size="sm" class="gap-1.5 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] font-medium shadow-md " onclick={save} disabled={isSaving || !name.trim() || !dirty}>
             <Save class="size-3.5" />
-            {isSaving ? "Saving..." : "Save Changes"}
+            {isSaving ? t("bot.saving") : t("bot.saveChanges")}
           </Button>
         </div>
       </div>
@@ -884,24 +910,24 @@
   <Dialog.Root open={showDeleteConfirm} onOpenChange={(o) => (!o && (showDeleteConfirm = false))}>
     <Dialog.Content class="sm:max-w-md bg-[var(--surface-1)] border-[var(--hairline)]">
       <Dialog.Header class="gap-2">
-        <div class="size-12 rounded-full bg-red-950/60 text-red-400 flex items-center justify-center mx-auto ring-8 ring-red-900/20 border border-red-800/40">
+        <div class="size-12 rounded-full bg-destructive/15 text-destructive flex items-center justify-center mx-auto border border-destructive/40">
           <AlertTriangle class="size-6" />
         </div>
-        <Dialog.Title class="text-center text-lg font-bold text-white">
-          Delete "{bot.name}"?
+        <Dialog.Title class="text-center text-lg font-bold text-[var(--text-primary)]">
+          {t("bot.deleteTitle", { name: bot.name })}
         </Dialog.Title>
         <Dialog.Description class="text-center text-xs text-[var(--text-tertiary)]">
-          This will permanently remove this agent, its memory configurations, and all associated chat threads.
+          {t("bot.deleteDesc")}
         </Dialog.Description>
       </Dialog.Header>
 
       <Dialog.Footer class="gap-2 sm:gap-0 mt-2 pt-2 border-t border-[var(--hairline)]">
         <Button variant="outline" size="sm" onclick={() => (showDeleteConfirm = false)}>
-          Cancel
+          {t("ui.cancel")}
         </Button>
-        <Button variant="destructive" size="sm" class="gap-1.5 bg-red-600 hover:bg-red-500 font-medium" onclick={deleteBot}>
+        <Button variant="destructive" size="sm" class="gap-1.5 font-medium" onclick={deleteBot}>
           <Trash2 class="size-3.5" />
-          Confirm Deletion
+          {t("bot.confirmDelete")}
         </Button>
       </Dialog.Footer>
     </Dialog.Content>

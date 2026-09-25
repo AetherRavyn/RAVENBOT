@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "$lib/i18n";
   import * as Card from "$lib/components/ui/card";
   import { Badge } from "$lib/components/ui/badge";
   import { Progress } from "$lib/components/ui/progress";
@@ -22,37 +23,37 @@
   $effect(() => { if (botId) load(); });
 
   let score = $derived(intel ? Math.round(intel.intelligence_score * 100) : 50);
-  let level = $derived(score < 30 ? "Novice" : score < 60 ? "Competent" : score < 85 ? "Expert" : "Master");
+  let level = $derived(score < 30 ? t("intel.levelNovice") : score < 60 ? t("intel.levelCompetent") : score < 85 ? t("intel.levelExpert") : t("intel.levelMaster"));
 </script>
 
 <div class="space-y-4">
   {#if intel}
-    <Card.Root class="bg-[#141223] border-[var(--brand)]/25">
+    <Card.Root class="bg-[var(--surface-2)] border-[var(--brand)]/25">
       <Card.Header class="pb-2">
-        <Card.Title class="text-sm flex items-center gap-2"><Brain class="size-4 text-[var(--brand-text)]" /> {botName} — Intelligence: {score}% <Badge variant="secondary" class="ml-auto bg-[var(--brand)] text-white">{level}</Badge></Card.Title>
-        <Card.Description class="text-xs">Gets smarter daily with more data — {intel.total_memories} personal + {intel.office_memories} team memories, {intel.learnings_count} learnings</Card.Description>
+        <Card.Title class="text-sm flex items-center gap-2"><Brain class="size-4 text-[var(--brand-text)]" /> {t("intel.title", { name: botName, score: score })} <Badge variant="secondary" class="ml-auto bg-[var(--brand)] text-[var(--text-on-light)]">{level}</Badge></Card.Title>
+        <Card.Description class="text-xs">{t("intel.desc", { p: intel.total_memories, t: intel.office_memories, l: intel.learnings_count })}</Card.Description>
       </Card.Header>
       <Card.Content class="space-y-3">
         <div class="space-y-1">
-          <div class="flex justify-between text-xs"><span>Intelligence</span><span>{score}%</span></div>
+          <div class="flex justify-between text-xs"><span>{t("intel.label")}</span><span>{score}%</span></div>
           <Progress value={score} class="h-2" />
         </div>
         <div class="grid grid-cols-3 gap-2 text-center">
-          <div class="p-2 rounded-xl bg-[var(--surface-2)]ard border"><div class="text-lg font-bold">{intel.tasks_today}</div><div class="text-[10px] text-muted-foreground">Tasks today</div></div>
-          <div class="p-2 rounded-xl bg-[var(--surface-2)]ard border"><div class="text-lg font-bold text-success">{intel.success_streak}</div><div class="text-[10px] text-muted-foreground">Streak</div></div>
-          <div class="p-2 rounded-xl bg-[var(--surface-2)]ard border"><div class="text-lg font-bold">{intel.total_memories + intel.office_memories}</div><div class="text-[10px] text-muted-foreground">Memories</div></div>
+          <div class="p-2 rounded-xl bg-[var(--surface-2)] border"><div class="text-lg font-bold">{intel.tasks_today}</div><div class="text-[10px] text-muted-foreground">{t("intel.tasksToday")}</div></div>
+          <div class="p-2 rounded-xl bg-[var(--surface-2)] border"><div class="text-lg font-bold text-success">{intel.success_streak}</div><div class="text-[10px] text-muted-foreground">{t("intel.streak")}</div></div>
+          <div class="p-2 rounded-xl bg-[var(--surface-2)] border"><div class="text-lg font-bold">{intel.total_memories + intel.office_memories}</div><div class="text-[10px] text-muted-foreground">{t("intel.memories")}</div></div>
         </div>
-        <p class="text-xs text-muted-foreground flex items-center gap-1.5"><TrendingUp class="size-3" /> Agent learns from every success/failure — success rate drives promotion to long-term memory.</p>
+        <p class="text-xs text-muted-foreground flex items-center gap-1.5"><TrendingUp class="size-3" /> {t("intel.learnNote")}</p>
       </Card.Content>
     </Card.Root>
 
     <Card.Root>
-      <Card.Header><Card.Title class="text-sm flex items-center gap-2"><Award class="size-4" /> Recent Learnings — how it got smarter</Card.Title></Card.Header>
+      <Card.Header><Card.Title class="text-sm flex items-center gap-2"><Award class="size-4" /> {t("intel.recentTitle")}</Card.Title></Card.Header>
       <Card.Content>
         <ScrollArea class="h-[250px] pr-2">
           <div class="space-y-2">
             {#each learnings as l}
-              <div class="p-2.5 rounded-xl border bg-[var(--surface-2)]ard flex gap-2">
+              <div class="p-2.5 rounded-xl border bg-[var(--surface-2)] flex gap-2">
                 <div class="size-6 rounded-full flex items-center justify-center shrink-0 {l.learning_type === 'success' ? 'bg-success/20 text-success' : 'bg-warning/20 text-warning'}">
                   {#if l.learning_type === 'success'}<CheckCircle2 class="size-3.5" />{:else}<Zap class="size-3.5" />{/if}
                 </div>
@@ -62,13 +63,13 @@
                 </div>
               </div>
             {:else}
-              <div class="py-6 text-center text-sm text-muted-foreground border-[var(--hairline)] border-dashed rounded-xl">No learnings yet — complete a task to see intelligence grow.</div>
+              <div class="py-6 text-center text-sm text-muted-foreground border border-dashed border-[var(--hairline)] rounded-xl">{t("intel.empty")}</div>
             {/each}
           </div>
         </ScrollArea>
       </Card.Content>
     </Card.Root>
   {:else}
-    <div class="p-4 text-center text-sm text-muted-foreground">Loading intelligence...</div>
+    <div class="p-4 text-center text-sm text-muted-foreground">{t("intel.loading")}</div>
   {/if}
 </div>

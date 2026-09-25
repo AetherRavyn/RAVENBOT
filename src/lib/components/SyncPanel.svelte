@@ -1,6 +1,8 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
+  import { t } from "$lib/i18n";
+  import { notify } from "$lib/toast";
   import { Button } from "$lib/components/ui/button";
   import {
     Download,
@@ -61,7 +63,7 @@
       a.click();
       URL.revokeObjectURL(url);
     } catch (e: any) {
-      alert("Export failed: " + String(e));
+      notify(t("sync.exportFailed") + String(e), "error");
     } finally {
       exporting = null;
     }
@@ -79,8 +81,8 @@
       importResult = {
         ok: true,
         message: signed
-          ? `Bot imported — Ed25519 signature verified (TOFU-trusted). New agent: ${botId}`
-          : `Bot imported (unsigned — no authenticity proof). New agent: ${botId}`,
+          ? t("sync.importedSigned", { id: botId })
+          : t("sync.importedUnsigned", { id: botId }),
       };
       importJson = "";
       try {
@@ -117,8 +119,8 @@
       importResult = {
         ok: true,
         message: signed
-          ? `Bot imported from ${file.name} — Ed25519 signature verified (TOFU-trusted). New agent: ${botId}`
-          : `Bot imported from ${file.name} (unsigned). New agent: ${botId}`,
+          ? t("sync.importedSignedFile", { file: file.name, id: botId })
+          : t("sync.importedUnsignedFile", { file: file.name, id: botId }),
       };
       try {
         bots = await invoke("list_bots");
@@ -139,26 +141,22 @@
 </script>
 
 <div class="space-y-4">
-  <!-- Header -->
+  <!-- Compact pane header (OpenBot pattern): this is the panel's ONLY title —
+       hosts must not add a second one. -->
   <div class="flex items-center gap-2">
-    <Boxes class="size-4 text-[var(--brand-text)]" />
-    <span class="text-[11px] font-bold text-[var(--text-secondary)] uppercase tracking-wider font-mono">
-      Fleet Sync & Backup
+    <Boxes class="size-4 shrink-0 text-[var(--brand-text)]" />
+    <span class="text-[13px] font-bold text-[var(--text-primary)]">{t("sync.title")}</span>
+    <span class="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)] font-mono shrink-0">
+      {bots.length}
     </span>
-    <span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-success/10 border border-success/30 text-success flex items-center gap-1">
+    <span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-success/10 border border-success/30 text-success flex items-center gap-1 shrink-0">
       <ShieldCheck class="size-2.5" />
-      Ed25519 signed
+      {t("sync.signedChip")}
     </span>
   </div>
 
-  <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
-    Export bots as signed bundles (agent + skills + memories) to back up or move
-    your fleet. Import verifies the Ed25519 signature: first import from a new
-    signer is trusted on first use — later imports must carry the same key.
-  </p>
-
   <!-- Bot list / export -->
-  <div class="space-y-1.5 max-h-52 overflow-y-auto pr-1">
+  <div class="space-y-1.5 max-h-52 overflow-y-auto pr-1 no-scrollbar">
     {#if loading}
       <div class="flex items-center justify-center py-4 text-[var(--text-muted)]">
         <Loader2 class="size-4 animate-spin" />
@@ -168,9 +166,9 @@
         <div class="flex items-center justify-between gap-2 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-2.5">
           <div class="min-w-0">
             <div class="flex items-center gap-1.5">
-              <span class="text-[11px] font-bold text-white truncate">{botRow.name}</span>
+              <span class="text-[11px] font-bold text-[var(--text-primary)] truncate">{botRow.name}</span>
               {#if botRow.id === bot?.id}
-                <span class="text-[8px] font-mono px-1 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30 shrink-0">current</span>
+                <span class="text-[8px] font-mono px-1 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30 shrink-0">{t("sync.current")}</span>
               {/if}
             </div>
             <span class="text-[9px] font-mono text-[var(--text-muted)] truncate">{providerLabel(botRow)}</span>
@@ -181,14 +179,14 @@
             class="h-6 px-2 text-[10px] gap-1 cursor-pointer shrink-0"
             disabled={exporting === botRow.id}
             onclick={() => exportBot(botRow)}
-            title="Export signed bundle (agent + skills + memories)"
+            title={t("sync.exportTip")}
           >
             {#if exporting === botRow.id}
               <Loader2 class="size-3 animate-spin" />
             {:else}
               <Download class="size-3" />
             {/if}
-            Export
+            {t("sync.export")}
           </Button>
         </div>
       {/each}
@@ -198,18 +196,19 @@
   <!-- Import -->
   <div class="space-y-1.5 pt-2 border-t border-[var(--hairline)]">
     <div class="flex items-center gap-1.5">
-      <Upload class="size-3 text-[var(--brand-text)]" />
-      <span class="text-[10px] font-bold text-[var(--text-secondary)] uppercase tracking-wider font-mono">Import bundle</span>
+      <Upload class="size-3.5 text-[var(--brand-text)]" />
+      <span class="text-[12px] font-bold text-[var(--text-primary)]">{t("sync.importTitle")}</span>
     </div>
     <textarea
       bind:value={importJson}
+      aria-label="Bot bundle JSON"
       rows={3}
-      placeholder='Paste a ravenbot-*.json bundle here…'
-      class="w-full px-2.5 py-2 rounded-xl bg-[var(--surface-1)] border border-[var(--hairline)] text-[10px] font-mono text-white placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus:border-[var(--brand)]/50"
+      placeholder={t("sync.pastePh")}
+      class="w-full px-2.5 py-2 rounded-xl bg-[var(--surface-1)] border border-[var(--hairline)] text-[10px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
     ></textarea>
 
     {#if importResult}
-      <div class="flex items-start gap-1.5 text-[10px] {importResult.ok ? 'text-success' : 'text-danger'}">
+      <div class="flex items-start gap-1.5 text-[10px] {importResult.ok ? 'text-success' : 'text-danger'}" role={importResult.ok ? "status" : "alert"}>
         {#if importResult.ok}
           <CheckCircle2 class="size-3 shrink-0 mt-0.5" />
         {:else}
@@ -233,30 +232,30 @@
         class="h-7 px-3 text-[10px] gap-1 border-[var(--hairline)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
         disabled={importing}
         onclick={openFilePicker}
-        title="Import bundle from a .json file on disk"
+        title={t("sync.openFileTip")}
       >
         <Upload class="size-3" />
-        Open File
+        {t("sync.openFile")}
       </Button>
       <Button
         size="sm"
-        class="h-7 px-3 text-[10px] gap-1 bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white cursor-pointer"
+        class="h-7 px-3 text-[10px] gap-1 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] cursor-pointer"
         disabled={!importJson.trim() || importing}
         onclick={importBundle}
-        title="Import and verify bundle"
+        title={t("sync.verifyTip")}
       >
         {#if importing}
           <Loader2 class="size-3 animate-spin" />
         {:else}
           <ShieldCheck class="size-3" />
         {/if}
-        Verify & Import
+        {t("sync.verifyImport")}
       </Button>
     </div>
 
     <div class="flex items-center gap-1.5 text-[9px] text-[var(--text-muted)] font-mono">
       <ShieldAlert class="size-2.5 shrink-0" />
-      <span>Tampered or key-swapped bundles are rejected outright.</span>
+      <span>{t("sync.tamperNote")}</span>
     </div>
   </div>
 </div>

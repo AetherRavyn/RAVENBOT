@@ -1,5 +1,6 @@
 <script lang="ts">
   import { cn } from "$lib/utils.js";
+  import { t } from "$lib/i18n";
   import {
     Search,
     Bot,
@@ -41,7 +42,7 @@
       id: `bot-${bot.id}`,
       category: "Bots" as const,
       label: bot.name,
-      description: bot.description || `Switch to ${bot.name} workspace`,
+      description: t("palette.switchTo", { name: bot.name }),
       icon: Bot,
       badge: bot.config?.model_provider || "OPENROUTER",
       action: () => {
@@ -52,8 +53,8 @@
     {
       id: "connectors-hub",
       category: "Tools & Integrations" as const,
-      label: "Connectors Command Center",
-      description: "Manage 135+ MCP tools, API plugins & multi-agent connector assignments",
+      label: t("palette.connectors"),
+      description: t("palette.connectorsDesc"),
       icon: Layers,
       action: () => {
         window.dispatchEvent(new CustomEvent("open-connectors"));
@@ -63,8 +64,8 @@
     {
       id: "create-bot",
       category: "Actions" as const,
-      label: "Create New Bot",
-      description: "Provision a new sovereign AI agent",
+      label: t("palette.createBot"),
+      description: t("palette.createBotDesc"),
       icon: Plus,
       action: () => {
         onCreateBot();
@@ -74,8 +75,8 @@
     {
       id: "settings",
       category: "System" as const,
-      label: "System Settings",
-      description: "Configure model providers, API keys & preferences",
+      label: t("palette.settings"),
+      description: t("palette.settingsDesc"),
       icon: SettingsIcon,
       action: () => {
         onOpenSettings();
@@ -149,7 +150,10 @@
         <input
           bind:this={inputRef}
           type="text"
-          placeholder="Search bots, commands, actions..."
+          placeholder={t("palette.search")}
+          aria-label={t("palette.search")}
+          aria-controls="palette-results"
+          aria-activedescendant={filteredCommands[selectedIndex] ? `palette-result-${filteredCommands[selectedIndex].id}` : undefined}
           bind:value={query}
           onkeydown={handleKeydown}
           class="flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none border-none ring-0 font-sans"
@@ -160,7 +164,7 @@
             class="text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-2 py-0.5 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)] transition-colors"
             onclick={() => (query = "")}
           >
-            Clear
+            {t("palette.clear")}
           </button>
         {/if}
         <span class="px-2 py-0.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-tertiary)] font-mono text-[10px]">
@@ -169,16 +173,19 @@
       </div>
 
       <!-- Command List -->
-      <div class="max-h-84 overflow-y-auto p-2 space-y-1">
+      <div id="palette-results" role="listbox" class="max-h-84 overflow-y-auto p-2 space-y-1">
         {#each filteredCommands as cmd, i (cmd.id)}
           {@const isSelected = selectedIndex === i}
           {@const IconComponent = cmd.icon}
           <button
             type="button"
+            id="palette-result-{cmd.id}"
+            role="option"
+            aria-selected={isSelected}
             class={cn(
-              "w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl text-left text-xs transition-all group cursor-pointer focus:outline-none",
+              "w-full flex items-center justify-between gap-3 px-3 py-2.5 rounded-xl text-left text-xs transition-all group cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60",
               isSelected
-                ? "bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-white shadow-sm font-medium"
+                ? "bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-[var(--text-primary)] shadow-sm font-medium"
                 : "text-[var(--text-secondary)] hover:bg-[var(--surface-3)] border border-transparent"
             )}
             onclick={cmd.action}
@@ -189,7 +196,7 @@
                 class={cn(
                   "size-8 rounded-lg flex items-center justify-center shrink-0 transition-colors",
                   isSelected
-                    ? "bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-white"
+                    ? "bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-[var(--text-primary)]"
                     : "bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] group-hover:text-[var(--text-primary)]"
                 )}
               >
@@ -197,13 +204,13 @@
               </div>
               <div class="flex flex-col min-w-0">
                 <div class="flex items-center gap-2">
-                  <span class="font-bold text-xs truncate text-white">{cmd.label}</span>
+                  <span class="font-bold text-xs truncate text-[var(--text-primary)]">{cmd.label}</span>
                   {#if cmd.badge}
                     <span
                       class={cn(
-                        "text-[9px] px-1.5 py-0.2 rounded font-mono uppercase border",
+                        "text-[9px] px-1.5 py-[2px] rounded font-mono uppercase border",
                         isSelected
-                          ? "bg-[var(--surface-3)] border-[var(--hairline-strong)] text-white"
+                          ? "bg-[var(--surface-3)] border-[var(--hairline-strong)] text-[var(--text-primary)]"
                           : "bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)]"
                       )}
                     >
@@ -234,8 +241,8 @@
         {:else}
           <div class="py-12 px-4 text-center">
             <Bot class="size-8 text-[var(--brand-text)]/40 mx-auto mb-2" />
-            <p class="text-sm font-semibold text-[var(--text-secondary)]">No matching commands</p>
-            <p class="text-xs text-[var(--text-muted)] mt-0.5">Try searching with another keyword</p>
+            <p class="text-sm font-semibold text-[var(--text-secondary)]">{t("palette.noMatches")}</p>
+            <p class="text-xs text-[var(--text-muted)] mt-0.5">{t("palette.noMatchesHint")}</p>
           </div>
         {/each}
       </div>
@@ -246,15 +253,15 @@
           <span class="flex items-center gap-1">
             <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">↑</kbd>
             <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">↓</kbd>
-            Navigate
+            {t("palette.navigate")}
           </span>
           <span class="flex items-center gap-1">
             <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">↵</kbd>
-            Select
+            {t("palette.select")}
           </span>
           <span class="flex items-center gap-1">
             <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">esc</kbd>
-            Dismiss
+            {t("palette.dismiss")}
           </span>
         </div>
         <div class="flex items-center gap-1.5 font-mono text-[10px] text-[var(--brand-text)]/80">

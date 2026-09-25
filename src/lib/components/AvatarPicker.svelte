@@ -4,6 +4,7 @@
   import { Label } from "$lib/components/ui/label";
   import { getDiceBearUrl, dicebearStyles } from "$lib/utils";
   import { cn } from "$lib/utils.js";
+  import { t } from "$lib/i18n";
   import { Sparkles, RefreshCw, Image, Wand2, Check, Palette } from "@lucide/svelte";
 
   interface Props {
@@ -97,34 +98,34 @@
     <!-- Live Avatar Circle -->
     <div class="flex items-center gap-4 relative z-10">
       <div class="relative group shrink-0">
-        <div class="size-20 rounded-2xl p-1 ring-2 ring-[var(--brand)]/60 ] transition-all duration-300 group-hover:ring-[var(--brand)] group-hover:scale-105 bg-[#12101e] overflow-hidden">
+        <div class="size-20 rounded-2xl p-1 ring-2 ring-[var(--brand)]/60 transition-all duration-300 group-hover:ring-[var(--brand)] group-hover:scale-105 bg-[var(--surface-2)] overflow-hidden">
           <img
             src={previewUrl}
-            alt="Avatar preview"
+            alt={t("avatar.previewAlt")}
             class="size-full rounded-xl object-cover"
             loading="eager"
           />
         </div>
-        <div class="absolute -bottom-1.5 -right-1.5 size-6 rounded-full bg-[var(--brand)] text-white flex items-center justify-center shadow-lg ring-2 ring-[var(--surface-1)]">
+        <div class="absolute -bottom-1.5 -right-1.5 size-6 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] flex items-center justify-center shadow-lg ring-2 ring-[var(--surface-1)]">
           <Sparkles class="size-3" />
         </div>
       </div>
 
       <div class="flex flex-col">
         <div class="flex items-center gap-2">
-          <span class="font-bold text-sm text-white">Agent Identity Preview</span>
+          <span class="font-bold text-sm text-[var(--text-primary)]">{t("avatar.preview")}</span>
           {#if !useCustom}
             <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30">
               {selectedStyle}
             </span>
           {:else}
-            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-success/80 text-success border border-success/30">
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-success/15 text-success border border-success/30">
               custom url
             </span>
           {/if}
         </div>
         <span class="text-xs text-[var(--text-tertiary)] mt-0.5">
-          Seed: <span class="font-mono text-[var(--brand-text)]">{previewSeed || "Agent"}</span>
+          {t("avatar.seedLabel")} <span class="font-mono text-[var(--brand-text)]">{previewSeed || t("ui.fallbackAgent")}</span>
         </span>
       </div>
     </div>
@@ -138,7 +139,7 @@
         class="h-8 gap-1.5 text-xs bg-[var(--surface-2)] border-[var(--brand)]/30 text-[var(--brand-text)] hover:bg-[var(--brand-soft)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)]"
       >
         <Wand2 class="size-3.5 text-[var(--brand-text)]" />
-        Randomize Look
+        {t("avatar.randomize")}
       </Button>
     </div>
   </div>
@@ -147,7 +148,7 @@
   <div class="space-y-1.5">
     <div class="flex items-center justify-between">
       <Label class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-        DiceBear 9.x Style Library ({allStyles.length} Styles)
+        {t("avatar.styleLibrary", { n: allStyles.length })}
       </Label>
     </div>
 
@@ -155,7 +156,8 @@
       {#each categories as cat}
         <button
           type="button"
-          class="px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all shrink-0 cursor-pointer {selectedCategory === cat ? 'bg-[var(--brand)] text-white shadow-sm' : 'bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[#181827]'}"
+          class="px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all shrink-0 cursor-pointer {selectedCategory === cat ? 'bg-[var(--brand)] text-[var(--text-on-light)] shadow-sm' : 'bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-on-light)] hover:bg-[var(--surface-3)]'}"
+          aria-pressed={selectedCategory === cat}
           onclick={() => (selectedCategory = cat)}
         >
           {cat}
@@ -165,17 +167,19 @@
   </div>
 
   <!-- Style Presets Grid -->
-  <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-40 overflow-y-auto pr-1">
+  <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-40 overflow-y-auto no-scrollbar pr-1" role="radiogroup" aria-label={t("avatar.styleLibrary", { n: allStyles.length })}>
     {#each filteredStyles as s}
       {@const isSelected = selectedStyle === s.value && !useCustom}
       <button
         type="button"
         class={cn(
- "group relative rounded-xl border p-2 transition-all text-center flex flex-col items-center gap-1.5 focus:outline-none cursor-pointer",
+ "group relative rounded-xl border p-2 transition-all text-center flex flex-col items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 cursor-pointer",
           isSelected
-            ? "border-[var(--brand)] bg-[var(--brand-soft)] ] ring-1 ring-[var(--brand)]/60"
-            : "border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--brand)]/40 hover:bg-[#131320]"
+            ? "border-[var(--brand)] bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/60"
+            : "border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--brand)]/40 hover:bg-[var(--surface-2)]"
         )}
+        role="radio"
+        aria-checked={isSelected}
         onclick={() => pick(s.value)}
         title={s.description}
       >
@@ -191,7 +195,7 @@
           {s.label}
         </span>
         {#if isSelected}
-          <div class="absolute top-1 right-1 size-3.5 rounded-full bg-[var(--brand)] text-white flex items-center justify-center shadow">
+          <div class="absolute top-1 right-1 size-3.5 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] flex items-center justify-center shadow">
             <Check class="size-2.5 stroke-[3]" />
           </div>
         {/if}
@@ -204,12 +208,12 @@
     <!-- Seed Customizer -->
     <div class="space-y-1">
       <Label for="avatar-seed" class="text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider">
-        Avatar Seed Name
+        {t("avatar.seedName")}
       </Label>
       <Input
         id="avatar-seed"
         bind:value={previewSeed}
-        placeholder="e.g. Chief, Nova, Architect..."
+        placeholder={t("avatar.seedPh")}
         class="h-8 font-mono text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
         oninput={() => {
           if (!useCustom) onSelect(getDiceBearUrl(previewSeed || "Agent", selectedStyle), selectedStyle);
@@ -221,10 +225,10 @@
     <div class="space-y-1">
       <div class="flex items-center justify-between">
         <Label for="custom-url" class="text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider">
-          Custom Image URL
+          {t("avatar.customUrl")}
         </Label>
         {#if useCustom}
-          <span class="text-[10px] text-[var(--brand-text)] font-mono">Active</span>
+          <span class="text-[10px] text-[var(--brand-text)] font-mono">{t("avatar.active")}</span>
         {/if}
       </div>
       <div class="flex gap-1.5">
@@ -238,7 +242,9 @@
         <Button
           variant={useCustom ? "default" : "outline"}
           size="sm"
-          class="h-8 px-2.5 text-xs shrink-0 {useCustom ? 'bg-[var(--brand)] text-white' : 'bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)]'}"
+          class="h-8 px-2.5 text-xs shrink-0 {useCustom ? 'bg-[var(--brand)] text-[var(--text-on-light)]' : 'bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)]'}"
+          aria-label={t("avatar.customUrl")}
+          aria-pressed={useCustom}
           onclick={() => (useCustom = !useCustom)}
         >
           <Image class="size-3.5" />
@@ -249,10 +255,10 @@
 
   <!-- Confirm / Save Selection -->
   <Button
-    class="w-full h-9 gap-2 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-white font-medium shadow-md  mt-1"
+    class="w-full h-9 gap-2 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] font-medium shadow-md  mt-1"
     onclick={confirm}
   >
     <Check class="size-4" />
-    Use Selected Avatar
+    {t("avatar.useSelected")}
   </Button>
 </div>

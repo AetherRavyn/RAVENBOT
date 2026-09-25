@@ -3,6 +3,8 @@
   import { onMount } from "svelte";
   import { getDiceBearUrl } from "$lib/utils";
   import { notify } from "$lib/toast";
+  import { fleetActivity } from "$lib/fleetActivity.svelte";
+  import { t } from "$lib/i18n";
   import { cn } from "$lib/utils.js";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -75,8 +77,6 @@
   let showBotSettings = $state(false);
   let selectedBotForSkills = $state<any>(null);
   let showSkillManager = $state(false);
-  let selectedBotForMcp = $state<any>(null);
-  let showMcpManager = $state(false);
   let isCreating = $state(false);
   let activeActionMenuBotId = $state<string | null>(null);
 
@@ -160,7 +160,7 @@
     try {
       const copy = await invoke<any>("duplicate_bot", { botId });
       onBotCreated(copy);
-      notify(`Duplicated as “${copy.name}”`, "success");
+      notify(t("sidebar.duplicated", { name: copy.name }), "success");
       await refreshContacts();
     } catch (e) {
       console.error("Failed to duplicate bot:", e);
@@ -221,15 +221,15 @@
   function getStatusTheme(status: string) {
     switch (status) {
       case "idle":
-        return { bg: "bg-[var(--status-idle)]", text: "text-[var(--text-muted)]", label: "Idle" };
+        return { bg: "bg-[var(--status-idle)]", text: "text-[var(--text-muted)]", label: t("sidebar.idle") };
       case "thinking":
-        return { bg: "bg-[var(--status-thinking)]", text: "text-[var(--status-thinking)]", label: "Thinking..." };
+        return { bg: "bg-[var(--status-thinking)]", text: "text-[var(--status-thinking)]", label: t("sidebar.thinking") };
       case "running_tool":
-        return { bg: "bg-[var(--status-running)]", text: "text-[var(--status-running)]", label: "Running Tool" };
+        return { bg: "bg-[var(--status-running)]", text: "text-[var(--status-running)]", label: t("sidebar.runningTool") };
       case "waiting_on_user":
-        return { bg: "bg-[var(--status-waiting)]", text: "text-[var(--status-waiting)]", label: "Waiting on you" };
+        return { bg: "bg-[var(--status-waiting)]", text: "text-[var(--status-waiting)]", label: t("sidebar.waitingOnYou") };
       case "paused":
-        return { bg: "bg-[var(--status-paused)]", text: "text-[var(--status-paused)]", label: "Paused" };
+        return { bg: "bg-[var(--status-paused)]", text: "text-[var(--status-paused)]", label: t("sidebar.paused") };
       default:
         return { bg: "bg-[var(--status-idle)]", text: "text-[var(--text-muted)]", label: status };
     }
@@ -251,7 +251,7 @@
     >
       <div class="flex items-center gap-2">
         <Plus class="size-4 group-hover:rotate-90 transition-transform duration-300" />
-        <span>New Chat</span>
+        <span>{t("sidebar.newChat")}</span>
       </div>
       <span class="text-[10px] font-mono text-black/60 bg-black/10 px-1.5 py-0.5 rounded">⌘N</span>
     </button>
@@ -260,7 +260,7 @@
   <!-- Section Header: FLEET AGENTS + Actions -->
   <div class="px-3 pt-2 pb-1.5 flex items-center justify-between">
     <div class="flex items-center gap-2">
-      <span class="font-semibold text-[10px] tracking-wider uppercase text-[var(--text-muted)] font-mono">Fleet Agents</span>
+      <span class="font-semibold text-[10px] tracking-wider uppercase text-[var(--text-muted)] font-mono">{t("sidebar.fleetAgents")}</span>
       <span class="bg-[var(--surface-2)] text-[var(--text-muted)] text-[10px] font-mono font-medium px-1.5 py-0.5 rounded border border-[var(--hairline)]">
         {bots.length}
       </span>
@@ -270,27 +270,31 @@
       <button
         type="button"
         class="icon-btn size-7 border border-[var(--hairline)] bg-[var(--surface-2)]"
+        aria-label={t("sidebar.createTip")}
         onclick={() => {
           showCreateModal = true;
           createModalTab = "profile";
         }}
-        title="Create new AI agent"
+        title={t("sidebar.createTip")}
       >
         <Plus class="size-3.5" />
       </button>
       <button
         type="button"
         class="icon-btn size-7 border border-[var(--hairline)] bg-[var(--surface-2)] {showHidden ? 'text-[var(--brand-text)] border-[var(--brand)]' : ''}"
+        aria-label={showHidden ? t("sidebar.hideHiddenTip") : t("sidebar.showHiddenTip")}
+        aria-pressed={showHidden}
         onclick={() => (showHidden = !showHidden)}
-        title={showHidden ? "Hide hidden agents" : "Show hidden agents"}
+        title={showHidden ? t("sidebar.hideHiddenTip") : t("sidebar.showHiddenTip")}
       >
         {#if showHidden}<Eye class="size-3.5" />{:else}<EyeOff class="size-3.5" />{/if}
       </button>
       <button
         type="button"
         class="icon-btn size-7 border border-[var(--hairline)] bg-[var(--surface-2)]"
+        aria-label={t("sidebar.settings")}
         onclick={openSettings}
-        title="Settings"
+        title={t("sidebar.settings")}
       >
         <SettingsIcon class="size-3.5" />
       </button>
@@ -303,7 +307,8 @@
       <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none transition-colors group-focus-within/search:text-[var(--text-secondary)]" />
       <input
         type="text"
-        placeholder="Filter fleet..."
+        placeholder={t("sidebar.search")}
+        aria-label={t("sidebar.search")}
         bind:value={searchQuery}
         class="w-full h-8 pl-8 pr-3 bg-[var(--surface-2)] border border-[var(--hairline)] rounded-md text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/25 transition-all font-sans"
       />
@@ -314,6 +319,7 @@
       <button
         type="button"
         class="flex items-center gap-2 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-1 py-1 transition-colors cursor-pointer"
+        aria-pressed={showOnlyWaiting}
         onclick={() => (showOnlyWaiting = !showOnlyWaiting)}
       >
         <div class="size-3.5 rounded-full border border-[var(--hairline-strong)] flex items-center justify-center {showOnlyWaiting ? 'border-danger bg-danger/20' : ''}">
@@ -322,7 +328,7 @@
           {/if}
         </div>
         <span class="text-[11px] font-medium {showOnlyWaiting ? 'text-danger' : 'text-[var(--text-muted)]'}">
-          Waiting on me
+          {t("sidebar.filterWaiting")}
         </span>
       </button>
     {/if}
@@ -333,15 +339,21 @@
     {#each filteredBots as bot (bot.id)}
       {@const isSelected = selectedBotId === bot.id}
       {@const statusTheme = getStatusTheme(bot.status)}
+      {@const activity = fleetActivity.get(bot.id)}
       <div class="relative group/item">
+        {#if isSelected}
+          <span class="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[3px] rounded-full bg-[var(--rail-selected)] z-10"></span>
+        {/if}
         <button
           type="button"
           class={cn(
-            "w-full text-left px-2.5 py-2 min-h-[54px] rounded-xl border transition-all duration-150 flex items-center gap-3 cursor-pointer focus:outline-none",
+            "w-full text-left px-2.5 py-2 min-h-[54px] rounded-xl flex items-center gap-3 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60",
             isSelected
-              ? "theme-selected text-[var(--text-primary)]"
-              : "border-transparent bg-transparent hover:bg-[var(--surface-2)] hover:border-[var(--hairline)] text-[var(--text-secondary)]"
+              ? "bg-[var(--surface-1)] text-[var(--text-primary)]"
+              : "bg-transparent hover:bg-[var(--surface-1)] text-[var(--text-secondary)]"
           )}
+          style="transition-duration: var(--duration-hover)"
+          aria-current={isSelected ? "true" : undefined}
           onclick={() => selectBot(bot.id)}
         >
           <!-- Avatar Container -->
@@ -355,11 +367,17 @@
               />
             </div>
 
-            <!-- Status Dot Badge -->
+            <!-- Status Dot Badge — live fleet activity overrides stored status -->
             <div
               class={cn(
                 "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-1)]",
-                statusTheme.bg
+                activity === "working"
+                  ? "bg-[var(--brand)] animate-pulse"
+                  : activity === "attention"
+                    ? "bg-[var(--warning-text)] animate-pulse"
+                    : activity === "responded"
+                      ? "bg-[var(--success-text)]"
+                      : statusTheme.bg
               )}
             ></div>
           </div>
@@ -367,7 +385,12 @@
           <!-- Name & Status -->
           <div class="flex-1 min-w-0">
             <div class="flex items-center justify-between gap-1.5">
-              <span class="font-medium text-[13px] text-[var(--text-primary)] truncate">{bot.name}</span>
+              <span class="flex items-center gap-1.5 min-w-0">
+                <span class="font-semibold text-[13px] text-[var(--text-primary)] truncate">{bot.name}</span>
+                {#if bot.specialty}
+                  <span class="text-[10px] px-1.5 py-px rounded shrink-0 bg-[var(--surface-3)] text-[var(--text-muted)] truncate max-w-[96px]">{bot.specialty}</span>
+                {/if}
+              </span>
               <span class="flex items-center gap-1 shrink-0">
                 {#if contacts[bot.id]?.pinned}
                   <Pin class="size-3 text-[var(--brand-text)]" />
@@ -377,16 +400,22 @@
                 {/if}
                 {#if (unread[bot.id] ?? 0) > 0}
                   <span
-                    class="min-w-4 h-4 px-1 rounded-full bg-[var(--brand)] text-white text-[9px] font-semibold flex items-center justify-center"
-                    title={`${unread[bot.id]} unread`}
+                    class="min-w-4 h-4 px-1 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] text-[9px] font-semibold flex items-center justify-center"
+                    title={t("sidebar.unread", { n: unread[bot.id] })}
                   >
                     {(unread[bot.id] ?? 0) > 99 ? "99+" : unread[bot.id]}
                   </span>
                 {/if}
               </span>
             </div>
-            <span class="text-[11px] text-[var(--text-muted)] truncate block mt-0.5">
-              {statusTheme.label}
+            <span class="text-[12.5px] truncate block mt-px {activity === 'attention' ? 'text-[var(--warning-text)]' : activity === 'working' ? 'text-[var(--brand-text)]' : 'text-[var(--text-muted)]'}">
+              {activity === "working"
+                ? t("fleet.working")
+                : activity === "attention"
+                  ? t("fleet.attention")
+                  : activity === "responded"
+                    ? t("fleet.replied")
+                    : statusTheme.label}
             </span>
           </div>
         </button>
@@ -395,11 +424,14 @@
         <button
           type="button"
           class="absolute right-2 top-2 size-6 rounded-md bg-[var(--surface-2)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] opacity-0 group-hover/item:opacity-100 transition-opacity flex items-center justify-center border border-[var(--hairline)] cursor-pointer"
+          aria-label={t("sidebar.agentOptions")}
+          aria-haspopup="true"
+          aria-expanded={activeActionMenuBotId === bot.id}
           onclick={(e) => {
             e.stopPropagation();
             activeActionMenuBotId = activeActionMenuBotId === bot.id ? null : bot.id;
           }}
-          title="Agent options"
+          title={t("sidebar.agentOptions")}
         >
           <MoreVertical class="size-3.5" />
         </button>
@@ -422,7 +454,7 @@
               }}
             >
               <Sliders class="size-3.5 text-[var(--text-tertiary)]" />
-              Settings
+              {t("sidebar.settings")}
             </button>
             <button
               type="button"
@@ -434,7 +466,7 @@
               }}
             >
               <Wrench class="size-3.5 text-[var(--text-tertiary)]" />
-              Skills
+              {t("sidebar.skills")}
             </button>
             <button
               type="button"
@@ -446,19 +478,19 @@
               }}
             >
               <Layers class="size-3.5 text-[var(--brand-text)]" />
-              Connectors Hub
+              {t("sidebar.connectorsHub")}
             </button>
             <button
               type="button"
               class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[var(--brand-text)] hover:bg-[var(--brand-soft)] text-left transition-colors cursor-pointer"
               onclick={() => {
-                selectedBotForMcp = bot;
-                showMcpManager = true;
+                onSelectBot(bot.id);
+                window.dispatchEvent(new CustomEvent("open-connectors", { detail: { botId: bot.id } }));
                 activeActionMenuBotId = null;
               }}
             >
               <Server class="size-3.5 text-[var(--brand-text)]" />
-              MCP Tools
+              {t("sidebar.mcpTools")}
             </button>
             <button
               type="button"
@@ -469,7 +501,7 @@
               }}
             >
               <Pin class="size-3.5 text-[var(--brand-text)]" />
-              {contacts[bot.id]?.pinned ? "Unpin" : "Pin to top"}
+              {contacts[bot.id]?.pinned ? t("sidebar.unpin") : t("sidebar.pin")}
             </button>
             <button
               type="button"
@@ -480,7 +512,7 @@
               }}
             >
               <MailOpen class="size-3.5 text-[var(--text-tertiary)]" />
-              Mark as read
+              {t("sidebar.markRead")}
             </button>
             <button
               type="button"
@@ -491,7 +523,7 @@
               }}
             >
               <Copy class="size-3.5 text-[var(--text-tertiary)]" />
-              Duplicate agent
+              {t("sidebar.duplicate")}
             </button>
             <button
               type="button"
@@ -503,10 +535,10 @@
             >
               {#if contacts[bot.id]?.hidden}
                 <Eye class="size-3.5 text-[var(--text-tertiary)]" />
-                Unhide
+                {t("sidebar.unhide")}
               {:else}
                 <EyeOff class="size-3.5 text-[var(--text-tertiary)]" />
-                Hide from list
+                {t("sidebar.hide")}
               {/if}
             </button>
             <button
@@ -519,7 +551,7 @@
               }}
             >
               <Trash2 class="size-3.5" />
-              Delete
+              {t("sidebar.remove")}
             </button>
           </div>
         {/if}
@@ -527,7 +559,7 @@
     {:else}
       <div class="py-12 px-3 text-center text-[var(--text-muted)]">
         <Bot class="size-8 mx-auto mb-2 opacity-30 text-[var(--text-tertiary)]" />
-        <p class="text-xs">No agents found</p>
+        <p class="text-xs">{t("sidebar.noBots")}</p>
       </div>
     {/each}
   </div>
@@ -541,7 +573,7 @@
     >
       <div class="flex items-center gap-2">
         <Pause class="size-3.5 fill-current text-[var(--text-tertiary)]" />
-        <span>Pause Fleet</span>
+        <span>{t("sidebar.pauseAll")}</span>
       </div>
       <span class="font-mono text-[10px] text-[var(--text-muted)] bg-[var(--surface-3)] px-1.5 py-0.5 rounded">⌘P</span>
     </button>
@@ -556,10 +588,10 @@
       <Dialog.Header class="gap-1">
         <Dialog.Title class="text-base font-semibold flex items-center gap-2 text-[var(--text-primary)]">
           <Bot class="size-5 text-[var(--brand-text)]" />
-          Provision New Fleet Agent
+          {t("sidebar.createBot")}
         </Dialog.Title>
         <Dialog.Description class="text-xs text-[var(--text-muted)]">
-          Configure agent identity, mission, and customizable DiceBear look.
+          {t("sidebar.provisionDesc")}
         </Dialog.Description>
       </Dialog.Header>
 
@@ -573,7 +605,7 @@
           onclick={() => (createModalTab = "profile")}
         >
           <UserCheck class="size-3.5" />
-          <span>Agent Details</span>
+          <span>{t("sidebar.agentDetails")}</span>
         </button>
 
         <button
@@ -584,7 +616,7 @@
           onclick={() => (createModalTab = "avatar")}
         >
           <Palette class="size-3.5" />
-          <span>Choose Avatar ({newBotAvatarStyle})</span>
+          <span>{t("sidebar.chooseAvatar", { style: newBotAvatarStyle })}</span>
         </button>
       </div>
     </div>
@@ -605,10 +637,10 @@
               </div>
               <div class="flex flex-col">
                 <span class="text-sm font-medium text-[var(--text-primary)]">
-                  {newBotName || "New Agent"}
+                  {newBotName || t("sidebar.newAgent")}
                 </span>
                 <span class="text-xs text-[var(--brand-text)] capitalize font-mono mt-0.5">
-                  Style: {newBotAvatarStyle}
+                  {t("sidebar.styleLabel", { style: newBotAvatarStyle })}
                 </span>
               </div>
             </div>
@@ -621,19 +653,19 @@
               onclick={() => (createModalTab = "avatar")}
             >
               <Palette class="size-3.5 text-[var(--brand-text)]" />
-              Customize
+              {t("sidebar.customize")}
             </Button>
           </div>
 
           <div class="space-y-1.5">
             <Label for="new-bot-name" class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              Agent Name
+              {t("sidebar.agentName")}
             </Label>
             <Input
               id="new-bot-name"
               type="text"
               bind:value={newBotName}
-              placeholder="e.g. Bro, Chief of Staff, Architect, Sentinel..."
+              placeholder={t("sidebar.agentNamePh")}
               class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-primary)]"
               required
             />
@@ -641,12 +673,12 @@
 
           <div class="space-y-1.5">
             <Label for="new-bot-desc" class="text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              Specialization & Mission
+              {t("sidebar.mission")}
             </Label>
             <Textarea
               id="new-bot-desc"
               bind:value={newBotDescription}
-              placeholder="What tasks, workflows, or roles does this agent handle?"
+              placeholder={t("sidebar.missionPh")}
               rows={3}
               class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] resize-none"
             />
@@ -671,7 +703,7 @@
       <!-- Always Fixed Pinned Footer (Never gets pushed out of view) -->
       <div class="px-6 py-3.5 border-t border-[var(--hairline)] bg-[var(--surface-1)] flex items-center justify-end gap-2 shrink-0">
         <Button variant="outline" size="sm" type="button" onclick={() => (showCreateModal = false)}>
-          Cancel
+          {t("ui.cancel")}
         </Button>
         <Button
           size="sm"
@@ -680,7 +712,7 @@
           disabled={!newBotName.trim() || isCreating}
         >
           <Plus class="size-3.5" />
-          {isCreating ? "Provisioning..." : "Create Agent"}
+          {isCreating ? t("sidebar.creating") : t("sidebar.createAgent")}
         </Button>
       </div>
     </form>
@@ -720,20 +752,6 @@
         }
         showSkillManager = false;
         selectedBotForSkills = null;
-      }}
-    />
-  {/await}
-{/if}
-
-<!-- MCP Manager Modal -->
-{#if showMcpManager && selectedBotForMcp}
-  {#await import("$lib/components/McpManager.svelte") then McpManager}
-    <McpManager.default
-      bot={selectedBotForMcp}
-      open={showMcpManager}
-      onClose={() => {
-        showMcpManager = false;
-        selectedBotForMcp = null;
       }}
     />
   {/await}

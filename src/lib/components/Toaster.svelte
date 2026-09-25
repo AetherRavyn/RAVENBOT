@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { dismissToast, subscribeToasts, type Toast } from "$lib/toast";
+  import { t } from "$lib/i18n";
   import { CheckCircle2, AlertTriangle, Info, X } from "@lucide/svelte";
 
   let toasts = $state<Toast[]>([]);
@@ -32,7 +33,7 @@
         type="button"
         class="size-5 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] cursor-pointer shrink-0"
         onclick={() => dismissToast(toast.id)}
-        aria-label="Dismiss"
+        aria-label={t("ui.dismiss")}
       >
         <X class="size-3" />
       </button>
