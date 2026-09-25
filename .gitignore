@@ -41,3 +41,7 @@ Thumbs.db
 # Tauri generated
 src-tauri/gen/
 .svelte-kit/
+
+# Agent tool local settings
+.qoder/
+.commandcode/
