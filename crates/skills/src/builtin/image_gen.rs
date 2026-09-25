@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 use ravenbot_core::Permission;
 
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct ImageGenSkill {
     client: reqwest::Client,
@@ -68,6 +68,8 @@ impl Skill for ImageGenSkill {
             "required": ["prompt"]
         })
     }
+
+    fn risk(&self) -> SkillRisk { SkillRisk::Low }
 
     async fn execute(
         &self,

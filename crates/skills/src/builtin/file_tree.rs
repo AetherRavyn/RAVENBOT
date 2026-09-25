@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct FileTreeSkill;
 
@@ -16,10 +16,13 @@ impl Skill for FileTreeSkill {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Root path, default ."},"depth":{"type":"integer","minimum":1,"maximum":5}},"required":[]})
     }
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+
+    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+        let raw = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let path = ctx.resolve_path(raw)?.to_string_lossy().to_string();
         let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
-        let out = tokio::process::Command::new("sh").args(["-c", &format!("find {} -maxdepth {} -type f -o -type d | head -n 200 2>&1", shell_escape(path), depth)]).output().await.map_err(|e| SkillError::Io(e.to_string()))?;
+        let out = tokio::process::Command::new("sh").args(["-c", &format!("find {} -maxdepth {} -type f -o -type d | head -n 200 2>&1", shell_escape(&path), depth)]).output().await.map_err(|e| SkillError::Io(e.to_string()))?;
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         Ok(SkillResult::success(serde_json::json!({"path": path, "tree": stdout.lines().collect::<Vec<_>>()})))
     }

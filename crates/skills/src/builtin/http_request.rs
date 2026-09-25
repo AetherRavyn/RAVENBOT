@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct HttpRequestSkill { client: reqwest::Client }
 impl HttpRequestSkill { pub fn new() -> Self { Self { client: reqwest::Client::new() } } }
@@ -20,6 +20,8 @@ impl Skill for HttpRequestSkill {
             "body":{"type":"object"}
         },"required":["method","url"]})
     }
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+
     async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let method = args.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
         let url = args.get("url").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing url".into()))?;

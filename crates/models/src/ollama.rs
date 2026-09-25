@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
+use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming, ToolCall};
 
 const BASE_URL: &str = "http://localhost:11434";
 
@@ -27,6 +27,27 @@ struct ChatMessage {
     /// Ollama native vision: base64 images ride directly on the message
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     images: Vec<String>,
+    /// Assistant tool calls (Ollama native function calling)
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    tool_calls: Option<Vec<OllamaToolCall>>,
+    /// For role == "tool": which function produced the result
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    tool_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OllamaToolCall {
+    #[serde(default)]
+    id: Option<String>,
+    function: OllamaFunctionCall,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct OllamaFunctionCall {
+    name: String,
+    /// Ollama accepts arguments as a JSON object (and historically a string)
+    #[serde(default)]
+    arguments: serde_json::Value,
 }
 
 #[derive(Debug, Serialize)]
@@ -57,7 +78,10 @@ struct ChatResponse {
 struct ResponseMessage {
     #[allow(dead_code)]
     role: String,
+    #[serde(default)]
     content: String,
+    #[serde(default)]
+    tool_calls: Vec<OllamaToolCall>,
 }
 
 pub struct OllamaProvider {
@@ -102,16 +126,6 @@ impl OllamaProvider {
             },
         };
 
-        let chat_messages: Vec<ChatMessage> = messages
-            .iter()
-            .filter(|m| m.role != "system")
-            .map(|m| ChatMessage {
-                role: m.role.clone(),
-                content: m.content.clone(),
-                images: Vec::new(),
-            })
-            .collect();
-
         let system = messages
             .iter()
             .find(|m| m.role == "system")
@@ -123,20 +137,51 @@ impl OllamaProvider {
                 role: "system".to_string(),
                 content: sys.clone(),
                 images: Vec::new(),
+                tool_calls: None,
+                tool_name: None,
             });
         }
-        // Ollama native vision: base64 payload rides directly on the message
-        let chat_messages: Vec<ChatMessage> = chat_messages
-            .into_iter()
-            .zip(messages.iter().filter(|m| m.role != "system"))
-            .map(|(mut msg, m)| {
-                for img in &m.images {
-                    msg.images.push(img.data.clone());
-                }
-                msg
-            })
-            .collect();
-        full_messages.extend(chat_messages);
+
+        for m in messages.iter().filter(|m| m.role != "system") {
+            // Tool result: Ollama keys it by tool_name on a "tool" role message.
+            if m.role == "tool" {
+                full_messages.push(ChatMessage {
+                    role: "tool".to_string(),
+                    content: m.content.clone(),
+                    images: Vec::new(),
+                    tool_calls: None,
+                    tool_name: m.name.clone(),
+                });
+                continue;
+            }
+
+            // Assistant tool calls round-trip natively.
+            let tool_calls = if m.has_tool_calls() {
+                Some(
+                    m.tool_calls
+                        .iter()
+                        .map(|tc| OllamaToolCall {
+                            id: Some(tc.id.clone()),
+                            function: OllamaFunctionCall {
+                                name: tc.name.clone(),
+                                arguments: tc.arguments.clone(),
+                            },
+                        })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+
+            full_messages.push(ChatMessage {
+                role: m.role.clone(),
+                content: m.content.clone(),
+                // Ollama native vision: base64 payload rides directly on the message
+                images: m.images.iter().map(|img| img.data.clone()).collect(),
+                tool_calls,
+                tool_name: None,
+            });
+        }
 
         let tools_param = if tools.is_empty() {
             None
@@ -185,11 +230,46 @@ impl OllamaProvider {
             // Streaming path: Ollama streams NDJSON (one JSON object per line),
             // which consume_sse handles since bare lines are treated as payloads.
             let mut acc = StreamAccumulator::new();
+            let mut tool_index = 0usize;
             streaming::consume_sse(response, |json| {
                 if let Some(text) = json.pointer("/message/content").and_then(|v| v.as_str()) {
                     if !text.is_empty() {
                         acc.push_text(text);
                         on_delta(text);
+                    }
+                }
+                // Ollama delivers complete tool calls (arguments already an
+                // object) — previously these were dropped, so local bots
+                // could never call tools.
+                if let Some(calls) = json
+                    .pointer("/message/tool_calls")
+                    .and_then(|v| v.as_array())
+                {
+                    for call in calls {
+                        let name = call
+                            .pointer("/function/name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let args = normalize_ollama_arguments(
+                            call.pointer("/function/arguments")
+                                .cloned()
+                                .unwrap_or_else(|| serde_json::json!({})),
+                        );
+                        let provided_id = call.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let id = if provided_id.is_empty() {
+                            format!("call_{}", tool_index)
+                        } else {
+                            provided_id.to_string()
+                        };
+                        acc.push_tool_use_start(tool_index, &id, name);
+                        acc.push_tool_json_delta(
+                            tool_index,
+                            &serde_json::to_string(&args).unwrap_or_else(|_| "{}".to_string()),
+                        );
+                        tool_index += 1;
                     }
                 }
                 let input = json.get("prompt_eval_count").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -207,12 +287,33 @@ impl OllamaProvider {
 
             let content = chat_response
                 .message
-                .map(|m| m.content)
+                .as_ref()
+                .map(|m| m.content.clone())
+                .unwrap_or_default();
+
+            let tool_calls = chat_response
+                .message
+                .as_ref()
+                .map(|m| {
+                    m.tool_calls
+                        .iter()
+                        .enumerate()
+                        .map(|(i, tc)| ToolCall {
+                            name: tc.function.name.clone(),
+                            arguments: normalize_ollama_arguments(tc.function.arguments.clone()),
+                            id: tc
+                                .id
+                                .clone()
+                                .filter(|s| !s.is_empty())
+                                .unwrap_or_else(|| format!("call_{}", i)),
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
 
             Ok(ModelResponse {
                 content: if content.is_empty() { None } else { Some(content) },
-                tool_calls: Vec::new(),
+                tool_calls,
                 usage: Usage {
                     input_tokens: chat_response.prompt_eval_count,
                     output_tokens: chat_response.eval_count,
@@ -220,6 +321,17 @@ impl OllamaProvider {
                 reasoning: None,
             })
         }
+    }
+}
+
+/// Ollama returns tool arguments as a JSON object, but some versions/models
+/// emit them as a JSON string — normalize both to a `Value`.
+fn normalize_ollama_arguments(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(s) => {
+            serde_json::from_str(&s).unwrap_or(serde_json::Value::String(s))
+        }
+        other => other,
     }
 }
 

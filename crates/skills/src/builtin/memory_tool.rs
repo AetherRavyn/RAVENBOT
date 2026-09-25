@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct MemorySaveSkill;
 impl MemorySaveSkill { pub fn new() -> Self { Self } }
@@ -16,6 +16,7 @@ impl Skill for MemorySaveSkill {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"content":{"type":"string"},"importance":{"type":"number","minimum":0,"maximum":1}},"required":["content"]})
     }
+    fn risk(&self) -> SkillRisk { SkillRisk::Low }
     async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let content = args.get("content").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing content".into()))?;
         let importance = args.get("importance").and_then(|v| v.as_f64()).unwrap_or(0.7) as f32;
@@ -38,6 +39,7 @@ impl Skill for MemoryRecallSkill {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"limit":{"type":"integer","minimum":1,"maximum":10}},"required":["query"]})
     }
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
     async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing query".into()))?;
         Ok(SkillResult::success(serde_json::json!({"query": query, "memories": [], "note": "In prod queries sqlite-vec; stub returns empty but tool is native", "bot_id": ctx.bot_id.to_string()})))

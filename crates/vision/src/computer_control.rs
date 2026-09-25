@@ -1,5 +1,6 @@
 //! Computer control through vision-guided actions
 
+use crate::input::{Button, InputInjector};
 use crate::screenshot::{Screenshot, ScreenshotCapture};
 use crate::image_analysis::{ImageAnalyzer, AnalysisResult};
 use serde::{Deserialize, Serialize};
@@ -56,6 +57,7 @@ pub struct ActionResult {
 pub struct ComputerController {
     screenshot_capture: ScreenshotCapture,
     image_analyzer: ImageAnalyzer,
+    input: InputInjector,
     /// Whether to capture screenshot after each action
     capture_after_action: bool,
     /// Maximum actions per task
@@ -67,8 +69,39 @@ impl ComputerController {
         Self {
             screenshot_capture: ScreenshotCapture::new(),
             image_analyzer: ImageAnalyzer::new(),
+            input: InputInjector::detect(),
             capture_after_action: true,
             max_actions: 50,
+        }
+    }
+
+    /// Whether real input injection is available on this machine.
+    pub fn input_available(&self) -> bool {
+        self.input.is_available()
+    }
+
+    /// Human-readable summary of the detected input backend.
+    pub fn input_backend(&self) -> String {
+        self.input.backend_summary()
+    }
+
+    /// The argv plan this action would run, without running it.
+    pub fn input_plan(&self, action: &ComputerAction) -> Option<String> {
+        self.input.describe_plan(action)
+    }
+
+    /// Capture a screenshot after a mutating action, if enabled and possible.
+    /// A failed capture never fails the action itself.
+    async fn after_shot(&self) -> Option<Screenshot> {
+        if !self.capture_after_action {
+            return None;
+        }
+        match self.screenshot_capture.capture().await {
+            Ok(shot) => Some(shot),
+            Err(e) => {
+                tracing::debug!(error = %e, "post-action screenshot unavailable");
+                None
+            }
         }
     }
 
@@ -110,70 +143,72 @@ impl ComputerController {
         }
     }
 
+    fn map_button(&self, button: &MouseButton) -> Button {
+        match button {
+            MouseButton::Left => Button::Left,
+            MouseButton::Middle => Button::Middle,
+            MouseButton::Right => Button::Right,
+        }
+    }
+
     /// Perform a click action
     async fn perform_click(&self, x: f32, y: f32, button: &MouseButton) -> Result<ActionResult, ControlError> {
-        // In production, use platform-specific APIs
-        // - macOS: CGEvent
-        // - Windows: SendInput
-        // - Linux: xdotool
-        
-        tracing::info!(x = x, y = y, button = ?button, "Click performed");
-        
-        let screenshot_after = if self.capture_after_action {
-            Some(self.screenshot_capture.capture().await
-                .map_err(|e| ControlError::ScreenshotFailed(e.to_string()))?)
-        } else {
-            None
-        };
-
+        self.input
+            .click(x, y, self.map_button(button))
+            .await
+            .map_err(ControlError::ActionFailed)?;
+        tracing::info!(x, y, ?button, "Click performed");
         Ok(ActionResult {
             success: true,
             message: format!("Clicked at ({}, {}) with {:?}", x, y, button),
-            screenshot_after,
+            screenshot_after: self.after_shot().await,
         })
     }
 
     /// Perform text typing
     async fn perform_type_text(&self, text: &str) -> Result<ActionResult, ControlError> {
-        tracing::info!(text = %text, "Typing text");
-        
+        self.input.type_text(text).await.map_err(ControlError::ActionFailed)?;
+        tracing::info!(len = text.len(), "Typed text");
         Ok(ActionResult {
             success: true,
-            message: format!("Typed: {}", text),
-            screenshot_after: None,
+            message: format!("Typed {} character(s)", text.chars().count()),
+            screenshot_after: self.after_shot().await,
         })
     }
 
     /// Perform key press
     async fn perform_key_press(&self, key: &str) -> Result<ActionResult, ControlError> {
-        tracing::info!(key = %key, "Pressing key");
-        
+        self.input.press_key(key).await.map_err(ControlError::ActionFailed)?;
+        tracing::info!(key, "Pressed key");
         Ok(ActionResult {
             success: true,
             message: format!("Pressed key: {}", key),
-            screenshot_after: None,
+            screenshot_after: self.after_shot().await,
         })
     }
 
     /// Perform scroll
     async fn perform_scroll(&self, x: f32, y: f32, delta_x: i32, delta_y: i32) -> Result<ActionResult, ControlError> {
-        tracing::info!(x = x, y = y, delta_x = delta_x, delta_y = delta_y, "Scrolling");
-        
+        self.input
+            .scroll(x, y, delta_x, delta_y)
+            .await
+            .map_err(ControlError::ActionFailed)?;
+        tracing::info!(x, y, delta_x, delta_y, "Scrolled");
         Ok(ActionResult {
             success: true,
             message: format!("Scrolled at ({}, {}) by ({}, {})", x, y, delta_x, delta_y),
-            screenshot_after: None,
+            screenshot_after: self.after_shot().await,
         })
     }
 
     /// Perform mouse move
     async fn perform_move_mouse(&self, x: f32, y: f32) -> Result<ActionResult, ControlError> {
-        tracing::info!(x = x, y = y, "Moving mouse");
-        
+        self.input.move_mouse(x, y).await.map_err(ControlError::ActionFailed)?;
+        tracing::info!(x, y, "Moved mouse");
         Ok(ActionResult {
             success: true,
             message: format!("Moved mouse to ({}, {})", x, y),
-            screenshot_after: None,
+            screenshot_after: self.after_shot().await,
         })
     }
 

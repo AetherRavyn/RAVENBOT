@@ -4,15 +4,24 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Message role in the conversation
+///
+/// The wire format is lowercase (`"user"`, `"assistant"`, …), matching the
+/// TypeScript `MessageRole` and optimistic browser messages. Capitalized
+/// aliases preserve compatibility with previously emitted payloads.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
 pub enum MessageRole {
     /// User message
+    #[serde(alias = "User")]
     User,
     /// Assistant (bot) message
+    #[serde(alias = "Assistant")]
     Assistant,
     /// System message
+    #[serde(alias = "System")]
     System,
     /// Tool call or result
+    #[serde(alias = "Tool")]
     Tool,
 }
 
@@ -80,6 +89,18 @@ pub struct Message {
     pub content: MessageContent,
     /// Attachments
     pub attachments: Vec<Attachment>,
+    /// Which bot spoke (None = human user / system). In office group threads
+    /// this is the ONLY way to tell agents apart — the role is "assistant"
+    /// for all of them, so the UI renders avatar+name from this field.
+    #[serde(default)]
+    pub sender_bot_id: Option<Uuid>,
+    /// Human label for the sender ("You", or the bot's name/rank at send
+    /// time). Denormalized so history survives renames/deletes.
+    #[serde(default)]
+    pub sender_name: Option<String>,
+    /// Which message this replies to (office agent-to-agent discussion).
+    #[serde(default)]
+    pub reply_to_id: Option<Uuid>,
     /// Timestamp
     pub created_at: DateTime<Utc>,
 }
@@ -134,6 +155,9 @@ impl Message {
             role: MessageRole::User,
             content: MessageContent::Text { text: text.into(), sources: Vec::new() },
             attachments: Vec::new(),
+            sender_bot_id: None,
+            sender_name: Some("You".to_string()),
+            reply_to_id: None,
             created_at: Utc::now(),
         }
     }
@@ -146,8 +170,24 @@ impl Message {
             role: MessageRole::Assistant,
             content: MessageContent::Text { text: text.into(), sources: Vec::new() },
             attachments: Vec::new(),
+            sender_bot_id: None,
+            sender_name: None,
+            reply_to_id: None,
             created_at: Utc::now(),
         }
+    }
+
+    /// Create a new assistant message spoken by a specific bot (office rooms).
+    pub fn assistant_from_bot(
+        thread_id: Uuid,
+        bot_id: Uuid,
+        bot_name: impl Into<String>,
+        text: impl Into<String>,
+    ) -> Self {
+        let mut msg = Self::assistant(thread_id, text);
+        msg.sender_bot_id = Some(bot_id);
+        msg.sender_name = Some(bot_name.into());
+        msg
     }
 
     /// Create a new assistant message with web sources/citations
@@ -158,6 +198,9 @@ impl Message {
             role: MessageRole::Assistant,
             content: MessageContent::Text { text: text.into(), sources },
             attachments: Vec::new(),
+            sender_bot_id: None,
+            sender_name: None,
+            reply_to_id: None,
             created_at: Utc::now(),
         }
     }
@@ -173,7 +216,49 @@ impl Message {
                 items,
             },
             attachments: Vec::new(),
+            sender_bot_id: None,
+            sender_name: None,
+            reply_to_id: None,
             created_at: Utc::now(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    #[test]
+    fn message_roles_round_trip_as_frontend_lowercase_values() {
+        let user = Message::user(Uuid::new_v4(), "hi");
+        let assistant = Message::assistant(Uuid::new_v4(), "hello");
+
+        assert_eq!(
+            serde_json::to_value(&user.role).expect("serialize user role"),
+            Value::String("user".to_string())
+        );
+        assert_eq!(
+            serde_json::to_value(&assistant.role).expect("serialize assistant role"),
+            Value::String("assistant".to_string())
+        );
+        assert_eq!(
+            serde_json::from_value::<Message>(serde_json::to_value(&user).expect("serialize user"))
+                .expect("deserialize user")
+                .role,
+            MessageRole::User
+        );
+    }
+
+    #[test]
+    fn message_role_accepts_legacy_capitalized_values() {
+        assert_eq!(
+            serde_json::from_value::<MessageRole>(json!("User")).expect("deserialize User"),
+            MessageRole::User
+        );
+        assert_eq!(
+            serde_json::from_value::<MessageRole>(json!("Assistant")).expect("deserialize Assistant"),
+            MessageRole::Assistant
+        );
     }
 }

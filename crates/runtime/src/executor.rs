@@ -15,12 +15,21 @@ use uuid::Uuid;
 pub struct GraphExecutor {
     runtime: Arc<Runtime>,
     db: Database,
+    /// Project folders every node in this graph works in (JSON array). Stamped
+    /// onto each node thread so the runtime confines tool work correctly.
+    working_dirs: Vec<String>,
 }
 
 impl GraphExecutor {
     /// Create a new executor
     pub fn new(runtime: Arc<Runtime>, db: Database) -> Self {
-        Self { runtime, db }
+        Self { runtime, db, working_dirs: Vec::new() }
+    }
+
+    /// Set the project folders every node thread inherits.
+    pub fn with_working_dirs(mut self, dirs: Vec<String>) -> Self {
+        self.working_dirs = dirs;
+        self
     }
 
     /// Execute a task graph, running ready tasks in parallel
@@ -33,25 +42,38 @@ impl GraphExecutor {
         loop {
             // Get ready nodes
             let ready_nodes = {
-                let g = graph.lock().await;
+                let mut g = graph.lock().await;
+                // Cascade skips first so a failed branch can't strand dependents.
+                let skipped = g.propagate_skips();
+                if skipped > 0 {
+                    tracing::info!(skipped, "Skipped nodes with failed dependencies");
+                }
                 let ready = g.ready_nodes();
-                
+
                 if ready.is_empty() {
                     if g.is_complete() {
                         tracing::info!("Graph execution complete");
                         break;
                     }
                     if g.has_deadlock() {
-                        return Err("Deadlock detected in task graph".to_string());
+                        return Err(format!(
+                            "Deadlock detected in task graph (states: {:?})",
+                            g.state_counts()
+                        ));
                     }
                     // Wait for running tasks to complete
                     drop(g);
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     continue;
                 }
-                
+
                 ready.into_iter()
-                    .map(|n| (n.id, n.bot_id, n.instruction.clone(), n.input.clone()))
+                    .map(|n| {
+                        // Prefer live dependency outputs (real DAG data flow) over
+                        // any input captured when the node was created.
+                        let input = g.input_for(n.id).or_else(|| n.input.clone());
+                        (n.id, n.bot_id, n.instruction.clone(), input)
+                    })
                     .collect::<Vec<_>>()
             };
 
@@ -64,8 +86,9 @@ impl GraphExecutor {
                 let runtime = self.runtime.clone();
                 let db = self.db.clone();
                 
+                let working_dirs = self.working_dirs.clone();
                 let handle = tokio::spawn(async move {
-                    Self::execute_node(graph, runtime, db, node_id, bot_id, instruction, input).await
+                    Self::execute_node(graph, runtime, db, node_id, bot_id, instruction, input, working_dirs).await
                 });
                 handles.push(handle);
             }
@@ -92,6 +115,7 @@ impl GraphExecutor {
         bot_id: Uuid,
         instruction: String,
         input: Option<String>,
+        working_dirs: Vec<String>,
     ) -> Result<(), String> {
         // Mark as running
         {
@@ -119,6 +143,15 @@ impl GraphExecutor {
         ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
             .await
             .map_err(|e| e.to_string())?;
+        // Remember which project folders this node may work in.
+        if !working_dirs.is_empty() {
+            let json = serde_json::to_string(&working_dirs).unwrap_or_else(|_| "[]".to_string());
+            let _ = sqlx::query("UPDATE threads SET project_folders = ? WHERE id = ?")
+                .bind(json)
+                .bind(thread.id.to_string())
+                .execute(db.pool())
+                .await;
+        }
 
         // Add input as user message if provided
         if let Some(input) = &input {
@@ -142,8 +175,33 @@ impl GraphExecutor {
             .await
             .map_err(|e| e.to_string())?;
 
-        // Execute the run
-        let result = runtime.execute_run(&mut run).await;
+        // No UI watches graph nodes: auto-allow gates (audited) for THIS run
+        // only. A global flag would race across the parallel nodes.
+        runtime.allow_approvals_for_run(run.id, true);
+        // Bound each node so a stuck provider (hung HTTP call, retry storm)
+        // can never hang the whole office indefinitely.
+        let node_timeout_secs = std::env::var("RAVENBOT_NODE_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(300);
+        let result = match tokio::time::timeout(
+            tokio::time::Duration::from_secs(node_timeout_secs),
+            runtime.execute_run(&mut run),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                runtime.request_cancel(run.id);
+                let _ = runtime.cancel_run(&mut run).await;
+                Err(crate::RuntimeError::TaskFailed(format!(
+                    "node timed out after {}s (set RAVENBOT_NODE_TIMEOUT_SECS to change)",
+                    node_timeout_secs
+                )))
+            }
+        };
+        runtime.allow_approvals_for_run(run.id, false);
         
         // Get the response
         let messages = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)

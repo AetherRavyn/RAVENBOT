@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct CodeSearchSkill;
 
@@ -27,18 +27,21 @@ impl Skill for CodeSearchSkill {
             },"required":["pattern"]
         })
     }
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+
+    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let pattern = args.get("pattern").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing pattern".into()))?;
-        let root = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let raw_root = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
+        let root = ctx.resolve_path(raw_root)?.to_string_lossy().to_string();
         let globs = args.get("globs").and_then(|v| v.as_str()).unwrap_or("");
         let max = args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
         // Use shell grep -r for simplicity (offline, no extra deps)
         let mut cmd = tokio::process::Command::new("sh");
         let grep = if globs.is_empty() {
-            format!("grep -rn -- -- {} {} 2>/dev/null | head -n {}", shell_escape(pattern), shell_escape(root), max)
+            format!("grep -rn -- -- {} {} 2>/dev/null | head -n {}", shell_escape(pattern), shell_escape(&root), max)
         } else {
-            format!("grep -rn --include='{}' -- -- {} {} 2>/dev/null | head -n {}", globs, shell_escape(pattern), shell_escape(root), max)
+            format!("grep -rn --include='{}' -- -- {} {} 2>/dev/null | head -n {}", globs, shell_escape(pattern), shell_escape(&root), max)
         };
         cmd.args(["-c", &grep]);
         let out = cmd.output().await.map_err(|e| SkillError::Io(e.to_string()))?;

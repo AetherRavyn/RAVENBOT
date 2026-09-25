@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use tokio::sync::Mutex;
@@ -28,6 +28,8 @@ impl Skill for CalendarSkill {
             "id":{"type":"string"}
         },"required":["action"]})
     }
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+
     async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
         let key = ctx.bot_id.to_string();

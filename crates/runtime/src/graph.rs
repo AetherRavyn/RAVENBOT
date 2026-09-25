@@ -165,6 +165,68 @@ impl TaskGraph {
             })
     }
 
+    /// Whether any dependency of this node has failed or been skipped, which
+    /// means the node can never run and should be skipped itself.
+    fn has_failed_dependency(&self, node_id: NodeId) -> bool {
+        self.edges
+            .iter()
+            .filter(|(_, to)| *to == node_id)
+            .any(|(from, _)| {
+                self.nodes
+                    .get(from)
+                    .map(|node| matches!(node.state, NodeState::Failed(_) | NodeState::Skipped))
+                    .unwrap_or(false)
+            })
+    }
+
+    /// Cascade skips: any pending node whose dependency failed or was skipped
+    /// is marked `Skipped`. Returns how many nodes were skipped. This lets a
+    /// graph with a failed branch still reach completion instead of leaving
+    /// dependents pending forever.
+    pub fn propagate_skips(&mut self) -> usize {
+        let mut skipped = 0;
+        loop {
+            let to_skip: Vec<NodeId> = self
+                .nodes
+                .values()
+                .filter(|n| matches!(n.state, NodeState::Pending) && self.has_failed_dependency(n.id))
+                .map(|n| n.id)
+                .collect();
+            if to_skip.is_empty() {
+                break;
+            }
+            for id in to_skip {
+                if let Some(node) = self.nodes.get_mut(&id) {
+                    node.state = NodeState::Skipped;
+                    skipped += 1;
+                }
+            }
+        }
+        skipped
+    }
+
+    /// Build the input text for a node from its dependencies' outputs, so a
+    /// dependent task actually receives the upstream work. Returns `None` when
+    /// the node has no satisfied dependencies.
+    pub fn input_for(&self, node_id: NodeId) -> Option<String> {
+        let mut parts = Vec::new();
+        for (from, to) in &self.edges {
+            if *to != node_id {
+                continue;
+            }
+            if let Some(dep) = self.nodes.get(from) {
+                if let Some(output) = &dep.output {
+                    parts.push(format!("### {}\n{}", dep.instruction, output.trim()));
+                }
+            }
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join("\n\n"))
+        }
+    }
+
     /// Mark a node as running
     pub fn mark_running(&mut self, node_id: NodeId, run_id: Uuid) -> Result<(), String> {
         let node = self.nodes.get_mut(&node_id)
@@ -224,9 +286,13 @@ impl TaskGraph {
         })
     }
 
-    /// Check if there are any deadlocks (no ready nodes but not complete)
+    /// Check for a true deadlock: not complete, nothing ready, and nothing
+    /// running — i.e. pending nodes are permanently blocked (a cycle, or a
+    /// dependency that can never be satisfied). Previously this required a
+    /// *running* node, so a real deadlock reported `false` and the executor
+    /// spun forever.
     pub fn has_deadlock(&self) -> bool {
-        !self.is_complete() && self.ready_nodes().is_empty() && !self.running_nodes().is_empty()
+        !self.is_complete() && self.ready_nodes().is_empty() && self.running_nodes().is_empty()
     }
 
     /// Get the count of each state
@@ -293,6 +359,12 @@ impl TaskGraph {
     }
 
     /// Topological sort of nodes (Kahn's algorithm)
+    /// Node ids in dependency order (for posting room replies as a
+    /// readable conversation rather than completion order).
+    pub fn ordered_node_ids(&self) -> Vec<NodeId> {
+        self.topological_sort()
+    }
+
     fn topological_sort(&self) -> Vec<NodeId> {
         let mut in_degree: HashMap<NodeId, usize> = HashMap::new();
         let mut adjacency: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
@@ -441,6 +513,50 @@ mod tests {
         
         // Output should be in blackboard
         assert_eq!(graph.blackboard.get(&a.to_string()).unwrap(), "processed data");
+    }
+
+    #[test]
+    fn test_failed_dependency_propagates_skip() {
+        let mut graph = TaskGraph::new("test");
+        let bot_id = Uuid::new_v4();
+        let a = graph.add_node(bot_id, "A");
+        let b = graph.add_node(bot_id, "B");
+        let c = graph.add_node(bot_id, "C");
+        graph.add_edge(a, b);
+        graph.add_edge(b, c);
+
+        // A fails → B (depends on A) and then C (depends on B) must skip.
+        graph.mark_failed(a, "boom".to_string()).unwrap();
+        assert_eq!(graph.propagate_skips(), 2);
+        assert!(graph.is_complete(), "graph must complete after skip cascade");
+        assert!(matches!(graph.nodes[&b].state, NodeState::Skipped));
+        assert!(matches!(graph.nodes[&c].state, NodeState::Skipped));
+    }
+
+    #[test]
+    fn test_true_deadlock_is_detected() {
+        let mut graph = TaskGraph::new("test");
+        let bot_id = Uuid::new_v4();
+        let a = graph.add_node(bot_id, "A");
+        let b = graph.add_node(bot_id, "B");
+        // Create a cycle A <-> B: neither can ever be ready.
+        graph.add_edge(a, b);
+        graph.add_edge(b, a);
+
+        assert!(graph.ready_nodes().is_empty());
+        assert!(graph.running_nodes().is_empty());
+        assert!(!graph.is_complete());
+        assert!(graph.has_deadlock(), "a blocked cycle must be detected");
+    }
+
+    #[test]
+    fn test_running_graph_is_not_a_deadlock() {
+        let mut graph = TaskGraph::new("test");
+        let bot_id = Uuid::new_v4();
+        let a = graph.add_node(bot_id, "A");
+        graph.mark_running(a, Uuid::new_v4()).unwrap();
+        // Nothing ready, nothing pending-run, but a task is running: not a deadlock.
+        assert!(!graph.has_deadlock());
     }
 
     #[test]

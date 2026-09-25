@@ -13,11 +13,16 @@ pub mod anthropic;
 pub mod openai;
 pub mod ollama;
 pub mod local;
+pub mod commandcode;
+pub mod openai_compat;
+pub mod mimo;
 pub mod manager;
 pub mod streaming;
+pub mod discovery;
 
 pub use manager::ProviderManager;
 pub use streaming::StreamAccumulator;
+pub use discovery::{ModelDiscovery, DiscoveredModel};
 
 /// Callback receiving incremental text deltas during streaming.
 /// Called from within the provider's response-parsing loop; must be cheap
@@ -47,13 +52,130 @@ pub enum ModelError {
 /// A message in the conversation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    /// Role (system, user, assistant)
+    /// Role (system, user, assistant, tool)
     pub role: String,
     /// Message content
     pub content: String,
     /// Inline images (base64) attached to this message (vision models)
     #[serde(default)]
     pub images: Vec<MessageImage>,
+    /// Native assistant tool calls for this turn (empty for non-assistant
+    /// messages). Round-tripping these with their ids is what lets models
+    /// continue a tool loop correctly instead of seeing flattened text.
+    #[serde(default)]
+    pub tool_calls: Vec<ToolCall>,
+    /// For `role == "tool"`: the id of the tool call this message answers.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
+    /// Optional tool/function name (legacy OpenAI `name`, Anthropic bookkeeping)
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+impl Message {
+    /// Plain text message with a role.
+    pub fn text(role: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: role.into(),
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    /// Attach inline images (vision).
+    pub fn with_images(mut self, images: Vec<MessageImage>) -> Self {
+        self.images = images;
+        self
+    }
+
+    /// Assistant message carrying native tool calls.
+    pub fn assistant_tool_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls,
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    /// Tool result message answering a specific tool call.
+    pub fn tool_result(
+        tool_call_id: impl Into<String>,
+        name: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
+        Self {
+            role: "tool".to_string(),
+            content: content.into(),
+            images: Vec::new(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.into()),
+            name: Some(name.into()),
+        }
+    }
+
+    /// Whether this is an assistant turn that requested tools.
+    pub fn has_tool_calls(&self) -> bool {
+        self.role == "assistant" && !self.tool_calls.is_empty()
+    }
+
+    /// OpenAI-wire content value: a plain string, or a text + image_url parts
+    /// array when the message carries inline images (vision models).
+    pub fn openai_content(&self) -> serde_json::Value {
+        if self.images.is_empty() {
+            return serde_json::json!(self.content);
+        }
+        let mut parts = vec![serde_json::json!({"type": "text", "text": self.content})];
+        for img in &self.images {
+            parts.push(serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{};base64,{}", img.mime, img.data) }
+            }));
+        }
+        serde_json::Value::Array(parts)
+    }
+
+    /// OpenAI-wire assistant tool calls (`arguments` serialized as a string).
+    pub fn openai_tool_calls(&self) -> Option<Vec<WireToolCall>> {
+        if self.tool_calls.is_empty() {
+            return None;
+        }
+        Some(
+            self.tool_calls
+                .iter()
+                .map(|tc| WireToolCall {
+                    id: tc.id.clone(),
+                    call_type: "function".to_string(),
+                    function: WireFunction {
+                        name: tc.name.clone(),
+                        arguments: serde_json::to_string(&tc.arguments)
+                            .unwrap_or_else(|_| "{}".to_string()),
+                    },
+                })
+                .collect(),
+        )
+    }
+}
+
+/// OpenAI-wire tool call (shared across openai-wire providers).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub function: WireFunction,
+}
+
+/// OpenAI-wire tool call function payload.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireFunction {
+    pub name: String,
+    pub arguments: String,
 }
 
 /// An inline image attached to a message (base64-encoded)
@@ -182,5 +304,25 @@ pub fn create_provider(
         ModelProvider::OpenAI => Box::new(openai::OpenAIProvider::new(api_key)),
         ModelProvider::Ollama => Box::new(ollama::OllamaProvider::new(base_url)),
         ModelProvider::Local => Box::new(local::LocalProvider::new()),
+        ModelProvider::CommandCode => Box::new(commandcode::CommandCodeProvider::new(api_key)),
+        ModelProvider::DeepSeek => Box::new(openai_compat::deepseek_provider(api_key)),
+        ModelProvider::Groq => Box::new(openai_compat::groq_provider(api_key)),
+        ModelProvider::Gemini => Box::new(openai_compat::gemini_provider(api_key)),
+        ModelProvider::Mistral => Box::new(openai_compat::mistral_provider(api_key)),
+        ModelProvider::Together => Box::new(openai_compat::together_provider(api_key)),
+        ModelProvider::Perplexity => Box::new(openai_compat::perplexity_provider(api_key)),
+        ModelProvider::Cohere => Box::new(openai_compat::cohere_provider(api_key)),
+        ModelProvider::MiMo => Box::new(mimo::MiMoProvider::new(api_key)),
+        ModelProvider::OpenCode => Box::new(openai_compat::opencode_provider(api_key)),
+        ModelProvider::Cline => Box::new(openai_compat::cline_provider(api_key)),
+        ModelProvider::XAI => Box::new(openai_compat::xai_provider(api_key)),
+        ModelProvider::TokenRouter => Box::new(openai_compat::tokenrouter_provider(api_key)),
+        // Custom providers are fully constructed by ProviderManager (it knows
+        // the kind); this arm is a safe fallback for direct factory callers.
+        ModelProvider::Custom => Box::new(openai_compat::custom_provider(
+            api_key,
+            base_url.unwrap_or_default(),
+            "",
+        )),
     }
 }

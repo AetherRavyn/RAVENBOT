@@ -20,6 +20,10 @@ pub struct BotRow {
     pub permissions: String, // JSON array
     pub is_orchestrator: bool,
     pub delegate_to: String, // JSON array
+    /// Per-bot enabled skill ids as JSON (migration 009; may be absent on old DBs)
+    pub skills: Option<String>,
+    /// Approval mode string (migration 010; may be absent on old DBs)
+    pub approval_mode: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub last_active_at: Option<String>,
@@ -54,7 +58,16 @@ impl BotRow {
             permissions,
             is_orchestrator: self.is_orchestrator,
             delegate_to,
-            skills: Vec::new(),
+            skills: self
+                .skills
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default(),
+            approval_mode: self
+                .approval_mode
+                .as_deref()
+                .map(ravenbot_core::ApprovalMode::parse)
+                .unwrap_or_default(),
             created_at: DateTime::parse_from_rfc3339(&self.created_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -91,6 +104,8 @@ impl BotRow {
             permissions: serde_json::to_string(&bot.permissions)?,
             is_orchestrator: bot.is_orchestrator,
             delegate_to: serde_json::to_string(&bot.delegate_to)?,
+            skills: Some(serde_json::to_string(&bot.skills)?),
+            approval_mode: Some(bot.approval_mode.as_str().to_string()),
             created_at: bot.created_at.to_rfc3339(),
             updated_at: bot.updated_at.to_rfc3339(),
             last_active_at: bot.last_active_at.map(|dt| dt.to_rfc3339()),
@@ -106,6 +121,9 @@ pub struct ThreadRow {
     pub title: String,
     pub is_active: bool,
     pub ephemeral: bool,
+    /// Added in migration 014 (nullable).
+    #[sqlx(default)]
+    pub channel_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -118,6 +136,12 @@ pub struct MessageRow {
     pub role: String,
     pub content: String, // JSON
     pub attachments: String, // JSON
+    /// Which bot spoke (migration 011; None on old DBs / human messages)
+    pub sender_bot_id: Option<String>,
+    /// Denormalized sender label
+    pub sender_name: Option<String>,
+    /// Message this replies to (office discussion)
+    pub reply_to_id: Option<String>,
     pub created_at: String,
 }
 
@@ -163,6 +187,8 @@ pub struct ChatRoomRow {
     pub terms: Option<String>,
     pub budget: Option<f64>,
     pub budget_distribution: Option<String>,
+    /// JSON array of project folder paths (migration 016; None on old DBs)
+    pub project_folders: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }

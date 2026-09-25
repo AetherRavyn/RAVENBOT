@@ -16,16 +16,23 @@ impl Skill for CodeEditSkill {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"patch":{"type":"string","description":"Unified diff"},"dry_run":{"type":"boolean"}},"required":["patch"]})
     }
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let patch = args.get("patch").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing patch".into()))?;
+        let workdir = ctx.primary_dir().map(|p| p.to_path_buf());
         let dry = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
         let tmp = format!("/tmp/raven_patch_{}.diff", uuid::Uuid::new_v4());
         tokio::fs::write(&tmp, patch).await.map_err(|e| SkillError::Io(e.to_string()))?;
-        let check = tokio::process::Command::new("sh").args(["-c", &format!("patch --dry-run -p1 < {} 2>&1 | head -n 100", shell_escape(&tmp))]).output().await.map_err(|e| SkillError::Io(e.to_string()))?;
+        let mut check_cmd = tokio::process::Command::new("sh");
+        check_cmd.args(["-c", &format!("patch --dry-run -p1 < {} 2>&1 | head -n 100", shell_escape(&tmp))]);
+        if let Some(dir) = &workdir { check_cmd.current_dir(dir); }
+        let check = check_cmd.output().await.map_err(|e| SkillError::Io(e.to_string()))?;
         let check_out = String::from_utf8_lossy(&check.stdout).to_string() + &String::from_utf8_lossy(&check.stderr).to_string();
         if dry { let _ = tokio::fs::remove_file(&tmp).await; return Ok(SkillResult::success(serde_json::json!({"dry_run": true, "check": check_out}))); }
         if !check.status.success() { let _ = tokio::fs::remove_file(&tmp).await; return Ok(SkillResult::failure(format!("Patch check failed: {}", check_out))); }
-        let apply = tokio::process::Command::new("sh").args(["-c", &format!("patch -p1 < {} 2>&1 | head -n 100", shell_escape(&tmp))]).output().await.map_err(|e| SkillError::Io(e.to_string()))?;
+        let mut apply_cmd = tokio::process::Command::new("sh");
+        apply_cmd.args(["-c", &format!("patch -p1 < {} 2>&1 | head -n 100", shell_escape(&tmp))]);
+        if let Some(dir) = &workdir { apply_cmd.current_dir(dir); }
+        let apply = apply_cmd.output().await.map_err(|e| SkillError::Io(e.to_string()))?;
         let out = String::from_utf8_lossy(&apply.stdout).to_string() + &String::from_utf8_lossy(&apply.stderr).to_string();
         let _ = tokio::fs::remove_file(&tmp).await;
         Ok(SkillResult::success(serde_json::json!({"applied": apply.status.success(), "output": out, "check": check_out})))

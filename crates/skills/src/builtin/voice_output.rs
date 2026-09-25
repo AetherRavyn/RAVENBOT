@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use ravenbot_core::Permission;
 
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct VoiceOutputSkill;
 
@@ -56,6 +56,8 @@ impl Skill for VoiceOutputSkill {
         })
     }
 
+    fn risk(&self) -> SkillRisk { SkillRisk::Low }
+
     async fn execute(
         &self,
         _context: &SkillContext,
@@ -86,15 +88,18 @@ impl Skill for VoiceOutputSkill {
         let audio = tts.synthesize(text).await
             .map_err(|e| SkillError::Execution(e.to_string()))?;
 
-        // Play the audio
-        tts.play(&audio).await
-            .map_err(|e| SkillError::Execution(e.to_string()))?;
+        // Return base64 audio so the UI can play it via Web Audio API.
+        use base64::Engine;
+        let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio);
 
         Ok(SkillResult::success(serde_json::json!({
             "text": text,
             "voice": voice,
             "rate": rate,
-            "audio_size": audio.len()
+            "audio_size": audio.len(),
+            "audio_b64": audio_b64,
+            "format": "wav",
+            "note": "Play audio_b64 via the Web Audio API"
         })))
     }
 }

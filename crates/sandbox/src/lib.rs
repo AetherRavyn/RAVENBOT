@@ -7,8 +7,12 @@ pub mod sandbox;
 pub mod resource_limits;
 pub mod network_policy;
 pub mod kill_switch;
+pub mod runner;
+pub mod desktop;
 
 pub use sandbox::{Sandbox, SandboxConfig, SandboxStatus};
 pub use resource_limits::{ResourceLimits, ResourceUsage};
 pub use network_policy::{NetworkPolicy, NetworkRule};
 pub use kill_switch::{KillSwitch, KillSwitchState};
+pub use runner::{SandboxBackend, SandboxReport, SandboxRunner};
+pub use desktop::DesktopSession;

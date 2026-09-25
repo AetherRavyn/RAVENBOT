@@ -8,6 +8,8 @@ edition.workspace = true
 ravenbot-core = { path = "../core" }
 ravenbot-db = { path = "../db" }
 ravenbot-vision = { path = "../vision" }
+ravenbot-sandbox = { path = "../sandbox" }
+sqlx.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true

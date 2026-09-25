@@ -14,7 +14,7 @@ pub enum MigrationError {
 }
 
 /// Migration version
-pub const CURRENT_VERSION: i32 = 6;
+pub const CURRENT_VERSION: i32 = 19;
 
 /// SQL for each migration version
 const MIGRATIONS: &[(i32, &str)] = &[
@@ -26,6 +26,17 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (6, include_str!("migrations/006_mcp.sql")),
     (7, include_str!("migrations/007_ephemeral.sql")),
     (8, include_str!("migrations/008_budget_usage.sql")),
+    (9, include_str!("migrations/009_bot_skills_and_settings.sql")),
+    (10, include_str!("migrations/010_approvals.sql")),
+    (11, include_str!("migrations/011_message_senders.sql")),
+    (12, include_str!("migrations/012_todos_skills_openapi_threads.sql")),
+    (13, include_str!("migrations/013_questions.sql")),
+    (14, include_str!("migrations/014_webhooks_channels.sql")),
+    (15, include_str!("migrations/015_contacts_and_channel_rules.sql")),
+    (16, include_str!("migrations/016_office_project_folders.sql")),
+    (17, include_str!("migrations/017_thread_project_folders.sql")),
+    (18, include_str!("migrations/018_custom_providers.sql")),
+    (19, include_str!("migrations/019_mcp_remote_plugins.sql")),
 ];
 
 /// Run all pending migrations

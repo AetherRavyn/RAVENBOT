@@ -23,10 +23,14 @@ ravenbot-sync = { path = "../crates/sync" }
 ravenbot-governance = { path = "../crates/governance" }
 ravenbot-plugins = { path = "../crates/plugins" }
 ravenbot-mcp = { path = "../crates/mcp" }
+ravenbot-engines = { path = "../crates/engines" }
+ravenbot-sandbox = { path = "../crates/sandbox" }
+ravenbot-vision = { path = "../crates/vision" }
 ravenbot-ipc = { path = "../crates/ipc" }
 
 # Tauri
 tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
@@ -59,3 +63,11 @@ tauri-plugin-window-state = "2"
 
 # HTTP for OpenAPI import
 reqwest = { version = "0.12", features = ["json"] }
+
+# Base64 for voice (audio in/out over IPC)
+base64 = "0.22"
+
+# Linux: enable microphone/media-stream so the UI can record voice input.
+# WebKitGTK disables it by default and Wry does not expose the setting.
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = "2.0"

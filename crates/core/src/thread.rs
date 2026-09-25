@@ -17,6 +17,9 @@ pub struct Thread {
     /// Ephemeral/temporary thread: skip agent-memory persistence (RAG, self-review)
     #[serde(default)]
     pub ephemeral: bool,
+    /// Channel (context) this thread is filed under, if any.
+    #[serde(default)]
+    pub channel_id: Option<Uuid>,
     /// Created timestamp
     pub created_at: DateTime<Utc>,
     /// Last updated timestamp
@@ -33,6 +36,7 @@ impl Thread {
             title: title.into(),
             is_active: true,
             ephemeral: false,
+            channel_id: None,
             created_at: now,
             updated_at: now,
         }
@@ -43,5 +47,11 @@ impl Thread {
         let mut thread = Self::new(bot_id, title);
         thread.ephemeral = true;
         thread
+    }
+
+    /// File this thread under a channel (context).
+    pub fn in_channel(mut self, channel_id: Option<Uuid>) -> Self {
+        self.channel_id = channel_id;
+        self
     }
 }

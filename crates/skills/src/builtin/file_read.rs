@@ -2,9 +2,8 @@
 
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use std::path::Path;
 
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct FileReadSkill;
 
@@ -56,9 +55,11 @@ impl Skill for FileReadSkill {
         })
     }
 
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+
     async fn execute(
         &self,
-        _context: &SkillContext,
+        context: &SkillContext,
         arguments: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let path = arguments
@@ -66,8 +67,9 @@ impl Skill for FileReadSkill {
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'path' field".to_string()))?;
 
-        // Security: basic path validation
-        let path = Path::new(path);
+        // Resolve against the office's project folders (confined).
+        let resolved = context.resolve_path(path)?;
+        let path = resolved.as_path();
         
         // Check if file exists
         if !path.exists() {

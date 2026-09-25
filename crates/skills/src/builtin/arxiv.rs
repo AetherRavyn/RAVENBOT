@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct ArxivSkill { client: reqwest::Client }
 impl ArxivSkill { pub fn new() -> Self { Self { client: reqwest::Client::new() } } }
@@ -15,6 +15,8 @@ impl Skill for ArxivSkill {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"query":{"type":"string"},"max_results":{"type":"integer","minimum":1,"maximum":10}},"required":["query"]})
     }
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+
     async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing query".into()))?;
         let max = args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(5);

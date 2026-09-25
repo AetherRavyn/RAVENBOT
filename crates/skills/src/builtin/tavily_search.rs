@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct TavilySearchSkill { client: reqwest::Client }
 
@@ -24,6 +24,8 @@ impl Skill for TavilySearchSkill {
             },"required":["query"]
         })
     }
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+
     async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let query = args.get("query").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing query".into()))?;
         let max = args.get("max_results").and_then(|v| v.as_u64()).unwrap_or(5);
@@ -36,7 +38,7 @@ impl Skill for TavilySearchSkill {
         }
         // Fallback: use DuckLite via web_search skill
         let fallback = crate::builtin::web_search::WebSearchSkill::new();
-        let ctx = SkillContext { bot_id: _ctx.bot_id, run_id: _ctx.run_id, thread_id: _ctx.thread_id };
+        let ctx = SkillContext { bot_id: _ctx.bot_id, run_id: _ctx.run_id, thread_id: _ctx.thread_id, sandbox_tier: _ctx.sandbox_tier.clone(), working_dirs: _ctx.working_dirs.clone() };
         fallback.execute(&ctx, serde_json::json!({"query": query, "max_results": max})).await
     }
 }

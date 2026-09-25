@@ -1,0 +1,14 @@
+[package]
+name = "ravenbot-engines"
+description = "RAVENBOT agent engines — drive external agent CLIs (Claude Code, Codex, ACP) with one normalized event stream"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+async-trait = "0.1"
+uuid.workspace = true

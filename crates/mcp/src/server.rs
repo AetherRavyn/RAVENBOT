@@ -13,36 +13,16 @@ use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
-/// Where the headless MCP server looks for the RAVENBOT database.
-/// Mirrors the desktop app's `app_data_dir/ravenbot.db` when possible.
-pub fn default_db_path() -> PathBuf {
-    if let Ok(p) = std::env::var("RAVENBOT_DB") {
-        return PathBuf::from(p);
-    }
-    let dir = if let Some(dir) = dirs_data_dir() {
-        dir.join("ravenbot")
-    } else {
-        PathBuf::from(".")
-    };
-    dir.join("ravenbot.db")
-}
+pub use ravenbot_core::APP_IDENTIFIER;
 
-fn dirs_data_dir() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    {
-        std::env::var("HOME").ok().map(|h| PathBuf::from(h).join("Library/Application Support"))
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("APPDATA").ok().map(|p| PathBuf::from(p))
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        std::env::var("XDG_DATA_HOME")
-            .ok()
-            .map(PathBuf::from)
-            .or_else(|| std::env::var("HOME").ok().map(|h| PathBuf::from(h).join(".local/share")))
-    }
+/// Where the headless MCP server / CLI looks for the RAVENBOT database.
+///
+/// Delegates to `ravenbot_core::default_db_path` so every process resolves the
+/// same file the desktop app uses (`<os-data-dir>/<APP_IDENTIFIER>/ravenbot.db`,
+/// matching Tauri's `app_data_dir().join("ravenbot.db")`). `RAVENBOT_DB`
+/// overrides everything.
+pub fn default_db_path() -> PathBuf {
+    ravenbot_core::default_db_path()
 }
 
 /// Run the MCP server loop over stdio. Returns when stdin closes.
@@ -126,7 +106,7 @@ async fn handle(
                 "name": skill.id(),
                 "description": skill.description(),
                 "inputSchema": skill.input_schema()
-            })).collect::<Vec<_>>()
+            })).chain(crate::team::tool_definitions()).collect::<Vec<_>>()
         })),
         "tools/call" => Some(call_tool(db, registry, req).await),
         _ => None,
@@ -141,6 +121,11 @@ async fn call_tool(
 ) -> serde_json::Value {
     let name = req.pointer("/params/name").and_then(|v| v.as_str()).unwrap_or("");
     let args = req.pointer("/params/arguments").cloned().unwrap_or(serde_json::json!({}));
+
+    // Team control plane first: bounded fleet operations (`ravenbot_*`).
+    if let Some(result) = crate::team::call(db, name, &args).await {
+        return result;
+    }
 
     let Some(skill) = registry.get(name) else {
         return serde_json::json!({
@@ -160,11 +145,11 @@ async fn call_tool(
         });
     }
 
-    let context = SkillContext {
-        bot_id: Uuid::new_v4(),
-        run_id: Uuid::new_v4(),
-        thread_id: Uuid::new_v4(),
-    };
+    let context = SkillContext::with_default_tier(
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+        Uuid::new_v4(),
+    );
 
     tracing::info!(tool = %name, "MCP tool call");
     let _ = db; // database opened for parity with the desktop app; tools use env/keychain
@@ -179,4 +164,31 @@ async fn call_tool(
         "content": [{ "type": "text", "text": serde_json::to_string(&payload).unwrap_or_default() }],
         "isError": !ok
     })
+}
+
+#[cfg(test)]
+mod db_path_tests {
+    use super::*;
+
+    /// The CLI/MCP server must point at the same file the desktop app uses.
+    /// Uses a single test to avoid env-var races between parallel tests.
+    #[test]
+    fn default_db_path_matches_the_desktop_app() {
+        // With an explicit override, it wins.
+        std::env::set_var("RAVENBOT_DB", "/tmp/custom-ravenbot.db");
+        assert_eq!(default_db_path(), PathBuf::from("/tmp/custom-ravenbot.db"));
+
+        std::env::remove_var("RAVENBOT_DB");
+        let path = default_db_path();
+        let s = path.to_string_lossy();
+        assert!(
+            s.ends_with("com.ravenbot.desktop/ravenbot.db")
+                || s.ends_with("com.ravenbot.desktop\\ravenbot.db"),
+            "default db path must be under the app identifier, got: {s}"
+        );
+        assert!(
+            !s.contains("/ravenbot/ravenbot.db"),
+            "must NOT use the old wrong path: {s}"
+        );
+    }
 }

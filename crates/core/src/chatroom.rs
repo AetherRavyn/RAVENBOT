@@ -52,6 +52,10 @@ pub struct ChatRoom {
     pub budget: Option<f64>,
     /// Per-agent budget distribution JSON {bot_id: amount}
     pub budget_distribution: Option<serde_json::Value>,
+    /// Project folders this office works in. All agent file/shell work is
+    /// confined to these roots; when empty a default folder is auto-created.
+    #[serde(default)]
+    pub project_folders: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -71,6 +75,7 @@ impl ChatRoom {
             terms: None,
             budget: None,
             budget_distribution: None,
+            project_folders: Vec::new(),
             created_at: now,
             updated_at: now,
         }

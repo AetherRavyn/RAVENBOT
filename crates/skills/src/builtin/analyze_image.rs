@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use ravenbot_core::Permission;
 
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct AnalyzeImageSkill;
 
@@ -57,42 +57,20 @@ impl Skill for AnalyzeImageSkill {
         })
     }
 
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+
     async fn execute(
         &self,
         _context: &SkillContext,
-        arguments: serde_json::Value,
+        _arguments: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
-        let image_data = arguments
-            .get("image_data")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| SkillError::InvalidArguments("Missing 'image_data' field".to_string()))?;
-
-        let format = arguments
-            .get("format")
-            .and_then(|v| v.as_str())
-            .unwrap_or("png");
-
-        let _question = arguments
-            .get("question")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Describe this image");
-
-        // Decode base64 image
-        use base64::Engine;
-        let image_bytes = base64::engine::general_purpose::STANDARD
-            .decode(image_data)
-            .map_err(|e| SkillError::InvalidArguments(format!("Invalid base64: {}", e)))?;
-
-        let analyzer = ravenbot_vision::ImageAnalyzer::new();
-        let result = analyzer.analyze_image(&image_bytes, format).await
-            .map_err(|e| SkillError::Execution(e.to_string()))?;
-
-        Ok(SkillResult::success(serde_json::json!({
-            "description": result.description,
-            "elements": result.elements,
-            "text_content": result.text_content,
-            "confidence": result.confidence
-        })))
+        // Never reached in production: the runtime routes "analyze_image" to
+        // exec_analyze_image (it owns the provider manager + DB pool). This
+        // path only fires for standalone registry users, who get an honest
+        // error instead of canned text.
+        Err(SkillError::Execution(
+            "analyze_image requires the agent runtime (provider-backed); standalone registry execution is unsupported".to_string(),
+        ))
     }
 }
 

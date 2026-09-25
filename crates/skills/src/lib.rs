@@ -8,5 +8,5 @@ pub mod builtin;
 pub mod registry;
 pub mod awesome;
 
-pub use traits::{Skill, SkillContext, SkillError, SkillResult};
+pub use traits::{Skill, SkillContext, SkillError, SkillResult, SkillKind, SkillRisk};
 pub use registry::SkillRegistry;

@@ -15,7 +15,12 @@ pub mod budget;
 pub mod audit;
 pub mod version;
 pub mod bundle;
+pub mod approval;
+pub mod question;
+pub mod team;
+pub mod channel;
 pub mod chatroom;
+pub mod paths;
 pub mod office_memory;
 
 // Re-exports for convenience
@@ -31,5 +36,10 @@ pub use budget::*;
 pub use audit::*;
 pub use version::*;
 pub use bundle::*;
+pub use approval::*;
+pub use question::*;
+pub use team::*;
+pub use channel::*;
 pub use chatroom::*;
+pub use paths::{APP_IDENTIFIER, app_data_dir, data_dir, default_db_path};
 pub use office_memory::*;

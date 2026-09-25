@@ -2,7 +2,6 @@
 
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use std::path::Path;
 
 use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 
@@ -62,7 +61,7 @@ impl Skill for FileWriteSkill {
 
     async fn execute(
         &self,
-        _context: &SkillContext,
+        context: &SkillContext,
         arguments: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let path = arguments
@@ -80,7 +79,9 @@ impl Skill for FileWriteSkill {
             .and_then(|v| v.as_str())
             .unwrap_or("overwrite");
 
-        let path = Path::new(path);
+        // Resolve against the office's project folders (confined).
+        let resolved = context.resolve_path(path)?;
+        let path = resolved.as_path();
 
         // Check if file exists for create_only mode
         if mode == "create_only" && path.exists() {

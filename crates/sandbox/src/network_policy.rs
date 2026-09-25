@@ -73,6 +73,8 @@ impl Default for NetworkPolicy {
                     .with_description("Anthropic API"),
                 NetworkRule::allow("openrouter.ai")
                     .with_description("OpenRouter API"),
+                NetworkRule::allow("api.tokenrouter.com")
+                    .with_description("TokenRouter API"),
                 NetworkRule::allow("localhost")
                     .with_description("Local services (Ollama, etc.)"),
                 NetworkRule::allow("127.0.0.1")
