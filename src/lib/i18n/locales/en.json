@@ -829,7 +829,33 @@
     "goalHint": "Autonomous agents in this room evaluate their reasoning steps against this mission goal before marking tasks complete.",
     "hardStop": "{{v}} Hard-Stop",
     "uncapped": "Uncapped",
-    "perAgent": "{{v}} / agent"
+    "perAgent": "{{v}} / agent",
+    "tmpl": {
+      "rot-archive": {
+        "name": "The Rot Archive",
+        "desc": "Forbidden alchemical & anatomical research team"
+      },
+      "it-office": {
+        "name": "IT Office",
+        "desc": "Full-stack engineering team"
+      },
+      "marketing": {
+        "name": "Marketing Agency",
+        "desc": "Growth & brand team"
+      },
+      "sales": {
+        "name": "Sales Office",
+        "desc": "Revenue & outreach"
+      },
+      "design": {
+        "name": "Design Studio",
+        "desc": "Product & brand design"
+      },
+      "custom": {
+        "name": "Custom Office",
+        "desc": "Build your own team"
+      }
+    }
   },
   "connector": {
     "title": "Connectors & Tools",
@@ -1215,7 +1241,40 @@
     "previewAlt": "Avatar preview",
     "seedLabel": "Seed:",
     "active": "Active",
-    "seedPh": "e.g. Chief, Nova, Architect..."
+    "seedPh": "e.g. Chief, Nova, Architect...",
+    "all": "All",
+    "cat": {
+      "robots-ai": "Robots & AI",
+      "characters": "Characters",
+      "fantasy": "Fantasy",
+      "modern": "Modern",
+      "doodles": "Doodles",
+      "retro": "Retro",
+      "expressive": "Expressive",
+      "geometric": "Geometric",
+      "playful": "Playful",
+      "sovereign": "Sovereign"
+    },
+    "desc": {
+      "bottts": "Androids & AI bots",
+      "avataaars": "Modern illustrated avatars",
+      "personas": "Clean corporate personas",
+      "lorelei": "Anime & illustrated faces",
+      "adventurer": "RPG heroes & adventurers",
+      "micah": "Minimalist vector avatars",
+      "notionists": "Notion-style line avatars",
+      "open-peeps": "Hand-drawn diverse doodles",
+      "pixel-art": "Retro 8-bit characters",
+      "big-smile": "Joyful smiling characters",
+      "croodles": "Playful artistic sketches",
+      "dylan": "Stylized expressive avatars",
+      "identicon": "Cryptographic geometric patterns",
+      "shapes": "Abstract Bauhaus shapes",
+      "rings": "Concentric radiant rings",
+      "thumbs": "Fun character thumbs",
+      "fun-emoji": "Cheerful 3D emoji faces",
+      "ravenicon": "Native Raven OS emblem"
+    }
   },
   "workspace": {
     "boot": "Initializing {{brand}} Runtime",

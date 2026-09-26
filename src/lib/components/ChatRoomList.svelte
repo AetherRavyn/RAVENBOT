@@ -2,7 +2,8 @@
   import { invoke } from "@tauri-apps/api/core";
   import { Button } from "$lib/components/ui/button";
   import { Skeleton } from "$lib/components/ui/skeleton";
-  import { getDiceBearUrl, OFFICE_TEMPLATES } from "$lib/utils";
+  import { getDiceBearUrl } from "$lib/utils";
+  import { officeTemplateDesc } from "$lib/catalogI18n";
   import { t } from "$lib/i18n";
   import CreateChatRoom from "$lib/components/CreateChatRoom.svelte";
   import {
@@ -112,7 +113,6 @@
       </div>
     {:else}
       {#each rooms as room (room.id)}
-        {@const tmpl = OFFICE_TEMPLATES[room.office_template as keyof typeof OFFICE_TEMPLATES] || OFFICE_TEMPLATES.custom}
         {@const IconComponent = templateIcons[room.office_template] || Building2}
         {@const isSelected = selectedRoomId === room.id}
         <button
@@ -143,7 +143,7 @@
                   </div>
                 </div>
                 <p class="text-[11px] text-[var(--text-tertiary)] truncate mt-0.5">
-                  {room.description || tmpl.description}
+                  {room.description || officeTemplateDesc(room.office_template)}
                 </p>
                 <div class="flex items-center gap-2 mt-1.5">
                   <span class="text-[9px] px-1.5 py-[2px] rounded bg-[var(--surface-3)] border border-[var(--hairline)] text-[var(--text-secondary)] font-mono capitalize">

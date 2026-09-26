@@ -829,7 +829,33 @@
     "goalHint": "此办公室中的自主智能体在将任务标记为完成前，会依据该任务目标评估其推理步骤。",
     "hardStop": "{{v}} 硬上限",
     "uncapped": "无上限",
-    "perAgent": "{{v}} / 智能体"
+    "perAgent": "{{v}} / 智能体",
+    "tmpl": {
+      "rot-archive": {
+        "name": "腐朽档案馆",
+        "desc": "禁忌炼金与解剖研究团队"
+      },
+      "it-office": {
+        "name": "IT办公室",
+        "desc": "全栈工程团队"
+      },
+      "marketing": {
+        "name": "营销代理公司",
+        "desc": "增长与品牌团队"
+      },
+      "sales": {
+        "name": "销售办公室",
+        "desc": "营收与外联"
+      },
+      "design": {
+        "name": "设计工作室",
+        "desc": "产品与品牌设计"
+      },
+      "custom": {
+        "name": "自定义办公室",
+        "desc": "组建你自己的团队"
+      }
+    }
   },
   "connector": {
     "title": "连接器与工具",
@@ -1215,7 +1241,40 @@
     "previewAlt": "头像预览",
     "seedLabel": "种子：",
     "active": "已启用",
-    "seedPh": "例如 Chief、Nova、Architect…"
+    "seedPh": "例如 Chief、Nova、Architect…",
+    "all": "全部",
+    "cat": {
+      "robots-ai": "机器人与AI",
+      "characters": "角色",
+      "fantasy": "奇幻",
+      "modern": "现代",
+      "doodles": "涂鸦",
+      "retro": "复古",
+      "expressive": "表情",
+      "geometric": "几何",
+      "playful": "趣味",
+      "sovereign": "主权"
+    },
+    "desc": {
+      "bottts": "机器人与AI仿生人",
+      "avataaars": "现代插画头像",
+      "personas": "简洁职场角色",
+      "lorelei": "动漫插画面孔",
+      "adventurer": "RPG英雄与冒险者",
+      "micah": "极简矢量头像",
+      "notionists": "Notion风格线条头像",
+      "open-peeps": "手绘多元涂鸦",
+      "pixel-art": "复古8位角色",
+      "big-smile": "欢乐笑脸角色",
+      "croodles": "俏皮艺术速写",
+      "dylan": "风格化表情头像",
+      "identicon": "加密几何图案",
+      "shapes": "抽象包豪斯形状",
+      "rings": "同心光环",
+      "thumbs": "趣味拇指角色",
+      "fun-emoji": "欢乐3D表情",
+      "ravenicon": "Raven OS 原生徽标"
+    }
   },
   "workspace": {
     "boot": "正在初始化 {{brand}} 运行时",

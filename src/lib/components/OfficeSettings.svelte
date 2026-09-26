@@ -17,6 +17,7 @@
   import ConnectorIcon from "$lib/components/ConnectorIcon.svelte";
   import OfficeMemoryPanel from "$lib/components/OfficeMemoryPanel.svelte";
   import { getDiceBearUrl, OFFICE_TEMPLATES, dicebearStyles } from "$lib/utils";
+  import { officeTemplateName, officeTemplateDesc } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
   import {
     Save,
@@ -421,7 +422,7 @@
                   {t("room.settings")} — {name || room.name}
                 </Dialog.Title>
                 <Badge variant="outline" class="bg-[var(--brand-soft)] border-[var(--brand)]/40 text-[var(--brand-text)] text-[10px] font-mono font-semibold px-2 py-0.5">
-                  {OFFICE_TEMPLATES[officeTemplate as keyof typeof OFFICE_TEMPLATES]?.name || "Custom Office"}
+                  {officeTemplateName(officeTemplate)}
                 </Badge>
                 <Badge variant="outline" class="bg-[var(--surface-2)] border-[var(--hairline-strong)] text-[var(--text-secondary)] text-[10px] font-mono px-2 py-0.5">
                   {members.length} {members.length === 1 ? t("office.agent1") : t("office.agentN")}
@@ -623,7 +624,7 @@
                           <IconComponent class="size-5" />
                         </div>
                         <div>
-                          <span class="font-bold text-xs text-[var(--text-primary)] block">{tmpl.name}</span>
+                          <span class="font-bold text-xs text-[var(--text-primary)] block">{officeTemplateName(key)}</span>
                           <span class="text-[10px] text-[var(--brand-text)]/90 font-mono">{t("office.ranksN", { n: tmpl.ranks.length })}</span>
                         </div>
                       </div>
@@ -636,7 +637,7 @@
                     </div>
 
                     <p class="text-[11px] text-[var(--text-tertiary)] line-clamp-2 leading-relaxed">
-                      {tmpl.description}
+                      {officeTemplateDesc(key)}
                     </p>
 
                     <!-- Preview of rank chips -->

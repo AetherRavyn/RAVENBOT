@@ -829,7 +829,33 @@
     "goalHint": "Los agentes autónomos de esta sala evalúan sus pasos de razonamiento según este objetivo antes de marcar tareas como completas.",
     "hardStop": "{{v}} — tope duro",
     "uncapped": "Sin límite",
-    "perAgent": "{{v}} / agente"
+    "perAgent": "{{v}} / agente",
+    "tmpl": {
+      "rot-archive": {
+        "name": "El Archivo de la Podredumbre",
+        "desc": "Equipo de investigación alquímica y anatómica prohibida"
+      },
+      "it-office": {
+        "name": "Oficina de TI",
+        "desc": "Equipo de ingeniería full-stack"
+      },
+      "marketing": {
+        "name": "Agencia de Marketing",
+        "desc": "Equipo de crecimiento y marca"
+      },
+      "sales": {
+        "name": "Oficina de Ventas",
+        "desc": "Ingresos y prospección"
+      },
+      "design": {
+        "name": "Estudio de Diseño",
+        "desc": "Diseño de producto y marca"
+      },
+      "custom": {
+        "name": "Oficina Personalizada",
+        "desc": "Crea tu propio equipo"
+      }
+    }
   },
   "connector": {
     "title": "Conectores y herramientas",
@@ -1215,7 +1241,40 @@
     "previewAlt": "Vista previa del avatar",
     "seedLabel": "Semilla:",
     "active": "Activa",
-    "seedPh": "p. ej. Jefe, Nova, Arquitecto..."
+    "seedPh": "p. ej. Jefe, Nova, Arquitecto...",
+    "all": "Todos",
+    "cat": {
+      "robots-ai": "Robots e IA",
+      "characters": "Personajes",
+      "fantasy": "Fantasía",
+      "modern": "Moderno",
+      "doodles": "Bocetos",
+      "retro": "Retro",
+      "expressive": "Expresivo",
+      "geometric": "Geométrico",
+      "playful": "Divertido",
+      "sovereign": "Soberano"
+    },
+    "desc": {
+      "bottts": "Androides y bots de IA",
+      "avataaars": "Avatares ilustrados modernos",
+      "personas": "Personas corporativas limpias",
+      "lorelei": "Caras de anime e ilustradas",
+      "adventurer": "Héroes y aventureros de RPG",
+      "micah": "Avatares vectoriales minimalistas",
+      "notionists": "Avatares de línea estilo Notion",
+      "open-peeps": "Bocetos diversos dibujados a mano",
+      "pixel-art": "Personajes retro de 8 bits",
+      "big-smile": "Personas sonrientes y alegres",
+      "croodles": "Bocetos artísticos juguetones",
+      "dylan": "Avatares expresivos estilizados",
+      "identicon": "Patrones geométricos criptográficos",
+      "shapes": "Formas abstractas de Bauhaus",
+      "rings": "Anillos concéntricos radiantes",
+      "thumbs": "Pulgares de personajes divertidos",
+      "fun-emoji": "Caras de emoji 3D alegres",
+      "ravenicon": "Emblema nativo de Raven OS"
+    }
   },
   "workspace": {
     "boot": "Inicializando el entorno de ejecución de {{brand}}",

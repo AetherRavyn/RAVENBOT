@@ -829,7 +829,33 @@
     "goalHint": "Autonome Agenten in diesem Raum bewerten ihre Reasoning-Schritte anhand dieses Missionsziels, bevor sie Aufgaben abschließen.",
     "hardStop": "{{v}} Hartlimit",
     "uncapped": "Unbegrenzt",
-    "perAgent": "{{v}} pro Agent"
+    "perAgent": "{{v}} pro Agent",
+    "tmpl": {
+      "rot-archive": {
+        "name": "Das Archiv des Verfalls",
+        "desc": "Verbotenes alchemistisches & anatomisches Forschungsteam"
+      },
+      "it-office": {
+        "name": "IT-Büro",
+        "desc": "Full-Stack-Engineering-Team"
+      },
+      "marketing": {
+        "name": "Marketing-Agentur",
+        "desc": "Wachstums- & Brand-Team"
+      },
+      "sales": {
+        "name": "Vertriebsbüro",
+        "desc": "Umsatz & Kundenansprache"
+      },
+      "design": {
+        "name": "Designstudio",
+        "desc": "Produkt- & Branddesign"
+      },
+      "custom": {
+        "name": "Eigenes Büro",
+        "desc": "Stelle dein eigenes Team zusammen"
+      }
+    }
   },
   "connector": {
     "title": "Connectors & Tools",
@@ -1215,7 +1241,40 @@
     "previewAlt": "Avatar-Vorschau",
     "seedLabel": "Seed:",
     "active": "Aktiv",
-    "seedPh": "z. B. Chief, Nova, Architect..."
+    "seedPh": "z. B. Chief, Nova, Architect...",
+    "all": "Alle",
+    "cat": {
+      "robots-ai": "Roboter & KI",
+      "characters": "Charaktere",
+      "fantasy": "Fantasy",
+      "modern": "Modern",
+      "doodles": "Doodles",
+      "retro": "Retro",
+      "expressive": "Ausdrucksstark",
+      "geometric": "Geometrisch",
+      "playful": "Verspielt",
+      "sovereign": "Hoheitszeichen"
+    },
+    "desc": {
+      "bottts": "Androiden & KI-Bots",
+      "avataaars": "Moderne illustrierte Avatare",
+      "personas": "Saubere Corporate-Personas",
+      "lorelei": "Anime- & illustrierte Gesichter",
+      "adventurer": "RPG-Helden & Abenteurer",
+      "micah": "Minimalistische Vektor-Avatare",
+      "notionists": "Notion-artige Linien-Avatare",
+      "open-peeps": "Handgezeichnete vielfältige Doodles",
+      "pixel-art": "Retro-8-Bit-Charaktere",
+      "big-smile": "Fröhlich lächelnde Charaktere",
+      "croodles": "Verspielte künstlerische Skizzen",
+      "dylan": "Stilisierte ausdrucksstarke Avatare",
+      "identicon": "Kryptografische geometrische Muster",
+      "shapes": "Abstrakte Bauhaus-Formen",
+      "rings": "Konzentrische strahlende Ringe",
+      "thumbs": "Lustige Charakter-Daumen",
+      "fun-emoji": "Fröhliche 3D-Emoji-Gesichter",
+      "ravenicon": "Native Raven OS Emblem"
+    }
   },
   "workspace": {
     "boot": "{{brand}}-Laufzeitumgebung wird initialisiert",

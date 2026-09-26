@@ -829,7 +829,33 @@
     "goalHint": "このルームの自律エージェントは、タスクを完了にする前に、その推論ステップをこのミッション目標に照らして評価します。",
     "hardStop": "{{v}} ハードストップ",
     "uncapped": "上限なし",
-    "perAgent": "{{v}} / エージェント"
+    "perAgent": "{{v}} / エージェント",
+    "tmpl": {
+      "rot-archive": {
+        "name": "腐敗の書庫",
+        "desc": "禁断の錬金術・解剖学研究チーム"
+      },
+      "it-office": {
+        "name": "ITオフィス",
+        "desc": "フルスタックエンジニアリングチーム"
+      },
+      "marketing": {
+        "name": "マーケティングエージェンシー",
+        "desc": "グロース＆ブランドチーム"
+      },
+      "sales": {
+        "name": "営業オフィス",
+        "desc": "売上とアウトリーチ"
+      },
+      "design": {
+        "name": "デザインスタジオ",
+        "desc": "プロダクト＆ブランドデザイン"
+      },
+      "custom": {
+        "name": "カスタムオフィス",
+        "desc": "自分だけのチームを作る"
+      }
+    }
   },
   "connector": {
     "title": "Connectors & Tools",
@@ -1215,7 +1241,40 @@
     "previewAlt": "アバタープレビュー",
     "seedLabel": "シード：",
     "active": "有効",
-    "seedPh": "例：チーフ、ノヴァ、アーキテクト…"
+    "seedPh": "例：チーフ、ノヴァ、アーキテクト…",
+    "all": "すべて",
+    "cat": {
+      "robots-ai": "ロボット＆AI",
+      "characters": "キャラクター",
+      "fantasy": "ファンタジー",
+      "modern": "モダン",
+      "doodles": "落書き",
+      "retro": "レトロ",
+      "expressive": "表情",
+      "geometric": "幾何学",
+      "playful": "遊び心",
+      "sovereign": "主権"
+    },
+    "desc": {
+      "bottts": "アンドロイド＆AIボット",
+      "avataaars": "モダンなイラストアバター",
+      "personas": "クリーンなコーポレートペルソナ",
+      "lorelei": "アニメ＆イラストの顔",
+      "adventurer": "RPGのヒーロー＆冒険者",
+      "micah": "ミニマルなベクターアバター",
+      "notionists": "Notion風ラインアバター",
+      "open-peeps": "手描きの多様な落書き",
+      "pixel-art": "レトロ8bitキャラクター",
+      "big-smile": "笑顔のはじけるキャラクター",
+      "croodles": "遊び心あるアートスケッチ",
+      "dylan": "スタイリッシュで表情豊かなアバター",
+      "identicon": "暗号風ジオメトリックパターン",
+      "shapes": "抽象バウハウス形状",
+      "rings": "同心円のグローリング",
+      "thumbs": "楽しいキャラサムズ",
+      "fun-emoji": "楽しい3D絵文字フェイス",
+      "ravenicon": "Raven OS ネイティブエンブレム"
+    }
   },
   "workspace": {
     "boot": "{{brand}} ランタイムを初期化しています",

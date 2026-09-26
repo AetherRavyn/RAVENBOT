@@ -8,6 +8,7 @@
   import { Textarea } from "$lib/components/ui/textarea";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
   import { getDiceBearUrl, OFFICE_TEMPLATES, type OfficeTemplateKey } from "$lib/utils";
+  import { officeTemplateName, officeTemplateDesc } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
   import {
     Building2,
@@ -275,8 +276,8 @@
                     <CheckCircle2 class="size-4 text-[var(--brand-text)]" />
                   {/if}
                 </div>
-                <div class="font-bold text-xs text-[var(--text-primary)] mt-2">{tmpl.name}</div>
-                <p class="text-[11px] text-[var(--text-tertiary)] line-clamp-2 mt-0.5">{tmpl.description}</p>
+                <div class="font-bold text-xs text-[var(--text-primary)] mt-2">{officeTemplateName(key)}</div>
+                <p class="text-[11px] text-[var(--text-tertiary)] line-clamp-2 mt-0.5">{officeTemplateDesc(key)}</p>
               </div>
 
               {#if tmpl.ranks.length}
@@ -301,7 +302,7 @@
           <div class="rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)] p-3 space-y-1.5 mt-2">
             <div class="text-[11px] font-bold text-[var(--text-primary)] flex items-center gap-1.5">
               <Sparkles class="size-3.5 text-[var(--brand-text)]" />
-              {t("office.rolesFor", { name: currentTemplate.name })}
+              {t("office.rolesFor", { name: officeTemplateName(officeTemplate) })}
             </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
               {#each currentTemplate.ranks as r}
@@ -325,7 +326,7 @@
           <span class="space-y-0.5">
             <span class="text-xs font-bold text-[var(--text-primary)] block">{t("office.autoStaff")}</span>
             <span class="text-[11px] text-[var(--text-tertiary)] block">
-              {t("office.autoStaffDesc", { name: currentTemplate.name })}
+              {t("office.autoStaffDesc", { name: officeTemplateName(officeTemplate) })}
             </span>
           </span>
         </label>

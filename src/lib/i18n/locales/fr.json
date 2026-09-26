@@ -829,7 +829,33 @@
     "goalHint": "Les agents autonomes de cette salle évaluent leurs étapes de raisonnement selon cet objectif avant de marquer les tâches comme terminées.",
     "hardStop": "{{v}} — plafond dur",
     "uncapped": "Sans plafond",
-    "perAgent": "{{v}} / agent"
+    "perAgent": "{{v}} / agent",
+    "tmpl": {
+      "rot-archive": {
+        "name": "Les Archives de la Pourriture",
+        "desc": "Équipe de recherche alchimique et anatomique interdite"
+      },
+      "it-office": {
+        "name": "Bureau IT",
+        "desc": "Équipe d'ingénierie full-stack"
+      },
+      "marketing": {
+        "name": "Agence Marketing",
+        "desc": "Équipe croissance et marque"
+      },
+      "sales": {
+        "name": "Bureau des Ventes",
+        "desc": "Revenus et prospection"
+      },
+      "design": {
+        "name": "Studio de Design",
+        "desc": "Design produit et marque"
+      },
+      "custom": {
+        "name": "Bureau Personnalisé",
+        "desc": "Composez votre propre équipe"
+      }
+    }
   },
   "connector": {
     "title": "Connecteurs et outils",
@@ -1215,7 +1241,40 @@
     "previewAlt": "Aperçu de l'avatar",
     "seedLabel": "Graine :",
     "active": "Active",
-    "seedPh": "ex. Chef, Nova, Architecte..."
+    "seedPh": "ex. Chef, Nova, Architecte...",
+    "all": "Tous",
+    "cat": {
+      "robots-ai": "Robots & IA",
+      "characters": "Personnages",
+      "fantasy": "Fantasy",
+      "modern": "Moderne",
+      "doodles": "Gribouillages",
+      "retro": "Rétro",
+      "expressive": "Expressif",
+      "geometric": "Géométrique",
+      "playful": "Ludique",
+      "sovereign": "Souverain"
+    },
+    "desc": {
+      "bottts": "Androides & bots d'IA",
+      "avataaars": "Avatars illustrés modernes",
+      "personas": "Personnages d'entreprise épurés",
+      "lorelei": "Visages anime et illustrés",
+      "adventurer": "Héros et aventuriers RPG",
+      "micah": "Avatars vectoriels minimalistes",
+      "notionists": "Avatars en ligne style Notion",
+      "open-peeps": "Gribouillages variés dessinés à la main",
+      "pixel-art": "Personnages rétro 8 bits",
+      "big-smile": "Personnages souriants joyeux",
+      "croodles": "Croquis artistiques ludiques",
+      "dylan": "Avatars expressifs stylisés",
+      "identicon": "Motifs géométriques cryptographiques",
+      "shapes": "Formes Bauhaus abstraites",
+      "rings": "Anneaux concentriques rayonnants",
+      "thumbs": "Pouces de personnages amusants",
+      "fun-emoji": "Visages d'émoji 3D joyeux",
+      "ravenicon": "Emblème natif de Raven OS"
+    }
   },
   "workspace": {
     "boot": "Initialisation de l'environnement d'exécution {{brand}}",

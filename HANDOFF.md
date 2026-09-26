@@ -325,8 +325,10 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
       DONE 2026-09-25 (P7 batch 18 — 35 built-ins × {name,desc} + 9 permission
       labels + toggle aria × 6 locales; community "awesome" skills stay raw by
       policy; Rust Debug permission strings fixed; see §5 entry).
-      REMAINING i18n: utils.ts data catalogs (needs data-localization
-      decision). ~~a11y pass~~ DONE 2026-09-25 (see §5 P7 a11y entry).
+      ~~REMAINING i18n: utils.ts data catalogs (needs data-localization
+      decision)~~ DONE 2026-09-27 — decision taken: chrome strings localized,
+      persisted data (ranks/specialties/style values/brand labels) stays raw
+      English (see §5 entry). ~~a11y pass~~ DONE 2026-09-25 (see §5 P7 a11y entry).
       REMAINING P7: user-run `tauri dev` visual pass.
 - **P8 — Any provider/model + MCP/plugins usable everywhere** (approved plan
       `lone-glade-finch`; user-approved ADDITIVE backend scope — existing
@@ -1431,6 +1433,37 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
   - Verification: cargo check + cargo test --workspace exit 0 (db migration
     tests green); `npm run check` 0/0; `npm test` 30/30; `npm run build` OK.
     Release binary rebuilt (`npx tauri build`). NOT run under tauri dev.
+- 2026-09-27 (P7 data-catalog i18n — LAST open P7 coding item):
+  - Decision (the pending "data-localization decision"): display chrome gets
+    translated; anything persisted or brand-named stays raw English. So
+    OFFICE_TEMPLATES rank/specialty strings (written into bot data on office
+    creation, used in prompts) and DiceBear style values + brand labels
+    ("Avataaars", "Bottts"…) stay as-is; template names/descriptions, avatar
+    category chips, and style tooltips (title=) go through t().
+  - New `src/lib/catalogI18n.ts`: SkillManager-batch-18 pattern —
+    `lookup(key, fallback)` returns the catalog's English string when the key
+    is missing (never renders a raw key). Exports officeTemplateName/Desc(key)
+    (unknown template key → custom fallback, same as before),
+    avatarAllLabel, avatarCategoryLabel (slug = lowercase non-alnum → `-`),
+    avatarStyleDescription(value).
+  - Locale keys added ×6 (41/locale, injector /tmp/i18n_catalog.py, parity
+    checked 0 missing / 0 extra): `office.tmpl.<6 keys>.{name,desc}`,
+    `avatar.all`, `avatar.cat.<10 slugs>` (incl. new `sovereign` — the old
+    hardcoded AvatarPicker chip list omitted the Sovereign category, chip list
+    is now derived from `dicebearStyles()` so it can't drift again),
+    `avatar.desc.<18 style values>`.
+  - Call sites swapped: AvatarPicker (chip labels + title + derived category
+    list), CreateChatRoom (wizard cards + rolesFor/autoStaffDesc params),
+    ChatRoomList (card description; dead `tmpl` @const + import removed),
+    OfficeSettings (badge, picker name/desc). Ranks chips/membership payloads
+    untouched by design.
+  - GOTCHA: catalog helpers must be called INSIDE markup/$derived — module
+    consts evaluated once (like the old `const allStyles`) would freeze
+    English labels across locale switches. t() is only reactive when read
+    during a reactive context.
+  - Verification: `npm run check` 0/0; `npm test` 30/30 (i18n parity test
+    green); `npm run build` OK. Release binary rebuilt. NOT run under
+    tauri dev.
 - 2026-09-25 (P7 a11y pass — WCAG AA across all panels):
   - Explore-agent audit over ~20 components found 6 gap categories: unnamed
     icon-only interactives, mouse-only clickables, missing toggle state,

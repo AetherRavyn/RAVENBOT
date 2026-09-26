@@ -3,6 +3,7 @@
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import { getDiceBearUrl, dicebearStyles } from "$lib/utils";
+  import { avatarAllLabel, avatarCategoryLabel, avatarStyleDescription } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
   import { t } from "$lib/i18n";
   import { Sparkles, RefreshCw, Image, Wand2, Check, Palette } from "@lucide/svelte";
@@ -53,7 +54,7 @@
 
   const allStyles = dicebearStyles();
 
-  const categories = ["All", "Robots & AI", "Characters", "Modern", "Fantasy", "Doodles", "Retro", "Geometric", "Playful"];
+  const categories = ["All", ...new Set(allStyles.map((s) => s.category))];
 
   let filteredStyles = $derived(
     selectedCategory === "All"
@@ -160,7 +161,7 @@
           aria-pressed={selectedCategory === cat}
           onclick={() => (selectedCategory = cat)}
         >
-          {cat}
+          {cat === "All" ? avatarAllLabel() : avatarCategoryLabel(cat)}
         </button>
       {/each}
     </div>
@@ -181,7 +182,7 @@
         role="radio"
         aria-checked={isSelected}
         onclick={() => pick(s.value)}
-        title={s.description}
+        title={avatarStyleDescription(s.value)}
       >
         <div class="relative size-10 rounded-full overflow-hidden bg-[var(--surface-3)] ring-1 ring-border/50 transition-transform group-hover:scale-105">
           <img
