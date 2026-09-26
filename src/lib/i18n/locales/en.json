@@ -46,7 +46,8 @@
     "duplicated": "Duplicated as \"{{name}}\"",
     "skills": "Skills",
     "createAgent": "Create Agent",
-    "fleetNavigator": "Fleet navigator"
+    "fleetNavigator": "Fleet navigator",
+    "resize": "Resize sidebar"
   },
   "bot": {
     "status": {

@@ -46,7 +46,8 @@
     "duplicated": "「{{name}}」として複製しました",
     "skills": "スキル",
     "createAgent": "エージェントを作成",
-    "fleetNavigator": "フリートナビゲーター"
+    "fleetNavigator": "フリートナビゲーター",
+    "resize": "サイドバーのサイズを変更"
   },
   "bot": {
     "status": {

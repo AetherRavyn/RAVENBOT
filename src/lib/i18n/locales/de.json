@@ -46,7 +46,8 @@
     "duplicated": "Dupliziert als \"{{name}}\"",
     "skills": "Skills",
     "createAgent": "Agent erstellen",
-    "fleetNavigator": "Flottennavigator"
+    "fleetNavigator": "Flottennavigator",
+    "resize": "Seitenleiste Größe ändern"
   },
   "bot": {
     "status": {

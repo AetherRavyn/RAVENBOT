@@ -222,8 +222,8 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
         `--frame-sidebar` column animation (`--ease-panel`), reduced-motion off.
       * Verified: svelte-check 0 errors, vitest 18/18, vite build OK. NOT yet visually run in
         `npm run tauri dev` — do that before/while starting P3.
-      * Deferred from P2: sidebar drag-resizer + auto-compact below 424px, AccountDock,
-        bot status state machine (→ P4), Connectors/Routines panes still host the old panel
+      * Deferred from P2: ~~sidebar drag-resizer + auto-compact below 424px, AccountDock~~
+        DONE 2026-09-27 (see §5 entry), bot status state machine (→ P4), Connectors/Routines panes still host the old panel
         components inside the new chrome.
 - [x] P3: Chat core — DONE (core) 2026-09-24.
       * New `src/lib/chat/` modules: `grouping.ts` (showAuthorHeader per consecutive-author run,
@@ -1344,6 +1344,32 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
   - Verification: `npm run check` 0/0; `npm test` 30/30; `npm run build` "Wrote site to
     'build' ✔ done"; release binary rebuilt via `npx tauri build` so the binary the user
     launches contains this. NOT run under tauri dev.
+- 2026-09-27 (P2 deferred closeout — sidebar resizer, auto-compact, AccountDock):
+  - Geometry (workspace.svelte.ts, OpenBot layout-constants): `sidebarUserWidth`
+    $state persisted to localStorage `raven.sidebarWidth` (clamped 128–400,
+    default 280); `windowWidth` $state updated by a resize listener in
+    Workspace.svelte onMount; `sidebarCompact` $derived when
+    `window − 64(rail) − userWidth < 424(conversation min)`; `sidebarWidth`
+    $derived = compact ? 88 : userWidth. RAIL_WIDTH exported. Helpers
+    setSidebarWidth/commitSidebarWidth/resetSidebarWidth.
+  - WorkspaceSidebar.svelte: `.sidebar-resizer` strip (components.css, 5px,
+    right edge, hover/focus brand wash; `html.sidebar-resizing` kills the
+    .app-frame grid transition mid-drag) — pointer-capture drag sets width from
+    `clientX − RAIL`; keyboard: role=separator + tabindex, arrows ±8 (Shift ±32),
+    Home=280; svelte-ignore a11y_no_noninteractive_tabindex/_element_interactions
+    (legit ARIA separator). New key `sidebar.resize` × 6 locales.
+  - Compact mode (88px): full Sidebar/ChatRoomList swap out for an icon strip of
+    avatars (rooms or bots per `workspace.dest`, selection-as-router calls reused,
+    fleetActivity dots on bot rows, selected = brand ring) — no label markup
+    squeezing, mirrors OpenBot auto-compact.
+  - AccountDock (bottom strip, both modes): current conversation chip (avatar +
+    name truncate + activity dot; `rail.home` when nothing selected) + settings
+    shortcut (`rail.settings`); icon-only in compact.
+  - Gotcha hit: writing the whole file with Write introduced a props-annotation
+    typo (`{ ThemeDefinition }`) that surfaced as a confusing
+    "implicitly any / $$ComponentProps" cascade — prefer Edit for existing files.
+  - Verification: `npm run check` 0/0; `npm test` 30/30; `npm run build` done;
+    `npx tauri build` exit 0 afterwards. NOT run under tauri dev.
 - 2026-09-27 (Command Code provider system fix + ThreadView top-bar overlap):
   - Verified live: `GET https://api.commandcode.ai/provider/v1/models` is PUBLIC
     (no key) — 82 models, fields `id,name,context_length,supported_endpoints`

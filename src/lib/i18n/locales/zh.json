@@ -46,7 +46,8 @@
     "duplicated": "已复制为“{{name}}”",
     "skills": "技能",
     "createAgent": "创建智能体",
-    "fleetNavigator": "舰队导航器"
+    "fleetNavigator": "舰队导航器",
+    "resize": "调整侧边栏宽度"
   },
   "bot": {
     "status": {

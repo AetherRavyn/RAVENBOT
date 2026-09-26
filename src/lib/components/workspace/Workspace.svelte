@@ -101,6 +101,8 @@
     mediaQuery.addEventListener("change", handler);
 
     const handleOpenSettings = () => workspace.openSettings("keys");
+    const onResize = () => (workspace.windowWidth = window.innerWidth);
+    window.addEventListener("resize", onResize);
     const handleOpenConnectors = (e: Event) => {
       const botId = (e as CustomEvent<{ botId?: string }>).detail?.botId;
       if (botId) workspace.selectedBotId = botId;
@@ -124,6 +126,7 @@
       unsubN();
       unsubEsc();
       mediaQuery.removeEventListener("change", handler);
+      window.removeEventListener("resize", onResize);
       window.removeEventListener("open-settings", handleOpenSettings);
       window.removeEventListener("open-connectors", handleOpenConnectors);
       window.removeEventListener("office-deleted", handleOfficeDeleted);

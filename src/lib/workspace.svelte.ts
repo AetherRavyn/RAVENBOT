@@ -6,6 +6,23 @@ import { t } from "$lib/i18n";
 
 export type RailDest = "home" | "agents" | "offices" | "connectors" | "routines";
 
+// OpenBot layout-constants (WorkspaceShell / layout-constants.ts): the sidebar
+// drags between 128–400px; below the 424px conversation minimum it auto-compact
+// to an 88px icon strip.
+const SIDEBAR_MIN = 128;
+const SIDEBAR_MAX = 400;
+const SIDEBAR_DEFAULT = 280;
+const SIDEBAR_COMPACT = 88;
+const CONVERSATION_MIN = 424;
+export const RAIL_WIDTH = 64;
+const SIDEBAR_STORE_KEY = "raven.sidebarWidth";
+
+function loadStoredSidebarWidth(): number {
+  if (typeof window === "undefined") return SIDEBAR_DEFAULT;
+  const raw = Number(window.localStorage.getItem(SIDEBAR_STORE_KEY));
+  return Number.isFinite(raw) && raw >= SIDEBAR_MIN && raw <= SIDEBAR_MAX ? raw : SIDEBAR_DEFAULT;
+}
+
 class Workspace {
   dest = $state<RailDest>("home");
   loading = $state(true);
@@ -16,7 +33,27 @@ class Workspace {
   selectedRoomId = $state<string | null>(null);
 
   sidebarCollapsed = $state(false);
-  sidebarWidth = $state(280);
+  /** User-dragged sidebar width (persisted); compact mode overrides it. */
+  sidebarUserWidth = $state(loadStoredSidebarWidth());
+  windowWidth = $state(typeof window !== "undefined" ? window.innerWidth : 1200);
+  sidebarCompact = $derived(
+    !this.sidebarCollapsed && this.windowWidth - RAIL_WIDTH - this.sidebarUserWidth < CONVERSATION_MIN,
+  );
+  sidebarWidth = $derived(this.sidebarCompact ? SIDEBAR_COMPACT : this.sidebarUserWidth);
+
+  setSidebarWidth(px: number) {
+    this.sidebarUserWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(px)));
+  }
+
+  commitSidebarWidth() {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(SIDEBAR_STORE_KEY, String(this.sidebarUserWidth));
+  }
+
+  resetSidebarWidth() {
+    this.setSidebarWidth(SIDEBAR_DEFAULT);
+    this.commitSidebarWidth();
+  }
 
   killSwitchActive = $state(false);
   showPalette = $state(false);
