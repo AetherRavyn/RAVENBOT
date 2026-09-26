@@ -45,6 +45,8 @@
             "opener:default",
             "opener:allow-open-path",
             "shell:allow-open",
+            "dialog:default",
+            "updater:default",
             "window-state:default",
             "window-state:allow-restore-state",
             "window-state:allow-save-window-state"

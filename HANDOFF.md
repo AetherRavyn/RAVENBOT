@@ -1509,6 +1509,21 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     windowrule for the chooser title, not an app change.
   - Verification: check 0/0, build OK; release binary rebuilt. NOT run
     under tauri dev.
+- 2026-09-27 (folder picker ACL denial — "dialog.open not allowed"):
+  - ROOT CAUSE: tauri.conf.json `app.security.capabilities` carries an INLINE
+    capability with identifier "default" — the SAME id as
+    src-tauri/capabilities/default.json — and the inline one wins. P8 added
+    `dialog:default` only to the FILE, so the effective (inline) capability
+    never granted it → plugin dialogs (and updater, which the file also had)
+    denied at runtime while all app-defined invoke commands kept working
+    (they're not ACL-gated), which masked the mismatch.
+  - Fix: added `dialog:default` + `updater:default` to the inline capability
+    in tauri.conf.json. GOTCHA: two capability sources with one identifier —
+    any future permission must go into tauri.conf.json (or the duplication
+    must be removed entirely), NOT just capabilities/default.json.
+  - Verification: `npx tauri build` exit 0 (tauri-build validates the ACL,
+    so a bad identifier fails the build); user relaunch confirms picker
+    opens. NOT run under tauri dev.
 - 2026-09-25 (P7 a11y pass — WCAG AA across all panels):
   - Explore-agent audit over ~20 components found 6 gap categories: unnamed
     icon-only interactives, mouse-only clickables, missing toggle state,
