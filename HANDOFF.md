@@ -251,18 +251,29 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
       per-bot streaming
       `lanes` in ChatRoomView (~line 245, listener ~:354, lanes render ~:930-974) also routed
       through StreamReveal; edit-resend/regenerate strip unchanged.
-- [ ] P4: Sidebar intelligence — bot state machine indicator fed by agent-stream + approvals;
-      empty states; pin/reorder.
+- [x] P4: Sidebar intelligence — bot state machine indicator fed by agent-stream + approvals;
+      empty states; pin/reorder. DONE 2026-09-27 (icons+badge rollup landed; drag-reorder
+      deferred, see below).
 - [x] P4: DONE (core) 2026-09-24 — `src/lib/fleetActivity.svelte.ts`: refcounted global
       agent-stream listener deriving per-bot activity `working|attention|responded|idle`
       (run_started/delta/tool_started→working; approval/question/paused→attention;
       decided/answered→working; done→responded, 3s hold→idle). Started/stopped in
       Workspace.svelte; Sidebar bot rows override the status dot color + label line with
       live activity (pulse brand=working, pulse warning=attention, success=responded).
-      Deferred: TypingDots/triangle-alert icons (color+label only for now), responded label
+      Deferred: ~~TypingDots/triangle-alert icons~~ DONE 2026-09-27 (Sidebar badge: working
+      = 3×`.typing-dot` pill in `--brand`, attention = `TriangleAlert` in `--warning-text`;
+      see §5 entry), responded label
       strings are hardcoded English → must go through i18n in P7 (6 locales),
-      rail-level badge rollup, ~~office-member activity in ChatRoomView headers~~
+      ~~rail-level badge rollup~~ DONE 2026-09-27 (WorkspaceRail Offices button: warning
+      count pill for attention bots, else pulsing brand dot for working — see §5 entry),
+      ~~office-member activity in ChatRoomView headers~~
       DONE 2026-09-25 (header roster rings/dots via fleetActivity — see §5 entry).
+      Remaining (deferred, needs backend): drag-reorder of Sidebar bot rows — requires a
+      persistent ordering column + migration in the bots table; pin already exists
+      (`set_bot_pinned`, sort priority in `filteredBots`) and empty states exist
+      (`sidebar.noBots` in Sidebar, `office.empty*` in ChatRoomList). i18n label part of
+      this deferral list was satisfied earlier (fleet.{working,attention,replied} shipped
+      in all 6 locales during P7).
 - [x] P5: Offices as the hero surface — org graph, member ranks, run timeline (our moat).
       DONE 2026-09-25 (all sub-items; see struck lines below).
       2026-09-24 lane work: ChatRoomView streaming lanes use `laneRevealOf(botId)`
@@ -1312,6 +1323,27 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     scrollWidth == clientWidth == 574, ✕ top-right, rows intact. Remedy:
     `npx tauri build` (or run `tauri dev`). GOTCHA: after any frontend fix,
     the release binary must be rebuilt or the user sees stale UI.
+- 2026-09-27 (P4 deferred icons + rail rollup — closes P4 except drag-reorder):
+  - Sidebar.svelte avatar badge: `working` now shows a pill (h-3.5,
+    `bg-[var(--surface-3)]` + `ring-2 ring-[var(--surface-1)]`) holding 3×`.typing-dot`
+    colored via `text-[var(--brand)]` (dots use `background: currentColor`; animation and
+    reduced-motion already in components.css); `attention` shows a `TriangleAlert`
+    (lucide, imported) at `size-[9px] text-[var(--warning-text)]` in a size-4 ring,
+    `animate-pulse`. `responded`/idle keep the plain size-2.5 dot. Badges are
+    `aria-hidden` — the label line already conveys state via translated `fleet.*` keys.
+  - WorkspaceRail.svelte: `$derived` rollups `attentionCount`/`workingCount` over
+    `fleetActivity.states` values (reactive through the class `$state` record). On the
+    Offices section button: attention → `bg-[var(--warning-text)]` count pill (9+ cap)
+    top-right; else working → pulsing `bg-[var(--brand)]` dot. aria-label appends
+    `· {n} · {t("fleet.attention")}` when attention>0 (reuses existing i18n keys; no new
+    strings invented).
+  - Already done, verified this pass: empty states (`sidebar.noBots`,
+    `office.emptyTitle/emptyDesc`), pin (`set_bot_pinned` + sort priority).
+    Drag-reorder still deferred: needs a persistent order column + migration; Rust side
+    is frozen except P8 additive scope, so it waits for an explicit go-ahead.
+  - Verification: `npm run check` 0/0; `npm test` 30/30; `npm run build` "Wrote site to
+    'build' ✔ done"; release binary rebuilt via `npx tauri build` so the binary the user
+    launches contains this. NOT run under tauri dev.
 - 2026-09-25 (P7 a11y pass — WCAG AA across all panels):
   - Explore-agent audit over ~20 components found 6 gap categories: unnamed
     icon-only interactives, mouse-only clickables, missing toggle state,

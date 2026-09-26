@@ -40,6 +40,7 @@
     Copy,
     Eye,
     EyeOff,
+    TriangleAlert,
   } from "@lucide/svelte";
 
   interface Props {
@@ -367,19 +368,31 @@
               />
             </div>
 
-            <!-- Status Dot Badge — live fleet activity overrides stored status -->
-            <div
-              class={cn(
-                "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-1)]",
-                activity === "working"
-                  ? "bg-[var(--brand)] animate-pulse"
-                  : activity === "attention"
-                    ? "bg-[var(--warning-text)] animate-pulse"
-                    : activity === "responded"
-                      ? "bg-[var(--success-text)]"
-                      : statusTheme.bg
-              )}
-            ></div>
+            <!-- Status Badge — live fleet activity overrides stored status -->
+            {#if activity === "working"}
+              <div
+                class="absolute -bottom-1.5 -right-1.5 flex items-center justify-center h-3.5 px-1 rounded-full bg-[var(--surface-3)] ring-2 ring-[var(--surface-1)] text-[var(--brand)]"
+                aria-hidden="true"
+              >
+                <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+              </div>
+            {:else if activity === "attention"}
+              <div
+                class="absolute -bottom-1.5 -right-1.5 size-4 rounded-full flex items-center justify-center bg-[var(--surface-3)] ring-2 ring-[var(--surface-1)] animate-pulse"
+                aria-hidden="true"
+              >
+                <TriangleAlert class="size-[9px] text-[var(--warning-text)]" strokeWidth={2.5} />
+              </div>
+            {:else}
+              <div
+                class={cn(
+                  "absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-1)]",
+                  activity === "responded"
+                    ? "bg-[var(--success-text)]"
+                    : statusTheme.bg
+                )}
+              ></div>
+            {/if}
           </div>
 
           <!-- Name & Status -->
