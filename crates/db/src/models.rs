@@ -27,6 +27,8 @@ pub struct BotRow {
     pub created_at: String,
     pub updated_at: String,
     pub last_active_at: Option<String>,
+    /// Manual sidebar order (migration 020; 0 = never dragged)
+    pub sort_order: Option<i64>,
 }
 
 impl BotRow {
@@ -109,6 +111,8 @@ impl BotRow {
             created_at: bot.created_at.to_rfc3339(),
             updated_at: bot.updated_at.to_rfc3339(),
             last_active_at: bot.last_active_at.map(|dt| dt.to_rfc3339()),
+            // Manual order is owned by BotQueries::reorder; create/update never touch it.
+            sort_order: None,
         })
     }
 }

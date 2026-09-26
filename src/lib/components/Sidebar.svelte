@@ -52,6 +52,7 @@
     onBotDeleted: (botId: string) => void;
     openSettings: () => void;
     onNewChat?: () => void;
+    onReorder?: (orderedIds: string[]) => void;
   }
 
   let {
@@ -63,6 +64,7 @@
     onBotDeleted,
     openSettings,
     onNewChat,
+    onReorder,
   }: Props = $props();
 
   let showCreateModal = $state(false);
@@ -171,6 +173,25 @@
   function selectBot(botId: string) {
     onSelectBot(botId);
     if (unread[botId]) markRead(botId);
+  }
+
+  // ── Drag-reorder (manual sidebar order, persisted via reorder_bots) ────
+  let dragId = $state<string | null>(null);
+  let dragOverId = $state<string | null>(null);
+
+  function commitDrop(targetId: string) {
+    if (!dragId || dragId === targetId) return;
+    const visible = filteredBots.map((b) => b.id as string);
+    const from = visible.indexOf(dragId);
+    const to = visible.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+    visible.splice(to, 0, ...visible.splice(from, 1));
+    onReorder?.(visible);
+  }
+
+  function endDrag() {
+    dragId = null;
+    dragOverId = null;
   }
 
   let filteredBots = $derived(
@@ -341,7 +362,38 @@
       {@const isSelected = selectedBotId === bot.id}
       {@const statusTheme = getStatusTheme(bot.status)}
       {@const activity = fleetActivity.get(bot.id)}
-      <div class="relative group/item">
+      <!-- Drag is a pointer-only affordance; the row's button child keeps keyboard access. -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div
+        class="relative group/item"
+        draggable="true"
+        ondragstart={(e) => {
+          dragId = bot.id;
+          if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", bot.id);
+          }
+        }}
+        ondragover={(e) => {
+          if (!dragId) return;
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          if (dragId !== bot.id) dragOverId = bot.id;
+        }}
+        ondragleave={() => {
+          if (dragOverId === bot.id) dragOverId = null;
+        }}
+        ondrop={(e) => {
+          e.preventDefault();
+          commitDrop(bot.id);
+          endDrag();
+        }}
+        ondragend={endDrag}
+        class:opacity-40={dragId === bot.id}
+      >
+        {#if dragOverId === bot.id && dragId !== bot.id}
+          <span class="absolute -top-1 left-2 right-2 h-0.5 rounded-full bg-[var(--brand)] z-10" aria-hidden="true"></span>
+        {/if}
         {#if isSelected}
           <span class="absolute left-0 top-1/2 -translate-y-1/2 h-6 w-[3px] rounded-full bg-[var(--rail-selected)] z-10"></span>
         {/if}

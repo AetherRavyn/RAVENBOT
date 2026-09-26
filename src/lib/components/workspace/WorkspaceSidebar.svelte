@@ -138,6 +138,7 @@
           onBotDeleted={(id) => workspace.handleBotDeleted(id)}
           openSettings={() => workspace.openSettings()}
           onNewChat={() => workspace.newChat()}
+          onReorder={(ids) => workspace.reorderBots(ids)}
         />
       {/if}
     </div>

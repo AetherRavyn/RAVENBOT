@@ -201,6 +201,14 @@ async fn mark_bot_read(state: State<'_, AppState>, bot_id: Uuid) -> Result<(), S
         .map_err(|e| e.to_string())
 }
 
+/// Persist manual sidebar order: each bot id gets sort_order = its position.
+#[tauri::command]
+async fn reorder_bots(state: State<'_, AppState>, ordered_ids: Vec<Uuid>) -> Result<(), String> {
+    ravenbot_db::queries::BotQueries::reorder(state.db.pool(), &ordered_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Unread assistant-message count per bot (drives sidebar badges).
 #[tauri::command]
 async fn get_unread_counts(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
@@ -4088,6 +4096,7 @@ pub fn run() {
             set_bot_pinned,
             set_bot_hidden,
             mark_bot_read,
+            reorder_bots,
             get_unread_counts,
             duplicate_bot,
             create_thread,

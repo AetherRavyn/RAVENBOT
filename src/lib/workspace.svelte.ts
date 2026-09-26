@@ -165,6 +165,19 @@ class Workspace {
     }
   }
 
+  /** Persist sidebar drag-reorder. `orderedIds` is the displayed order; bots
+      not in the list (filtered out) keep their relative order. */
+  reorderBots(orderedIds: string[]) {
+    const pos = new Map(orderedIds.map((id, i) => [id, i]));
+    const order = (b: any) => pos.get(b.id) ?? Number.MAX_SAFE_INTEGER;
+    const previous = this.bots;
+    this.bots = [...this.bots].sort((a: any, b: any) => order(a) - order(b));
+    invoke("reorder_bots", { orderedIds }).catch((e) => {
+      console.error("Failed to reorder bots:", e);
+      this.bots = previous;
+    });
+  }
+
   handleBotCreated(bot: any) {
     this.bots = [...this.bots, bot];
     this.selectBot(bot.id);

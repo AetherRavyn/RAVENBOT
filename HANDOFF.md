@@ -268,8 +268,9 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
       count pill for attention bots, else pulsing brand dot for working — see §5 entry),
       ~~office-member activity in ChatRoomView headers~~
       DONE 2026-09-25 (header roster rings/dots via fleetActivity — see §5 entry).
-      Remaining (deferred, needs backend): drag-reorder of Sidebar bot rows — requires a
-      persistent ordering column + migration in the bots table; pin already exists
+      ~~Remaining (deferred, needs backend): drag-reorder of Sidebar bot rows~~
+      DONE 2026-09-27 (migration 020 `bots.sort_order` + `reorder_bots` command +
+      HTML5 DnD in Sidebar rows — see §5 entry); pin already exists
       (`set_bot_pinned`, sort priority in `filteredBots`) and empty states exist
       (`sidebar.noBots` in Sidebar, `office.empty*` in ChatRoomList). i18n label part of
       this deferral list was satisfied earlier (fleet.{working,attention,replied} shipped
@@ -1403,6 +1404,33 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
   - Verification: cargo test --workspace 0 failures; `npm run check` 0/0;
     `npm test` 30/30; `npx tauri build` exit 0 (fresh binary at
     target/release/ravenbot). NOT run under tauri dev.
+- 2026-09-27 (P4 drag-reorder of Sidebar bot rows — closes the last P4 item):
+  - Backend (additive only, per P8 freeze rules): migration 020 adds
+    `bots.sort_order INTEGER NOT NULL DEFAULT 0` (crates/db/src/migrations/
+    020_bot_sort_order.sql, registered in migrations.rs). `BotRow` gained
+    `sort_order: Option<i64>`; `from_domain` sets it to `None` — create/update
+    statements keep explicit column lists, so only `reorder` ever writes it.
+    `BotQueries::list` now `ORDER BY sort_order ASC, updated_at DESC`: dragged
+    bots keep manual order, never-dragged/new bots stay 0 and tie-break
+    newest-first (existing behavior). New `BotQueries::reorder(pool, ids)`
+    writes sort_order = index for each id inside one transaction. New command
+    `reorder_bots(ordered_ids)` in src-tauri/src/lib.rs (registered in
+    generate_handler) — no existing command touched.
+  - Frontend: `workspace.reorderBots(orderedIds)` optimistically reorders
+    `workspace.bots` (displayed ids get positions; unlisted bots keep relative
+    order via MAX_SAFE_INTEGER sort key, stable in JS) and reverts + logs on
+    invoke failure. Sidebar.svelte rows wrapped in HTML5 DnD:
+    `draggable="true"` on the row div, dragId/dragOverId $state, drop computes
+    the new displayed-id order and calls `onReorder` → wired in
+    WorkspaceSidebar. Dragged row dims (`opacity-40`), target row shows a
+    brand drop-line above. Pinned-first sort stays dominant (stable sort keeps
+    within-group drop order); drag is pointer-only so the row `<button>` keeps
+    keyboard access (svelte-ignore a11y_no_static_element_interactions with
+    comment — NOTE: rule name is `a11y_no_static_element_interactions` in
+    Svelte 5, NOT the old `a11y_no_noninteractive_element_interactions`).
+  - Verification: cargo check + cargo test --workspace exit 0 (db migration
+    tests green); `npm run check` 0/0; `npm test` 30/30; `npm run build` OK.
+    Release binary rebuilt (`npx tauri build`). NOT run under tauri dev.
 - 2026-09-25 (P7 a11y pass — WCAG AA across all panels):
   - Explore-agent audit over ~20 components found 6 gap categories: unnamed
     icon-only interactives, mouse-only clickables, missing toggle state,

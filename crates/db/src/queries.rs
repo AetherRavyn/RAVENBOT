@@ -170,11 +170,12 @@ impl BotQueries {
         }
     }
 
-    /// Get all bots
+    /// Get all bots. Manual drag-order wins; never-dragged bots keep newest-first.
     pub async fn list(pool: &SqlitePool) -> Result<Vec<ravenbot_core::Bot>, sqlx::Error> {
-        let rows: Vec<BotRow> = sqlx::query_as("SELECT * FROM bots ORDER BY updated_at DESC")
-            .fetch_all(pool)
-            .await?;
+        let rows: Vec<BotRow> =
+            sqlx::query_as("SELECT * FROM bots ORDER BY sort_order ASC, updated_at DESC")
+                .fetch_all(pool)
+                .await?;
 
         let needs_backfill = rows.iter().any(|r| r.skills.is_none());
         let mut bots = Vec::new();
@@ -185,6 +186,19 @@ impl BotQueries {
             Self::backfill_skills_from_junction(pool, &mut bots).await;
         }
         Ok(bots)
+    }
+
+    /// Persist manual ordering (sidebar drag-reorder): each id gets sort_order = its position.
+    pub async fn reorder(pool: &SqlitePool, ordered_ids: &[Uuid]) -> Result<(), sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        for (i, id) in ordered_ids.iter().enumerate() {
+            sqlx::query("UPDATE bots SET sort_order = ? WHERE id = ?")
+                .bind(i as i64)
+                .bind(id.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
     }
 
     /// Update a bot

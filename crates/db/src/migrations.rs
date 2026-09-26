@@ -37,6 +37,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (17, include_str!("migrations/017_thread_project_folders.sql")),
     (18, include_str!("migrations/018_custom_providers.sql")),
     (19, include_str!("migrations/019_mcp_remote_plugins.sql")),
+    (20, include_str!("migrations/020_bot_sort_order.sql")),
 ];
 
 /// Run all pending migrations
