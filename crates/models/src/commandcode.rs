@@ -14,6 +14,12 @@ use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelErr
 
 const BASE_URL: &str = "https://api.commandcode.ai/provider/v1";
 
+/// Zero-data-retention opt-in — mirrors the CLI's `CMD_ZDR=1`. Requests then
+/// route only through ZDR-capable upstreams (422 if none exists).
+fn zdr_enabled() -> bool {
+    std::env::var("CMD_ZDR").map(|v| v.trim() == "1").unwrap_or(false)
+}
+
 pub struct CommandCodeProvider {
     api_key: Option<String>,
     model_id: String,
@@ -33,7 +39,8 @@ impl CommandCodeProvider {
 
     pub fn with_model(mut self, model_id: impl Into<String>) -> Self {
         let mid = model_id.into();
-        // Auto-detect: Anthropic models use /messages endpoint
+        // Auto-detect: Anthropic models answer on /messages only (per the
+        // supported_endpoints field of /provider/v1/models).
         self.use_anthropic_format = mid.starts_with("claude-") || mid.starts_with("anthropic/");
         self.model_id = mid;
         self
@@ -127,9 +134,13 @@ impl CommandCodeProvider {
             stream_options: if stream { Some(StreamOpts { include_usage: true }) } else { None },
         };
 
-        let response = self.client
+        let mut builder = self.client
             .post(format!("{}/chat/completions", BASE_URL))
-            .header("Authorization", format!("Bearer {}", api_key))
+            .header("Authorization", format!("Bearer {}", api_key));
+        if zdr_enabled() {
+            builder = builder.header("x-cmd-zdr", "1");
+        }
+        let response = builder
             .json(&request)
             .send()
             .await
@@ -266,11 +277,15 @@ impl CommandCodeProvider {
             thinking: if enable_reasoning { Some(ThinkingCfg { kind: "enabled".into(), budget_tokens: (max_tokens as f64 * 0.6) as u32 }) } else { None },
         };
 
-        let response = self.client
+        let mut builder = self.client
             .post(format!("{}/messages", BASE_URL))
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("Content-Type", "application/json")
+            .header("Content-Type", "application/json");
+        if zdr_enabled() {
+            builder = builder.header("x-cmd-zdr", "1");
+        }
+        let response = builder
             .json(&request)
             .send()
             .await
@@ -415,9 +430,9 @@ impl ModelProviderTrait for CommandCodeProvider {
     }
 
     fn with_model(self: Box<Self>, model_id: String) -> Box<dyn ModelProviderTrait> {
-        let mut s = *self;
-        s.model_id = model_id;
-        Box::new(s)
+        // Route through the builder so the /messages-vs-/chat/completions
+        // auto-detection is re-evaluated for the new model id.
+        Box::new((*self).with_model(model_id))
     }
 
     async fn health_check(&self) -> Result<bool, ModelError> {
@@ -430,6 +445,9 @@ impl ModelProviderTrait for CommandCodeProvider {
             .header("Authorization", format!("Bearer {}", api_key))
             .send()
             .await;
-        Ok(response.is_ok())
+        match response {
+            Ok(r) => Ok(r.status().is_success()),
+            Err(_) => Ok(false),
+        }
     }
 }

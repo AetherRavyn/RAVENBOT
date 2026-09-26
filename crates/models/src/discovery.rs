@@ -45,6 +45,10 @@ pub struct ProviderEndpoint {
     extractor: ModelExtractor,
     /// How to authenticate the discovery request
     auth_style: AuthStyle,
+    /// When true, absence of pricing data does NOT imply the model is free
+    /// (gateways like Command Code omit pricing entirely — only an explicit
+    /// free-shaped id counts).
+    free_by_id_only: bool,
 }
 
 /// Auth header shape a provider's /models endpoint expects.
@@ -56,6 +60,9 @@ enum AuthStyle {
     XApiKey,
     /// Bearer plus Google's `x-goog-api-key` (Gemini accepts both)
     BearerAndGoogleKey,
+    /// Bearer if a key exists, but the endpoint answers keyless
+    /// (Command Code's /models is public).
+    BearerOptional,
     /// No key required (local daemons)
     Keyless,
 }
@@ -80,6 +87,7 @@ impl ProviderEndpoint {
             path: "/models".to_string(),
             extractor: ModelExtractor::OpenAIFormat,
             auth_style: AuthStyle::Bearer,
+            free_by_id_only: false,
         }
     }
 
@@ -90,6 +98,7 @@ impl ProviderEndpoint {
             path: "/models".to_string(),
             extractor: ModelExtractor::AnthropicFormat,
             auth_style: AuthStyle::XApiKey,
+            free_by_id_only: false,
         }
     }
 
@@ -110,6 +119,7 @@ impl ProviderEndpoint {
                     path: "/api/tags".to_string(),
                     extractor: ModelExtractor::OllamaFormat,
                     auth_style: AuthStyle::Keyless,
+                    free_by_id_only: false,
                 })
             }
             "openai" | "" => Ok(Self::openai(base_url, "")),
@@ -136,7 +146,6 @@ pub fn provider_endpoints() -> HashMap<String, ProviderEndpoint> {
         ("perplexity", "https://api.perplexity.ai", "PERPLEXITY_API_KEY"),
         ("cohere", "https://api.cohere.com/compatibility/v1", "COHERE_API_KEY"),
         ("mimo", "https://api.mimo.mi.com/v1", "MIMO_API_KEY"),
-        ("commandcode", "https://api.commandcode.ai/provider/v1", "COMMANDCODE_API_KEY"),
         ("xai", "https://api.x.ai/v1", "XAI_API_KEY"),
         ("opencode", "https://opencode.ai/zen/v1", "OPENCODE_API_KEY"),
         ("cline", "https://api.cline.bot/api/v1", "CLINE_API_KEY"),
@@ -159,6 +168,21 @@ pub fn provider_endpoints() -> HashMap<String, ProviderEndpoint> {
         ProviderEndpoint::anthropic("https://api.anthropic.com/v1", "ANTHROPIC_API_KEY"),
     );
 
+    // Command Code gateway: /provider/v1/models is public (key optional),
+    // and its entries carry no pricing fields — free models are only the
+    // ones with a free-shaped id (`…:free`, `…-free`, `stealth/…`).
+    map.insert(
+        "commandcode".to_string(),
+        ProviderEndpoint {
+            base_url: "https://api.commandcode.ai/provider/v1".to_string(),
+            api_key_env: "COMMANDCODE_API_KEY".to_string(),
+            path: "/models".to_string(),
+            extractor: ModelExtractor::OpenAIFormat,
+            auth_style: AuthStyle::BearerOptional,
+            free_by_id_only: true,
+        },
+    );
+
     // Ollama local daemon — keyless, queried on the machine's Ollama host.
     // The base URL is resolved per-request (env override aware), so the
     // stored endpoint just needs the right extractor; the path is /api/tags.
@@ -170,6 +194,7 @@ pub fn provider_endpoints() -> HashMap<String, ProviderEndpoint> {
             path: "/api/tags".to_string(),
             extractor: ModelExtractor::OllamaFormat,
             auth_style: AuthStyle::Keyless,
+            free_by_id_only: false,
         },
     );
 
@@ -324,7 +349,7 @@ impl ModelDiscovery {
         api_key: Option<&str>,
         endpoint: &ProviderEndpoint,
     ) -> Result<Vec<DiscoveredModel>, ModelError> {
-        let api_key = if endpoint.auth_style == AuthStyle::Keyless {
+        let api_key = if matches!(endpoint.auth_style, AuthStyle::Keyless | AuthStyle::BearerOptional) {
             api_key.map(|k| k.to_string())
         } else {
             Some(
@@ -355,6 +380,9 @@ impl ModelDiscovery {
                 AuthStyle::Bearer => {
                     req = req.header("Authorization", format!("Bearer {}", key));
                 }
+                AuthStyle::BearerOptional => {
+                    req = req.header("Authorization", format!("Bearer {}", key));
+                }
                 AuthStyle::Keyless => {}
             }
         }
@@ -372,7 +400,9 @@ impl ModelDiscovery {
 
         // Extract models based on format
         match &endpoint.extractor {
-            ModelExtractor::OpenAIFormat => Self::extract_openai_format(&json, provider),
+            ModelExtractor::OpenAIFormat => {
+                Self::extract_openai_format(&json, provider, endpoint.free_by_id_only)
+            }
             ModelExtractor::AnthropicFormat => Self::extract_anthropic_format(&json, provider),
             ModelExtractor::OllamaFormat => Self::extract_ollama_format(&json, provider),
         }
@@ -381,6 +411,7 @@ impl ModelDiscovery {
     fn extract_openai_format(
         json: &serde_json::Value,
         provider: &str,
+        free_by_id_only: bool,
     ) -> Result<Vec<DiscoveredModel>, ModelError> {
         let data = json
             .get("data")
@@ -452,7 +483,16 @@ impl ModelDiscovery {
             let input_cost = cost_of(&["input", "prompt", "prompt_tokens"]);
             let output_cost = cost_of(&["output", "completion", "completion_tokens"]);
 
-            let is_free = input_cost == 0.0 && output_cost == 0.0;
+            // Free-shaped ids are the OpenRouter/CommandCode convention:
+            // "…:free", "…-free", and transient "stealth/…" previews.
+            let free_by_id = id.ends_with(":free")
+                || id.ends_with("-free")
+                || id.starts_with("stealth/");
+            let is_free = if free_by_id_only {
+                free_by_id
+            } else {
+                (input_cost == 0.0 && output_cost == 0.0) || free_by_id
+            };
 
             let supports_vision = item
                 .get("architecture")
@@ -620,6 +660,34 @@ mod tests {
         let tr = endpoints.get("tokenrouter").expect("tokenrouter endpoint must exist");
         assert_eq!(tr.base_url, "https://api.tokenrouter.com/v1");
         assert_eq!(tr.path, "/models");
+
+        let cc = endpoints.get("commandcode").expect("commandcode endpoint must exist");
+        assert_eq!(cc.base_url, "https://api.commandcode.ai/provider/v1");
+        assert_eq!(cc.path, "/models");
+        assert_eq!(cc.auth_style, AuthStyle::BearerOptional);
+        assert!(cc.free_by_id_only, "commandcode omits pricing — id decides free");
+    }
+
+    #[test]
+    fn test_extract_openai_format_commandcode_free_ids() {
+        let json = serde_json::json!({
+            "object": "list",
+            "data": [
+                { "id": "claude-sonnet-5", "name": "Claude Sonnet 5", "context_length": 1000000, "supported_endpoints": ["/messages"] },
+                { "id": "poolside/laguna-s-2.1-free", "name": "Laguna S 2.1" },
+                { "id": "inclusionai/ling-3.0-flash-sante:free", "name": "Ling 3.0 Flash Sante" },
+                { "id": "stealth/pixel-canary", "name": "Pixel Canary" }
+            ]
+        });
+
+        let models = ModelDiscovery::extract_openai_format(&json, "commandcode", true).expect("must extract");
+        let by_id: std::collections::HashMap<_, _> = models.iter().map(|m| (m.id.as_str(), m.is_free)).collect();
+        assert!(!by_id["claude-sonnet-5"], "no pricing must not imply free");
+        assert!(by_id["poolside/laguna-s-2.1-free"]);
+        assert!(by_id["inclusionai/ling-3.0-flash-sante:free"]);
+        assert!(by_id["stealth/pixel-canary"]);
+        // Free models sort first.
+        assert!(models.iter().take(3).all(|m| m.is_free));
     }
 
     #[test]
@@ -640,7 +708,7 @@ mod tests {
             ]
         });
 
-        let models = ModelDiscovery::extract_openai_format(&json, "opencode").expect("must extract models");
+        let models = ModelDiscovery::extract_openai_format(&json, "opencode", false).expect("must extract models");
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "claude-sonnet-4-5");
         assert_eq!(models[1].id, "gpt-5");

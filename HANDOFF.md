@@ -1344,6 +1344,39 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
   - Verification: `npm run check` 0/0; `npm test` 30/30; `npm run build` "Wrote site to
     'build' ✔ done"; release binary rebuilt via `npx tauri build` so the binary the user
     launches contains this. NOT run under tauri dev.
+- 2026-09-27 (Command Code provider system fix + ThreadView top-bar overlap):
+  - Verified live: `GET https://api.commandcode.ai/provider/v1/models` is PUBLIC
+    (no key) — 82 models, fields `id,name,context_length,supported_endpoints`
+    (NO pricing). Claude ids are `/messages`-only; free models are id-shaped
+    (`…:free`, `…-free`, `stealth/…`). Snapshot kept at /tmp/cc_models.json.
+  - BUG (crates/models/src/commandcode.rs): the trait `with_model` (the runtime
+    path used by ProviderManager) overwrote `model_id` WITHOUT re-running the
+    claude→/messages auto-detect — switching a Command Code bot to Claude sent
+    OpenAI-shaped requests to /chat/completions → 400. Fixed by delegating the
+    trait method to the detecting builder. Also: health_check returned true on
+    401/4xx (now requires success status); added ZDR support via env `CMD_ZDR=1`
+    → `x-cmd-zdr: 1` header on both wire formats (mirrors the CLI).
+  - Discovery (crates/models/src/discovery.rs): new `AuthStyle::BearerOptional`
+    so commandcode `/models` works keyless (picker/Settings populate the live
+    82-model list even before a key is saved); new per-endpoint
+    `free_by_id_only` flag — commandcode omits pricing, and the old
+    `cost==0 ⇒ free` rule would have marked ALL models free; free now comes
+    from the id suffixes above. Tests added (14 pass in ravenbot-models).
+  - Frontend (src/lib/model-catalog.ts): added `CURATED.commandcode` (verified
+    2026-09-27 against the live list) — default `deepseek/deepseek-v4-flash`,
+    top models (Claude Sonnet/Opus 5, GPT-6 Sol, Gemini 3.5 Flash, Kimi K3,
+    Grok 4.7, GLM 5.3, DeepSeek V4/V4.1 Flash) + the 4 free models, with real
+    context windows; replaces the frozen backend list via `curate()` and the
+    stale minimalCatalog entry. No pricing invented (unknown = "—").
+  - ThreadView.svelte header overlap (user screenshot: thread title bleeding
+    into "$0.0000" cost pill): left cluster `flex-1 min-w-0`, right controls
+    `shrink-0`, header `gap-3 overflow-hidden`; thread-switcher button gets
+    `min-w-0` + truncatable label; "…Intelligence" label now `hidden xl:inline`
+    (icon-only at narrower widths); channel option label now uses
+    `t("thread.noChannel")` instead of a hardcoded string.
+  - Verification: cargo test --workspace 0 failures; `npm run check` 0/0;
+    `npm test` 30/30; `npx tauri build` exit 0 (fresh binary at
+    target/release/ravenbot). NOT run under tauri dev.
 - 2026-09-25 (P7 a11y pass — WCAG AA across all panels):
   - Explore-agent audit over ~20 components found 6 gap categories: unnamed
     icon-only interactives, mouse-only clickables, missing toggle state,

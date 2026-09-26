@@ -1310,9 +1310,9 @@
 
 <div class="flex flex-col h-full overflow-hidden select-none bg-[var(--surface-0)] text-[var(--text-primary)] font-sans relative">
   <!-- Sleek Top Header Bar (Grok Style) -->
-  <header class="h-[46px] px-4 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between z-20 shrink-0">
+  <header class="h-[46px] px-4 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between gap-3 overflow-hidden z-20 shrink-0">
     <!-- Left: Bot Avatar & Info + Thread Switcher Dropdown -->
-    <div class="flex items-center gap-3 min-w-0">
+    <div class="flex items-center gap-3 min-w-0 flex-1">
       <div class="relative size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] p-0.5 shrink-0 shadow-sm">
         <img
           src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
@@ -1421,10 +1421,10 @@
       </div>
 
       <!-- Thread Switcher Dropdown -->
-      <div class="relative ml-2">
+      <div class="relative ml-2 min-w-0 shrink">
         <button
           type="button"
-          class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-xs text-[var(--text-secondary)] flex items-center gap-1.5 cursor-pointer font-medium transition-colors"
+          class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-xs text-[var(--text-secondary)] flex items-center gap-1.5 cursor-pointer font-medium transition-colors min-w-0"
           onclick={(e) => {
             e.stopPropagation();
             showThreadDropdown = !showThreadDropdown;
@@ -1432,11 +1432,11 @@
           aria-expanded={showThreadDropdown}
           title={t("thread.switchThread")}
         >
-          <MessageSquare class="size-3 text-[var(--brand-text)]" />
-          <span class="max-w-[130px] truncate text-[11px] font-mono">
+          <MessageSquare class="size-3 text-[var(--brand-text)] shrink-0" />
+          <span class="min-w-0 max-w-[130px] truncate text-[11px] font-mono">
             {currentThread?.title || (threads.length > 0 ? "Threads (" + threads.length + ")" : "New Thread")}
           </span>
-          <ChevronDown class="size-3 text-[var(--text-tertiary)]" />
+          <ChevronDown class="size-3 text-[var(--text-tertiary)] shrink-0" />
         </button>
 
         {#if showThreadDropdown}
@@ -1484,7 +1484,7 @@
       <!-- Quick New Thread Button -->
       <button
         type="button"
-        class="h-7 px-2 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-xs text-[var(--text-secondary)] flex items-center gap-1 cursor-pointer transition-colors"
+        class="h-7 px-2 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-xs text-[var(--text-secondary)] flex items-center gap-1 cursor-pointer transition-colors shrink-0"
         onclick={createNewThread}
         title={t("thread.newThread")}
       >
@@ -1494,7 +1494,7 @@
     </div>
 
     <!-- Right Header Controls -->
-    <div class="flex items-center gap-2">
+    <div class="flex items-center gap-2 shrink-0">
       <!-- Session Telemetry Pill -->
       <button
         type="button"
@@ -1514,8 +1514,8 @@
         onclick={() => (showIntelligence = true)}
         title={t("thread.intelligence")}
       >
-        <Brain class="size-3 text-[var(--brand-text)]" />
-        <span class="hidden md:inline text-[11px]">{bot.name.split(" ")[0]} Intelligence</span>
+        <Brain class="size-3 text-[var(--brand-text)] shrink-0" />
+        <span class="hidden xl:inline text-[11px]">{bot.name.split(" ")[0]} Intelligence</span>
       </button>
 
       <!-- Thread Drawer Toggle Button -->
@@ -1547,7 +1547,7 @@
         <SimpleSelect
           value={activeChannelId ?? ""}
           options={[
-            { value: "", label: "No channel" },
+            { value: "", label: t("thread.noChannel") },
             ...channelOptions.map((c) => ({ value: c.id, label: c.name })),
           ]}
           onValueChange={(v) => (activeChannelId = v || null)}

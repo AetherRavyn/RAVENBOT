@@ -264,8 +264,11 @@ export function modelSummary(m: CatalogModel | null | undefined): string {
 
 // ── Curated provider facts layered over the frozen backend catalog ─────────
 // Only replaces fallback_models/default_model/description for the ids listed.
-// Gateways we cannot verify (commandcode, opencode, cline, tokenrouter, mimo)
-// keep whatever the backend ships.
+// Gateways we cannot verify (opencode, cline, tokenrouter, mimo) keep whatever
+// the backend ships. Command Code was verified live against
+// https://api.commandcode.ai/provider/v1/models (public, 82 models) on
+// 2026-09-27 — the list below is the no-network fallback; live discovery always
+// wins and returns the full catalog.
 
 interface CuratedProvider {
   description: string;
@@ -280,6 +283,25 @@ const mm = (
 ): CatalogModel => ({ id, name, ...extra });
 
 export const CURATED: Record<string, CuratedProvider> = {
+  commandcode: {
+    description: "Every top model on one API — Claude/GPT/Gemini + open & FREE models, pay-as-you-go",
+    default_model: "deepseek/deepseek-v4-flash",
+    models: [
+      mm("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash (CC)", { context_window: 1000000, supports_tools: true }),
+      mm("deepseek/deepseek-v4.1-flash", "DeepSeek V4.1 Flash (CC)", { context_window: 1000000, supports_tools: true }),
+      mm("claude-sonnet-5", "Claude Sonnet 5 (CC)", { context_window: 1000000, supports_vision: true, supports_tools: true, reasoning: true }),
+      mm("claude-opus-5", "Claude Opus 5 (CC)", { context_window: 1000000, supports_vision: true, supports_tools: true, reasoning: true }),
+      mm("gpt-6-sol", "GPT-6 Sol (CC)", { context_window: 1050000, supports_vision: true, supports_tools: true, reasoning: true }),
+      mm("google/gemini-3.5-flash", "Gemini 3.5 Flash (CC)", { context_window: 1000000, supports_vision: true, supports_tools: true }),
+      mm("moonshotai/Kimi-K3", "Kimi K3 (CC)", { context_window: 1000000, supports_tools: true }),
+      mm("xai/grok-4.7", "Grok 4.7 (CC)", { context_window: 500000, supports_tools: true, reasoning: true }),
+      mm("zai-org/GLM-5.3", "GLM 5.3 (CC)", { context_window: 1000000, supports_tools: true }),
+      mm("stealth/pixel-canary", "Pixel Canary (Free)", { context_window: 262144, is_free: true, supports_tools: true }),
+      mm("stealth/space-bunny-alpha", "Space Bunny Alpha (Free)", { context_window: 1000000, is_free: true }),
+      mm("poolside/laguna-s-2.1-free", "Laguna S 2.1 (Free)", { context_window: 256000, is_free: true, supports_tools: true }),
+      mm("inclusionai/ling-3.0-flash-sante:free", "Ling 3.0 Flash Sante (Free)", { context_window: 262144, is_free: true }),
+    ],
+  },
   anthropic: {
     description: "Claude Fable 5, Opus 5, Sonnet 5 & Haiku 4.5 — 1M-context frontier models",
     default_model: "claude-sonnet-5",
@@ -433,11 +455,7 @@ export function minimalCatalog(): CatalogProvider[] {
   });
 
   return [
-    provider("commandcode", "Command Code", "⚡", "OpenAI & Anthropic proxy, high-rate limits, free models", "cc_... or rc_...", "https://commandcode.ai", "COMMANDCODE_API_KEY", "claude-sonnet-4-6", [
-      mv("claude-sonnet-4-6", "Claude Sonnet 4 (CC)"),
-      m("deepseek/deepseek-v4-flash", "DeepSeek V4 Flash (CC)"),
-      mf("longcat-2.0:free", "LongCat 2.0 (Free)"),
-    ]),
+    provider("commandcode", "Command Code", "⚡", CURATED.commandcode.description, "cc_... or rc_...", "https://commandcode.ai", "COMMANDCODE_API_KEY", CURATED.commandcode.default_model, CURATED.commandcode.models),
     provider("opencode", "OpenCode", "💻", "OpenCode Zen coding agent & multi-model LLM gateway", "sk-...", "https://opencode.ai/auth", "OPENCODE_API_KEY", "claude-sonnet-4-5", [
       mv("claude-sonnet-4-5", "Claude Sonnet 4.5"),
       mv("gpt-5", "GPT-5"),
