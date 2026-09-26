@@ -1484,6 +1484,19 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     prop instead.
   - Verification: check 0/0, 30/30 tests, build OK, `npx tauri build` exit 0.
     NOT run under tauri dev.
+- 2026-09-27 (avatar-picker panel overflow in New Office wizard, user
+    screenshot):
+  - Symptom: expanding the Avatar panel inside CreateChatRoom's dialog pushed
+    the panel wider than the dialog (chips clipped at both edges, whole
+    content horizontally scrolled). Cause: the panel's min-content width =
+    the 10 `shrink-0` category chips (~850px); the panel is a grid item in
+    the dialog's auto track, whose automatic minimum size let it exceed the
+    dialog.
+  - Fix (width-chain, no visual change): `min-w-0` on AvatarPicker root,
+    category-chip scroller, style grid, and the CreateChatRoom panel wrapper.
+    Same recipe applies to any future wide-chip panel in a dialog.
+  - Verification: check 0/0, 30/30, build OK; release binary rebuilt.
+    NOT run under tauri dev.
 - 2026-09-25 (P7 a11y pass — WCAG AA across all panels):
   - Explore-agent audit over ~20 components found 6 gap categories: unnamed
     icon-only interactives, mouse-only clickables, missing toggle state,

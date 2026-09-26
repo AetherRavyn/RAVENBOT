@@ -92,7 +92,7 @@
   }
 </script>
 
-<div class="flex flex-col gap-4 p-1 text-[var(--text-primary)]">
+<div class="flex flex-col gap-4 p-1 min-w-0 text-[var(--text-primary)]">
   <!-- Avatar Preview Hero Area -->
   <div class="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-2xl bg-[var(--surface-1)] border border-[var(--hairline)] relative overflow-hidden shadow-inner">
 
@@ -153,7 +153,7 @@
       </Label>
     </div>
 
-    <div class="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+    <div class="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar min-w-0">
       {#each categories as cat}
         <button
           type="button"
@@ -168,7 +168,7 @@
   </div>
 
   <!-- Style Presets Grid -->
-  <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-40 overflow-y-auto no-scrollbar pr-1" role="radiogroup" aria-label={t("avatar.styleLibrary", { n: allStyles.length })}>
+  <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-40 overflow-y-auto no-scrollbar pr-1 min-w-0" role="radiogroup" aria-label={t("avatar.styleLibrary", { n: allStyles.length })}>
     {#each filteredStyles as s}
       {@const isSelected = selectedStyle === s.value && !useCustom}
       <button

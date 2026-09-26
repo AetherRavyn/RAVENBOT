@@ -227,7 +227,7 @@
       </div>
 
       {#if showAvatarPicker}
-        <div class="p-4 rounded-2xl border border-[var(--brand)]/40 bg-[var(--surface-1)] shadow-2xl">
+        <div class="p-4 rounded-2xl border border-[var(--brand)]/40 bg-[var(--surface-1)] shadow-2xl min-w-0">
           <div class="flex items-center justify-between mb-2">
             <span class="text-xs font-bold text-[var(--text-primary)]">{t("office.createAvatar")}</span>
             <Button variant="ghost" size="xs" onclick={() => (showAvatarPicker = false)}>{t("ui.done")}</Button>
