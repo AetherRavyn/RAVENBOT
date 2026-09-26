@@ -907,6 +907,7 @@
 
           <ChatMessageRow
             {isUser}
+            {isError}
             text={rawText}
             time={formatTime(msg.created_at)}
             grouped={!showAuthorHeader(messages, mi)}

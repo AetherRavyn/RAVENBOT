@@ -1464,6 +1464,26 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
   - Verification: `npm run check` 0/0; `npm test` 30/30 (i18n parity test
     green); `npm run build` OK. Release binary rebuilt. NOT run under
     tauri dev.
+- 2026-09-27 (hotfix: EVERY chat bubble rendered as "Model configuration
+    required" — user thought the Command Code key was broken):
+  - DB forensics (~/.local/share/com.ravenbot.desktop/ravenbot.db) showed the
+    agent replying FINE ("Hey! 👋" stored as plain Text) — the key works; the
+    bug was purely presentational.
+  - Root cause: ChatMessageRow renders `{#if errorCard}` — a snippet prop is
+    ALWAYS defined when the caller declares it, and both ThreadView and
+    ChatRoomView declare `{#snippet errorCard()}` unconditionally. Their
+    `isModelError`/`isError` consts were computed but never used to gate the
+    slot, so every user AND agent row replaced its bubble with the red error
+    card (introduced by the d1371fb ChatMessageRow extraction).
+  - Fix: "everything is a prop" — ChatMessageRow gained `isError?: boolean`
+    (gate: `{#if isError && errorCard}`); ThreadView passes
+    `isError={isModelError}`, ChatRoomView `{isError}`.
+  - GOTCHA: wrapping `{#snippet}` in `{#if}` inside a component's children is
+    NOT allowed (Svelte then requires a `children` snippet prop →
+    svelte-check "children does not exist in type Props"). Gate via a boolean
+    prop instead.
+  - Verification: check 0/0, 30/30 tests, build OK, `npx tauri build` exit 0.
+    NOT run under tauri dev.
 - 2026-09-25 (P7 a11y pass — WCAG AA across all panels):
   - Explore-agent audit over ~20 components found 6 gap categories: unnamed
     icon-only interactives, mouse-only clickables, missing toggle state,

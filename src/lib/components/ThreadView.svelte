@@ -1742,6 +1742,7 @@
 
             <ChatMessageRow
               {isUser}
+              isError={isModelError}
               text={hasChecklist ? (message.content.text || "") : rawContent}
               time={formatTime(message.created_at)}
               {grouped}

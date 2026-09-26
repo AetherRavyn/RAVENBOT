@@ -35,6 +35,8 @@
     author?: { name: string; specialty?: string } | null;
     /** Room: 32px user avatar on the trailing side of user rows. */
     userAvatar?: string;
+    /** Row carries a backend "⚠️ **Model Error:**" reply → render errorCard. */
+    isError?: boolean;
     errorCard?: Snippet;
     actions?: Snippet;
     aboveBubble?: Snippet;
@@ -57,6 +59,7 @@
     gutterAvatar = "",
     author = null,
     userAvatar = "",
+    isError = false,
     errorCard,
     actions,
     aboveBubble,
@@ -92,7 +95,7 @@
       </div>
     {/if}
 
-    {#if errorCard}
+    {#if isError && errorCard}
       {@render errorCard()}
     {:else if isUser}
       <div class="msg-bubble msg-bubble-user selection:bg-[var(--brand-soft)]">
