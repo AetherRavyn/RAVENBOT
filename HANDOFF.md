@@ -1304,6 +1304,14 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     net for the Content itself.
   - Verification: `npm run check` 0/0; `npm test` 30/30; `npm run build` done.
     NOT run under tauri dev.
+  - FOLLOW-UP: user still saw the bug after "restarting the app" — they run
+    the Sept-25 `src-tauri/target/release/ravenbot` binary, which embeds the
+    frontend at compile time, so source/build changes never reach it. Proved
+    the fix correct against the REAL component by mounting `SkillManager.svelte`
+    in a headless-chromium vite harness (stubbed `invoke`, full Tailwind CSS):
+    scrollWidth == clientWidth == 574, ✕ top-right, rows intact. Remedy:
+    `npx tauri build` (or run `tauri dev`). GOTCHA: after any frontend fix,
+    the release binary must be rebuilt or the user sees stale UI.
 - 2026-09-25 (P7 a11y pass — WCAG AA across all panels):
   - Explore-agent audit over ~20 components found 6 gap categories: unnamed
     icon-only interactives, mouse-only clickables, missing toggle state,
