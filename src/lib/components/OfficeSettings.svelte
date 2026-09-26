@@ -213,6 +213,7 @@
         directory: true,
         multiple: true,
         title: "Select project folder(s)",
+        parent: true,
       });
       if (!picked) return;
       const list = Array.isArray(picked) ? picked : [picked];

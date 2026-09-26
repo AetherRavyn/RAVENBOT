@@ -241,6 +241,7 @@
         directory: true,
         multiple: false,
         title: t("bot.selectFolder"),
+        parent: true,
       });
       if (typeof picked === "string") workingFolder = picked;
     } catch (e) {

@@ -1497,6 +1497,18 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     Same recipe applies to any future wide-chip panel in a dialog.
   - Verification: check 0/0, 30/30, build OK; release binary rebuilt.
     NOT run under tauri dev.
+- 2026-09-27 (native folder picker opened detached/off-screen — user
+    screenshot showed a sliver of the chooser at the screen edge):
+  - Both `openDialog` call sites (OfficeSettings.browseFolders,
+    BotSettings.browseWorkingFolder) now pass `parent: true`, making the
+    rfd/GTK chooser a child of the main window so Wayland centers it over
+    the app instead of mapping it unassociated (Hyprland placed the
+    parentless dialog at the workarea edge).
+  - Fallbacks already in the UI: manual path input + Enter in both panels.
+    If a future WM still misplaces it, the next step is a Hyprland
+    windowrule for the chooser title, not an app change.
+  - Verification: check 0/0, build OK; release binary rebuilt. NOT run
+    under tauri dev.
 - 2026-09-25 (P7 a11y pass — WCAG AA across all panels):
   - Explore-agent audit over ~20 components found 6 gap categories: unnamed
     icon-only interactives, mouse-only clickables, missing toggle state,
