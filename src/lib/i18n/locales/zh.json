@@ -729,7 +729,18 @@
     "staffBrief": "为这个办公室配置人员。",
     "ceoBadge": "CEO / 编排者",
     "ceoStaffDesc": "把这个办公室的任务交给 CEO，它会精确提议所需的智能体（规划、开发、测试、QA…）。批准名单即可瞬间入职——无需手动配置。",
-    "leadBadge": "主管"
+    "leadBadge": "主管",
+    "board": {
+      "title": "办公室看板",
+      "upNext": "即将开始",
+      "working": "进行中",
+      "done": "已完成",
+      "issues": "问题",
+      "progress": "{{done}}/{{total}} 已完成",
+      "hide": "隐藏看板",
+      "show": "显示看板",
+      "dagLive": "实时运行图"
+    }
   },
   "office": {
     "tabGeneral": "通用",

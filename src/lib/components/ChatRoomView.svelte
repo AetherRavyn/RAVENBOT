@@ -23,15 +23,15 @@
   import { notify } from "$lib/toast";
   import OfficeSettings from "$lib/components/OfficeSettings.svelte";
   import OfficeMemoryPanel from "$lib/components/OfficeMemoryPanel.svelte";
-  import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
   import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
   import PlanDag from "$lib/components/chat/PlanDag.svelte";
+  import OfficeBoard from "$lib/components/chat/OfficeBoard.svelte";
+  import type { BoardNode } from "$lib/components/chat/OfficeBoard.svelte";
   import RunTimelineStrip from "$lib/components/chat/RunTimeline.svelte";
   import { RunTimeline as RunTimelineState } from "$lib/chat/runTimeline.svelte";
-  import { showAuthorHeader, authorHue } from "$lib/chat/grouping";
+  import { showAuthorHeader, authorHue, isGhostContent } from "$lib/chat/grouping";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { StreamReveal } from "$lib/chat/streamReveal.svelte";
-  import { smoothHeight } from "$lib/chat/smoothHeight";
   import { prefersReducedMotion } from "$lib/a11y";
   import {
     Building2,
@@ -253,36 +253,117 @@
   let userAvatar = $state<string | null>(null);
   // Live office telemetry from the runtime stream (per-agent status + usage)
   let agentStatus = $state<Record<string, string>>({});
-  // Live per-agent token streams (lanes) during a team run
-  let lanes = $state<Record<string, string>>({});
+  // Live token streams during a team run — keyed by graph NODE id (falling
+  // back to `bot:<id>` when a delta can't be attributed), so two parallel
+  // nodes run by the same bot never mix. `rounds` keeps the finished rounds'
+  // text when the runtime emits `clear` — progress notes, not lost text.
+  interface Lane {
+    botId: string;
+    text: string;
+    rounds: string[];
+  }
+  let lanes = $state<Record<string, Lane>>({});
   // Current tool each agent is running (live)
   let agentTool = $state<Record<string, string>>({});
+  // Office board (planner → kanban → live DAG) fed by plan_ready/node_* events
+  let boardGoal = $state("");
+  let boardNodes = $state<BoardNode[]>([]);
+  // Threads owned by the current room run: every node thread opened so far.
+  // Events from any other thread are ignored (no cross-run clobbering).
+  const activeThreads = new Set<string>();
+  const threadToNode = new Map<string, string>();
   // Live activity strip: what each agent is doing right now (P5).
   const runTimeline = new RunTimelineState();
-  // Word-by-word reveal per agent lane (same engine as ThreadView streaming)
+  // Word-by-word reveal per live lane (same engine as ThreadView streaming)
   const laneReveals = new Map<string, StreamReveal>();
-  // Rows without a resolvable bot id share this inert reveal instead of
+  // Lanes without a resolvable key share this inert reveal instead of
   // poisoning the map with a ""-keyed live lane.
   const inertReveal = new StreamReveal();
-  function laneRevealOf(botId: string): StreamReveal {
-    if (!botId) return inertReveal;
-    let r = laneReveals.get(botId);
+  function laneRevealOf(key: string): StreamReveal {
+    if (!key) return inertReveal;
+    let r = laneReveals.get(key);
     if (!r) {
       r = new StreamReveal();
-      laneReveals.set(botId, r);
+      laneReveals.set(key, r);
     }
     return r;
   }
   $effect(() => {
     const live = new Set<string>();
-    for (const [botId, text] of Object.entries(lanes)) {
-      live.add(botId);
-      laneRevealOf(botId).track(text);
+    for (const [key, lane] of Object.entries(lanes)) {
+      live.add(key);
+      laneRevealOf(key).track(lane.text);
     }
-    for (const [botId, r] of laneReveals) {
-      if (!live.has(botId)) r.track("");
+    for (const [key, r] of laneReveals) {
+      if (!live.has(key)) r.track("");
     }
   });
+
+  function memberForBot(botId: string) {
+    return members.find((m: any) => m.bot?.id === botId);
+  }
+  function patchNode(nodeId: string, patch: Partial<BoardNode>) {
+    boardNodes = boardNodes.map((n) => (n.nodeId === nodeId ? { ...n, ...patch } : n));
+  }
+  function upsertNode(node: BoardNode) {
+    if (boardNodes.some((n) => n.nodeId === node.nodeId)) patchNode(node.nodeId, node);
+    else boardNodes = [...boardNodes, node];
+  }
+  // Wipe everything tied to the current run (room switch, new dispatch).
+  function resetRun() {
+    if (commitTimer) {
+      window.clearTimeout(commitTimer);
+      commitTimer = undefined;
+    }
+    lanes = {};
+    agentStatus = {};
+    agentTool = {};
+    boardGoal = "";
+    boardNodes = [];
+    activeThreads.clear();
+    threadToNode.clear();
+    runTimeline.reset();
+  }
+  // Hold-until-commit: keep the live lanes rendered until the refetched
+  // persisted messages land, THEN fade them out (no blank-gap flash).
+  let commitTimer: number | undefined;
+  function commitLanes() {
+    if (commitTimer) window.clearTimeout(commitTimer);
+    commitTimer = window.setTimeout(() => {
+      commitTimer = undefined;
+      lanes = {};
+      agentTool = {};
+      agentStatus = {};
+      activeThreads.clear();
+      threadToNode.clear();
+    }, 500);
+  }
+  function checklistState(s: unknown): BoardNode["state"] {
+    switch (String(s)) {
+      case "InProgress": return "running";
+      case "Completed": return "done";
+      case "Failed": return "failed";
+      case "Skipped": return "skipped";
+      default: return "pending";
+    }
+  }
+  // Fallback board when the run finished while this view wasn't listening
+  // (no live events): rehydrate columns from the returned checklist. No deps
+  // are available, so the DAG section stays hidden.
+  function rehydrateBoard(res: any) {
+    if (boardNodes.length > 0) return;
+    const list = Array.isArray(res?.checklist) ? res.checklist : [];
+    if (list.length === 0) return;
+    boardGoal = String(res?.goal || "");
+    boardNodes = list.map((it: any, i: number) => ({
+      nodeId: `post-${i}`,
+      botId: String(it.bot_id || ""),
+      label: String(it.label || "Task"),
+      dependsOn: [] as string[],
+      state: checklistState(it.status),
+      preview: String(it.result || ""),
+    }));
+  }
   let officeTokens = $state(0);
   let officeCost = $state(0.0);
   let unlisten: UnlistenFn | null = null;
@@ -333,12 +414,13 @@
 
   // Agents with live work, and whether the team is currently active at all
   // (covers Plan mode, which does not set `sending`).
+  let laneBotIds = $derived(new Set(Object.values(lanes).map((l) => l.botId)));
   let activeMembers = $derived(
     members.filter((m) => {
       const st = agentStatus[m.bot?.id];
       return (
         (st && st !== "idle") ||
-        ((lanes[m.bot?.id] || "").length > 0) ||
+        laneBotIds.has(m.bot?.id) ||
         Boolean(agentTool[m.bot?.id])
       );
     })
@@ -405,10 +487,7 @@
     if (room?.id) {
       threadId = null;
       messages = [];
-      agentStatus = {};
-      lanes = {};
-      agentTool = {};
-      runTimeline.reset();
+      resetRun();
       officeTokens = 0;
       officeCost = 0;
       load();
@@ -419,38 +498,108 @@
     listen<any>("agent-stream", (event) => {
         const p = event.payload;
         if (!p) return;
+        const kind = String(p.kind || "");
+
+        // Board topology events also own thread attribution, so they are
+        // handled before the thread gate below.
+        if (kind === "plan_ready") {
+          if (p.thread_id) activeThreads.add(String(p.thread_id));
+          boardGoal = String(p.goal || "");
+          boardNodes = (Array.isArray(p.nodes) ? p.nodes : []).map((n: any) => ({
+            nodeId: String(n.node_id ?? ""),
+            botId: String(n.bot_id ?? ""),
+            label: String(n.label || "Task"),
+            dependsOn: (Array.isArray(n.depends_on) ? n.depends_on : []).map(String),
+            state: "pending" as const,
+          }));
+          return;
+        }
+        if (kind === "node_open") {
+          const nodeId = String(p.node_id ?? "");
+          if (!nodeId) return;
+          if (p.node_thread_id) {
+            activeThreads.add(String(p.node_thread_id));
+            threadToNode.set(String(p.node_thread_id), nodeId);
+          }
+          if (boardNodes.some((n) => n.nodeId === nodeId)) {
+            // Keep the plan_ready label/deps — just flip to working.
+            patchNode(nodeId, { state: "running" });
+          } else {
+            upsertNode({
+              nodeId,
+              botId: String(p.bot_id ?? ""),
+              label: String(p.instruction || "Working"),
+              dependsOn: [],
+              state: "running",
+            });
+          }
+          return;
+        }
+        if (kind === "node_finished") {
+          patchNode(String(p.node_id ?? ""), {
+            state: p.state === "failed" ? "failed" : "done",
+            preview: String(p.preview || ""),
+          });
+          if (Array.isArray(p.skipped)) {
+            for (const s of p.skipped) patchNode(String(s), { state: "skipped" });
+          }
+          return;
+        }
+        if (kind === "graph_status") {
+          for (const n of Array.isArray(p.nodes) ? p.nodes : []) {
+            if (n?.state) patchNode(String(n.node_id ?? ""), { state: String(n.state) as BoardNode["state"] });
+          }
+          return;
+        }
+
+        // Everything else must belong to THIS room's current run — the room
+        // thread or a node thread opened by it. (Fixes cross-run/cross-room
+        // lanes being clobbered by foreign streams.)
+        const tid = p.thread_id ? String(p.thread_id) : "";
+        if (tid && tid !== String(threadId || "") && !activeThreads.has(tid)) return;
         runTimeline.track(p);
-        if (p.kind === "status") {
+
+        if (kind === "status") {
           const state = p.state === "done" ? "idle" : p.state;
           agentStatus = { ...agentStatus, [p.bot_id]: state };
-        } else if (p.kind === "usage") {
+        } else if (kind === "usage") {
           officeTokens += p.tokens || 0;
           officeCost += p.cost || 0;
-        } else if (p.kind === "delta") {
-          // Live lane: stream tokens for member agents
-          if (p.bot_id && members.some((m) => m.bot?.id === p.bot_id)) {
-            lanes = { ...lanes, [p.bot_id]: (lanes[p.bot_id] || "") + (p.content || "") };
-            scrollToBottom();
-          }
-        } else if (p.kind === "tool_started") {
+        } else if (kind === "delta") {
+          // Route the token stream to its NODE lane (parallel same-bot nodes
+          // stay separate); unattributed deltas fall back to a per-bot lane.
+          const botId = String(p.bot_id || "");
+          if (!botId || !memberForBot(botId)) return;
+          const key = threadToNode.get(tid) || `bot:${botId}`;
+          const cur = lanes[key] || { botId, text: "", rounds: [] };
+          lanes = { ...lanes, [key]: { ...cur, text: cur.text + (p.content || "") } };
+          scrollToBottom();
+        } else if (kind === "tool_started") {
           if (p.bot_id) {
             agentTool = { ...agentTool, [p.bot_id]: p.name || "tool" };
             agentStatus = { ...agentStatus, [p.bot_id]: "running_tool" };
           }
-        } else if (p.kind === "tool_finished") {
+        } else if (kind === "tool_finished") {
           if (p.bot_id) {
             const next = { ...agentTool };
             delete next[p.bot_id];
             agentTool = next;
           }
-        } else if (p.kind === "clear") {
-          if (p.bot_id) {
-            lanes = { ...lanes, [p.bot_id]: "" };
-          }
-        } else if (p.kind === "done") {
-          lanes = {};
-          agentTool = {};
-          agentStatus = {};
+        } else if (kind === "clear") {
+          // A new model round begins: KEEP the finished round's text as a
+          // progress note instead of wiping it.
+          const key = threadToNode.get(tid) || `bot:${p.bot_id}`;
+          const cur = lanes[key];
+          if (!cur) return;
+          const note = cur.text.trim();
+          lanes = {
+            ...lanes,
+            [key]: { ...cur, text: "", rounds: note ? [...cur.rounds, note] : cur.rounds },
+          };
+        } else if (kind === "done") {
+          // Backend emits `done` only AFTER posting the persisted messages.
+          // Hold the lanes until send()/dispatchPlan() refetches and commits
+          // (commitLanes) — no blank-gap flash.
         }
       })
       .then((fn) => {
@@ -462,6 +611,7 @@
   onDestroy(() => {
     unlisten?.();
     unlisten = null;
+    if (commitTimer) window.clearTimeout(commitTimer);
     for (const r of laneReveals.values()) r.stop();
   });
 
@@ -542,6 +692,7 @@
     if (planTasks.length === 0) { planError = "Add at least one task."; return; }
     planError = null;
     planGenerating = true;
+    resetRun();
     // Optimistically show the dispatched goal in the room feed.
     const tempUserMsg = {
       id: "temp-plan-" + Date.now(),
@@ -584,10 +735,12 @@
         staticEntries = false;
         scrollToBottom(true);
       }
+      rehydrateBoard(res);
     } catch (e: any) {
       notify(`Plan dispatch failed: ${String(e)}`, "error");
     } finally {
       planGenerating = false;
+      commitLanes();
     }
   }
 
@@ -601,8 +754,7 @@
     sending = true;
     newMessage = "";
     pendingAttachments = [];
-    lanes = {};
-    agentStatus = {};
+    resetRun();
 
     // Optimistically insert user prompt
     const tempUserMsg = {
@@ -632,12 +784,25 @@
       messages = (await invoke("list_messages", { threadId })) as any[];
       await tick();
       staticEntries = false;
+      rehydrateBoard(res);
+      scrollToBottom(true);
     } catch (e) {
-      console.error("Office dispatch error:", e);
-      staticEntries = false;
+      // Never swallow the failure: toast it, and still refetch so persisted
+      // agent replies surface even if the call rejected late.
+      notify(`Office dispatch failed: ${String(e)}`, "error");
+      if (threadId) {
+        try {
+          staticEntries = true;
+          messages = (await invoke("list_messages", { threadId })) as any[];
+        } catch {
+          /* keep the optimistic row if the refetch also failed */
+        } finally {
+          staticEntries = false;
+        }
+      }
     } finally {
       sending = false;
-      lanes = {};
+      commitLanes();
       scrollToBottom();
     }
   }
@@ -876,6 +1041,13 @@
     </div>
   {/if}
 
+  <!-- Office board: planner → kanban → live dependency graph -->
+  {#if boardNodes.length > 0}
+    <div class="px-4 pt-2.5 shrink-0 min-w-0">
+      <OfficeBoard goal={boardGoal} nodes={boardNodes} {members} runActive={teamActive} />
+    </div>
+  {/if}
+
   <!-- Run timeline: live "who is doing what" pills from agent-stream -->
   {#if runTimeline.events.length > 0}
     <RunTimelineStrip
@@ -1004,7 +1176,7 @@
           </div>
         {/each}
 
-        <!-- Live team activity: exactly what each specialist is doing now -->
+        <!-- Live team activity: streamed node lanes through the shared row shell -->
         {#if teamActive}
           <div class="space-y-3">
             <div class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
@@ -1012,49 +1184,82 @@
               Live team activity · {activeMembers.length > 0 ? `${activeMembers.length} working` : "orchestrating"}
             </div>
 
-            {#each activeMembers as m (m.bot?.id)}
-              {@const st = agentStatus[m.bot?.id] || "idle"}
-              {@const laneReveal = laneRevealOf(m.bot?.id ?? "")}
-              {@const laneText = laneReveal.shown}
-              {@const toolName = agentTool[m.bot?.id]}
-              <div class="flex gap-3 justify-start animate-rise-in">
-                <div class="relative size-8 shrink-0 mt-1">
-                  <img
-                    src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, m.bot?.avatar_style || "avataaars")}
-                    alt={m.rank}
-                    class="size-8 rounded-xl object-cover border border-[var(--hairline)] shadow-sm"
-                  />
-                  <span class="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-0)] {statusDot(st)}"></span>
-                </div>
+            {#snippet statusRow(name: string, avatar: string, color: string, toolName?: string)}
+              <div class="flex items-center gap-2 px-1 min-w-0 animate-rise-in">
+                <img src={avatar} alt="" class="size-6 rounded-lg object-cover border border-[var(--hairline)] shrink-0" />
+                <span class="text-[11px] font-bold truncate" style={`color: ${color}`}>{name}</span>
+                {#if toolName}
+                  <span class="font-mono text-[9px] px-1.5 py-0.5 rounded bg-info/10 border border-info/30 text-info inline-flex items-center gap-1 shrink-0">
+                    <Wrench class="size-2.5" /> {toolName}
+                  </span>
+                {/if}
+                <span class="rounded-[var(--radius-bubble)] px-3.5 py-2 bg-[var(--surface-1)] inline-flex gap-1 items-center">
+                  <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
+                </span>
+              </div>
+            {/snippet}
 
-                <div class="min-w-0 flex-1 max-w-[min(80%,720px)] space-y-1.5">
-                  <div class="flex items-center gap-2 min-w-0">
-                    <span class="text-[11px] font-bold truncate" style={`color: hsl({authorHue(m.bot?.id || m.rank)} 55% 68%)`}>{m.bot?.name || m.rank}</span>
-                    <span class="text-[10px] text-[var(--text-muted)] truncate hidden sm:inline">{m.rank}</span>
-                    <span class="ml-auto shrink-0">
-                      {#if toolName}
+            {#each Object.entries(lanes) as [key, lane] (key)}
+              {@const m = memberForBot(lane.botId)}
+              {@const st = agentStatus[lane.botId] || "idle"}
+              {@const reveal = laneRevealOf(key)}
+              {@const toolName = agentTool[lane.botId]}
+              {@const nodeName = boardNodes.find((n) => n.nodeId === key)?.label}
+              {@const name = m?.bot?.name || m?.rank || t("ui.fallbackAgent")}
+              {@const avatar = m?.bot?.avatar_url || getDiceBearUrl(name, m?.bot?.avatar_style || "bottts")}
+              {@const color = `hsl(${authorHue(lane.botId || name)} 55% 68%)`}
+              {#if reveal.shown || lane.rounds.length}
+                <ChatMessageRow
+                  isUser={false}
+                  text={reveal.body}
+                  streamTail={reveal.tail}
+                  grouped={false}
+                  showMeta={false}
+                  ghost={isGhostContent(reveal.body)}
+                  gutter={true}
+                  gutterAvatar={avatar}
+                  author={{ name, specialty: nodeName || m?.specialty }}
+                  authorColor={color}
+                >
+                  {#snippet aboveBubble()}
+                    {#if lane.rounds.length}
+                      <div class="space-y-1 px-3 min-w-0">
+                        {#each lane.rounds as round, ri (ri)}
+                          <div class="text-[11px] text-[var(--text-muted)] leading-snug border-l-2 border-[var(--hairline)] pl-2.5 line-clamp-3">{round}</div>
+                        {/each}
+                      </div>
+                    {/if}
+                  {/snippet}
+                  {#snippet belowBubble()}
+                    {#if toolName}
+                      <div class="px-3">
                         <span class="font-mono text-[9px] px-1.5 py-0.5 rounded bg-info/10 border border-info/30 text-info inline-flex items-center gap-1">
                           <Wrench class="size-2.5" /> {toolName}
                         </span>
-                      {:else}
-                        <span class="font-mono text-[9px] px-1.5 py-0.5 rounded {st === "thinking" ? "bg-warning/10 border border-warning/30 text-warning" : "bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)]"}">
-                          {st === "thinking" ? "thinking" : st === "waiting_on_user" ? "waiting" : "working"}
+                      </div>
+                    {:else if st === "thinking" || st === "running_tool" || st === "waiting_on_user"}
+                      <div class="px-3">
+                        <span class="font-mono text-[9px] px-1.5 py-0.5 rounded bg-warning/10 border border-warning/30 text-warning">
+                          {st === "waiting_on_user" ? "waiting" : "thinking"}
                         </span>
-                      {/if}
-                    </span>
-                  </div>
+                      </div>
+                    {/if}
+                  {/snippet}
+                </ChatMessageRow>
+              {:else}
+                {@render statusRow(name, avatar, color, toolName)}
+              {/if}
+            {/each}
 
-                  {#if laneText}
-                    <div use:smoothHeight class="msg-bubble msg-bubble-agent">
-                      <MarkdownRenderer content={laneReveal.body} streamTail={laneReveal.tail} />
-                    </div>
-                  {:else}
-                    <div class="rounded-[var(--radius-bubble)] px-3.5 py-2 bg-[var(--surface-1)] w-fit">
-                      <span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>
-                    </div>
-                  {/if}
-                </div>
-              </div>
+            <!-- Active bots that haven't streamed a token yet (pre-first-delta) -->
+            {#each activeMembers.filter((m: any) => !laneBotIds.has(m.bot?.id)) as m (m.bot?.id)}
+              {@const name = m?.bot?.name || m.rank || "?"}
+              {@render statusRow(
+                name,
+                m?.bot?.avatar_url || getDiceBearUrl(name, m?.bot?.avatar_style || "bottts"),
+                `hsl(${authorHue(m.bot?.id || name)} 55% 68%)`,
+                agentTool[m.bot?.id],
+              )}
             {/each}
 
             {#if activeMembers.length === 0}

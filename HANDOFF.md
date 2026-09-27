@@ -1639,6 +1639,40 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
   - Verification: `cargo test --workspace` all green (engines 30, mcp 20,
     incl. new tests); scoped clippy shows zero new warnings.
     NOT run under tauri dev.
+- 2026-09-27 (office chat: lost-text fix + live planner→kanban→DAG board):
+  - Root causes of "no text staying in office chat": room `agent-stream` listener
+    ignored thread_id (per-node threads clobbered lanes), lanes keyed by bot_id
+    (parallel same-bot nodes mixed), `clear` wiped round text, `done` emitted
+    BEFORE messages were posted (blank gap), and `send()` swallowed errors.
+  - Backend (P8-additive, ad-hoc JSON kinds on `agent-stream`; StreamEvent enum
+    untouched): executor.rs gained `NodeEventSink` + `with_node_events` and emits
+    `node_open{node_id,bot_id,node_thread_id,instruction}`,
+    `node_finished{state:done|failed,preview,skipped[]}`, `graph_status{nodes}` (skips).
+    lib.rs emits `plan_ready{thread_id,goal,nodes[{node_id,bot_id,label,depends_on}]}`
+    in `execute_graph` + `send_to_chatroom`, moved `done` to AFTER all
+    `post_bot_message` calls (Ok and Err arms), and posts PURE agent output
+    (dropped the `**instruction**\n\n` header — task text now lives on the board).
+  - Frontend: ChatRoomView lanes keyed by NODE id via node_thread_id map +
+    `activeThreads` gate (foreign-thread events ignored); `clear` keeps finished
+    rounds as progress notes; `done` = hold-until-commit (lanes stay until the
+    refetch lands, then `commitLanes()` fades after 500ms); `send()` catch now
+    toasts + refetches; live lanes render through ChatMessageRow (gutter/author/
+    streamTail/ghost). NEW `chat/OfficeBoard.svelte`: collapsible kanban
+    (Up next/Working/Done/Issues) + live PlanDag fed by plan_ready/node_* and
+    rehydrated from `res.checklist` when no live events were seen. PlanDag gained
+    optional `stateFor(idx)` → per-node border tint + running pulse.
+  - types.ts fixed to Rust reality: MessageContent tags + ChecklistStatus are
+    PascalCase (`#[serde(tag="type")]` has no rename_all) — revives the
+    ThreadView checklist accordion (was dead code). `isGhostContent` moved to
+    `$lib/chat/grouping` (shared by ThreadView + ChatRoomView). New i18n
+    `room.board.*` in all 6 locales.
+  - GOTCHAS: (1) ad-hoc board events arrive with NO `thread_id` field of the
+    typed kinds — node attribution goes through `node_open.node_thread_id`;
+    (2) `$derived<T>(() => …)` derives the FUNCTION — use `$derived.by`;
+    (3) OfficeBoard auto-collapses when `runActive` falls (sawActive latch).
+  - Verified: `npm run check` 0/0; vitest 6 files 30/30; `npm run build` OK;
+    `cargo test --workspace` exit 0; `npx tauri build` exit 0 (user must
+    relaunch target/release/ravenbot to see it). NOT run under tauri dev.
 - 2026-09-25 (P8 batch 4 — connectors + plugins UI):
   - ConnectorCenter.svelte: McpServerSummary interface gained optional
     url/transport. New custom-server states `customTransport` (stdio|http),

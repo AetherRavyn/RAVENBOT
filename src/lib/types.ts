@@ -52,7 +52,7 @@ export interface Thread {
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
 
-export type ChecklistStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped";
+export type ChecklistStatus = "Pending" | "InProgress" | "Completed" | "Failed" | "Skipped";
 
 export interface Attachment {
   id: string;
@@ -70,11 +70,13 @@ export interface ChecklistItem {
   bot_id: string | null;
 }
 
+// Rust serializes this enum with `#[serde(tag = "type")]` and no rename_all,
+// so the discriminants are the PascalCase variant names.
 export type MessageContent =
-  | { type: "text"; text: string }
-  | { type: "checklist"; text: string | null; items: ChecklistItem[] }
-  | { type: "tool_call"; tool_name: string; arguments: any }
-  | { type: "tool_result"; tool_name: string; result: any; is_error: boolean };
+  | { type: "Text"; text: string; sources?: unknown[] }
+  | { type: "Checklist"; text: string | null; items: ChecklistItem[] }
+  | { type: "ToolCall"; tool_name: string; arguments: any }
+  | { type: "ToolResult"; tool_name: string; result: any; is_error: boolean };
 
 export interface Message {
   id: string;

@@ -23,3 +23,10 @@ export function authorHue(key: string): number {
   for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
   return h % 360;
 }
+
+/** OpenBot ghost variant: replies that are only a code block or only a table
+ * render edge-to-edge with no bubble chrome. */
+export function isGhostContent(text: string): boolean {
+  const t = (text || "").trim();
+  return /^```[\s\S]*```\s*$/.test(t) || /^\|.+\n\|[-| :]+\n/.test(t);
+}

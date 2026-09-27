@@ -729,7 +729,18 @@
     "staffBrief": "Pourvoyez ce bureau en personnel.",
     "ceoBadge": "PDG / ORCHESTRATEUR",
     "ceoStaffDesc": "Donnez au PDG la mission de ce bureau et il proposera exactement les agents nécessaires (planificateur, développeurs, testeurs, QA…). Validez l'équipe et ils sont embauchés instantanément, sans configuration manuelle.",
-    "leadBadge": "Chef"
+    "leadBadge": "Chef",
+    "board": {
+      "title": "Tableau du bureau",
+      "upNext": "À venir",
+      "working": "En cours",
+      "done": "Terminé",
+      "issues": "Incidents",
+      "progress": "{{done}}/{{total}} terminés",
+      "hide": "Masquer le tableau",
+      "show": "Afficher le tableau",
+      "dagLive": "Graphe d'exécution en direct"
+    }
   },
   "office": {
     "tabGeneral": "Général",

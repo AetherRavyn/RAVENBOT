@@ -729,7 +729,18 @@
     "staffBrief": "Staff this office.",
     "ceoBadge": "CEO / ORCHESTRATOR",
     "ceoStaffDesc": "Give the CEO this office's mission and it will propose exactly which agents it needs (planner, builders, testers, QA…). Approve the roster and they're hired instantly — no manual bot setup.",
-    "leadBadge": "Lead"
+    "leadBadge": "Lead",
+    "board": {
+      "title": "Office board",
+      "upNext": "Up next",
+      "working": "Working",
+      "done": "Done",
+      "issues": "Issues",
+      "progress": "{{done}}/{{total}} done",
+      "hide": "Hide board",
+      "show": "Show board",
+      "dagLive": "Live run graph"
+    }
   },
   "office": {
     "tabGeneral": "General",

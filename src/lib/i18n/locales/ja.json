@@ -729,7 +729,18 @@
     "staffBrief": "このオフィスに人員を配置してください。",
     "ceoBadge": "CEO / オーケストレーター",
     "ceoStaffDesc": "CEOにこのオフィスのミッションを伝えれば、必要なエージェント（プランナー、開発、テスター、QA…）を正確に提案します。メンバーを承認すると即座に雇用され、手動の設定は不要です。",
-    "leadBadge": "リード"
+    "leadBadge": "リード",
+    "board": {
+      "title": "オフィスボード",
+      "upNext": "次以降",
+      "working": "作業中",
+      "done": "完了",
+      "issues": "問題",
+      "progress": "{{done}}/{{total}} 完了",
+      "hide": "ボードを隠す",
+      "show": "ボードを表示",
+      "dagLive": "ライブ実行グラフ"
+    }
   },
   "office": {
     "tabGeneral": "一般",

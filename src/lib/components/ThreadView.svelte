@@ -232,18 +232,13 @@
   let stickToLatest = $state(true);
   let staticEntries = $state(true);
   import { StreamReveal } from "$lib/chat/streamReveal.svelte";
+  import { isGhostContent } from "$lib/chat/grouping";
   import { prefersReducedMotion, announce } from "$lib/a11y";
   import ChatActionMarker from "$lib/components/chat/ChatActionMarker.svelte";
   import { t } from "$lib/i18n";
 
   let textareaRef = $state<HTMLTextAreaElement | null>(null);
 
-  // OpenBot ghost variant: replies that are only a code block or only a table
-  // render edge-to-edge with no bubble chrome.
-  function isGhostContent(text: string): boolean {
-    const t = (text || "").trim();
-    return /^```[\s\S]*```\s*$/.test(t) || /^\|.+\n\|[-| :]+\n/.test(t);
-  }
   let deepSearchActive = $state(false);
   let thinkActive = $state(false);
   let copiedMessageId = $state<string | null>(null);
@@ -1732,10 +1727,10 @@
             {@const isUser = isUserMessage(message)}
             {@const isModelError = typeof message.content === "string" && message.content.includes("⚠️ **Model Error:**")}
             {@const rawContent = typeof message.content === "string" ? message.content : message.content?.text || JSON.stringify(message.content)}
-            {@const hasChecklist = message.content?.type === "checklist" || (typeof message.content === "object" && message.content?.items)}
+            {@const hasChecklist = message.content?.type === "Checklist" || (typeof message.content === "object" && message.content?.items)}
             {@const messageSources = Array.isArray(message.content?.sources) ? message.content.sources : []}
             {@const messageImages = Array.isArray(message.attachments) ? message.attachments.filter((a: any) => a?.is_image && a?.data) : []}
-            {@const toolAudioB64 = message.content?.type === "tool_result" && message.content?.result?.audio_b64 ? message.content.result.audio_b64 : null}
+            {@const toolAudioB64 = message.content?.type === "ToolResult" && message.content?.result?.audio_b64 ? message.content.result.audio_b64 : null}
             {@const grouped = mi > 0 && isUserMessage(messages[mi - 1]) === isUser}
             {@const continuesRun = mi < messages.length - 1 && isUserMessage(messages[mi + 1]) === isUser}
             {@const ghost = !isUser && !hasChecklist && isGhostContent(rawContent)}
@@ -1805,11 +1800,11 @@
                     <div class="p-3 border-t border-[var(--hairline)] space-y-1.5 bg-[var(--surface-0)]">
                       {#each message.content.items as item}
                         <div class="flex items-center gap-2.5 text-xs bg-[var(--surface-2)] p-2.5 rounded-xl border border-[var(--hairline)]">
-                          {#if item.status === "completed"}
+                          {#if item.status === "Completed"}
                             <CheckCircle2 class="size-4 text-success shrink-0" />
-                          {:else if item.status === "failed"}
+                          {:else if item.status === "Failed"}
                             <XCircle class="size-4 text-danger shrink-0" />
-                          {:else if item.status === "in_progress"}
+                          {:else if item.status === "InProgress"}
                             <Loader2 class="size-4 text-[var(--brand-text)] animate-spin shrink-0" />
                           {:else}
                             <Circle class="size-4 text-[var(--text-muted)] shrink-0" />

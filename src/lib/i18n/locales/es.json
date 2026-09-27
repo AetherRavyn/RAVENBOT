@@ -729,7 +729,18 @@
     "staffBrief": "Asigna personal a esta oficina.",
     "ceoBadge": "CEO / ORQUESTADOR",
     "ceoStaffDesc": "Dale al CEO la misión de esta oficina y propondrá exactamente qué agentes se necesitan (planificador, constructores, testers, QA…). Aprueba la plantilla y se incorporan al instante, sin configuración manual.",
-    "leadBadge": "Líder"
+    "leadBadge": "Líder",
+    "board": {
+      "title": "Panel de oficina",
+      "upNext": "A continuación",
+      "working": "En curso",
+      "done": "Hecho",
+      "issues": "Incidencias",
+      "progress": "{{done}}/{{total}} hechos",
+      "hide": "Ocultar panel",
+      "show": "Mostrar panel",
+      "dagLive": "Grafo de ejecución en vivo"
+    }
   },
   "office": {
     "tabGeneral": "General",

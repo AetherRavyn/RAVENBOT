@@ -729,7 +729,18 @@
     "staffBrief": "Besetze dieses Büro.",
     "ceoBadge": "CEO / ORCHESTRATOR",
     "ceoStaffDesc": "Gib dem CEO die Mission dieses Büros, und er schlägt genau die nötigen Agenten vor (Planer, Entwickler, Tester, QA…). Roster bestätigen — die Agenten sind sofort eingestellt, ganz ohne manuelles Setup.",
-    "leadBadge": "Leitung"
+    "leadBadge": "Leitung",
+    "board": {
+      "title": "Büro-Tafel",
+      "upNext": "Als Nächstes",
+      "working": "In Arbeit",
+      "done": "Fertig",
+      "issues": "Probleme",
+      "progress": "{{done}}/{{total}} fertig",
+      "hide": "Tafel ausblenden",
+      "show": "Tafel einblenden",
+      "dagLive": "Live-Ausführungsgraph"
+    }
   },
   "office": {
     "tabGeneral": "Allgemein",

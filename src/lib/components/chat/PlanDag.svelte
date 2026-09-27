@@ -14,12 +14,31 @@
   interface Props {
     tasks: DagTask[];
     members: MemberLite[];
+    /** Optional live node state ("pending"|"running"|"done"|"failed"|"skipped")
+     *  for the office board's run-graph; the plan modal leaves it undefined. */
+    stateFor?: (index: number) => string | undefined;
   }
 
-  let { tasks, members }: Props = $props();
+  let { tasks, members, stateFor }: Props = $props();
 
   let layout = $derived(dagLayout(tasks));
   let edges = $derived(dagEdges(tasks));
+
+  function nodeBorderColor(idx: number): string {
+    if (!stateFor) return "color-mix(in srgb, var(--brand) 35%, transparent)";
+    switch (stateFor(idx)) {
+      case "running":
+        return "var(--brand)";
+      case "done":
+        return "color-mix(in srgb, var(--success) 65%, transparent)";
+      case "failed":
+        return "color-mix(in srgb, var(--danger) 65%, transparent)";
+      case "skipped":
+        return "color-mix(in srgb, var(--warning) 65%, transparent)";
+      default:
+        return "var(--hairline)";
+    }
+  }
 
   function memberFor(botId: string) {
     return members.find((m) => m.bot_id === botId);
@@ -79,7 +98,7 @@
         {#if pos}
           <div
             class="absolute rounded-xl border bg-[var(--surface-2)] px-2 py-1.5 flex items-center gap-1.5"
-            style="left: {pos.x}px; top: {pos.y}px; width: {DAG_NODE_W}px; height: {DAG_NODE_H}px; border-color: color-mix(in srgb, var(--brand) 35%, transparent)"
+            style="left: {pos.x}px; top: {pos.y}px; width: {DAG_NODE_W}px; height: {DAG_NODE_H}px; border-color: {nodeBorderColor(i)}"
             title={task.label}
           >
             <img src={avatarFor(task.botId)} alt="" class="size-5 rounded-full object-cover shrink-0 border border-[var(--hairline)]" />
@@ -87,6 +106,9 @@
               <div class="text-[10px] font-bold text-[var(--text-primary)] truncate leading-tight">{nameFor(task.botId)}</div>
               <div class="text-[9px] text-[var(--text-muted)] truncate leading-tight">{task.label}</div>
             </div>
+            {#if stateFor?.(i) === "running"}
+              <span class="ml-auto size-1.5 rounded-full bg-[var(--brand)] animate-pulse shrink-0" aria-hidden="true"></span>
+            {/if}
           </div>
         {/if}
       {/each}

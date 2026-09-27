@@ -2519,6 +2519,35 @@ async fn execute_graph(
     }
 
     let graph = Arc::new(tokio::sync::Mutex::new(graph));
+    // Seed the room's live planner board before execution starts.
+    if let Some(tid) = thread_id {
+        let nodes: Vec<serde_json::Value> = tasks
+            .iter()
+            .enumerate()
+            .map(|(i, task)| {
+                serde_json::json!({
+                    "node_id": node_ids[i].to_string(),
+                    "bot_id": task.bot_id.to_string(),
+                    "label": briefing_label(&task.instruction),
+                    "depends_on": task
+                        .depends_on
+                        .iter()
+                        .filter(|d| **d < node_ids.len() && **d < i)
+                        .map(|d| node_ids[*d].to_string())
+                        .collect::<Vec<String>>(),
+                })
+            })
+            .collect();
+        let _ = app.emit(
+            "agent-stream",
+            serde_json::json!({
+                "kind": "plan_ready",
+                "thread_id": tid.to_string(),
+                "goal": truncate_chars(goal.trim(), 200),
+                "nodes": nodes,
+            }),
+        );
+    }
     // Project folders for every node in this office (same rule as send_to_chatroom).
     let office_dirs: Vec<String> = match chatroom_id {
         Some(cid) => {
@@ -2532,11 +2561,15 @@ async fn execute_graph(
         }
         None => Vec::new(),
     };
+    let node_event_app = app.clone();
     let executor = ravenbot_runtime::executor::GraphExecutor::new(
         state.runtime.clone(),
         state.db.clone(),
     )
-    .with_working_dirs(office_dirs);
+    .with_working_dirs(office_dirs)
+    .with_node_events(Arc::new(move |v| {
+        let _ = node_event_app.emit("agent-stream", v);
+    }));
 
     // Office nodes share one fallback stream emitter, so serialize office runs
     // (and drop the emitter afterwards) to keep live lanes isolated.
@@ -2565,11 +2598,9 @@ async fn execute_graph(
             let Some(node) = graph_snapshot.nodes.get(&nid) else { continue };
             let Some(output) = &node.output else { continue };
             let name = roster_name(r, node.bot_id);
-            let body = format!(
-                "**{}**\n\n{}",
-                truncate_chars(&node.instruction, 140),
-                output.trim()
-            );
+            // Pure conversation: the bubble carries only the agent's reply;
+            // author identity lives in the row gutter, task text on the board.
+            let body = output.trim().to_string();
             let _ = post_bot_message(state.db.pool(), tid, node.bot_id, name.clone(), body).await;
             outputs.push((name, output.clone()));
         }
@@ -2627,6 +2658,12 @@ async fn execute_graph(
     } else {
         None
     };
+
+    // Close the run only after the room holds the full persisted conversation
+    // (matches send_to_chatroom; the UI holds live lanes until this arrives).
+    if let Some(tid) = thread_id {
+        let _ = app.emit("agent-stream", serde_json::json!({ "kind": "done", "thread_id": tid.to_string() }));
+    }
 
     Ok(GraphResult {
         goal,
@@ -3640,6 +3677,9 @@ async fn send_to_chatroom(
     let mut node_ids: Vec<uuid::Uuid> = Vec::new();
     let mut label_for_node: std::collections::HashMap<uuid::Uuid, String> =
         std::collections::HashMap::new();
+    // (node_id, bot_id, board label, dependency task indices) for the live
+    // planner board — emitted as `plan_ready` before execution starts.
+    let mut board_nodes: Vec<(uuid::Uuid, uuid::Uuid, String, Vec<usize>)> = Vec::new();
 
     if let Some(plan) = &plan {
         for task in &plan.tasks {
@@ -3649,6 +3689,7 @@ async fn send_to_chatroom(
             let nid = graph.add_node(assignee, task.instruction.clone());
             label_for_node.insert(nid, task.bot.clone());
             node_ids.push(nid);
+            board_nodes.push((nid, assignee, briefing_label(&task.instruction), task.depends_on.clone()));
         }
         // Wire dependencies after all nodes exist.
         for (i, task) in plan.tasks.iter().enumerate() {
@@ -3661,13 +3702,43 @@ async fn send_to_chatroom(
     } else {
         for (m, bot) in &roster.bots {
             let instruction = format!("[{} - {}] {}", m.rank, m.specialty, content);
-            let nid = graph.add_node(bot.id, instruction);
+            let nid = graph.add_node(bot.id, instruction.clone());
             label_for_node.insert(nid, bot.name.clone());
             node_ids.push(nid);
+            board_nodes.push((nid, bot.id, truncate_chars(&instruction, 120), Vec::new()));
         }
     }
 
     let graph = Arc::new(tokio::sync::Mutex::new(graph));
+    // Seed the room's live board (kanban + dependency DAG) before any node
+    // starts streaming, so the user sees the plan form immediately.
+    {
+        let nodes: Vec<serde_json::Value> = board_nodes
+            .iter()
+            .enumerate()
+            .map(|(i, (nid, bot, label, deps))| {
+                serde_json::json!({
+                    "node_id": nid.to_string(),
+                    "bot_id": bot.to_string(),
+                    "label": label,
+                    "depends_on": deps
+                        .iter()
+                        .filter(|d| **d < node_ids.len() && **d < i)
+                        .map(|d| node_ids[*d].to_string())
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        let _ = app.emit(
+            "agent-stream",
+            serde_json::json!({
+                "kind": "plan_ready",
+                "thread_id": thread_id.to_string(),
+                "goal": truncate_chars(content.trim(), 200),
+                "nodes": nodes,
+            }),
+        );
+    }
     // Project folders for every node in this office: configured folders, or an
     // auto-created default named after the office.
     let office_dirs: Vec<String> = {
@@ -3687,8 +3758,12 @@ async fn send_to_chatroom(
             configured
         }
     };
+    let node_event_app = app.clone();
     let executor = ravenbot_runtime::executor::GraphExecutor::new(state.runtime.clone(), state.db.clone())
-        .with_working_dirs(office_dirs);
+        .with_working_dirs(office_dirs)
+        .with_node_events(Arc::new(move |v| {
+            let _ = node_event_app.emit("agent-stream", v);
+        }));
 
     // Office nodes create their own threads, so they use the fallback emitter.
     // Serialize whole-office execution so concurrent offices don't interleave
@@ -3698,7 +3773,8 @@ async fn send_to_chatroom(
     let exec_result = executor.execute(graph.clone()).await;
     state.runtime.set_stream_emitter(None);
     drop(office_guard);
-    let _ = app.emit("agent-stream", serde_json::json!({ "kind": "done", "thread_id": thread_id.to_string() }));
+    // NOTE: `done` is emitted only after the final posts below, so the room
+    // never blanks between the last token and the persisted conversation.
 
     match exec_result {
         Ok(blackboard) => {
@@ -3729,19 +3805,16 @@ async fn send_to_chatroom(
 
             // Post every specialist's work into the group thread, attributed to
             // the bot that did it (this is what makes the office "talk").
-            for (bot_id, name, instruction, output) in &node_results {
-                let task_note = instruction.trim();
-                let body = format!(
-                    "**{}**\n\n{}",
-                    truncate_chars(task_note, 140),
-                    output.trim()
-                );
+            // Pure conversation: the bubble carries only the agent's reply —
+            // the row's author header/gutter identifies who and the board
+            // carries what task they were given.
+            for (bot_id, name, _instruction, output) in &node_results {
                 let _ = post_bot_message(
                     state.db.pool(),
                     thread_id,
                     *bot_id,
                     name.clone(),
-                    body,
+                    output.trim().to_string(),
                 )
                 .await;
             }
@@ -3803,6 +3876,7 @@ async fn send_to_chatroom(
                 final_summary.clone(),
             )
             .await;
+            let _ = app.emit("agent-stream", serde_json::json!({ "kind": "done", "thread_id": thread_id.to_string() }));
             Ok(serde_json::json!({
                 "thread_id": thread_id,
                 "checklist": checklist,
@@ -3823,6 +3897,7 @@ async fn send_to_chatroom(
                 error_summary.clone(),
             )
             .await;
+            let _ = app.emit("agent-stream", serde_json::json!({ "kind": "done", "thread_id": thread_id.to_string() }));
             Ok(serde_json::json!({ "thread_id": thread_id, "checklist": [], "blackboard": {}, "summary": error_summary }))
         }
     }
