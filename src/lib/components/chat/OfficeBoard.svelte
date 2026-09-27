@@ -27,8 +27,8 @@
     dependsOn: string[];
     state: "pending" | "running" | "done" | "failed" | "skipped";
     preview?: string;
-    /** Thread this node streams on (from `node_open`); lets a re-opened room
-     re-query parked approvals/questions for still-running nodes. */
+    /** Thread this node streams on (from `node_open`); a re-opened room uses
+     it to check the run's liveness and re-query parked approvals/questions. */
     nodeThreadId?: string;
   }
 

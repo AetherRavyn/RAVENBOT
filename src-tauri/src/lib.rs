@@ -2093,7 +2093,9 @@ async fn save_office_board(
     .map_err(|e| e.to_string())
 }
 
-/// Last persisted office board for a room thread, if any.
+/// Last persisted office board for a room thread, if any. The payload gains
+/// `liveNodeThreads`: node threads whose latest run is still non-terminal,
+/// so the UI can tell a genuinely-working card from one orphaned by a restart.
 #[tauri::command]
 async fn get_office_board(
     state: State<'_, AppState>,
@@ -2105,7 +2107,44 @@ async fn get_office_board(
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(raw.and_then(|v| serde_json::from_str(&v).ok()))
+    let Some(raw) = raw else { return Ok(None) };
+    let mut payload: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let mut node_threads: Vec<String> = Vec::new();
+    if let Some(nodes) = payload.get("nodes").and_then(|v| v.as_array()) {
+        for n in nodes {
+            if let Some(s) = n.get("nodeThreadId").and_then(|v| v.as_str()) {
+                if Uuid::parse_str(s).is_ok() {
+                    node_threads.push(s.to_string());
+                }
+            }
+        }
+    }
+    let live: Vec<String> = if node_threads.is_empty() {
+        Vec::new()
+    } else {
+        let sql = format!(
+            "SELECT DISTINCT thread_id FROM runs WHERE thread_id IN ({}) \
+             AND state NOT IN ('completed','failed','cancelled')",
+            vec!["?"; node_threads.len()].join(",")
+        );
+        let mut q = sqlx::query_as::<_, (String,)>(&sql);
+        for id in &node_threads {
+            q = q.bind(id);
+        }
+        q.fetch_all(state.db.pool())
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(t,)| t)
+            .collect()
+    };
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("liveNodeThreads".to_string(), serde_json::json!(live));
+    }
+    Ok(Some(payload))
 }
 
 /// Pending `ask_user` questions for a thread (inline answer cards).
@@ -4072,6 +4111,29 @@ pub fn run() {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let (db, runtime) = rt.block_on(async {
                 let db = Database::new(&db_path).await.expect("failed to initialize database");
+
+                // Runs are in-memory loops: anything still non-terminal at
+                // startup was orphaned by a crash or quit. Close them so
+                // liveness queries (e.g. the office board) tell the truth.
+                let now = chrono::Utc::now().to_rfc3339();
+                match sqlx::query(
+                    "UPDATE runs SET state = 'failed', outcome = ?,
+                        updated_at = ?, completed_at = ?
+                     WHERE state IN ('planning','acting','observing','reflecting','waiting_on_user','paused')",
+                )
+                .bind(r#"{"Failure":{"error":"app quit while the run was active"}}"#)
+                .bind(&now)
+                .bind(&now)
+                .execute(db.pool())
+                .await
+                {
+                    Ok(r) if r.rows_affected() > 0 => {
+                        tracing::warn!(orphaned_runs = r.rows_affected(), "Marked interrupted runs failed at startup");
+                    }
+                    Err(e) => tracing::warn!("Orphaned-run reconciliation failed: {e}"),
+                    _ => {}
+                }
+
                 let runtime = Arc::new(ravenbot_runtime::Runtime::new(db.clone()));
 
                 // Pre-populate saved provider API keys from SQLite into Runtime's ProviderManager

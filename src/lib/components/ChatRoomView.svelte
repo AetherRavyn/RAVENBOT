@@ -458,21 +458,26 @@
     );
   }
   // Rehydrate the persisted board when (re)opening a room. A stored
-  // "running" node may belong to a run that died with the app, so it is
-  // demoted to pending; parked HITL cards are re-queried from the server
+  // "running" node only stays Working if the server says its node run is
+  // still non-terminal (startup reconciliation guarantees that means LIVE);
+  // otherwise it is demoted to pending. Parked HITL cards are re-queried
   // for the room thread and every node thread we know about.
   async function rehydratePersistedBoard() {
     if (!threadId || boardNodes.length > 0) return;
-    let saved: { goal?: string; nodes?: any[] } | null = null;
+    let saved: { goal?: string; nodes?: any[]; liveNodeThreads?: unknown } | null = null;
     try {
-      saved = await invoke<{ goal?: string; nodes?: any[] } | null>("get_office_board", {
-        threadId,
-      });
+      saved = await invoke<{ goal?: string; nodes?: any[]; liveNodeThreads?: unknown } | null>(
+        "get_office_board",
+        { threadId },
+      );
     } catch {
       return;
     }
     if (!saved || boardNodes.length > 0) return;
     const valid = new Set(["pending", "running", "done", "failed", "skipped"]);
+    const liveThreads = new Set(
+      (Array.isArray(saved.liveNodeThreads) ? saved.liveNodeThreads : []).map(String),
+    );
     boardGoal = String(saved.goal || "");
     boardNodes = (Array.isArray(saved.nodes) ? saved.nodes : [])
       .map(
@@ -487,7 +492,20 @@
         }),
       )
       .filter((n: BoardNode) => n.nodeId)
-      .map((n: BoardNode) => (n.state === "running" ? { ...n, state: "pending" as const } : n));
+      .map(
+        (n: BoardNode) =>
+          n.state === "running" && !(n.nodeThreadId && liveThreads.has(n.nodeThreadId))
+            ? { ...n, state: "pending" as const }
+            : n,
+      );
+    // Re-opening mid-run: claim the live nodes' threads so subsequent stream
+    // events attribute to THIS room instead of dying at the thread gate.
+    for (const n of boardNodes) {
+      if (n.state === "running" && n.nodeThreadId) {
+        activeThreads.add(n.nodeThreadId);
+        threadToNode.set(n.nodeThreadId, n.nodeId);
+      }
+    }
     await refreshPendingHitl();
   }
   async function refreshPendingHitl() {
@@ -788,8 +806,12 @@
           };
         } else if (kind === "done") {
           // Backend emits `done` only AFTER posting the persisted messages.
-          // Hold the lanes until send()/dispatchPlan() refetches and commits
-          // (commitLanes) — no blank-gap flash.
+          // Our own send()/dispatchPlan() refetches and commits (commitLanes)
+          // — no blank-gap flash. If we did NOT start this run (room reopened
+          // mid-run), refetch here now that the posts are in the DB.
+          if (!sending && tid === String(threadId || "")) {
+            void load().finally(() => commitLanes());
+          }
         }
       })
       .then((fn) => {

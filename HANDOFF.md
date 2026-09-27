@@ -1693,11 +1693,25 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     `BoardNode` gained optional `nodeThreadId` (stamped from node_open) so the
     re-opened room can `refreshPendingHitl()` — re-queries
     list_pending_approvals/list_pending_questions for the room thread + every
-    known node thread and merges unseen cards. DESIGN CHOICE: persisted
-    "running" nodes are DEMOTED to pending on rehydrate — a snapshot saved
-    mid-run may belong to a run that died with the app and runs rows are not
-    reliably terminal; the next run's plan_ready replaces the board anyway.
-    Also deduped a double refreshBotTodos in node_finished.
+    known node thread and merges unseen cards. DESIGN CHOICE (v1): persisted
+    "running" nodes were DEMOTED to pending on rehydrate — a snapshot saved
+    mid-run may belong to a run that died with the app. Also deduped a double
+    refreshBotTodos in node_finished.
+  - FOLLOW-UP 4 (liveness-aware rehydration, same day): makes that demotion
+    precise instead of blanket. (1) src-tauri setup now reconciles orphaned
+    runs at startup: any `runs` row still in planning/acting/observing/
+    reflecting/waiting_on_user/paused becomes failed with outcome
+    `{"Failure":{"error":"app quit while the run was active"}}` (runs are
+    in-memory loops; nothing else queries non-terminal rows — grep-verified).
+    (2) `get_office_board` gained `liveNodeThreads` — one `SELECT DISTINCT
+    thread_id FROM runs WHERE thread_id IN (?) AND state NOT IN
+    ('completed','failed','cancelled')` over the snapshot's nodeThreadId
+    values (each Uuid-validated before binding; placeholders are fixed "?").
+    (3) ChatRoomView keeps a stored "running" only if its thread is live, and
+    then REGISTERS live node threads in activeThreads/threadToNode so
+    re-opening a room mid-run keeps streaming into the right lane; the
+    previously inert `done` branch now refetches+commitLanes when the run was
+    not started by this view (`!sending`), closing the reopened-mid-run loop.
   - Verified: `npm run check` 0/0; vitest 6 files 30/30; `npm run build` OK;
     `cargo test --workspace` exit 0; `npx tauri build` exit 0 (user must
     relaunch target/release/ravenbot to see it). NOT run under tauri dev.
