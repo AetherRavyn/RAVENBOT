@@ -4302,6 +4302,17 @@ pub fn run() {
                     _ => {}
                 }
 
+                // The same reasoning for agents: a crash mid-run leaves rows
+                // saying `thinking`, and the fleet then looks permanently busy
+                // with nobody working.
+                match ravenbot_db::queries::BotQueries::mark_all_idle(db.pool()).await {
+                    Ok(n) if n > 0 => {
+                        tracing::info!(bots = n, "Reset agent status at startup");
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("Agent status reset failed: {e}"),
+                }
+
                 let runtime = Arc::new(ravenbot_runtime::Runtime::new(db.clone()));
 
                 // Pre-populate saved provider API keys from SQLite into Runtime's ProviderManager

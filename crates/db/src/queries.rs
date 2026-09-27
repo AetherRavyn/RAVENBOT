@@ -1,6 +1,7 @@
 //! Database query functions
 
 use sqlx::SqlitePool;
+use chrono::Utc;
 use uuid::Uuid;
 
 use crate::models::{BotRow, ThreadRow, MessageRow, RunRow};
@@ -289,6 +290,46 @@ impl BotQueries {
             .execute(pool)
             .await?;
         Ok(())
+    }
+
+    /// Record that a bot is doing something, and what.
+    ///
+    /// These two columns were only ever written by the whole-row `insert` and
+    /// `update` above, which nothing calls mid-run — so `status` stayed
+    /// `idle` and `last_active_at` stayed `NULL` for the life of every bot.
+    /// The UI worked around that by deriving live state from the event stream
+    /// instead, which is right while the window is open and useless after a
+    /// restart or in a second window.
+    ///
+    /// `last_active_at` moves with every call because "when did this agent
+    /// last do anything" is the question a user actually asks about an agent
+    /// that has gone quiet.
+    pub async fn mark_active(
+        pool: &SqlitePool,
+        id: Uuid,
+        status: ravenbot_core::BotStatus,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE bots SET status = ?, last_active_at = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(crate::models::bot_status_to_db(status))
+        .bind(Utc::now().to_rfc3339())
+        .bind(Utc::now().to_rfc3339())
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Move every bot in a set back to idle.
+    ///
+    /// Used at startup after the orphaned-run reconciliation, so a crash does
+    /// not leave the fleet permanently shown as busy.
+    pub async fn mark_all_idle(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query("UPDATE bots SET status = 'idle' WHERE status != 'idle'")
+            .execute(pool)
+            .await?;
+        Ok(result.rows_affected())
     }
 }
 

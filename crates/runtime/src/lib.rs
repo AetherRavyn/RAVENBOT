@@ -746,6 +746,32 @@ impl Runtime {
     }
 
     fn emit(&self, event: StreamEvent) {
+        // Persist the agent's state as it is announced.
+        //
+        // Hooked here rather than at the fifteen places that emit a `Status`,
+        // because the two must not be able to disagree: a status that the
+        // window shows and a row in the database that says something else is
+        // the kind of drift nobody notices until they restart the app. Every
+        // meaningful transition already announces itself, so this catches all
+        // of them and cannot miss a new one.
+        if let StreamEvent::Status { bot_id, state, .. } = &event {
+            let status = match state.as_str() {
+                "thinking" | "running_tool" | "emulating_tools" => {
+                    // The stream distinguishes a tool round from a model round;
+                    // the stored column does not need to.
+                    if state == "running_tool" {
+                        ravenbot_core::BotStatus::RunningTool
+                    } else {
+                        ravenbot_core::BotStatus::Thinking
+                    }
+                }
+                "waiting_on_user" => ravenbot_core::BotStatus::WaitingOnUser,
+                "paused" => ravenbot_core::BotStatus::Paused,
+                // "done" and anything else means the agent is available again.
+                _ => ravenbot_core::BotStatus::Idle,
+            };
+            self.mark_bot_status(*bot_id, status);
+        }
         if let Some(emitter) = self.emitter_for(stream_event_thread_id(&event)) {
             emitter(event);
         }
@@ -1653,6 +1679,23 @@ impl Runtime {
         };
         let label = office_name.as_deref().unwrap_or(bot.name.as_str());
         vec![default_project_dir(label)]
+    }
+
+    /// Record what an agent is doing in the database.
+    ///
+    /// The UI derives live state from the event stream, which is right while a
+    /// window is open. This is what makes it true the rest of the time: after a
+    /// restart, in a second window, or for a user reading the database. It is
+    /// fire-and-forget because a status hint failing is never worth failing a
+    /// run over.
+    fn mark_bot_status(&self, bot_id: Uuid, status: ravenbot_core::BotStatus) {
+        let pool = self.db.pool().clone();
+        tokio::spawn(async move {
+            if let Err(e) = ravenbot_db::queries::BotQueries::mark_active(&pool, bot_id, status).await
+            {
+                tracing::warn!(%bot_id, error = %e, "Could not record bot status");
+            }
+        });
     }
 
     /// Start or resume a run
@@ -3729,6 +3772,116 @@ mod integration_tests {
         let mut run = ravenbot_core::Run::new(bot.id, thread.id);
         let err = runtime.execute_run(&mut run).await.unwrap_err();
         assert!(matches!(err, RuntimeError::Model(_)));
+    }
+
+    /// An agent's stored status has to follow the run.
+    ///
+    /// `bots.status` and `bots.last_active_at` were only ever written by the
+    /// whole-row insert and update, which nothing calls mid-run, so both stayed
+    /// at their initial values for the life of every bot. The UI compensated by
+    /// deriving state from the event stream, which is right while a window is
+    /// open and useless after a restart.
+    #[tokio::test]
+    async fn a_run_records_the_bots_status_and_last_activity() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+
+        let mut bot = Bot::new("Lively", "liveness test");
+        // No provider, so the run fails fast — after it has already announced
+        // that it was thinking, which is the transition under test.
+        bot.config.model_provider = "bogus-provider".to_string();
+        bot.config.model_id = "some/model".to_string();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+
+        let thread = Thread::new(bot.id, "liveness");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+        ravenbot_db::queries::MessageQueries::insert(
+            db.pool(),
+            &ravenbot_core::Message::user(thread.id, "hello"),
+        )
+        .await
+        .unwrap();
+
+        let mut run = ravenbot_core::Run::new(bot.id, thread.id);
+        let _ = runtime.execute_run(&mut run).await;
+
+        // `mark_bot_status` is a detached task, so give the runtime a moment
+        // to schedule and run it rather than asserting on a race.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let stored = ravenbot_db::queries::BotQueries::get(db.pool(), bot.id)
+            .await
+            .unwrap()
+            .expect("bot row");
+
+        assert!(
+            stored.last_active_at.is_some(),
+            "last_active_at was never written, so an agent that went quiet looks identical to one that just arrived"
+        );
+        // The run reached "thinking" and never finished, so the honest state is
+        // busy, not idle.
+        assert_ne!(
+            stored.status,
+            ravenbot_core::BotStatus::Idle,
+            "status stayed idle through a run"
+        );
+    }
+
+    #[tokio::test]
+    async fn announcing_a_finished_run_returns_the_agent_to_idle() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+
+        let mut bot = Bot::new("Finisher", "status round trip");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+
+        // Drive the same path `emit` uses, which is the only place status is
+        // recorded, so the test fails if that mapping ever drifts.
+        runtime.emit(StreamEvent::Status {
+            bot_id: bot.id,
+            thread_id: Uuid::new_v4(),
+            state: "thinking".to_string(),
+        });
+        runtime.emit(StreamEvent::Status {
+            bot_id: bot.id,
+            thread_id: Uuid::new_v4(),
+            state: "done".to_string(),
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+        let stored = ravenbot_db::queries::BotQueries::get(db.pool(), bot.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ravenbot_core::BotStatus::Idle);
+        assert!(stored.last_active_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn startup_clears_status_left_behind_by_a_crash() {
+        let db = temp_db().await;
+        let mut bot = Bot::new("CrashVictim", "left mid-run");
+        bot.status = ravenbot_core::BotStatus::Thinking;
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+
+        let reset = ravenbot_db::queries::BotQueries::mark_all_idle(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(reset, 1, "the busy bot was not reset");
+
+        let stored = ravenbot_db::queries::BotQueries::get(db.pool(), bot.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ravenbot_core::BotStatus::Idle);
     }
 
     #[tokio::test]
