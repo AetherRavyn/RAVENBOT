@@ -1676,6 +1676,12 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     rendered in the feed, `decide_approval`/`answer_question` invokes, cards pruned on
     `approval_decided`, node_finished (stale thread) and resetRun. Reuses ThreadView
     markup + `thread.highStakes`/`thread.answerPlaceholder` keys (no new i18n).
+  - FOLLOW-UP 2 (bot_todos surfacing): new additive command `list_bot_todos(bot_id)`
+    reading the existing `bot_todos` table; ChatRoomView keeps `botTodos` (refreshed
+    on room load, `tool_finished` where name==="todo", and node_finished) and
+    OfficeBoard cards render each bot's checklist progress (`n/m` + up to 2 open
+    items, ListChecks icon). GOTCHA: `{@const}` must be an IMMEDIATE child of a
+    block tag (`{#if}`/`{#each}`…), not of a `<div>` — wrap in `{#if (…)}` first.
   - Verified: `npm run check` 0/0; vitest 6 files 30/30; `npm run build` OK;
     `cargo test --workspace` exit 0; `npx tauri build` exit 0 (user must
     relaunch target/release/ravenbot to see it). NOT run under tauri dev.

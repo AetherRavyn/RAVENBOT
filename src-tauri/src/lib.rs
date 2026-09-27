@@ -2046,6 +2046,26 @@ async fn decide_approval(
     Ok(decided)
 }
 
+/// A bot's live todo list (the runtime-native `todo` tool). Surfaced on the
+/// office board so each teammate's self-tracked checklist is visible.
+#[tauri::command]
+async fn list_bot_todos(
+    state: State<'_, AppState>,
+    bot_id: Uuid,
+) -> Result<Vec<serde_json::Value>, String> {
+    let rows: Vec<(String, String, i64)> = sqlx::query_as(
+        "SELECT id, task, done FROM bot_todos WHERE bot_id = ? ORDER BY created_at ASC LIMIT 60",
+    )
+    .bind(bot_id.to_string())
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, task, done)| serde_json::json!({ "id": id, "task": task, "done": done != 0 }))
+        .collect())
+}
+
 /// Pending `ask_user` questions for a thread (inline answer cards).
 #[tauri::command]
 async fn list_pending_questions(
@@ -4145,6 +4165,7 @@ pub fn run() {
             get_approval_mode,
             list_pending_approvals,
             decide_approval,
+            list_bot_todos,
             list_pending_questions,
             answer_question,
             cancel_run,

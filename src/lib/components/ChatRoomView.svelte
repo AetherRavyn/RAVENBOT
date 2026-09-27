@@ -26,7 +26,7 @@
   import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
   import PlanDag from "$lib/components/chat/PlanDag.svelte";
   import OfficeBoard from "$lib/components/chat/OfficeBoard.svelte";
-  import type { BoardNode } from "$lib/components/chat/OfficeBoard.svelte";
+  import type { BoardNode, BotTodo } from "$lib/components/chat/OfficeBoard.svelte";
   import RunTimelineStrip from "$lib/components/chat/RunTimeline.svelte";
   import { RunTimeline as RunTimelineState } from "$lib/chat/runTimeline.svelte";
   import { showAuthorHeader, authorHue, isGhostContent } from "$lib/chat/grouping";
@@ -286,6 +286,20 @@
   }
   let pendingApprovals = $state<PendingApproval[]>([]);
   let pendingQuestions = $state<PendingQuestion[]>([]);
+  // Per-bot self-tracked checklists (the runtime `todo` tool), shown on the board.
+  let botTodos = $state<Record<string, BotTodo[]>>({});
+  async function refreshBotTodos(botId: string) {
+    if (!botId) return;
+    try {
+      const rows = (await invoke<any[]>("list_bot_todos", { botId })) || [];
+      botTodos = {
+        ...botTodos,
+        [botId]: rows.map((r) => ({ id: String(r.id), task: String(r.task || ""), done: Boolean(r.done) })),
+      };
+    } catch {
+      /* todos are best-effort decoration */
+    }
+  }
   let decidingApproval = $state<string | null>(null);
   let answeringQuestion = $state<string | null>(null);
   let questionDraft = $state<Record<string, string>>({});
@@ -385,6 +399,7 @@
     agentTool = {};
     boardGoal = "";
     boardNodes = [];
+    botTodos = {};
     pendingApprovals = [];
     pendingQuestions = [];
     activeThreads.clear();
@@ -533,6 +548,7 @@
     try {
       const mems = (await invoke("list_chatroom_members", { chatroomId: room.id })) as any[];
       members = mems.map((m) => ({ ...m, bot: bots.find((b: any) => b.id === m.bot_id) }));
+      for (const m of members) refreshBotTodos(m.bot?.id ?? "");
       const tid = await invoke("get_chatroom_thread", { chatroomId: room.id });
       if (tid) {
         threadId = tid as string;
@@ -611,12 +627,14 @@
           if (Array.isArray(p.skipped)) {
             for (const s of p.skipped) patchNode(String(s), { state: "skipped" });
           }
+          refreshBotTodos(String(p.bot_id || ""));
           // The node's thread is done — any card still parked on it is stale.
           const ntid = [...threadToNode.entries()].find(([, id]) => id === nodeId)?.[0];
           if (ntid) {
             pendingApprovals = pendingApprovals.filter((a) => String(a.thread_id) !== ntid);
             pendingQuestions = pendingQuestions.filter((q) => String(q.thread_id) !== ntid);
           }
+          refreshBotTodos(String(p.bot_id || ""));
           return;
         }
         if (kind === "graph_status") {
@@ -672,6 +690,7 @@
             const next = { ...agentTool };
             delete next[p.bot_id];
             agentTool = next;
+            if (p.name === "todo") refreshBotTodos(String(p.bot_id));
           }
         } else if (kind === "clear") {
           // A new model round begins: KEEP the finished round's text as a
@@ -1132,7 +1151,7 @@
   <!-- Office board: planner → kanban → live dependency graph -->
   {#if boardNodes.length > 0}
     <div class="px-4 pt-2.5 shrink-0 min-w-0">
-      <OfficeBoard goal={boardGoal} nodes={boardNodes} {members} runActive={teamActive} />
+      <OfficeBoard goal={boardGoal} nodes={boardNodes} {members} todos={botTodos} runActive={teamActive} />
     </div>
   {/if}
 

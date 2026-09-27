@@ -16,6 +16,7 @@
     XCircle,
     Circle,
     MinusCircle,
+    ListChecks,
   } from "@lucide/svelte";
 
   export interface BoardNode {
@@ -28,14 +29,22 @@
     preview?: string;
   }
 
+  export interface BotTodo {
+    id: string;
+    task: string;
+    done: boolean;
+  }
+
   interface Props {
     goal: string;
     nodes: BoardNode[];
     members: any[];
     runActive: boolean;
+    /** Per-bot self-tracked checklists (`todo` tool), keyed by bot id. */
+    todos?: Record<string, BotTodo[]>;
   }
 
-  let { goal, nodes, members, runActive }: Props = $props();
+  let { goal, nodes, members, runActive, todos }: Props = $props();
 
   let collapsed = $state(false);
   // Re-expand for a new run; auto-collapse when the run ends so the
@@ -148,6 +157,19 @@
                       {/if}
                     </div>
                     <div class="mt-1 text-[11px] text-[var(--text-secondary)] leading-snug line-clamp-2">{n.label}</div>
+                    {#if (todos?.[n.botId] ?? []).length > 0}
+                      {@const botTodos = todos?.[n.botId] ?? []}
+                      {@const todosDone = botTodos.filter((td) => td.done).length}
+                      <div class="mt-1 space-y-0.5 min-w-0">
+                        <div class="flex items-center gap-1 text-[9px] font-mono text-[var(--text-muted)]">
+                          <ListChecks class="size-2.5 shrink-0" />
+                          <span class="tabular-nums">{todosDone}/{botTodos.length}</span>
+                        </div>
+                        {#each botTodos.filter((td) => !td.done).slice(0, 2) as item (item.id)}
+                          <div class="text-[10px] text-[var(--text-tertiary)] truncate">◻ {item.task}</div>
+                        {/each}
+                      </div>
+                    {/if}
                     {#if n.preview}
                       <div class="mt-1 text-[10px] text-[var(--text-muted)] leading-snug line-clamp-2">{n.preview}</div>
                     {/if}
