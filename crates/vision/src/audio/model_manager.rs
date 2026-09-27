@@ -17,17 +17,21 @@ pub enum ModelError {
 }
 
 /// Root dir for cached models.
+///
+/// `RAVENBOT_MODEL_HOME` overrides it; otherwise the weights land in
+/// `~/RAVENBOT/cache/models` alongside everything else RAVENBOT owns, rather
+/// than in a second hidden `~/.ravenbot` tree that a user backing up or
+/// uninstalling would miss.
 pub fn models_root() -> PathBuf {
-    let home = std::env::var("RAVENBOT_MODEL_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let mut p = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-            p.push(".ravenbot");
-            p.push("models");
-            p
-        });
-    let _ = std::fs::create_dir_all(&home);
-    home
+    if let Ok(home) = std::env::var("RAVENBOT_MODEL_HOME") {
+        let home = home.trim();
+        if !home.is_empty() {
+            let home = PathBuf::from(home);
+            let _ = std::fs::create_dir_all(&home);
+            return home;
+        }
+    }
+    ravenbot_core::ensure_dir(&ravenbot_core::cache_dir().join("models"))
 }
 
 /// Local cache path for a repo.

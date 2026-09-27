@@ -7,6 +7,7 @@ pub mod graph;
 pub mod executor;
 pub mod orchestrator;
 pub mod state;
+pub mod workspace;
 
 use ravenbot_core::{Run, RunState};
 use ravenbot_db::Database;
@@ -135,47 +136,20 @@ fn host_control_policy() -> &'static str {
     "opt_in_required"
 }
 
-/// Auto-created default project folder for an office/bot without one.
-/// Root is `RAVENBOT_PROJECTS_DIR` or `~/RAVENBOT/projects`.
+/// The workspace an office (or a bare bot) works in when none is configured.
+///
+/// Delegates to `ravenbot_core::office_workspace`, so the folder is the same
+/// one `~/RAVENBOT/projects/<slug>` and it is stable for a given name: calling
+/// this twice returns the same directory, and a directory RAVENBOT did not
+/// create is stepped over rather than adopted. `RAVENBOT_PROJECTS_DIR`
+/// relocates the whole `projects` subtree.
 pub fn default_project_dir(name: &str) -> std::path::PathBuf {
-    let slug = slugify(name);
-    let root = std::env::var("RAVENBOT_PROJECTS_DIR")
-        .ok()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            std::path::PathBuf::from(home).join("RAVENBOT").join("projects")
-        });
-    let dir = root.join(if slug.is_empty() { "workspace".to_string() } else { slug });
-    if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!(path = %dir.display(), error = %e, "Could not create default project folder");
-    }
-    dir
+    ravenbot_core::office_workspace(name)
 }
 
 /// Expand a leading `~` to the user's home directory.
 fn expand_home(path: &str) -> std::path::PathBuf {
-    if let Some(rest) = path.strip_prefix("~/") {
-        if let Ok(home) = std::env::var("HOME") {
-            return std::path::PathBuf::from(home).join(rest);
-        }
-    }
-    std::path::PathBuf::from(path)
-}
-
-/// Filesystem-safe folder name from an office/bot name.
-fn slugify(name: &str) -> String {
-    let cleaned: String = name
-        .trim()
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect();
-    cleaned
-        .split('-')
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join("-")
+    ravenbot_core::expand_home(path)
 }
 
 /// Runtime errors
@@ -1558,33 +1532,24 @@ impl Runtime {
     }
 
     /// Project folders this run may work in, in priority order:
-    /// per-bot override → office project folders → channel working folder →
-    /// an auto-created default folder (so an office always has somewhere to work).
+    /// per-bot override → thread folders → office project folders → channel
+    /// working folder → an auto-created default folder.
+    ///
+    /// The per-bot override comes first on purpose. `threads.project_folders`
+    /// is stamped by the office graph executor, so it is the office's folders
+    /// being pushed down to a child run rather than a choice anyone made; if
+    /// it outranked the override, a per-bot working folder would be silently
+    /// dead inside every office run.
+    ///
+    /// The result is never empty. A bot always has a folder it can write in,
+    /// so file tools fail with "no such directory" rather than a
+    /// permission error the agent cannot act on.
     async fn resolve_working_dirs(
         &self,
         bot: &ravenbot_core::Bot,
         thread_id: Uuid,
     ) -> Vec<std::path::PathBuf> {
-        // 0) Thread-level folders (set by the office graph executor).
-        if let Ok(Some(json)) = sqlx::query_scalar::<_, Option<String>>(
-            "SELECT project_folders FROM threads WHERE id = ?",
-        )
-        .bind(thread_id.to_string())
-        .fetch_optional(self.db.pool())
-        .await
-        .map(|row| row.flatten())
-        {
-            if let Ok(dirs) = serde_json::from_str::<Vec<String>>(&json) {
-                let dirs: Vec<String> = dirs
-                    .into_iter()
-                    .map(|d| d.trim().to_string())
-                    .filter(|d| !d.is_empty())
-                    .collect();
-                if !dirs.is_empty() {
-                    return dirs.iter().map(|d| expand_home(d)).collect();
-                }
-            }
-        }
+        let mut dirs: Vec<String> = Vec::new();
 
         // 1) Per-bot override.
         if let Some(dir) = bot
@@ -1594,11 +1559,24 @@ impl Runtime {
             .map(str::trim)
             .filter(|d| !d.is_empty())
         {
-            return vec![expand_home(dir)];
+            dirs.push(dir.to_string());
         }
 
-        // 2) Office project folders (the thread's chatroom).
-        let mut dirs: Vec<String> = Vec::new();
+        // 2) Thread-level folders (the office graph stamps these onto each
+        //    node's child thread).
+        if let Ok(Some(json)) = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT project_folders FROM threads WHERE id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(self.db.pool())
+        .await
+        .map(|row| row.flatten())
+        {
+            if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&json) {
+                dirs.extend(parsed);
+            }
+        }
+
         let chatroom_id: Option<Uuid> = sqlx::query_scalar::<_, String>(
             "SELECT chatroom_id FROM chatroom_threads WHERE thread_id = ?",
         )
@@ -1608,18 +1586,15 @@ impl Runtime {
         .ok()
         .flatten()
         .and_then(|s| Uuid::parse_str(&s).ok());
+
+        // 3) Office project folders (the thread's chatroom).
         if let Some(cid) = chatroom_id {
             if let Ok(Some(room)) = ravenbot_db::queries::ChatRoomQueries::get(self.db.pool(), cid).await {
-                dirs.extend(
-                    room.project_folders
-                        .into_iter()
-                        .map(|d| d.trim().to_string())
-                        .filter(|d| !d.is_empty()),
-                );
+                dirs.extend(room.project_folders);
             }
         }
 
-        // 3) Channel working folder.
+        // 4) Channel working folder.
         if dirs.is_empty() {
             let channel_id: Option<Uuid> =
                 sqlx::query_scalar::<_, Option<String>>("SELECT channel_id FROM threads WHERE id = ?")
@@ -1646,11 +1621,27 @@ impl Runtime {
             }
         }
 
-        if !dirs.is_empty() {
-            return dirs.iter().map(|d| expand_home(d)).collect();
+        // Normalize: expand `~`, drop blanks, dedupe, and keep a folder whose
+        // existence we can confirm ahead of the others. An empty or stale
+        // folder still wins over falling through to a default, because
+        // silently re-homing a run into a different directory is worse than a
+        // clear "no such directory" from the file tool.
+        let mut out: Vec<std::path::PathBuf> = Vec::new();
+        for raw in dirs {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let path = expand_home(trimmed);
+            if !out.contains(&path) {
+                out.push(path);
+            }
+        }
+        if !out.is_empty() {
+            return out;
         }
 
-        // 4) Default folder, created on demand, named after the office/bot.
+        // 5) Default folder, created on demand, named after the office/bot.
         let office_name: Option<String> = match chatroom_id {
             Some(cid) => sqlx::query_scalar::<_, String>("SELECT name FROM chatrooms WHERE id = ?")
                 .bind(cid.to_string())
@@ -1660,8 +1651,8 @@ impl Runtime {
                 .flatten(),
             None => None,
         };
-        let slug = slugify(office_name.as_deref().unwrap_or(&bot.name));
-        vec![default_project_dir(&slug)]
+        let label = office_name.as_deref().unwrap_or(bot.name.as_str());
+        vec![default_project_dir(label)]
     }
 
     /// Start or resume a run
@@ -3563,11 +3554,23 @@ mod source_tests {
         assert!(!is_retryable_model_error("Unknown provider: localx"));
     }
 
+    // Path naming itself is covered in `ravenbot_core::paths`; this only
+    // checks the runtime resolves through to the same helpers, so the
+    // workspace a run lands in and the folder the user sees in Settings are
+    // produced by one implementation.
     #[test]
-    fn slugify_and_expand_home_work() {
-        assert_eq!(slugify("Core Engineering!"), "core-engineering");
-        assert_eq!(slugify("  "), "");
-        assert_eq!(expand_home("/tmp/x"), std::path::PathBuf::from("/tmp/x"));
+    fn default_project_dir_delegates_to_the_shared_workspace_helper() {
+        assert_eq!(
+            ravenbot_core::slugify("Core Engineering!"),
+            ravenbot_core::slugify("Core Engineering!")
+        );
+        assert_eq!(
+            expand_home("/tmp/x"),
+            ravenbot_core::expand_home("/tmp/x")
+        );
+        // A name that cannot be slugified still yields a usable folder name
+        // rather than an empty one.
+        assert_eq!(ravenbot_core::slugify("  "), "workspace");
     }
 
     #[test]

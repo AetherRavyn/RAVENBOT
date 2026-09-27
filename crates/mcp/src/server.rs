@@ -171,24 +171,28 @@ mod db_path_tests {
     use super::*;
 
     /// The CLI/MCP server must point at the same file the desktop app uses.
-    /// Uses a single test to avoid env-var races between parallel tests.
+    ///
+    /// Both resolve through `ravenbot_core::default_db_path`, so this asserts
+    /// the delegation rather than restating the path — a hardcoded expectation
+    /// here would fail every time the layout moved, which is exactly what it
+    /// did when the root changed from the OS app-data dir to `~/RAVENBOT`.
+    ///
+    /// One test, and it takes the env lock, because `set_var` is
+    /// process-global and parallel tests would race.
     #[test]
-    fn default_db_path_matches_the_desktop_app() {
-        // With an explicit override, it wins.
+    fn default_db_path_is_the_shared_one() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         std::env::set_var("RAVENBOT_DB", "/tmp/custom-ravenbot.db");
         assert_eq!(default_db_path(), PathBuf::from("/tmp/custom-ravenbot.db"));
-
         std::env::remove_var("RAVENBOT_DB");
-        let path = default_db_path();
-        let s = path.to_string_lossy();
+
+        assert_eq!(default_db_path(), ravenbot_core::default_db_path());
         assert!(
-            s.ends_with("com.ravenbot.desktop/ravenbot.db")
-                || s.ends_with("com.ravenbot.desktop\\ravenbot.db"),
-            "default db path must be under the app identifier, got: {s}"
-        );
-        assert!(
-            !s.contains("/ravenbot/ravenbot.db"),
-            "must NOT use the old wrong path: {s}"
+            default_db_path().ends_with("ravenbot.db"),
+            "expected a ravenbot.db filename, got: {}",
+            default_db_path().display()
         );
     }
 }

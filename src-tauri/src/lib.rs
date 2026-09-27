@@ -3118,12 +3118,85 @@ async fn create_chatroom(
     office_template: String,
     avatar_url: Option<String>,
     avatar_style: Option<String>,
+    // An existing folder to work in. Omit to get a fresh room created under
+    // `~/RAVENBOT/projects/`.
+    project_folder: Option<String>,
+    goal: Option<String>,
+    policy: Option<String>,
 ) -> Result<ChatRoom, String> {
     let mut room = ChatRoom::new(name, description, office_template);
     if let Some(url) = avatar_url { room.avatar_url = Some(url); }
     if let Some(style) = avatar_style { room.avatar_style = Some(style); }
+    room.goal = goal.map(|g| g.trim().to_string()).filter(|g| !g.is_empty());
+    room.policy = policy.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+
+    // An office always gets a room, at creation rather than lazily at first
+    // send. `project_folder` lets a user point the office at a directory they
+    // already have; otherwise we mint `~/RAVENBOT/projects/<slug>/` and seed
+    // the charter files the agents read on their first turn.
+    match project_folder.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(chosen) => {
+            // The user's folder is the office. Do NOT also mint a default
+            // room — that would leave a stray empty directory and give the
+            // agents a charter pointing somewhere they cannot write.
+            let path = ravenbot_core::expand_home(chosen);
+            ravenbot_core::ensure_dir(&path);
+            ravenbot_runtime::workspace::seed_at(&path, &room, &[]);
+            room.project_folders = vec![path.to_string_lossy().to_string()];
+        }
+        None => {
+            let ws = ravenbot_runtime::workspace::seed(&room, &[]);
+            room.project_folders = ravenbot_runtime::workspace::project_folders(&ws);
+        }
+    }
+
     ravenbot_db::queries::ChatRoomQueries::create(state.db.pool(), &room).await.map_err(|e| e.to_string())?;
     Ok(room)
+}
+
+/// Re-seed an office's charter files from the current room + roster.
+///
+/// Called whenever the roster, goal, or policy changes, so `OFFICE.md` in the
+/// workspace always matches what the app displays. Best-effort: a workspace
+/// that cannot be written must not fail the edit that triggered it.
+async fn refresh_office_workspace(state: &AppState, chatroom_id: Uuid) {
+    let Ok(Some(room)) = ravenbot_db::queries::ChatRoomQueries::get(state.db.pool(), chatroom_id).await
+    else {
+        return;
+    };
+    let members = ravenbot_db::queries::ChatRoomQueries::list_members(state.db.pool(), chatroom_id)
+        .await
+        .unwrap_or_default();
+
+    let roster: Vec<ravenbot_runtime::workspace::RosterEntry> = {
+        let mut out = Vec::with_capacity(members.len());
+        for m in members {
+            let Ok(Some(bot)) = ravenbot_db::queries::BotQueries::get(state.db.pool(), m.bot_id).await
+            else {
+                continue;
+            };
+            let mut entry = ravenbot_runtime::workspace::RosterEntry::new(
+                bot.name.clone(),
+                if m.rank.trim().is_empty() { bot.rank.clone().unwrap_or_default() } else { m.rank.clone() },
+                if m.specialty.trim().is_empty() { bot.specialty.clone().unwrap_or_default() } else { m.specialty.clone() },
+                bot.is_orchestrator,
+            );
+            // The roster records how each member works, not only their title,
+            // so a teammate reading the folder sees the mandate.
+            if let Some(p) = bot.config.custom_prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                entry = entry.with_mandate(p);
+            }
+            out.push(entry);
+        }
+        out
+    };
+
+    // Honour a user-chosen folder: seed there rather than in the default room.
+    if let Some(first) = room.project_folders.first().map(String::as_str) {
+        ravenbot_runtime::workspace::seed_at(&ravenbot_core::expand_home(first), &room, &roster);
+    } else {
+        ravenbot_runtime::workspace::seed(&room, &roster);
+    }
 }
 
 #[tauri::command]
@@ -3145,7 +3218,9 @@ async fn add_member_to_chatroom(
     specialty: String,
 ) -> Result<(), String> {
     let member = ChatRoomMember { chatroom_id, bot_id, rank, specialty, joined_at: chrono::Utc::now() };
-    ravenbot_db::queries::ChatRoomQueries::add_member(state.db.pool(), &member).await.map_err(|e| e.to_string())
+    ravenbot_db::queries::ChatRoomQueries::add_member(state.db.pool(), &member).await.map_err(|e| e.to_string())?;
+    refresh_office_workspace(&state, chatroom_id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -3155,7 +3230,14 @@ async fn list_chatroom_members(state: State<'_, AppState>, chatroom_id: Uuid) ->
 
 #[tauri::command]
 async fn update_chatroom(state: State<'_, AppState>, room: ChatRoom) -> Result<(), String> {
-    ravenbot_db::queries::ChatRoomQueries::update(state.db.pool(), &room).await.map_err(|e| e.to_string())
+    // Keep the policy document in the workspace in step with the field.
+    ravenbot_runtime::workspace::write_policy(&room);
+    let result =
+        ravenbot_db::queries::ChatRoomQueries::update(state.db.pool(), &room).await.map_err(|e| e.to_string());
+    if result.is_ok() {
+        refresh_office_workspace(&state, room.id).await;
+    }
+    result
 }
 
 #[tauri::command]
@@ -3165,12 +3247,16 @@ async fn delete_chatroom(state: State<'_, AppState>, chatroom_id: Uuid) -> Resul
 
 #[tauri::command]
 async fn remove_chatroom_member(state: State<'_, AppState>, chatroom_id: Uuid, bot_id: Uuid) -> Result<(), String> {
-    ravenbot_db::queries::ChatRoomQueries::remove_member(state.db.pool(), chatroom_id, bot_id).await.map_err(|e| e.to_string())
+    ravenbot_db::queries::ChatRoomQueries::remove_member(state.db.pool(), chatroom_id, bot_id).await.map_err(|e| e.to_string())?;
+    refresh_office_workspace(&state, chatroom_id).await;
+    Ok(())
 }
 
 #[tauri::command]
 async fn update_chatroom_member(state: State<'_, AppState>, chatroom_id: Uuid, bot_id: Uuid, rank: String, specialty: String) -> Result<(), String> {
-    ravenbot_db::queries::ChatRoomQueries::update_member(state.db.pool(), chatroom_id, bot_id, &rank, &specialty).await.map_err(|e| e.to_string())
+    ravenbot_db::queries::ChatRoomQueries::update_member(state.db.pool(), chatroom_id, bot_id, &rank, &specialty).await.map_err(|e| e.to_string())?;
+    refresh_office_workspace(&state, chatroom_id).await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -4101,11 +4187,39 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_window_state::Builder::new().build())
         .setup(|app| {
-            // Get app data directory
-            let app_dir = app.path().app_data_dir().expect("failed to get app data dir");
-            std::fs::create_dir_all(&app_dir).ok();
-            
-            let db_path = app_dir.join("ravenbot.db");
+            // Everything RAVENBOT owns lives under one folder (`~/RAVENBOT`),
+            // resolved by the same helper the CLI and MCP server use. Deriving
+            // it from `app.path().app_data_dir()` here is what let the two
+            // drift apart into different databases.
+            let db_path = ravenbot_core::default_db_path();
+
+            // An install from before the `~/RAVENBOT` layout has its database
+            // in the OS app-data dir. Move it rather than presenting an empty
+            // app — the sidecar -wal / -shm files go with it or the moved
+            // database is missing committed transactions.
+            if let Some(legacy) = ravenbot_core::legacy_db_path() {
+                match std::fs::rename(&legacy, &db_path) {
+                    Ok(()) => {
+                        // `-wal` / `-shm` are named after the database, not
+                        // derived from it, so append rather than substitute.
+                        for suffix in ["-wal", "-shm"] {
+                            let mut side = legacy.clone().into_os_string();
+                            side.push(suffix);
+                            let _ = std::fs::remove_file(std::path::PathBuf::from(side));
+                        }
+                        tracing::info!(
+                            from = %legacy.display(),
+                            to = %db_path.display(),
+                            "Moved the existing RAVENBOT database into ~/RAVENBOT"
+                        );
+                    }
+                    Err(e) => tracing::warn!(
+                        "Could not move {} to {}: {e}",
+                        legacy.display(),
+                        db_path.display()
+                    ),
+                }
+            }
             
             // Initialize database + runtime inside Tokio context so Runtime::new can spawn plugin seeding
             let rt = tokio::runtime::Runtime::new().unwrap();
