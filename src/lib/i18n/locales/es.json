@@ -1250,7 +1250,8 @@
     "copyTitle": "Copiar código",
     "artifact": "Artefacto",
     "artifactTip": "Abrir en el panel de artefactos (lienzo)",
-    "reasoning": "🧠 Razonamiento"
+    "reasoning": "🧠 Razonamiento",
+    "table": "Tabla"
   },
   "avatar": {
     "preview": "Vista previa de identidad del agente",

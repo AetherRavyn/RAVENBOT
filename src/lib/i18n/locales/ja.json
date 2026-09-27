@@ -1250,7 +1250,8 @@
     "copyTitle": "コードをコピー",
     "artifact": "アーティファクト",
     "artifactTip": "アーティファクトパネル（キャンバス）で開く",
-    "reasoning": "🧠 推論"
+    "reasoning": "🧠 推論",
+    "table": "表"
   },
   "avatar": {
     "preview": "エージェント アイデンティティ プレビュー",

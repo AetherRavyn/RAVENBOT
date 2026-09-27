@@ -1250,7 +1250,8 @@
     "copyTitle": "复制代码",
     "artifact": "工件",
     "artifactTip": "在工件面板（画布）中打开",
-    "reasoning": "🧠 推理"
+    "reasoning": "🧠 推理",
+    "table": "表格"
   },
   "avatar": {
     "preview": "智能体身份预览",

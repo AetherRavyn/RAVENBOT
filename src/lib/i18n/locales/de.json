@@ -1250,7 +1250,8 @@
     "copyTitle": "Code kopieren",
     "artifact": "Artefakt",
     "artifactTip": "Im Artefakt-Panel öffnen (Canvas)",
-    "reasoning": "🧠 Überlegung"
+    "reasoning": "🧠 Überlegung",
+    "table": "Tabelle"
   },
   "avatar": {
     "preview": "Agenten-Identitätsvorschau",

@@ -732,3 +732,278 @@ html.sidebar-resizing .app-frame {
     animation: none;
   }
 }
+
+/* ── Markdown: the token renderer ───────────────────────────────────────────
+ * The body renders from `marked` tokens into real elements, so these rules
+ * style elements the component tree owns rather than output from a string.
+ *
+ * `white-space: normal` on the root is the load-bearing one: the copy handler
+ * used to set `pre-line` inline, and a block that inherits it collapses the
+ * newlines a code block depends on. */
+.markdown-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.markdown-content :is(p, ul, ol, blockquote, pre, table) {
+  margin: 0;
+}
+
+.markdown-content > :not(:first-child) {
+  margin-top: 12px;
+}
+
+/* Nested containers add their own rhythm rather than inheriting the root's
+ * `> :not(:first-child)` rule, which does not reach them. */
+.markdown-content :is(ul, ol) :is(p, ul, ol, blockquote),
+.markdown-content blockquote :is(p, ul, ol, blockquote) {
+  margin-top: 4px;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  color: inherit;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.markdown-content h1 {
+  font-size: 20px;
+}
+.markdown-content h2 {
+  font-size: 17px;
+}
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  font-size: 14px;
+}
+
+/* A task list item is a flex row so the checkbox sits beside the text rather
+ * than being part of it, and the marker is dropped. */
+.markdown-content li.md-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  list-style: none;
+}
+
+.markdown-content li.md-task input[type="checkbox"] {
+  margin-top: 4px;
+  flex: 0 0 auto;
+  accent-color: var(--brand);
+}
+
+.markdown-content li.md-task > * {
+  min-width: 0;
+}
+
+.markdown-content a {
+  color: var(--brand-text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--brand-text) 40%, transparent);
+  text-underline-offset: 2px;
+}
+
+.markdown-content a:hover {
+  text-decoration-color: currentColor;
+}
+
+/* A link the URL check refused. Shown as text so the reader can still see and
+ * copy the address, rather than silently disappearing. */
+.markdown-content .md-link-refused {
+  color: var(--text-tertiary);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+/* Raw HTML from a model's answer: visible, escaped, and clearly not the page's
+ * own markup. This is what replaces executing it. */
+.markdown-content .md-raw-html {
+  display: block;
+  border-left: 2px solid var(--hairline-strong);
+  padding-left: 8px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.markdown-content .md-image {
+  display: block;
+  max-width: 100%;
+  max-height: 340px;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+/* Tables get a focusable scroll region. A wide table must not widen the message
+ * column, and it must be reachable by keyboard — an `overflow-x: auto` box that
+ * Tab cannot land on is a scroll region only a mouse can use. */
+.markdown-content .md-table-scroll {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+.markdown-content .md-table-scroll:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.markdown-content .md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.markdown-content .md-table th,
+.markdown-content .md-table td {
+  border-bottom: 1px solid var(--hairline);
+  border-right: 1px solid var(--hairline);
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.markdown-content .md-table th:last-child,
+.markdown-content .md-table td:last-child {
+  border-right: 0;
+}
+
+.markdown-content .md-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown-content .md-table th {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* ── Code blocks ──────────────────────────────────────────────────────────── */
+.markdown-content .md-code {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.markdown-content .md-code-header {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--hairline);
+  padding: 0 8px 0 10px;
+  background: var(--surface-1);
+}
+
+.markdown-content .md-code-lang {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.markdown-content .md-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.markdown-content .md-code-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 6px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.markdown-content .md-code-btn:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+
+.markdown-content .md-code-btn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.markdown-content .md-code-pre {
+  margin: 0;
+  max-height: 460px;
+  overflow: auto;
+  padding: 10px 12px;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+
+.markdown-content .md-code-pre code {
+  background: none;
+  padding: 0;
+  border: 0;
+  font-size: inherit;
+  white-space: pre;
+}
+
+/* Token colours. Deliberately low-contrast-on-purpose-free: they are tints of
+ * the existing semantic tokens so every theme gets them without a new entry. */
+.markdown-content .tok-string {
+  color: var(--success-text);
+}
+.markdown-content .tok-comment {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.markdown-content .tok-number {
+  color: var(--warning-text);
+}
+.markdown-content .tok-keyword {
+  color: var(--brand-text);
+}
+.markdown-content .tok-function {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* ── The streaming tail ──────────────────────────────────────────────────────
+ * Opacity only. A blur or transform on text repaints every fading word on each
+ * frame, which is what made long answers stutter while they streamed. */
+.md-fade {
+  animation: md-fade-in 220ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+@keyframes md-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-fade {
+    animation: none;
+  }
+}

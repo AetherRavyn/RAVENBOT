@@ -1250,7 +1250,8 @@
     "copyTitle": "Copy code",
     "artifact": "Artifact",
     "artifactTip": "Open in artifact panel (canvas)",
-    "reasoning": "🧠 Reasoning"
+    "reasoning": "🧠 Reasoning",
+    "table": "Table"
   },
   "avatar": {
     "preview": "Agent Identity Preview",

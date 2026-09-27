@@ -1250,7 +1250,8 @@
     "copyTitle": "Copier le code",
     "artifact": "Artefact",
     "artifactTip": "Ouvrir dans le panneau artefact (canevas)",
-    "reasoning": "🧠 Raisonnement"
+    "reasoning": "🧠 Raisonnement",
+    "table": "Tableau"
   },
   "avatar": {
     "preview": "Aperçu de l'identité de l'agent",
