@@ -67,6 +67,39 @@ impl SandboxRunner {
         })
     }
 
+    /// Build a runner that also binds `paths` read-write.
+    ///
+    /// An office workspace has to be bound, not merely used as the cwd: a
+    /// command that does `cd /tmp` first would otherwise lose access to the
+    /// folder it is supposed to be working in, and a tool that reads a sibling
+    /// file by absolute path would fail even though the path is inside the
+    /// office. These roots are added to `allowed_paths`, so bubblewrap mounts
+    /// them writable.
+    ///
+    /// Only paths that exist are bound; a root that has been deleted is
+    /// skipped rather than causing a spawn failure.
+    pub fn from_tier_with_paths(tier: SandboxTier, paths: &[PathBuf]) -> Self {
+        let mut config = SandboxConfig {
+            tier,
+            resource_limits: ResourceLimits::default(),
+            network_policy: NetworkPolicy::default(),
+            ..Default::default()
+        };
+        for path in paths {
+            if !path.is_dir() {
+                continue;
+            }
+            // Canonicalize so a root given as `~/office` binds the same inode
+            // the path check compares against.
+            let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+            let as_text = resolved.to_string_lossy().to_string();
+            if !config.allowed_paths.contains(&as_text) {
+                config.allowed_paths.push(as_text);
+            }
+        }
+        Self::new(config)
+    }
+
     fn detect_backend(config: &SandboxConfig) -> SandboxBackend {
         if config.tier == SandboxTier::Host {
             return SandboxBackend::None;

@@ -39,13 +39,13 @@ impl Skill for TaskRunnerSkill {
         })
     }
 
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let action = args.get("action").and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'action'".into()))?;
 
         match action {
-            "run" => self.run_task(args).await,
-            "list" => self.list_tasks(args).await,
+            "run" => self.run_task(ctx, args).await,
+            "list" => self.list_tasks(ctx, args).await,
             "watch" => Ok(SkillResult::failure("Watch mode not yet implemented".to_string())),
             "stop" => Ok(SkillResult::failure("Stop requires background task tracking".to_string())),
             "schedule" => Ok(SkillResult::failure("Use the scheduler skill for cron scheduling".to_string())),
@@ -55,33 +55,58 @@ impl Skill for TaskRunnerSkill {
 }
 
 impl TaskRunnerSkill {
-    async fn run_task(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn run_task(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let task = args.get("task").and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'task'".into()))?;
-        let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+        let raw_cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
         let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60).min(600);
 
-        // Resolve task from package.json, Makefile, or run as raw command
-        let command = self.resolve_task(task, cwd).await;
+        // Confine the directory first: it decides where the task runs, and
+        // `resolve_task` probes for a manifest underneath it. It used to be
+        // used raw, so `cwd: "/etc"` ran there and `cwd: "../../.."` ran at
+        // the filesystem root.
+        let dir = crate::exec::resolve_cwd(ctx, Some(raw_cwd))?;
+        let cwd = dir.to_string_lossy().to_string();
 
+        // Resolve the task from package.json, a Makefile, or a known runner.
+        let command = self.resolve_task(task, &cwd).await;
+
+        let runner = crate::exec::runner_for(ctx);
         let mut cmd = if cfg!(target_os = "windows") {
             let mut c = tokio::process::Command::new("cmd");
             c.args(["/C", &command]);
             c
         } else {
-            let mut c = tokio::process::Command::new("sh");
-            c.args(["-c", &command]);
-            c
+            // The shell is unavoidable here — a Makefile target and an npm
+            // script are shell lines. The boundary is the sandbox plus the
+            // confined cwd, not the absence of a shell.
+            runner
+                .command("sh", &["-c".to_string(), command.clone()], Some(&dir))
+                .map_err(SkillError::Execution)?
         };
 
-        cmd.current_dir(cwd);
+        cmd.current_dir(&dir);
 
-        // Add custom env vars
+        // Custom env vars. Keys are validated: an arbitrary key here is a way
+        // to change how every child process behaves.
         if let Some(env_vars) = args.get("env").and_then(|v| v.as_object()) {
             for (k, v) in env_vars {
-                if let Some(val) = v.as_str() {
-                    cmd.env(k, val);
+                let val = v.as_str().unwrap_or_default();
+                let sane_key = !k.is_empty()
+                    && k.len() <= 64
+                    && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    && !k.starts_with(|c: char| c.is_ascii_digit());
+                if !sane_key {
+                    return Err(SkillError::InvalidArguments(format!(
+                        "Invalid environment variable name {k:?}."
+                    )));
                 }
+                if val.len() > 4096 {
+                    return Err(SkillError::InvalidArguments(format!(
+                        "Value for {k} is too long."
+                    )));
+                }
+                cmd.env(k, val);
             }
         }
 
@@ -172,8 +197,11 @@ impl TaskRunnerSkill {
         task.to_string()
     }
 
-    async fn list_tasks(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
+    async fn list_tasks(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+        // Confined for the same reason as `run_task`: this reads manifests off
+        // disk, so the directory is not just a label.
+        let dir = crate::exec::resolve_cwd(ctx, args.get("cwd").and_then(|v| v.as_str()))?;
+        let cwd = dir.to_string_lossy().to_string();
         let mut tasks = Vec::new();
 
         // package.json scripts

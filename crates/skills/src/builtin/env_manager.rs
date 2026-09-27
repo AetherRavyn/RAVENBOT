@@ -50,12 +50,29 @@ impl Skill for EnvManagerSkill {
         })
     }
 
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let action = args.get("action").and_then(|v| v.as_str())
-            .ok_or_else(|| SkillError::InvalidArguments("Missing 'action'".into()))?;
+    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if action.is_empty() {
+            return Err(SkillError::InvalidArguments("Missing 'action'".into()));
+        }
+        // Every file this skill touches is confined to the run's workspace
+        // before any action runs. Previously `file` was taken as given, so
+        // `write_env` could write `~/.bashrc` or an application config, and
+        // `sync_env` could copy values into any file on the computer.
+        //
+        // Resolving once here, rather than in each action, means there is a
+        // single place the boundary is enforced and every action inherits it.
+        let mut args = args;
+        confine_path(ctx, &mut args, "file", ".env")?;
+        confine_path(ctx, &mut args, "source", ".env")?;
+        confine_path(ctx, &mut args, "target", ".env")?;
         let file = args.get("file").and_then(|v| v.as_str()).unwrap_or(".env").to_string();
 
-        match action {
+        match action.as_str() {
             "read" => self.read_env(&file).await,
             "write" => self.write_env(&file, args).await,
             "delete" => self.delete_key(&file, args).await,
@@ -64,9 +81,29 @@ impl Skill for EnvManagerSkill {
             "sync" => self.sync_env(args).await,
             "list" => self.list_env(&file).await,
             "export" => self.export_env(&file, args).await,
-            _ => Err(SkillError::InvalidArguments(format!("Unknown action: {}", action))),
+            other => Err(SkillError::InvalidArguments(format!(
+                "Unknown action: {other}"
+            ))),
         }
     }
+}
+
+/// Rewrite one path-valued argument in place to its confined absolute form.
+///
+/// Absent fields are left absent so each action keeps its own default, which
+/// is itself resolved.
+fn confine_path(
+    ctx: &SkillContext,
+    args: &mut serde_json::Value,
+    key: &str,
+    default: &str,
+) -> Result<(), SkillError> {
+    let raw = args.get(key).and_then(|v| v.as_str()).unwrap_or(default);
+    let resolved = ctx.resolve_path(raw)?;
+    if let Some(obj) = args.as_object_mut() {
+        obj.insert(key.to_string(), serde_json::Value::String(resolved.to_string_lossy().to_string()));
+    }
+    Ok(())
 }
 
 impl EnvManagerSkill {

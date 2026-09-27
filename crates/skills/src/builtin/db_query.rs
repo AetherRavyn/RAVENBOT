@@ -53,12 +53,12 @@ impl Skill for DbQuerySkill {
         "Database Query"
     }
     fn description(&self) -> &str {
-        "Run a read-only SQL query against the local RAVENBOT SQLite database \
-         (tables: bots, threads, messages, runs, routines, memories, …). \
-         Returns structured rows as JSON."
+        "Run a read-only SQL query against a SQLite file in this office's \
+         workspace. Returns structured rows as JSON. Cannot read RAVENBOT's \
+         own database."
     }
     fn version(&self) -> &str {
-        "1.1.0"
+        "1.2.0"
     }
     fn required_permissions(&self) -> Vec<Permission> {
         vec![Permission::FileSystem { paths: vec![".".into()] }]
@@ -67,8 +67,8 @@ impl Skill for DbQuerySkill {
         serde_json::json!({
             "type":"object","properties":{
                 "sql":{"type":"string","description":"A single read-only statement (SELECT/PRAGMA/EXPLAIN/WITH)"},
-                "path":{"type":"string","description":"Database path (default: the RAVENBOT app database)"},
-                "limit":{"type":"integer","description":"Max rows returned (default 100, max 1000)"}
+                "path":{"type":"string","description":"SQLite file inside this office's workspace"},
+                "limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Max rows returned (default 100)"}
             },"required":["sql"]
         })
     }
@@ -78,7 +78,7 @@ impl Skill for DbQuerySkill {
 
     async fn execute(
         &self,
-        _ctx: &SkillContext,
+        ctx: &SkillContext,
         args: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let sql = args
@@ -101,16 +101,30 @@ impl Skill for DbQuerySkill {
             .unwrap_or(100)
             .clamp(1, 1000);
 
-        let path = args
+        // The database must be inside the run's workspace.
+        //
+        // Without this, omitting `path` opened the live RAVENBOT application
+        // database, and `SELECT * FROM bundle_signing_key` returned the
+        // Ed25519 private key that signs fleet-sync bundles — at
+        // `SkillRisk::ReadOnly`, so never gated behind an approval. The path
+        // goes through the same confinement as every other tool, so a
+        // workspace that contains a `.db` is the only thing reachable.
+        let requested = args
             .get("path")
             .and_then(|v| v.as_str())
             .filter(|p| !p.trim().is_empty())
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(ravenbot_core::default_db_path);
+            .ok_or_else(|| {
+                SkillError::InvalidArguments(
+                    "Pass `path` to a SQLite file inside this office's workspace, for example \
+                     `notes/inventory.db`. This tool does not read RAVENBOT's own database."
+                        .into(),
+                )
+            })?;
+        let path = ctx.resolve_path(requested)?;
 
-        if !path.exists() {
+        if !path.is_file() {
             return Ok(SkillResult::failure(format!(
-                "Database not found at {}",
+                "No database file at {}",
                 path.display()
             )));
         }

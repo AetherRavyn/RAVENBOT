@@ -4,6 +4,7 @@
 //! for web search, file operations, shell execution, and more.
 
 pub mod traits;
+pub mod exec;
 pub mod builtin;
 pub mod registry;
 pub mod awesome;

@@ -7,7 +7,6 @@
 
 use async_trait::async_trait;
 use ravenbot_core::{Permission, SandboxTier};
-use ravenbot_sandbox::SandboxRunner;
 
 use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 
@@ -102,7 +101,11 @@ impl Skill for ShellExecSkill {
             SandboxTier::Docker => SandboxTier::Docker,
             SandboxTier::OsLevel => Self::tier_from_env(),
         };
-        let runner = SandboxRunner::from_tier(tier);
+        // Bind the office's workspace roots, not just the cwd. Without this a
+        // command that does `cd /tmp` first loses access to the folder it is
+        // working in, and a tool reading a sibling file by absolute path fails
+        // even though the path is inside the office.
+        let runner = crate::exec::runner_from_tier(tier, &context.working_dirs);
 
         let cwd = match cwd_arg {
             Some(arg) => Some(context.resolve_path(arg)?),

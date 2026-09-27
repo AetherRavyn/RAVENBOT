@@ -38,7 +38,9 @@ impl Skill for TavilySearchSkill {
         }
         // Fallback: use DuckLite via web_search skill
         let fallback = crate::builtin::web_search::WebSearchSkill::new();
-        let ctx = SkillContext { bot_id: _ctx.bot_id, run_id: _ctx.run_id, thread_id: _ctx.thread_id, sandbox_tier: _ctx.sandbox_tier.clone(), working_dirs: _ctx.working_dirs.clone() };
+        // Carry the confinement across with the rest of the context, so a
+        // delegated call is bound exactly like the original.
+        let ctx = _ctx.clone_for_delegation();
         fallback.execute(&ctx, serde_json::json!({"query": query, "max_results": max})).await
     }
 }

@@ -2400,13 +2400,21 @@ impl Runtime {
                 model_messages.push(Message::assistant_tool_calls(assistant_content, calls.clone()));
             }
 
+            // The run is confined to its workspace, always.
+            //
+            // `resolve_working_dirs` never returns an empty list, so this
+            // always names at least one root. It is built the explicit way
+            // rather than through `with_working_dirs` so that the intent is
+            // visible: if a future change ever produced no roots, this denies
+            // every path instead of quietly becoming unrestricted.
             let skill_context = SkillContext::new(
                 bot.id,
                 run.id,
                 run.thread_id,
                 bot.config.sandbox_tier.clone(),
             )
-            .with_working_dirs(working_dirs.clone());
+            .with_working_dirs(working_dirs.clone())
+            .confined();
 
             // ── Approval pass (sequential, in order: cards appear in order) ──
             let mut decisions: Vec<bool> = Vec::with_capacity(calls.len());

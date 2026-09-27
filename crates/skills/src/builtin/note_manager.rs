@@ -43,12 +43,25 @@ impl Skill for NoteManagerSkill {
 
     fn risk(&self) -> SkillRisk { SkillRisk::Low }
 
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let action = args.get("action").and_then(|v| v.as_str())
-            .ok_or_else(|| SkillError::InvalidArguments("Missing 'action'".into()))?;
-        let dir = args.get("directory").and_then(|v| v.as_str()).unwrap_or("./notes").to_string();
+    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        if action.is_empty() {
+            return Err(SkillError::InvalidArguments("Missing 'action'".into()));
+        }
+        // Confine the path arguments once, before dispatch. `directory` and
+        // `path` were taken as given, so notes could be written to, read from,
+        // or deleted anywhere on the computer — `create_note` even called
+        // `create_dir_all` on whatever it was handed.
+        let mut args = args;
+        confine_path(ctx, &mut args, "directory", "notes")?;
+        confine_path(ctx, &mut args, "path", "notes")?;
+        let dir = args.get("directory").and_then(|v| v.as_str()).unwrap_or("notes").to_string();
 
-        match action {
+        match action.as_str() {
             "create" => self.create_note(&dir, args).await,
             "read" => self.read_note(args).await,
             "update" => self.update_note(args).await,
@@ -58,9 +71,26 @@ impl Skill for NoteManagerSkill {
             "tag" => self.tag_note(args).await,
             "export" => self.export_notes(&dir, args).await,
             "bookmark" => self.create_bookmark(&dir, args).await,
-            _ => Err(SkillError::InvalidArguments(format!("Unknown action: {}", action))),
+            other => Err(SkillError::InvalidArguments(format!(
+                "Unknown action: {other}"
+            ))),
         }
     }
+}
+
+/// Rewrite one path-valued argument in place to its confined absolute form.
+fn confine_path(
+    ctx: &SkillContext,
+    args: &mut serde_json::Value,
+    key: &str,
+    default: &str,
+) -> Result<(), SkillError> {
+    let raw = args.get(key).and_then(|v| v.as_str()).unwrap_or(default);
+    let resolved = ctx.resolve_path(raw)?;
+    if let Some(obj) = args.as_object_mut() {
+        obj.insert(key.to_string(), serde_json::Value::String(resolved.to_string_lossy().to_string()));
+    }
+    Ok(())
 }
 
 impl NoteManagerSkill {
