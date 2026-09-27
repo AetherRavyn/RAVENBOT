@@ -272,6 +272,71 @@
   // Events from any other thread are ignored (no cross-run clobbering).
   const activeThreads = new Set<string>();
   const threadToNode = new Map<string, string>();
+  // Human-in-the-loop cards: an office node's tool call parks server-side
+  // until it is decided/answered, so the room must surface the request.
+  interface PendingApproval {
+    id: string; bot_id: string; thread_id: string; run_id: string;
+    tool_name: string; tool_label: string; arguments: any; risk: string;
+    status: string; created_at: string;
+  }
+  interface PendingQuestion {
+    id: string; bot_id: string; thread_id: string; run_id: string;
+    header: string; question: string; options: string[]; allow_custom: boolean;
+    status: string; created_at: string;
+  }
+  let pendingApprovals = $state<PendingApproval[]>([]);
+  let pendingQuestions = $state<PendingQuestion[]>([]);
+  let decidingApproval = $state<string | null>(null);
+  let answeringQuestion = $state<string | null>(null);
+  let questionDraft = $state<Record<string, string>>({});
+
+  async function decideApproval(id: string, allowed: boolean) {
+    if (decidingApproval) return;
+    decidingApproval = id;
+    try {
+      await invoke("decide_approval", { approvalId: id, allowed, note: null });
+      pendingApprovals = pendingApprovals.filter((a) => a.id !== id);
+    } catch (e) {
+      notify(`Failed to decide approval: ${String(e)}`, "error");
+    } finally {
+      decidingApproval = null;
+    }
+  }
+
+  async function answerQuestion(id: string, answer: string) {
+    const value = (answer ?? "").trim();
+    if (!value || answeringQuestion) return;
+    answeringQuestion = id;
+    try {
+      await invoke("answer_question", { questionId: id, answer: value });
+      pendingQuestions = pendingQuestions.filter((q) => q.id !== id);
+    } catch (e) {
+      notify(`Failed to answer: ${String(e)}`, "error");
+    } finally {
+      answeringQuestion = null;
+    }
+  }
+
+  function approvalSummary(args: any): string {
+    try {
+      if (args == null) return "";
+      if (typeof args === "string") return args.slice(0, 280);
+      if (typeof args.command === "string") return String(args.command).slice(0, 280);
+      if (typeof args.path === "string" && typeof args.content === "string")
+        return `${args.path} (+${args.content.length} chars)`;
+      if (typeof args.path === "string") return String(args.path).slice(0, 280);
+      if (typeof args.instruction === "string") return String(args.instruction).slice(0, 280);
+      if (typeof args.query === "string") return String(args.query).slice(0, 280);
+      if (typeof args.url === "string") return String(args.url).slice(0, 280);
+      return JSON.stringify(args).slice(0, 280);
+    } catch {
+      return "";
+    }
+  }
+  function agentNameFor(botId: string): string {
+    const m = memberForBot(botId);
+    return m?.bot?.name || m?.rank || "Agent";
+  }
   // Live activity strip: what each agent is doing right now (P5).
   const runTimeline = new RunTimelineState();
   // Word-by-word reveal per live lane (same engine as ThreadView streaming)
@@ -320,6 +385,8 @@
     agentTool = {};
     boardGoal = "";
     boardNodes = [];
+    pendingApprovals = [];
+    pendingQuestions = [];
     activeThreads.clear();
     threadToNode.clear();
     runTimeline.reset();
@@ -536,12 +603,19 @@
           return;
         }
         if (kind === "node_finished") {
-          patchNode(String(p.node_id ?? ""), {
+          const nodeId = String(p.node_id ?? "");
+          patchNode(nodeId, {
             state: p.state === "failed" ? "failed" : "done",
             preview: String(p.preview || ""),
           });
           if (Array.isArray(p.skipped)) {
             for (const s of p.skipped) patchNode(String(s), { state: "skipped" });
+          }
+          // The node's thread is done — any card still parked on it is stale.
+          const ntid = [...threadToNode.entries()].find(([, id]) => id === nodeId)?.[0];
+          if (ntid) {
+            pendingApprovals = pendingApprovals.filter((a) => String(a.thread_id) !== ntid);
+            pendingQuestions = pendingQuestions.filter((q) => String(q.thread_id) !== ntid);
           }
           return;
         }
@@ -565,6 +639,20 @@
         } else if (kind === "usage") {
           officeTokens += p.tokens || 0;
           officeCost += p.cost || 0;
+        } else if (kind === "approval_requested") {
+          if (p.approval && !pendingApprovals.some((a) => a.id === p.approval.id)) {
+            pendingApprovals = [...pendingApprovals, p.approval];
+            scrollToBottom(true);
+          }
+        } else if (kind === "approval_decided") {
+          pendingApprovals = pendingApprovals.filter((a) => a.id !== p.approval_id);
+        } else if (kind === "question_asked") {
+          if (p.question && !pendingQuestions.some((q) => q.id === p.question.id)) {
+            pendingQuestions = [...pendingQuestions, p.question];
+            scrollToBottom(true);
+          }
+        } else if (kind === "question_answered") {
+          pendingQuestions = pendingQuestions.filter((q) => q.id !== p.question_id);
         } else if (kind === "delta") {
           // Route the token stream to its NODE lane (parallel same-bot nodes
           // stay separate); unattributed deltas fall back to a per-bot lane.
@@ -1173,6 +1261,89 @@
                 {/each}
               </div>
             </div>
+          </div>
+        {/each}
+
+        <!-- Human-in-the-loop cards from office nodes -->
+        {#each pendingApprovals as ap (ap.id)}
+          {@const deciding = decidingApproval === ap.id}
+          <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border {ap.risk === 'high' ? 'border-warning/40' : 'border-[var(--hairline)]'} bg-[var(--surface-1)] p-4 space-y-2.5 shadow-xl">
+            <div class="flex items-baseline justify-between gap-3 min-w-0">
+              <div class="text-[13px] font-semibold text-[var(--text-primary)] truncate">
+                {agentNameFor(ap.bot_id)} wants to {ap.tool_label || ap.tool_name}
+              </div>
+              <span class="shrink-0 font-mono text-[10px] text-[var(--text-muted)]">{ap.tool_name}</span>
+            </div>
+            {#if approvalSummary(ap.arguments)}
+              <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/50 border border-[var(--hairline)] px-3 py-2 font-mono text-[11.5px] leading-relaxed text-[var(--text-secondary)]">{approvalSummary(ap.arguments)}</pre>
+            {/if}
+            {#if ap.risk === 'high'}
+              <p class="text-[11px] text-warning/90">{t("thread.highStakes")}</p>
+            {/if}
+            <div class="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={deciding}
+                onclick={() => decideApproval(ap.id, true)}
+                class="h-8 px-4 rounded-full bg-success text-[var(--text-primary)] text-xs font-bold hover:bg-success transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {deciding ? 'Allowing…' : 'Allow'}
+              </button>
+              <button
+                type="button"
+                disabled={deciding}
+                onclick={() => decideApproval(ap.id, false)}
+                class="h-8 px-4 rounded-full border border-danger/40 text-danger text-xs font-bold hover:bg-danger/15 transition-colors cursor-pointer disabled:opacity-50"
+              >
+                Deny
+              </button>
+              <span class="text-[10px] font-mono text-[var(--text-muted)] ml-1">the run resumes after you decide</span>
+            </div>
+          </div>
+        {/each}
+
+        {#each pendingQuestions as q (q.id)}
+          {@const answering = answeringQuestion === q.id}
+          <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border border-[var(--brand)]/40 bg-[var(--surface-1)] p-4 space-y-3 shadow-xl">
+            <div class="flex items-baseline justify-between gap-3 min-w-0">
+              <div class="text-[13px] font-semibold text-[var(--text-primary)] truncate">{q.header || 'Question'} — {agentNameFor(q.bot_id)}</div>
+              <span class="shrink-0 font-mono text-[10px] text-[var(--brand-text)]/80">ask_user</span>
+            </div>
+            <p class="text-[12.5px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">{q.question}</p>
+            {#if q.options?.length}
+              <div class="flex flex-wrap gap-2">
+                {#each q.options as opt}
+                  <button
+                    type="button"
+                    disabled={answering}
+                    onclick={() => answerQuestion(q.id, opt)}
+                    class="h-8 px-3.5 rounded-full border border-[var(--brand)]/40 text-[var(--brand-text)] text-xs font-semibold hover:bg-[var(--brand-soft)] transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    {opt}
+                  </button>
+                {/each}
+              </div>
+            {/if}
+            {#if q.allow_custom !== false}
+              <div class="flex items-center gap-2 min-w-0">
+                <input
+                  type="text"
+                  aria-label="Answer"
+                  bind:value={questionDraft[q.id]}
+                  onkeydown={(e) => { if (e.key === 'Enter') answerQuestion(q.id, questionDraft[q.id] ?? ''); }}
+                  placeholder={t("thread.answerPlaceholder")}
+                  class="flex-1 min-w-0 h-9 rounded-xl border border-[var(--hairline)] bg-black/50 px-3 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+                />
+                <button
+                  type="button"
+                  disabled={answering || !(questionDraft[q.id] ?? '').trim()}
+                  onclick={() => answerQuestion(q.id, questionDraft[q.id] ?? '')}
+                  class="h-9 px-4 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] text-xs font-bold hover:bg-[var(--brand-hover)] transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                >
+                  {answering ? 'Sending…' : 'Answer'}
+                </button>
+              </div>
+            {/if}
           </div>
         {/each}
 

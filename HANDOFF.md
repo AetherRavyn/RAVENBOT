@@ -1670,6 +1670,12 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     typed kinds — node attribution goes through `node_open.node_thread_id`;
     (2) `$derived<T>(() => …)` derives the FUNCTION — use `$derived.by`;
     (3) OfficeBoard auto-collapses when `runActive` falls (sawActive latch).
+  - FOLLOW-UP (same day): office human-in-the-loop cards — ChatRoomView now handles
+    `approval_requested/decided` + `question_asked/answered` (previously dropped, so a
+    parked node hung with no way to answer): Allow/Deny + option/custom-answer cards
+    rendered in the feed, `decide_approval`/`answer_question` invokes, cards pruned on
+    `approval_decided`, node_finished (stale thread) and resetRun. Reuses ThreadView
+    markup + `thread.highStakes`/`thread.answerPlaceholder` keys (no new i18n).
   - Verified: `npm run check` 0/0; vitest 6 files 30/30; `npm run build` OK;
     `cargo test --workspace` exit 0; `npx tauri build` exit 0 (user must
     relaunch target/release/ravenbot to see it). NOT run under tauri dev.
