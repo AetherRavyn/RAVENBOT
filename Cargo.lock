@@ -4047,6 +4047,7 @@ dependencies = [
  "ravenbot-runtime",
  "ravenbot-sandbox",
  "ravenbot-scheduler",
+ "ravenbot-skills",
  "ravenbot-sync",
  "ravenbot-vision",
  "reqwest 0.12.28",
