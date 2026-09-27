@@ -445,6 +445,80 @@
       state: checklistState(it.status),
       preview: String(it.result || ""),
     }));
+    persistBoard();
+  }
+  // Persist the board (fire-and-forget) so a room re-open — or an app
+  // restart — shows the latest plan snapshot instead of an empty board.
+  function persistBoard() {
+    if (!threadId || boardNodes.length === 0) return;
+    void invoke("save_office_board", { threadId, goal: boardGoal, nodes: boardNodes }).catch(
+      () => {
+        /* board persistence is best-effort */
+      },
+    );
+  }
+  // Rehydrate the persisted board when (re)opening a room. A stored
+  // "running" node may belong to a run that died with the app, so it is
+  // demoted to pending; parked HITL cards are re-queried from the server
+  // for the room thread and every node thread we know about.
+  async function rehydratePersistedBoard() {
+    if (!threadId || boardNodes.length > 0) return;
+    let saved: { goal?: string; nodes?: any[] } | null = null;
+    try {
+      saved = await invoke<{ goal?: string; nodes?: any[] } | null>("get_office_board", {
+        threadId,
+      });
+    } catch {
+      return;
+    }
+    if (!saved || boardNodes.length > 0) return;
+    const valid = new Set(["pending", "running", "done", "failed", "skipped"]);
+    boardGoal = String(saved.goal || "");
+    boardNodes = (Array.isArray(saved.nodes) ? saved.nodes : [])
+      .map(
+        (n: any): BoardNode => ({
+          nodeId: String(n?.nodeId ?? ""),
+          botId: String(n?.botId ?? ""),
+          label: String(n?.label || "Task"),
+          dependsOn: (Array.isArray(n?.dependsOn) ? n.dependsOn : []).map(String),
+          state: valid.has(String(n?.state)) ? (String(n.state) as BoardNode["state"]) : "pending",
+          preview: n?.preview ? String(n.preview) : undefined,
+          nodeThreadId: n?.nodeThreadId ? String(n.nodeThreadId) : undefined,
+        }),
+      )
+      .filter((n: BoardNode) => n.nodeId)
+      .map((n: BoardNode) => (n.state === "running" ? { ...n, state: "pending" as const } : n));
+    await refreshPendingHitl();
+  }
+  async function refreshPendingHitl() {
+    if (!threadId) return;
+    const threads = [
+      String(threadId),
+      ...boardNodes.map((n) => n.nodeThreadId).filter(Boolean).map(String),
+    ];
+    try {
+      const chunks = await Promise.all(
+        threads.map(async (t) => {
+          const [aps, qs] = await Promise.all([
+            invoke<any[]>("list_pending_approvals", { threadId: t }).catch(() => [] as any[]),
+            invoke<any[]>("list_pending_questions", { threadId: t }).catch(() => [] as any[]),
+          ]);
+          return { aps: aps || [], qs: qs || [] };
+        }),
+      );
+      const seenA = new Set(pendingApprovals.map((a) => String(a.id)));
+      const addA = chunks
+        .flatMap((c) => c.aps)
+        .filter((a) => a?.id && !seenA.has(String(a.id)));
+      if (addA.length) pendingApprovals = [...pendingApprovals, ...addA];
+      const seenQ = new Set(pendingQuestions.map((q) => String(q.id)));
+      const addQ = chunks
+        .flatMap((c) => c.qs)
+        .filter((q) => q?.id && !seenQ.has(String(q.id)));
+      if (addQ.length) pendingQuestions = [...pendingQuestions, ...addQ];
+    } catch {
+      /* HITL re-query is best-effort */
+    }
   }
   let officeTokens = $state(0);
   let officeCost = $state(0.0);
@@ -553,6 +627,7 @@
       if (tid) {
         threadId = tid as string;
         messages = (await invoke("list_messages", { threadId })) as any[];
+        await rehydratePersistedBoard();
       } else {
         threadId = null;
         messages = [];
@@ -595,18 +670,23 @@
             dependsOn: (Array.isArray(n.depends_on) ? n.depends_on : []).map(String),
             state: "pending" as const,
           }));
+          persistBoard();
           return;
         }
         if (kind === "node_open") {
           const nodeId = String(p.node_id ?? "");
           if (!nodeId) return;
-          if (p.node_thread_id) {
-            activeThreads.add(String(p.node_thread_id));
-            threadToNode.set(String(p.node_thread_id), nodeId);
+          const nodeTid = p.node_thread_id ? String(p.node_thread_id) : undefined;
+          if (nodeTid) {
+            activeThreads.add(nodeTid);
+            threadToNode.set(nodeTid, nodeId);
           }
           if (boardNodes.some((n) => n.nodeId === nodeId)) {
             // Keep the plan_ready label/deps — just flip to working.
-            patchNode(nodeId, { state: "running" });
+            patchNode(
+              nodeId,
+              nodeTid ? { state: "running", nodeThreadId: nodeTid } : { state: "running" },
+            );
           } else {
             upsertNode({
               nodeId,
@@ -614,8 +694,10 @@
               label: String(p.instruction || "Working"),
               dependsOn: [],
               state: "running",
+              nodeThreadId: nodeTid,
             });
           }
+          persistBoard();
           return;
         }
         if (kind === "node_finished") {
@@ -627,7 +709,6 @@
           if (Array.isArray(p.skipped)) {
             for (const s of p.skipped) patchNode(String(s), { state: "skipped" });
           }
-          refreshBotTodos(String(p.bot_id || ""));
           // The node's thread is done — any card still parked on it is stale.
           const ntid = [...threadToNode.entries()].find(([, id]) => id === nodeId)?.[0];
           if (ntid) {
@@ -635,12 +716,14 @@
             pendingQuestions = pendingQuestions.filter((q) => String(q.thread_id) !== ntid);
           }
           refreshBotTodos(String(p.bot_id || ""));
+          persistBoard();
           return;
         }
         if (kind === "graph_status") {
           for (const n of Array.isArray(p.nodes) ? p.nodes : []) {
             if (n?.state) patchNode(String(n.node_id ?? ""), { state: String(n.state) as BoardNode["state"] });
           }
+          persistBoard();
           return;
         }
 

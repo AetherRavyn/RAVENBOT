@@ -1682,6 +1682,22 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     OfficeBoard cards render each bot's checklist progress (`n/m` + up to 2 open
     items, ListChecks icon). GOTCHA: `{@const}` must be an IMMEDIATE child of a
     block tag (`{#if}`/`{#each}`…), not of a `<div>` — wrap in `{#if (…)}` first.
+  - FOLLOW-UP 3 (board + HITL survive room re-open): two new additive commands
+    `save_office_board(thread_id, goal, nodes)` / `get_office_board(thread_id)`
+    storing the board as ONE JSON value in the existing `app_settings` KV table
+    under key `office_board:<thread_id>` (no migration; 64KB cap, nodes must be
+    an array). ChatRoomView calls `persistBoard()` (fire-and-forget) after every
+    board-mutating lifecycle event (plan_ready/node_open/node_finished/
+    graph_status) and after the checklist fallback `rehydrateBoard`; `load()`
+    calls `rehydratePersistedBoard()` to rebuild goal/nodes on room (re-)open.
+    `BoardNode` gained optional `nodeThreadId` (stamped from node_open) so the
+    re-opened room can `refreshPendingHitl()` — re-queries
+    list_pending_approvals/list_pending_questions for the room thread + every
+    known node thread and merges unseen cards. DESIGN CHOICE: persisted
+    "running" nodes are DEMOTED to pending on rehydrate — a snapshot saved
+    mid-run may belong to a run that died with the app and runs rows are not
+    reliably terminal; the next run's plan_ready replaces the board anyway.
+    Also deduped a double refreshBotTodos in node_finished.
   - Verified: `npm run check` 0/0; vitest 6 files 30/30; `npm run build` OK;
     `cargo test --workspace` exit 0; `npx tauri build` exit 0 (user must
     relaunch target/release/ravenbot to see it). NOT run under tauri dev.

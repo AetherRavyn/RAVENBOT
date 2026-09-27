@@ -27,6 +27,9 @@
     dependsOn: string[];
     state: "pending" | "running" | "done" | "failed" | "skipped";
     preview?: string;
+    /** Thread this node streams on (from `node_open`); lets a re-opened room
+     re-query parked approvals/questions for still-running nodes. */
+    nodeThreadId?: string;
   }
 
   export interface BotTodo {

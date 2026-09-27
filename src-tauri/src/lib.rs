@@ -2066,6 +2066,48 @@ async fn list_bot_todos(
         .collect())
 }
 
+/// Persist the office board snapshot for a room thread so the kanban/DAG
+/// survives room re-opens and app restarts. Stored as one JSON value in
+/// `app_settings` keyed by thread (rooms are few; upsert keeps one row each).
+#[tauri::command]
+async fn save_office_board(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+    goal: String,
+    nodes: serde_json::Value,
+) -> Result<(), String> {
+    if !nodes.is_array() {
+        return Err("nodes must be an array".to_string());
+    }
+    let payload = serde_json::json!({ "goal": goal, "nodes": nodes });
+    let encoded = serde_json::to_string(&payload).map_err(|e| e.to_string())?;
+    if encoded.len() > 64 * 1024 {
+        return Err("board snapshot too large".to_string());
+    }
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        &format!("office_board:{}", thread_id),
+        &encoded,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Last persisted office board for a room thread, if any.
+#[tauri::command]
+async fn get_office_board(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+) -> Result<Option<serde_json::Value>, String> {
+    let raw = ravenbot_db::queries::AppSettingsQueries::get(
+        state.db.pool(),
+        &format!("office_board:{}", thread_id),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(raw.and_then(|v| serde_json::from_str(&v).ok()))
+}
+
 /// Pending `ask_user` questions for a thread (inline answer cards).
 #[tauri::command]
 async fn list_pending_questions(
@@ -4166,6 +4208,8 @@ pub fn run() {
             list_pending_approvals,
             decide_approval,
             list_bot_todos,
+            save_office_board,
+            get_office_board,
             list_pending_questions,
             answer_question,
             cancel_run,
