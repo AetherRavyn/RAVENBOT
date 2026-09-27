@@ -1712,6 +1712,12 @@ Retire candidates in rebuild: `McpManager.svelte` (fold into ConnectorCenter),
     re-opening a room mid-run keeps streaming into the right lane; the
     previously inert `done` branch now refetches+commitLanes when the run was
     not started by this view (`!sending`), closing the reopened-mid-run loop.
+  - Verified (follow-ups 3+4): `npm run check` 0/0; vitest 6 files 30/30;
+    `npm run build` OK; `cargo test --workspace` exit 0 (real pipestatus);
+    `npx tauri build` exit 0 ×2 (user must relaunch target/release/ravenbot
+    to see it). GOTCHA: `cargo test … | tail; echo exit=$?` captures the
+    PIPE's status — in zsh use `${pipestatus[1]}` for the real one.
+    NOT run under tauri dev.
   - Verified: `npm run check` 0/0; vitest 6 files 30/30; `npm run build` OK;
     `cargo test --workspace` exit 0; `npx tauri build` exit 0 (user must
     relaunch target/release/ravenbot to see it). NOT run under tauri dev.
