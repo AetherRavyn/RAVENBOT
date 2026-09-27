@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -1309,11 +1310,7 @@
     <!-- Left: Bot Avatar & Info + Thread Switcher Dropdown -->
     <div class="flex items-center gap-3 min-w-0 flex-1">
       <div class="relative size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] p-0.5 shrink-0 shadow-sm">
-        <img
-          src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
-          alt={bot.name}
-          class="size-full rounded-lg object-cover"
-        />
+        <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} />
         <span class="absolute bottom-0 right-0 size-2 rounded-full ring-1 ring-black {botStatusTheme.dot}"></span>
       </div>
 
@@ -1882,11 +1879,7 @@
               <!-- Bot Identity Emblem -->
               <div class="relative inline-block">
                 <div class="relative size-16 rounded-2xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] mx-auto shadow-2xl p-0.5">
-                  <img
-                    src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
-                    alt={bot.name}
-                    class="size-full rounded-xl object-cover"
-                  />
+                  <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} />
                 </div>
                 <span class="absolute -bottom-1 -right-1 size-3.5 rounded-full ring-2 ring-black {botStatusTheme.dot}"></span>
               </div>
@@ -1971,11 +1964,7 @@
                   {@render liveMarkers()}
                   <div class="agent-activity-row flex items-center gap-2.5 min-h-[44px]">
                     <div class="size-8 rounded-full overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0">
-                      <img
-                        src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
-                        alt={bot.name}
-                        class="size-full object-cover"
-                      />
+                      <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} />
                     </div>
                     <span class="agent-activity-label">{t(activityLine)}</span>
                   </div>

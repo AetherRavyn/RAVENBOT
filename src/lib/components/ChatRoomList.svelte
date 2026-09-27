@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { Button } from "$lib/components/ui/button";
   import { Skeleton } from "$lib/components/ui/skeleton";
@@ -128,11 +129,7 @@
           >
             <div class="flex items-center gap-3">
               <div class="size-11 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline)] shrink-0">
-                <img
-                  src={room.avatar_url || getDiceBearUrl(room.name, room.avatar_style || "bottts")}
-                  alt={room.name}
-                  class="size-full object-cover"
-                />
+                <RavenAvatar name={room.name} imageUrl={room.avatar_url} />
               </div>
 
               <div class="flex-1 min-w-0">

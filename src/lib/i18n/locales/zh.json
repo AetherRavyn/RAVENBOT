@@ -1310,5 +1310,8 @@
   },
   "runtime": {
     "emulatingTools": "正在通过文本协议模拟工具调用…"
+  },
+  "logo": {
+    "label": "RAVENBOT。点击以触发反应。"
   }
 }

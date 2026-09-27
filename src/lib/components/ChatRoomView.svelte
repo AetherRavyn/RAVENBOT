@@ -10,6 +10,7 @@
   import { ScrollArea } from "$lib/components/ui/scroll-area";
   import { getDiceBearUrl, isUserMessage, OFFICE_TEMPLATES } from "$lib/utils";
   import { cn } from "$lib/utils.js";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { t } from "$lib/i18n";
   import { recordUtterance, transcribeBlob, voiceErrorMessage } from "$lib/voice";
   import {
@@ -1140,11 +1141,7 @@
     <div class="flex items-center gap-3">
       <!-- Office Avatar -->
       <div class="size-10 rounded-2xl overflow-hidden bg-[var(--surface-3)] border border-[var(--brand)]/40 p-0.5 shrink-0 shadow-md">
-        <img
-          src={room.avatar_url || getDiceBearUrl(room.name, room.avatar_style || "bottts")}
-          alt={room.name}
-          class="size-full rounded-xl object-cover"
-        />
+        <RavenAvatar name={room.name} imageUrl={room.avatar_url} />
       </div>
 
       <div class="flex flex-col">
@@ -1182,15 +1179,19 @@
     <div class="flex items-center gap-3">
       <div class="flex -space-x-2">
         {#each members.slice(0, 5) as m}
-          {@const act = fleetActivity.get(m.bot?.id ?? "")}
+          {@const botId = m.bot?.id ?? ""}
+          {@const act = fleetActivity.get(botId)}
           <div class="relative size-8 shrink-0 transition-transform hover:scale-110 hover:z-10" title={`${m.bot?.name || m.rank} (${m.specialty})`}>
-            <div class={cn("size-full rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline)] shadow-sm", rosterRing(act))}>
-              <img
-                src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, m.bot?.avatar_style || "avataaars")}
-                alt={m.rank}
-                class="size-full object-cover"
-              />
-            </div>
+            <!-- The face follows the work, so a glance at the roster shows
+                 which agent is thinking, which needs an answer, and which
+                 failed — without reading a single label. -->
+            <RavenAvatar
+              name={m.bot?.name || m.rank}
+              mood={fleetActivity.mood(botId)}
+              imageUrl={m.bot?.avatar_url}
+              decorative
+              class={cn("size-full rounded-full", rosterRing(act))}
+            />
             {#if act !== "idle"}
               <span class={cn("absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-0)]", rosterDot(act))}></span>
             {/if}
@@ -1235,10 +1236,12 @@
             title={`${m.bot?.name || m.rank} — ${m.specialty}${st !== "idle" ? ` · ${st.replace("_", " ")}` : ""} (click to manage)`}
           >
             <span class="relative shrink-0">
-              <img
-                src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, m.bot?.avatar_style || "bottts")}
-                alt=""
-                class="size-6 rounded-md object-cover border border-[var(--hairline)]"
+              <RavenAvatar
+                name={m.bot?.name || m.rank}
+                mood={fleetActivity.mood(m.bot?.id ?? "")}
+                imageUrl={m.bot?.avatar_url}
+                decorative
+                class="size-6 rounded-md"
               />
               <span class="absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-[var(--surface-2)] {statusDot(st)}"></span>
             </span>
@@ -1296,7 +1299,9 @@
             time={formatTime(msg.created_at)}
             grouped={!showAuthorHeader(messages, mi)}
             gutter={!isUser}
-            gutterAvatar={showAuthorHeader(messages, mi) ? senderAvatar : ""}
+            gutterName={showAuthorHeader(messages, mi) ? (senderName || senderBot?.name || "") : ""}
+                  gutterImage={senderAvatar}
+                  gutterMood={fleetActivity.mood(senderBot?.id ?? "")}
             author={!isUser && !isError && showAuthorHeader(messages, mi)
               ? { name: senderName, specialty: senderBot?.specialty }
               : null}
@@ -1337,11 +1342,7 @@
                 {#each members as m}
                   <div class="flex flex-col items-center gap-1">
                     <div class="size-9 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] shadow-md">
-                      <img
-                        src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, m.bot?.avatar_style || "bottts")}
-                        alt={m.rank}
-                        class="size-full object-cover"
-                      />
+                      <RavenAvatar name={m.rank} imageUrl={m.bot?.avatar_url} />
                     </div>
                     <span class="text-[10px] font-bold text-[var(--text-secondary)] font-mono">{m.rank}</span>
                   </div>
@@ -1501,7 +1502,7 @@
               {@const toolName = agentTool[lane.botId]}
               {@const nodeName = boardNodes.find((n) => n.nodeId === key)?.label}
               {@const name = m?.bot?.name || m?.rank || t("ui.fallbackAgent")}
-              {@const avatar = m?.bot?.avatar_url || getDiceBearUrl(name, m?.bot?.avatar_style || "bottts")}
+              {@const avatar = m?.bot?.avatar_url ?? null}
               {@const color = `hsl(${authorHue(lane.botId || name)} 55% 68%)`}
               {#if reveal.shown || lane.rounds.length}
                 <ChatMessageRow
@@ -1512,7 +1513,9 @@
                   showMeta={false}
                   ghost={isGhostContent(reveal.body)}
                   gutter={true}
-                  gutterAvatar={avatar}
+                  gutterName={name}
+                  gutterImage={avatar}
+                  gutterMood={fleetActivity.mood(lane.botId || "")}
                   author={{ name, specialty: nodeName || m?.specialty }}
                   authorColor={color}
                 >
@@ -1980,11 +1983,7 @@
     <div class="modal-panel w-full max-w-md p-5 space-y-4 animate-scale-in">
       <div class="flex items-center gap-3">
         <div class="size-11 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] shrink-0">
-          <img
-            src={manageBot.avatar_url || getDiceBearUrl(manageBot.name, manageBot.avatar_style || "bottts")}
-            alt={manageBot.name}
-            class="size-full object-cover"
-          />
+          <RavenAvatar name={manageBot.name} imageUrl={manageBot.avatar_url} />
         </div>
         <div class="min-w-0">
           <div class="font-bold text-sm text-[var(--text-primary)] truncate flex items-center gap-1.5">

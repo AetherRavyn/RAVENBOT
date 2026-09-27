@@ -15,6 +15,7 @@
   import { Label } from "$lib/components/ui/label";
   import { Textarea } from "$lib/components/ui/textarea";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import {
     Bot,
     Plus,
@@ -409,16 +410,15 @@
           aria-current={isSelected ? "true" : undefined}
           onclick={() => selectBot(bot.id)}
         >
-          <!-- Avatar Container -->
+          <!-- Avatar: a generated face that changes with what the agent is doing -->
           <div class="relative size-9 shrink-0">
-            <div class="size-9 rounded-lg overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline)]">
-              <img
-                src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "bottts")}
-                alt={bot.name}
-                class="size-full object-cover"
-                loading="lazy"
-              />
-            </div>
+            <RavenAvatar
+              name={bot.name}
+              mood={fleetActivity.mood(bot.id)}
+              imageUrl={bot.avatar_url}
+              decorative
+              class="size-9 rounded-lg"
+            />
 
             <!-- Status Badge — live fleet activity overrides stored status -->
             {#if activity === "working"}

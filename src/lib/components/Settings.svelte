@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { onMount } from "svelte";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -1099,7 +1100,7 @@
               <div class="flex items-center gap-5">
                 <button type="button" onclick={() => (showUserAvatarPicker = !showUserAvatarPicker)} class="group shrink-0">
                   <div class="size-24 rounded-2xl overflow-hidden bg-muted border-2 p-1 shadow-md group-hover:scale-105 transition-transform" style="border-color: {currentTheme.primaryColor}60;">
-                    <img src={userAvatarUrl || getDiceBearUrl(userName || "You", userAvatarStyle)} alt={t("settings.you")} class="size-full rounded-xl object-cover" />
+                    <RavenAvatar name={t("settings.you")} />
                   </div>
                   <p class="text-[11px] text-muted-foreground mt-1 text-center">{t("settings.tapToChange")}</p>
                 </button>

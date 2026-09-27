@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import * as Dialog from "$lib/components/ui/dialog";
@@ -490,11 +491,7 @@
               >
                 <div class="flex items-center gap-3 min-w-0">
                   <div class="size-9 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline)] shrink-0">
-                    <img
-                      src={bot.avatar_url || getDiceBearUrl(bot.name, bot.avatar_style || "avataaars")}
-                      alt={bot.name}
-                      class="size-full object-cover"
-                    />
+                    <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} />
                   </div>
                   <div class="min-w-0">
                     <div class="font-bold text-xs text-[var(--text-primary)] truncate">{bot.name}</div>

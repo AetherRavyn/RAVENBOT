@@ -6,6 +6,8 @@
   // hover-revealed meta line. "Everything is a prop" on purpose so the two
   // views can never drift apart again.
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
+  import type { AvatarMood } from "$lib/avatar";
   import { entrance } from "$lib/chat/entrance";
   import { smoothHeight } from "$lib/chat/smoothHeight";
 
@@ -29,8 +31,12 @@
     authorColor?: string;
     /** Room: reserve the 24px gutter on agent rows. */
     gutter?: boolean;
-    /** Room: avatar shown in the gutter on the first row of an author run. */
-    gutterAvatar?: string;
+    /** Room: whose face to draw in the gutter on the first row of an author run. */
+    gutterName?: string;
+    /** A custom image for the gutter avatar, if the agent has one. */
+    gutterImage?: string | null;
+    /** What that agent is doing, so the face reacts. */
+    gutterMood?: AvatarMood;
     /** Room: name header row on the first row of an author run. */
     author?: { name: string; specialty?: string } | null;
     /** Room: 32px user avatar on the trailing side of user rows. */
@@ -56,7 +62,9 @@
     fullWidthAgent = false,
     authorColor = "",
     gutter = false,
-    gutterAvatar = "",
+    gutterName = "",
+    gutterImage = null,
+    gutterMood = "idle",
     author = null,
     userAvatar = "",
     isError = false,
@@ -76,10 +84,17 @@
   style={authorColor ? `--message-author-color: ${authorColor}` : undefined}
 >
   {#if !isUser && gutter}
-    {#if gutterAvatar}
-      <div class="size-6 rounded-full overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0 self-end">
-        <img src={gutterAvatar} alt={author?.name || ""} class="size-full object-cover" />
-      </div>
+    {#if gutterName}
+      <!-- The gutter avatar is the agent's face, and it reacts to what they
+           are doing — so a stream of messages from one agent shows one
+           attentive face, not a row of static icons. -->
+      <RavenAvatar
+        name={gutterName}
+        mood={gutterMood}
+        imageUrl={gutterImage}
+        decorative
+        class="size-6 rounded-full shrink-0 self-end"
+      />
     {:else}
       <div class="w-6 shrink-0" aria-hidden="true"></div>
     {/if}

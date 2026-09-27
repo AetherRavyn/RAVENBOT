@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { onMount } from "svelte";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import ScreenReader from "$lib/components/ScreenReader.svelte";
@@ -228,7 +229,7 @@
                     class="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] hover:border-[var(--brand)]/40 cursor-pointer transition-colors"
                     onclick={() => workspace.selectBot(b.id)}
                   >
-                    <img src={b.avatar_url || getDiceBearUrl(b.name, b.avatar_style || "bottts")} alt="" class="size-5 rounded-full" />
+                    <RavenAvatar name={b.name} imageUrl={b.avatar_url} decorative />
                     <span>{b.name}</span>
                   </button>
                 {/each}

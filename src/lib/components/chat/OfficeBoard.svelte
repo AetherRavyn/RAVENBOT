@@ -5,7 +5,7 @@
   // from the returned checklist when a run finished while the room was away.
   import { t } from "$lib/i18n";
   import { entrance } from "$lib/chat/entrance";
-  import { getDiceBearUrl } from "$lib/utils";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import PlanDag from "$lib/components/chat/PlanDag.svelte";
   import type { DagTask } from "$lib/chat/dag";
   import {
@@ -97,10 +97,6 @@
     const m = memberFor(botId);
     return m?.bot?.name || m?.rank || "?";
   }
-  function avatarFor(botId: string): string {
-    const m = memberFor(botId);
-    return m?.bot?.avatar_url || getDiceBearUrl(nameFor(botId), m?.bot?.avatar_style || "bottts");
-  }
 </script>
 
 {#if nodes.length > 0}
@@ -141,10 +137,16 @@
                 {#each col.items as n (n.nodeId)}
                   <div use:entrance class="min-w-0 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] p-2">
                     <div class="flex items-center gap-1.5 min-w-0">
-                      <img
-                        src={avatarFor(n.botId)}
-                        alt=""
-                        class="size-4 rounded-full object-cover shrink-0 border border-[var(--hairline)]"
+                      <!-- A board card is the densest place the app shows who
+                           is doing what, so the face reacts here too: a running
+                           node's agent looks attentive without a label saying
+                           so. -->
+                      <RavenAvatar
+                        name={nameFor(n.botId)}
+                        mood={n.state === "running" ? "working" : n.state === "failed" ? "failed" : "idle"}
+                        imageUrl={memberFor(n.botId)?.bot?.avatar_url}
+                        decorative
+                        class="size-4 rounded-full"
                       />
                       <span class="text-[10px] font-bold text-[var(--text-primary)] truncate">{nameFor(n.botId)}</span>
                       {#if n.state === "running"}

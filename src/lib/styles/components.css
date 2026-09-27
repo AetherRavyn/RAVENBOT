@@ -1007,3 +1007,208 @@ html.sidebar-resizing .app-frame {
     animation: none;
   }
 }
+
+/* ── Raven avatar ────────────────────────────────────────────────────────────
+ * A generated SVG face. The silhouette and hue are fixed per agent; only the
+ * expression changes, and only the rings and the breathing animate — the
+ * outline is how a user knows which agent they are looking at, so an animation
+ * that edited it would hand back a different creature mid-run. */
+.raven-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--av-deep, var(--surface-3));
+  border: 1px solid var(--hairline);
+}
+
+.raven-avatar > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.raven-avatar-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.raven-avatar-initials {
+  font-size: 0.75em;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+}
+
+/* Breathing moves the whole rendered avatar, so it can never reshape the
+ * silhouette. Zero amplitude on a resting mood disables it entirely. */
+.raven-avatar[data-mood="working"],
+.raven-avatar[data-mood="sleeping"] {
+  animation: raven-breathe 3.2s ease-in-out infinite;
+}
+
+@keyframes raven-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(calc(1 + var(--av-breathe, 0.03)));
+  }
+}
+
+/* Orbit rings turn in opposite directions, so the avatar reads as busy without
+ * the whole thing spinning. */
+.raven-avatar-rings {
+  transform-origin: 50px 50px;
+  animation: raven-orbit 9s linear infinite;
+}
+
+@keyframes raven-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A face change should be noticeable but not jarring. */
+.raven-avatar-face {
+  animation: raven-face-in 260ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+@keyframes raven-face-in {
+  from {
+    opacity: 0.4;
+  }
+}
+
+/* Attention wins visually over everything else, whatever the face is saying.
+ * The ring is the thing a user scanning the sidebar is looking for. */
+.raven-avatar[data-mood="waiting"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--warning);
+}
+
+.raven-avatar[data-mood="failed"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--danger);
+}
+
+.raven-avatar[data-mood="responded"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--success);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raven-avatar[data-mood="working"],
+  .raven-avatar[data-mood="sleeping"],
+  .raven-avatar-rings,
+  .raven-avatar-face {
+    animation: none;
+  }
+  /* The rings are the only cue that work is happening, so they stay — static
+   * rather than removed, or a working agent looks idle. */
+  .raven-avatar[data-mood="working"] {
+    box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 3px var(--brand);
+  }
+}
+
+/* ── The RAVENBOT mark ───────────────────────────────────────────────────────
+ * The eyes are polylines so the whole shape can be translated as one piece by
+ * two custom properties, which the compositor animates without a repaint.
+ * `--logo-eye-x/y` are written by the component on pointer move. */
+.raven-logo {
+  --logo-eye-x: 0%;
+  --logo-eye-y: 0%;
+  display: block;
+  flex-shrink: 0;
+}
+
+.raven-logo .app-logo-background {
+  fill: var(--surface-2);
+  stroke: var(--hairline-strong);
+  stroke-width: 2;
+}
+
+.raven-logo .app-logo-eye {
+  fill: var(--text-primary);
+  transform: translate(var(--logo-eye-x), var(--logo-eye-y));
+  transition: transform 220ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.raven-logo[data-interactive] {
+  cursor: pointer;
+}
+
+.raven-logo[data-interactive]:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 24px;
+}
+
+/* A click blinks the eyes shut. */
+.raven-logo[data-reacted] .app-logo-eye-motion {
+  animation: logo-blink 360ms ease-in-out;
+}
+
+@keyframes logo-blink {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(0.08);
+  }
+}
+
+.raven-logo[data-reacted] .app-logo-eye {
+  transition: none;
+}
+
+/* Five rapid clicks and the mark throws a party. It is in the app's most
+ * persistent element, so it has to be earned rather than ambient. */
+.raven-logo[data-celebrating] .app-logo-background {
+  animation: logo-pop 1.2s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.raven-logo[data-celebrating] .app-logo-eye-motion {
+  animation: logo-celebrate 1.2s ease-in-out;
+}
+
+@keyframes logo-pop {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes logo-celebrate {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-8px) rotate(-6deg);
+  }
+  60% {
+    transform: translateY(3px) rotate(5deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The mark still reacts to hover, because hover is not motion the user did
+   * not ask for — it is a direct response to their pointer. What is removed is
+   * everything that plays on its own. */
+  .raven-logo .app-logo-eye {
+    transition: none;
+  }
+  .raven-logo[data-reacted] .app-logo-eye-motion,
+  .raven-logo[data-celebrating] .app-logo-background,
+  .raven-logo[data-celebrating] .app-logo-eye-motion {
+    animation: none;
+  }
+}

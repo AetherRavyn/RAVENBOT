@@ -1,40 +1,70 @@
-// Fleet activity state machine (OpenBot SidebarAgentIndicator): derives live
-// per-bot activity from the global agent-stream feed — independent of the
-// persisted bot.status field.
-//   working  → run_started / delta / tool_started
-//   attention→ approval_requested / question_asked / paused
-//   responded→ done (holds ~3s, then back to idle)
+/**
+ * Fleet activity: what every agent is doing, derived from the stream.
+ *
+ * This is the one place that listens to `agent-stream`, and it derives live
+ * state from the feed rather than reading the persisted `bot.status` column —
+ * a status written at the end of a run tells you nothing about what is
+ * happening now.
+ *
+ * Two things come out of it:
+ *
+ *  - an **activity** badge (working / needs you / replied / idle), which is
+ *    about urgency, and
+ *  - a **mood** for the avatar face, which is about what the agent is
+ *    experiencing.
+ *
+ * They are not the same thing, which is why there are two. A failed run is not
+ * `working` — it has stopped — but it is the thing a user most needs to see, so
+ * the mood precedence puts failure above everything while the badge stays
+ * quiet once the run is over.
+ */
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { computeMoods, type AvatarMood } from "$lib/avatar";
 
 export type Activity = "working" | "attention" | "responded" | "idle";
 
+/** How long a "just replied" state holds before the agent is idle again. */
 const RESPONDED_HOLD_MS = 3000;
+/** How long a failure face holds, so it is readable but not a permanent scar. */
+const FAILED_HOLD_MS = 8000;
 
 class FleetActivity {
   states = $state<Record<string, Activity>>({});
+  moods = $state<Record<string, AvatarMood>>({});
+
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private unlisten: UnlistenFn | null = null;
   private refs = 0;
+  private listening = false;
 
   get(botId: string): Activity {
     return this.states[botId] ?? "idle";
   }
 
-  /** Subscribe once; refcounted so HMR / re-mounts don't double-listen. */
+  /** The face to draw. A missing entry means idle, not unknown. */
+  mood(botId: string): AvatarMood {
+    return this.moods[botId] ?? "idle";
+  }
+
+  /** How many agents need a person right now. Drives the rail badge. */
+  attentionCount(botId: string): number {
+    return this.states[botId] === "attention" ? 1 : 0;
+  }
+
+  /** Subscribe once; refcounted so HMR and re-mounts do not double-listen. */
   async start(): Promise<void> {
     this.refs++;
     if (this.unlisten || this.listening) return;
     this.listening = true;
     const fn = await listen<any>("agent-stream", (e) => this.handle(e.payload));
     this.listening = false;
+    // `stop()` may have been called while the listener was being registered.
     if (this.refs === 0) {
       fn();
       return;
     }
     this.unlisten = fn;
   }
-
-  private listening = false;
 
   stop(): void {
     this.refs = Math.max(0, this.refs - 1);
@@ -44,45 +74,80 @@ class FleetActivity {
     for (const t of this.timers.values()) clearTimeout(t);
     this.timers.clear();
     this.states = {};
+    this.moods = {};
   }
 
   handle(p: any): void {
     const botId = p?.bot_id;
     if (!botId) return;
+
     switch (p.kind) {
       case "run_started":
       case "delta":
       case "tool_started":
-        this.hold(botId);
-        this.states[botId] = "working";
+      case "tool_finished":
+        // A new run supersedes an old failure: the agent is no longer sitting
+        // on a failure, it is working.
+        this.set(botId, "working");
         break;
+
       case "approval_requested":
       case "question_asked":
       case "paused":
-        this.hold(botId);
-        this.states[botId] = "attention";
+        this.set(botId, "attention");
         break;
+
       case "approval_decided":
       case "question_answered":
-        this.hold(botId);
-        this.states[botId] = "working";
+        // The question was answered, so the agent is back to work.
+        this.set(botId, "working");
         break;
-      case "done":
+
       case "error":
-        this.hold(botId);
-        this.states[botId] = "responded";
-        this.timers.set(
-          botId,
-          setTimeout(() => {
-            this.timers.delete(botId);
-            this.states[botId] = "idle";
-          }, RESPONDED_HOLD_MS),
-        );
+      case "error_card":
+        this.fail(botId);
+        break;
+
+      case "done":
+        this.replied(botId);
         break;
     }
   }
 
-  private hold(botId: string) {
+  private set(botId: string, next: Activity, mood?: AvatarMood): void {
+    this.hold(botId);
+    this.states[botId] = next;
+    this.moods[botId] = mood ?? defaultMood(next);
+  }
+
+  private replied(botId: string): void {
+    this.set(botId, "responded", "responded");
+    this.expire(botId, RESPONDED_HOLD_MS, "idle");
+  }
+
+  /**
+   * A failed run.
+   *
+   * Held longer than a reply because it is the one state a user must not miss,
+   * but still temporary — a permanently sad face stops meaning anything.
+   */
+  private fail(botId: string): void {
+    this.set(botId, "responded", "failed");
+    this.expire(botId, FAILED_HOLD_MS, "idle");
+  }
+
+  private expire(botId: string, ms: number, to: Activity): void {
+    this.timers.set(
+      botId,
+      setTimeout(() => {
+        this.timers.delete(botId);
+        this.states[botId] = to;
+        this.moods[botId] = "idle";
+      }, ms),
+    );
+  }
+
+  private hold(botId: string): void {
     const t = this.timers.get(botId);
     if (t) {
       clearTimeout(t);
@@ -91,4 +156,17 @@ class FleetActivity {
   }
 }
 
+function defaultMood(activity: Activity): AvatarMood {
+  switch (activity) {
+    case "working":
+      return "working";
+    case "attention":
+      return "waiting";
+    default:
+      return "idle";
+  }
+}
+
 export const fleetActivity = new FleetActivity();
+
+export { computeMoods };

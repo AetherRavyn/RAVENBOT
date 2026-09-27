@@ -1310,5 +1310,8 @@
   },
   "runtime": {
     "emulatingTools": "テキストプロトコルでツールをエミュレート中…"
+  },
+  "logo": {
+    "label": "RAVENBOT。反応させるには押してください。"
   }
 }

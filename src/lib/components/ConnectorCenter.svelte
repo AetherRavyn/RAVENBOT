@@ -1,4 +1,5 @@
 <script lang="ts">
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import { cn } from "$lib/utils.js";
@@ -757,11 +758,7 @@
                 onSelectBot?.(b.id);
               }}
             >
-              <img
-                src={b.avatar_url || getDiceBearUrl(b.name, b.avatar_style || "bottts")}
-                alt={b.name}
-                class="size-4.5 rounded-full object-cover border border-[var(--hairline-strong)]"
-              />
+              <RavenAvatar name={b.name} imageUrl={b.avatar_url} />
               <span>{b.name}</span>
               <span
                 class={cn(
@@ -1303,11 +1300,7 @@
             }}
           >
             <div class="flex items-center gap-3">
-              <img
-                src={b.avatar_url || getDiceBearUrl(b.name, b.avatar_style || "bottts")}
-                alt={b.name}
-                class="size-8 rounded-full object-cover border border-[var(--brand)]/40"
-              />
+              <RavenAvatar name={b.name} imageUrl={b.avatar_url} />
               <div>
                 <span class="font-bold text-xs text-[var(--text-primary)] block">{b.name}</span>
                 <span class="text-[10px] text-[var(--text-tertiary)] font-mono">{b.model || t("connector.defaultModel")}</span>

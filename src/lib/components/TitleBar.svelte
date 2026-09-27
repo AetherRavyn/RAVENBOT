@@ -3,6 +3,7 @@
   import { THEMES, getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition } from "$lib/theme";
   import { t } from "$lib/i18n";
   import ThemeLogo from "$lib/components/ThemeLogo.svelte";
+  import RavenLogo from "$lib/components/RavenLogo.svelte";
   import {
     Minus,
     Square,
@@ -110,6 +111,10 @@
         <PanelLeft class="size-3.5" />
       </button>
     {/if}
+    <!-- The mark is interactive: the eyes follow the pointer and a click gets a
+         reaction. It is the app's most persistent element, so it is also the
+         one place a little personality earns its keep. -->
+    <RavenLogo size="sm" interactive class="mr-1.5" />
     <span data-tauri-drag-region class="font-semibold tracking-tight text-[11px] text-[var(--text-primary)]">
       {currentTheme.brand.brandTitle}<span class="text-[var(--brand-text)]">{currentTheme.brand.brandAccent}</span>
     </span>

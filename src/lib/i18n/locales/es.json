@@ -1310,5 +1310,8 @@
   },
   "runtime": {
     "emulatingTools": "Emulando herramientas por protocolo de texto…"
+  },
+  "logo": {
+    "label": "RAVENBOT. Actívalo para una reacción."
   }
 }

@@ -3,7 +3,7 @@
   // edges. Positions come from dagLayout (pure, tested) so this stays a
   // dumb renderer.
   import { dagLayout, dagEdges, DAG_NODE_W, DAG_NODE_H, type DagTask } from "$lib/chat/dag";
-  import { getDiceBearUrl } from "$lib/utils";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
 
   interface MemberLite {
     bot_id: string;
@@ -49,10 +49,7 @@
     return m?.bot?.name || m?.rank || "?";
   }
 
-  function avatarFor(botId: string): string {
-    const m = memberFor(botId);
-    return m?.bot?.avatar_url || getDiceBearUrl(nameFor(botId), m?.bot?.avatar_style || "bottts");
-  }
+
 
   function edgePath(from: number, to: number): string {
     const a = layout.positions[from];
@@ -101,7 +98,12 @@
             style="left: {pos.x}px; top: {pos.y}px; width: {DAG_NODE_W}px; height: {DAG_NODE_H}px; border-color: {nodeBorderColor(i)}"
             title={task.label}
           >
-            <img src={avatarFor(task.botId)} alt="" class="size-5 rounded-full object-cover shrink-0 border border-[var(--hairline)]" />
+            <RavenAvatar
+              name={nameFor(task.botId)}
+              imageUrl={memberFor(task.botId)?.bot?.avatar_url}
+              decorative
+              class="size-5 rounded-full shrink-0"
+            />
             <div class="min-w-0">
               <div class="text-[10px] font-bold text-[var(--text-primary)] truncate leading-tight">{nameFor(task.botId)}</div>
               <div class="text-[9px] text-[var(--text-muted)] truncate leading-tight">{task.label}</div>

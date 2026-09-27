@@ -1310,5 +1310,8 @@
   },
   "runtime": {
     "emulatingTools": "Tools über Textprotokoll emuliert…"
+  },
+  "logo": {
+    "label": "RAVENBOT. Für eine Reaktion aktivieren."
   }
 }

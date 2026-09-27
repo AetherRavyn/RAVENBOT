@@ -681,7 +681,7 @@
                         <div class="flex items-center gap-3 min-w-0">
                           <Avatar.Root class="size-9 rounded-xl ring-1 ring-[var(--brand)]/30 shrink-0">
                             <Avatar.Image
-                              src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, m.bot?.avatar_style || "bottts")}
+                              src={m.bot?.avatar_url || ""}
                               alt={m.bot?.name || m.rank}
                             />
                             <Avatar.Fallback class="bg-[var(--brand-soft)] text-[var(--brand-text)] text-xs">
