@@ -71,3 +71,9 @@ base64 = "0.22"
 # WebKitGTK disables it by default and Wry does not expose the setting.
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = "2.0"
+
+[dev-dependencies]
+# The allowlist in office_org is checked against the real skill registry, so a
+# skill that exists but is not listed (or the reverse) fails a test rather than
+# quietly making a tool impossible to give an agent.
+ravenbot-skills = { path = "../crates/skills" }

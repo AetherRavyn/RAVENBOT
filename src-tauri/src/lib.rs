@@ -3124,11 +3124,17 @@ async fn create_chatroom(
     goal: Option<String>,
     policy: Option<String>,
 ) -> Result<ChatRoom, String> {
-    let mut room = ChatRoom::new(name, description, office_template);
+    let mut room = ChatRoom::new(name, description, office_template.clone());
     if let Some(url) = avatar_url { room.avatar_url = Some(url); }
     if let Some(style) = avatar_style { room.avatar_style = Some(style); }
     room.goal = goal.map(|g| g.trim().to_string()).filter(|g| !g.is_empty());
-    room.policy = policy.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    // An office with no policy is an office where every agent invents its own
+    // standards, so a new one starts from the template's. The user can edit or
+    // clear it afterwards; `write_policy` keeps POLICY.md in step either way.
+    room.policy = policy
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .or_else(|| Some(office_org::template_policy(&office_template).to_string()));
 
     // An office always gets a room, at creation rather than lazily at first
     // send. `project_folder` lets a user point the office at a directory they
@@ -3368,11 +3374,47 @@ async fn provision_office_org(
     let mut used: std::collections::HashSet<Uuid> =
         existing_members.iter().map(|m| m.bot_id).collect();
 
+    // ── The office half of every brief ──
+    //
+    // The template knows what a Coder owns; only the room knows where the
+    // office works, who else is on the team, and what the rules are. Compose
+    // both together once, here, so every agent is provisioned with a brief
+    // that names its own folder instead of one that only names a job.
+    let room = ravenbot_db::queries::ChatRoomQueries::get(state.db.pool(), chatroom_id)
+        .await
+        .ok()
+        .flatten();
+    let office = {
+        let mut ctx = office_org::OfficeContext::new(
+            room.as_ref().map(|r| r.name.clone()).unwrap_or_else(|| "Office".into()),
+        )
+        .with_goal(room.as_ref().and_then(|r| r.goal.clone()))
+        .with_policy(room.as_ref().and_then(|r| r.policy.clone()))
+        .with_workspace(room.as_ref().and_then(|r| r.project_folders.first().cloned()));
+        ctx = ctx.with_roster(
+            roles
+                .iter()
+                .map(|r| office_org::Teammate::new(
+                    r.name.clone(),
+                    r.rank.clone(),
+                    r.specialty.clone(),
+                    r.is_lead,
+                ))
+                .collect(),
+        );
+        ctx
+    };
+
     let (default_provider, default_model) = resolve_default_model(state.db.pool()).await;
     let mut created = Vec::new();
     let mut reused = Vec::new();
 
-    for role in roles {
+    for raw_role in roles {
+        // Common skills and the office context are attached before the brief is
+        // written, so the stored prompt matches what the agent can actually do.
+        let role = office_org::with_common_skills(raw_role);
+        let brief = office_org::compose_system_prompt(&office, &role);
+
         let bot = if let Some(mut existing) = find_reusable_agent(&all_bots, &used, &role) {
             // Fill only what's missing — never clobber the owner's settings.
             let mut changed = false;
@@ -3381,11 +3423,20 @@ async fn provision_office_org(
                 existing.config.model_id = default_model.clone();
                 changed = true;
             }
-            if existing.config.custom_prompt.as_deref().map(str::trim).unwrap_or("").is_empty() {
-                if let Some(prompt) = role.system_prompt.as_deref().filter(|p| !p.trim().is_empty()) {
-                    existing.config.custom_prompt = Some(prompt.to_string());
-                    changed = true;
-                }
+            // Only a blank or persona-sized prompt is replaced. An agent whose
+            // prompt someone has since written out is left alone, even if it
+            // names the wrong office.
+            let needs_brief = existing
+                .config
+                .custom_prompt
+                .as_deref()
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(|p| !office_org::mandate_is_substantive(p))
+                .unwrap_or(true);
+            if needs_brief && office_org::mandate_is_substantive(&brief) {
+                existing.config.custom_prompt = Some(brief.clone());
+                changed = true;
             }
             if existing.skills.is_empty() && !role.skills.is_empty() {
                 existing.skills = role.skills.clone();
@@ -3412,9 +3463,7 @@ async fn provision_office_org(
             if role.is_lead {
                 bot.avatar_color = "#8b5cf6".to_string();
             }
-            if let Some(prompt) = role.system_prompt.as_deref().filter(|p| !p.trim().is_empty()) {
-                bot.config.custom_prompt = Some(prompt.to_string());
-            }
+            bot.config.custom_prompt = Some(brief.clone());
             if !role.skills.is_empty() {
                 bot.skills = role.skills.clone();
             }
@@ -3532,9 +3581,14 @@ async fn draft_office_org(
         .runtime
         .complete_as_bot(
             thinker.id,
-            "You are the CEO of an AI office. Output only valid JSON.",
+            "You are the CEO of an AI office. Output only valid JSON, with no \
+             prose before or after it.",
             &prompt,
-            1600,
+            // Room for a real brief. 1600 tokens truncated the roster to two or
+            // three roles, because each one now carries an artifact, a way to
+            // prove the work, and a handoff. 6000 fits a 7-role office with
+            // room to spare and is still a bounded, non-streaming call.
+            6000,
         )
         .await
     {

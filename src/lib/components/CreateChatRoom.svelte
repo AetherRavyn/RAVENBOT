@@ -22,6 +22,7 @@
     CheckCircle2,
     Wand2,
     Layers,
+    FolderOpen,
   } from "@lucide/svelte";
 
   interface Props {
@@ -44,6 +45,42 @@
   // Provision the template's full org (CEO + specialists) automatically. This
   // is what turns a new office into a real team without hand-creating bots.
   let autoStaff = $state(true);
+
+  // The office's folder, its mission, and its rules. All three are handed to
+  // every agent in the room: an agent told only its job title works in the
+  // abstract, while one told where the folder is and what the rules are works
+  // in a place.
+  let goal = $state("");
+  let policy = $state("");
+  let workspaceChoice = $state<"default" | "custom">("default");
+  let customFolder = $state("");
+  let pickingFolder = $state(false);
+
+  /** The folder the office will use, for display before it is created. */
+  let workspacePreview = $derived(
+    workspaceChoice === "custom" && customFolder.trim()
+      ? customFolder.trim()
+      : `~/RAVENBOT/projects/${(name || "office")
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, "-")
+          .replace(/^-+|-+$/g, "") || "workspace"}`,
+  );
+
+  async function pickFolder() {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const picked = await open({ directory: true, multiple: false, title: "Choose the office workspace" });
+      if (typeof picked === "string" && picked.trim()) {
+        customFolder = picked.trim();
+        workspaceChoice = "custom";
+      }
+    } catch (e) {
+      console.error("Folder picker failed:", e);
+    } finally {
+      pickingFolder = false;
+    }
+  }
 
   // Wizard: Office → Template → Staffing
   let step = $state(0);
@@ -85,14 +122,21 @@
     isCreating = true;
     try {
       const url = roomAvatarUrl || getDiceBearUrl(name, roomAvatarStyle);
-      const room = await invoke("create_chatroom", {
+      const room = await invoke<any>("create_chatroom", {
         name,
         description,
         officeTemplate,
         avatarUrl: url,
         avatarStyle: roomAvatarStyle,
+        // Omit to get a fresh room under ~/RAVENBOT/projects/. A folder the
+        // user picks becomes the office instead, and the charter is written
+        // there rather than into a second, unused directory.
+        projectFolder: workspaceChoice === "custom" ? customFolder.trim() || null : null,
+        goal: goal.trim() || null,
+        policy: policy.trim() || null,
       });
-      const roomId = (room as any).id;
+      const roomId = room.id;
+      const workspace = room.project_folders?.[0] ?? null;
 
       if (autoStaff) {
         // Build the full org (CEO + role specialists) from the blueprint.
@@ -115,10 +159,14 @@
         }
       }
 
-      onCreated(room);
+      onCreated({ ...room, workspace });
       onClose();
       name = "";
       description = "";
+      goal = "";
+      policy = "";
+      customFolder = "";
+      workspaceChoice = "default";
       selectedMembers = [];
       step = 0;
     } catch (e) {
@@ -222,6 +270,80 @@
               rows={2}
               class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] resize-none"
             />
+          </div>
+
+          <div class="space-y-1">
+            <Label for="room-goal" class="text-xs font-semibold text-[var(--text-tertiary)]">
+              {t("office.goalLabel")}
+            </Label>
+            <Textarea
+              id="room-goal"
+              bind:value={goal}
+              placeholder={t("office.goalPh")}
+              rows={2}
+              class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] resize-none"
+            />
+            <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
+              {t("office.goalHint")}
+            </p>
+          </div>
+
+          <div class="space-y-1.5">
+            <Label class="text-xs font-semibold text-[var(--text-tertiary)]">
+              {t("office.workspaceLabel")}
+            </Label>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <Button
+                variant={workspaceChoice === "default" ? "default" : "ghost"}
+                size="xs"
+                onclick={() => (workspaceChoice = "default")}
+              >
+                {t("office.workspaceDefault")}
+              </Button>
+              <Button
+                variant={workspaceChoice === "custom" ? "default" : "ghost"}
+                size="xs"
+                onclick={() => (workspaceChoice = "custom")}
+              >
+                {t("office.workspaceExisting")}
+              </Button>
+            </div>
+            {#if workspaceChoice === "custom"}
+              <div class="flex items-center gap-1.5">
+                <Input
+                  bind:value={customFolder}
+                  placeholder={t("office.workspacePh")}
+                  oninput={() => (workspaceChoice = "custom")}
+                  class="h-8 flex-1 min-w-0 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] font-mono"
+                />
+                <Button variant="ghost" size="xs" onclick={pickFolder} disabled={pickingFolder}>
+                  <FolderOpen class="size-3" />
+                </Button>
+              </div>
+            {/if}
+            <div class="flex items-start gap-1.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-2 py-1.5">
+              <FolderOpen class="size-3 mt-0.5 shrink-0 text-[var(--text-muted)]" />
+              <code class="min-w-0 flex-1 break-all text-[10px] text-[var(--text-secondary)]">{workspacePreview}</code>
+            </div>
+            <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
+              {t("office.workspaceHint")}
+            </p>
+          </div>
+
+          <div class="space-y-1">
+            <Label for="room-policy" class="text-xs font-semibold text-[var(--text-tertiary)]">
+              {t("office.policyLabel")}
+            </Label>
+            <Textarea
+              id="room-policy"
+              bind:value={policy}
+              placeholder={t("office.policyPh")}
+              rows={3}
+              class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] resize-none font-mono"
+            />
+            <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
+              {t("office.policyHint")}
+            </p>
           </div>
         </div>
       </div>

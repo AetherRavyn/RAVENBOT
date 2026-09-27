@@ -540,8 +540,7 @@
                   <span class="text-[10px] text-[var(--text-muted)]">{projectFolders.length} configured</span>
                 </div>
                 <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
-                  All agent file and shell work is confined to these folders. Leave empty to let RAVENBOT
-                  auto-create a default folder at <span class="font-mono">~/RAVENBOT/projects/&lt;office&gt;</span>.
+                  {t("office.foldersConfinement")}
                 </p>
 
                 <div class="space-y-1.5">
