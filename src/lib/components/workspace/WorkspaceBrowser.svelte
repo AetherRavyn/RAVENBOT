@@ -301,83 +301,60 @@
   {:else if tree}
     <div class="raven-wsb__body">
       <div class="raven-wsb__list" role="tree" aria-label={t("wsb.listLabel")}>
-        {#if flat}
-          {#each visibleFlat as e (e.path)}
-            {@const depth = e.isDir ? e.path.split("/").length - 1 : 0}
-            <button
-              type="button"
-              class="raven-wsb__row"
-              class:raven-wsb__row--on={selected?.path === e.path}
-              style:padding-left="{8 + depth * 12}px"
-              onclick={() => (e.isDir ? toggle(e.path) : (selected = e))}
-            >
-              {#if e.isDir}
-                {#if expanded.has(e.path)}<ChevronDown size={ICON_SIZE} />{:else}<ChevronRight size={ICON_SIZE} />{/if}
-              {:else}
-                <span class="w-[13px] shrink-0"></span>
-              {/if}
-              {#if e.isLink}
-                <Link2 class="size-3 text-[var(--text-muted)] shrink-0" />
-              {:else if e.isDir}
-                <FolderOpen class="size-3 text-[var(--brand-text)] shrink-0" />
-              {:else if isMarkdown(e.name)}
-                <FileText class="size-3 text-[var(--text-secondary)] shrink-0" />
-              {:else}
-                <File class="size-3 text-[var(--text-muted)] shrink-0" />
-              {/if}
-              <span class="flex-1 text-left truncate">{e.name}</span>
-              {#if !e.isDir}<span class="raven-wsb__size">{fmtBytes(e.sizeBytes)}</span>{/if}
-            </button>
-          {/each}
-        {:else}
-          {#each treeNodes as node (node.entry.path)}
-            {@const e = node.entry}
+        <!--
+          One row renderer, used by both views and at every depth.
+
+          There were two copies before, and the top-level one had an `{#if
+          e.isDir}` with no `{:else}` — so a *file* at the workspace root was
+          rendered as nothing at all. That is not an edge case: `OFFICE.md`,
+          `README.md` and `POLICY.md` are the three files that make a folder an
+          office's workspace, they all sit at the root, and none of them appeared.
+        -->
+        {#snippet rowFor(e: Entry, depth: number)}
+          <button
+            type="button"
+            class="raven-wsb__row"
+            class:raven-wsb__row--on={selected?.path === e.path}
+            class:font-medium={e.isDir}
+            style:padding-left="{8 + depth * 12}px"
+            onclick={() => (e.isDir ? toggle(e.path) : (selected = e))}
+          >
             {#if e.isDir}
-              <button
-                type="button"
-                class="raven-wsb__row font-medium"
-                style:padding-left="{8 + node.depth * 12}px"
-                onclick={() => toggle(e.path)}
-              >
-                {#if expanded.has(e.path)}<ChevronDown size={ICON_SIZE} />{:else}<ChevronRight size={ICON_SIZE} />{/if}
-                {#if e.isLink}
-                  <Link2 class="size-3 text-[var(--text-muted)] shrink-0" />
-                {:else}
-                  <FolderOpen class="size-3 text-[var(--brand-text)] shrink-0" />
-                {/if}
-                <span class="flex-1 text-left truncate">{e.name}</span>
-              </button>
-              {#if expanded.has(e.path)}
-                {#each node.children as child (child.entry.path)}
-                  {@const c = child.entry}
-                  <button
-                    type="button"
-                    class="raven-wsb__row"
-                    class:raven-wsb__row--on={selected?.path === c.path}
-                    style:padding-left="{8 + child.depth * 12}px"
-                    onclick={() => (c.isDir ? toggle(c.path) : (selected = c))}
-                  >
-                    {#if c.isDir}
-                      {#if expanded.has(c.path)}<ChevronDown size={ICON_SIZE} />{:else}<ChevronRight size={ICON_SIZE} />{/if}
-                    {:else}
-                      <span class="w-[13px] shrink-0"></span>
-                    {/if}
-                    {#if c.isLink}
-                      <Link2 class="size-3 text-[var(--text-muted)] shrink-0" />
-                    {:else if c.isDir}
-                      <FolderOpen class="size-3 text-[var(--brand-text)] shrink-0" />
-                    {:else if isMarkdown(c.name)}
-                      <FileText class="size-3 text-[var(--text-secondary)] shrink-0" />
-                    {:else}
-                      <File class="size-3 text-[var(--text-muted)] shrink-0" />
-                    {/if}
-                    <span class="flex-1 text-left truncate">{c.name}</span>
-                    {#if !c.isDir}<span class="raven-wsb__size">{fmtBytes(c.sizeBytes)}</span>{/if}
-                  </button>
-                {/each}
-              {/if}
+              {#if expanded.has(e.path)}<ChevronDown size={ICON_SIZE} />{:else}<ChevronRight size={ICON_SIZE} />{/if}
+            {:else}
+              <span class="w-[13px] shrink-0"></span>
+            {/if}
+            {#if e.isLink}
+              <Link2 class="size-3 text-[var(--text-muted)] shrink-0" />
+            {:else if e.isDir}
+              <FolderOpen class="size-3 text-[var(--brand-text)] shrink-0" />
+            {:else if isMarkdown(e.name)}
+              <FileText class="size-3 text-[var(--text-secondary)] shrink-0" />
+            {:else}
+              <File class="size-3 text-[var(--text-muted)] shrink-0" />
+            {/if}
+            <span class="flex-1 text-left truncate">{e.name}</span>
+            {#if !e.isDir}<span class="raven-wsb__size">{fmtBytes(e.sizeBytes)}</span>{/if}
+          </button>
+        {/snippet}
+
+        <!-- Recursive, because the listing is up to three levels deep and a
+             two-level version would silently drop the third. -->
+        {#snippet branch(nodes: Node[])}
+          {#each nodes as node (node.entry.path)}
+            {@render rowFor(node.entry, node.depth)}
+            {#if node.entry.isDir && expanded.has(node.entry.path) && node.children.length}
+              {@render branch(node.children)}
             {/if}
           {/each}
+        {/snippet}
+
+        {#if flat}
+          {#each visibleFlat as e (e.path)}
+            {@render rowFor(e, e.isDir ? e.path.split("/").length - 1 : 0)}
+          {/each}
+        {:else}
+          {@render branch(treeNodes)}
         {/if}
       </div>
 
