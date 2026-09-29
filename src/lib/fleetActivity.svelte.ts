@@ -20,6 +20,7 @@
  */
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computeMoods, type AvatarMood } from "$lib/avatar";
+import { handoffs } from "$lib/handoffs.svelte";
 
 export type Activity = "working" | "attention" | "responded" | "idle";
 
@@ -37,12 +38,24 @@ class FleetActivity {
   private refs = 0;
   private listening = false;
 
+  /**
+   * The badge for an agent.
+   *
+   * An agent that another agent has just handed work to counts as working, even
+   * if it has not emitted anything yet. A delegation runs a whole child run in
+   * a different thread, and the *target's* stream events are routed to that
+   * thread's emitter — so in the office the colleague doing the work looks
+   * completely idle while it works. Without this, a working office shows one
+   * busy agent and several empty chairs.
+   */
   get(botId: string): Activity {
+    if (handoffs.targets[botId]) return "working";
     return this.states[botId] ?? "idle";
   }
 
   /** The face to draw. A missing entry means idle, not unknown. */
   mood(botId: string): AvatarMood {
+    if (handoffs.targets[botId]) return "working";
     return this.moods[botId] ?? "idle";
   }
 
@@ -75,9 +88,15 @@ class FleetActivity {
     this.timers.clear();
     this.states = {};
     this.moods = {};
+    handoffs.clear();
   }
 
   handle(p: any): void {
+    // Folded first and without an early return: a delegation event carries a
+    // `bot_id`, so the guard below would otherwise let it past, but the shape
+    // of the rest of the switch does not apply to it and it needs no badge.
+    handoffs.ingest(p);
+
     const botId = p?.bot_id;
     if (!botId) return;
 

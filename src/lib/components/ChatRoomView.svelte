@@ -32,6 +32,8 @@
   import { RunTimeline as RunTimelineState } from "$lib/chat/runTimeline.svelte";
   import { showAuthorHeader, authorHue, isGhostContent } from "$lib/chat/grouping";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
+  import { handoffs } from "$lib/handoffs.svelte";
+  import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
   import { StreamReveal } from "$lib/chat/streamReveal.svelte";
   import { prefersReducedMotion } from "$lib/a11y";
   import {
@@ -44,6 +46,7 @@
     Loader2,
     Circle,
     ArrowRight,
+    AlertTriangle,
     Play,
     Pause,
     Radio,
@@ -76,6 +79,14 @@
   let messages = $state<any[]>([]);
   let newMessage = $state("");
   let threadId: string | null = $state(null);
+  /**
+   * Handoffs in this conversation, newest first.
+   *
+   * Derived from the store rather than copied into local state, so a handoff
+   * that settles while the view is open cannot leave a stale row behind.
+   */
+  const threadHandoffs = $derived(threadId ? handoffs.forThread(threadId) : []);
+
   let sending = $state(false);
   let chatContainer = $state<HTMLDivElement | null>(null);
   let showOfficeSettings = $state(false);
@@ -1471,6 +1482,73 @@
             {/if}
           </div>
         {/each}
+
+        <!--
+          Agent-to-agent handoffs, in flight.
+
+          A delegation used to leave one trace: a tool result inside the calling
+          agent's message. In an office that reads as the lead going quiet, and
+          "asked a colleague to check the logs" and "stuck" look identical. This
+          is the edge, while it is an edge — and a refused one too, because an
+          agent that cannot ask for help is the case a user needs explained.
+        -->
+        {#if threadHandoffs.length}
+          <div class="space-y-1.5" aria-live="polite">
+            {#each threadHandoffs as h (h.key)}
+              {@const from = memberForBot(h.fromBotId)}
+              {@const to = memberForBot(h.toBotId)}
+              {@const fromName = from?.bot?.name || from?.rank || t("ui.fallbackAgent")}
+              {@const toName = to?.bot?.name || h.toBotName || t("ui.fallbackAgent")}
+              <div
+                class="raven-handoff animate-rise-in"
+                class:raven-handoff--refused={Boolean(h.error)}
+                class:raven-handoff--done={h.done && !h.error}
+              >
+                <span class="flex items-center gap-1.5 shrink-0">
+                  <span class="font-bold text-[11px] truncate max-w-28" style={`color: ${authorHue(h.fromBotId || fromName)}`}>
+                    {fromName}
+                  </span>
+                  {#if h.done && !h.error}
+                    <Check class="size-3 text-success shrink-0" />
+                  {:else if h.error}
+                    <AlertTriangle class="size-3 text-warning shrink-0" />
+                  {:else}
+                    <Loader2 class="size-3 animate-spin text-[var(--brand-text)] shrink-0" />
+                  {/if}
+                </span>
+                <ArrowRight class="size-3 text-[var(--text-muted)] shrink-0" />
+                <span class="font-bold text-[11px] truncate max-w-28" style={`color: ${authorHue(h.toBotId || toName)}`}>
+                  {toName}
+                </span>
+                <span class="flex-1 min-w-0 text-[11px] text-[var(--text-muted)] truncate" title={h.instruction}>
+                  {h.error ?? h.instruction}
+                </span>
+                {#if h.response}
+                  <button
+                    type="button"
+                    class="text-[10px] text-[var(--brand-text)] hover:underline shrink-0 cursor-pointer"
+                    aria-expanded={h.expanded}
+                    onclick={() => handoffs.toggle(h.key)}
+                  >
+                    {h.expanded ? t("wsb.hideReply") : t("wsb.showReply")}
+                  </button>
+                {/if}
+              </div>
+              <!--
+                The reply, inline. An office has exactly one thread and the
+                delegated agent's is a different one, so this is the only place
+                its answer can appear — and the handoff row saying "asked Sam"
+                without showing what Sam said is a handoff the user still has to
+                take on trust.
+              -->
+              {#if h.response && h.expanded}
+                <div class="raven-handoff__reply">
+                  <MarkdownRenderer content={h.response} />
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {/if}
 
         <!-- Live team activity: streamed node lanes through the shared row shell -->
         {#if teamActive}

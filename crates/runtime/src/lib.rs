@@ -71,6 +71,37 @@ pub enum StreamEvent {
     Status { bot_id: Uuid, thread_id: Uuid, state: String },
     /// Real token/cost usage for a completed run
     Usage { thread_id: Uuid, tokens: u64, cost: f64 },
+    /// An agent handed work to another agent.
+    ///
+    /// Carries the *office* thread as well as the delegating one, because the
+    /// point is that the office can see the handoff. Without this the only trace
+    /// of a delegation is a tool result buried inside the caller's message, and
+    /// the office looks like one agent went quiet for a while — which reads as
+    /// a stall rather than as a colleague being asked to do something.
+    ///
+    /// Emitted twice: once when the handoff is accepted and once when it lands
+    /// or fails. A refused handoff is the one most worth seeing, so it is
+    /// emitted too, with the reason.
+    Delegation {
+        /// The agent handing the work over.
+        bot_id: Uuid,
+        /// The thread to show it in — the office thread, not the child thread.
+        thread_id: Uuid,
+        /// Where the work is actually happening. `None` for a refused handoff,
+        /// which never got as far as creating a thread — pointing it at the
+        /// parent would send the user to the conversation they are already in.
+        child_thread_id: Option<Uuid>,
+        to_bot_id: Uuid,
+        to_bot_name: String,
+        instruction: String,
+        /// `true` on the second emission.
+        done: bool,
+        /// The reply, once there is one.
+        response: Option<String>,
+        /// Why it failed, if it did. Includes a refusal by the delegate list or
+        /// the capability, not only a failed run.
+        error: Option<String>,
+    },
 }
 
 /// Emitter callback for stream events. Must be cheap and non-blocking.
@@ -91,7 +122,8 @@ fn stream_event_thread_id(event: &StreamEvent) -> Uuid {
         | StreamEvent::QuestionAsked { thread_id, .. }
         | StreamEvent::QuestionAnswered { thread_id, .. }
         | StreamEvent::Status { thread_id, .. }
-        | StreamEvent::Usage { thread_id, .. } => *thread_id,
+        | StreamEvent::Usage { thread_id, .. }
+        | StreamEvent::Delegation { thread_id, .. } => *thread_id,
     }
 }
 
@@ -204,6 +236,25 @@ pub struct Runtime {
     provider_override: Arc<Mutex<Option<Arc<dyn ModelProviderTrait>>>>,
     /// Delegation depth per run (recursion guard for inter-bot delegation)
     delegation_depth: std::sync::RwLock<HashMap<Uuid, u32>>,
+    /// The newest status announced for each agent, with the sequence number that
+    /// announced it.
+    ///
+    /// `emit` is synchronous and must not block, so the write is spawned — but
+    /// two spawns for the same row have no order between them, and an agent that
+    /// announces "thinking" then "done" could have the first land second. The
+    /// row would then say the agent is thinking while it sits idle, which is the
+    /// exact drift the hook in `emit` exists to prevent. Recording the intent
+    /// here and letting a writer act on it only if it is still the newest makes
+    /// the outcome independent of which spawn happens to win.
+    ///
+    /// A `std` mutex, not the async one: the critical sections are a hash
+    /// lookup and a store, and one of them runs on the synchronous side of
+    /// `mark_bot_status` where an async lock could not be taken at all. No
+    /// guard is ever held across an await.
+    status_intent: Arc<std::sync::Mutex<HashMap<Uuid, (u64, ravenbot_core::BotStatus)>>>,
+    /// Monotonic counter behind `status_intent`, so "newer" is well defined
+    /// across wraparound-free runs and across agents.
+    status_seq: Arc<std::sync::atomic::AtomicU64>,
     /// Headless mode: no UI is watching, so approval gates auto-allow (with
     /// audit) instead of parking forever. Set for CLI runs, office graph
     /// nodes, and routine execution.
@@ -269,6 +320,8 @@ impl Runtime {
             default_stream_emitter: std::sync::RwLock::new(None),
             provider_override: Arc::new(Mutex::new(None)),
             delegation_depth: std::sync::RwLock::new(HashMap::new()),
+            status_intent: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            status_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             auto_allow_approvals: std::sync::atomic::AtomicBool::new(false),
             auto_allow_runs: std::sync::Mutex::new(HashSet::new()),
             cancel_flags: std::sync::Mutex::new(HashSet::new()),
@@ -954,6 +1007,19 @@ impl Runtime {
                 &target.name,
                 &roster,
             ) {
+                // Announced even though nothing will happen. A refused handoff
+                // is the one most worth seeing: the agent wanted to ask a
+                // colleague and was not allowed, and if that only appears as a
+                // tool error the office reads it as the agent changing its mind.
+                self.announce_delegation(
+                    parent_run,
+                    None,
+                    &target,
+                    &instruction,
+                    true,
+                    None,
+                    Some(denial.explain()),
+                );
                 return ravenbot_skills::SkillResult::failure(denial.explain());
             }
         }
@@ -1002,6 +1068,18 @@ impl Runtime {
             map.insert(child_run.id, depth + 1);
         }
 
+        // The handoff is accepted: say so before the work starts, so the office
+        // shows the agent as busy *because* it asked someone, not as stalled.
+        self.announce_delegation(
+            parent_run,
+            Some(thread.id),
+            &target,
+            &instruction,
+            false,
+            None,
+            None,
+        );
+
         // Box the recursive call (delegation → run → tool → delegation…)
         let exec_result = Box::pin(self.execute_run(&mut child_run)).await;
 
@@ -1019,18 +1097,76 @@ impl Runtime {
         };
 
         match exec_result {
-            Ok(()) => ravenbot_skills::SkillResult::success(serde_json::json!({
-                "status": "completed",
-                "target_bot": target.name,
-                "target_bot_id": target.id.to_string(),
-                "thread_id": thread.id.to_string(),
-                "result": response_text
-            })),
-            Err(e) => ravenbot_skills::SkillResult::failure(format!(
-                "Delegation to '{}' failed: {}",
-                target.name, e
-            )),
+            Ok(()) => {
+                self.announce_delegation(
+                    parent_run,
+                    Some(thread.id),
+                    &target,
+                    &instruction,
+                    true,
+                    Some(response_text.clone()),
+                    None,
+                );
+                ravenbot_skills::SkillResult::success(serde_json::json!({
+                    "status": "completed",
+                    "target_bot": target.name,
+                    "target_bot_id": target.id.to_string(),
+                    "thread_id": thread.id.to_string(),
+                    "result": response_text
+                }))
+            }
+            Err(e) => {
+                let reason = e.to_string();
+                self.announce_delegation(
+                    parent_run,
+                    Some(thread.id),
+                    &target,
+                    &instruction,
+                    true,
+                    None,
+                    Some(reason.clone()),
+                );
+                ravenbot_skills::SkillResult::failure(format!(
+                    "Delegation to '{}' failed: {}",
+                    target.name, reason
+                ))
+            }
         }
+    }
+
+    /// Tell the office that one agent asked another to do something.
+    ///
+    /// Routed to the *parent's* thread, not the child, so it lands in the
+    /// conversation the user is reading. The child thread is carried along
+    /// because it is the thread to open when the user asks to see the work.
+    ///
+    /// A no-op when the parent is not in an office: a one-to-one conversation
+    /// has no roster to show a handoff to, and the tool result already says
+    /// what happened.
+    fn announce_delegation(
+        &self,
+        parent_run: &Run,
+        child_thread_id: Option<Uuid>,
+        target: &ravenbot_core::Bot,
+        instruction: &str,
+        done: bool,
+        response: Option<String>,
+        error: Option<String>,
+    ) {
+        if self.emitter_for(parent_run.thread_id).is_none() {
+            return;
+        }
+        self.emit(StreamEvent::Delegation {
+            bot_id: parent_run.bot_id,
+            thread_id: parent_run.thread_id,
+            child_thread_id,
+            to_bot_id: target.id,
+            to_bot_name: target.name.clone(),
+            instruction: instruction.chars().take(400).collect(),
+            done,
+            response: response.map(|r| r.chars().take(2000).collect()),
+            error,
+        });
     }
 
     /// Record a tool call the agent's own grant refused.
@@ -1852,11 +1988,38 @@ impl Runtime {
     /// fire-and-forget because a status hint failing is never worth failing a
     /// run over.
     fn mark_bot_status(&self, bot_id: Uuid, status: ravenbot_core::BotStatus) {
+        use std::sync::atomic::Ordering;
+
+        // Record the intent, so a writer that is not the newest knows to stand
+        // down rather than overwrite a newer state with an older one.
+        let seq = self.status_seq.fetch_add(1, Ordering::SeqCst) + 1;
+        {
+            let mut intent = self.status_intent.lock().expect("status intent lock poisoned");
+            intent.insert(bot_id, (seq, status.clone()));
+        }
+
         let pool = self.db.pool().clone();
+        let shared = self.status_intent.clone();
         tokio::spawn(async move {
+            // Re-read under the lock: anything announced after this task was
+            // spawned has already superseded what it was told to write.
+            {
+                let intent = shared.lock().expect("status intent lock poisoned");
+                match intent.get(&bot_id) {
+                    Some((latest, _)) if *latest != seq => return,
+                    None => return,
+                    _ => {}
+                }
+            }
             if let Err(e) = ravenbot_db::queries::BotQueries::mark_active(&pool, bot_id, status).await
             {
                 tracing::warn!(%bot_id, error = %e, "Could not record bot status");
+            }
+            // Cleared only if nothing newer landed while the write was in
+            // flight, so a status announced mid-write is not forgotten.
+            let mut intent = shared.lock().expect("status intent lock poisoned");
+            if intent.get(&bot_id).map(|(s, _)| *s) == Some(seq) {
+                intent.remove(&bot_id);
             }
         });
     }
@@ -4172,6 +4335,53 @@ mod integration_tests {
         assert!(stored.last_active_at.is_some());
     }
 
+    /// A burst of statuses must leave the *last* one standing.
+    ///
+    /// `emit` is synchronous and must not block, so each write is spawned, and
+    /// spawns for one row have no order between them. An agent that announces
+    /// "thinking" and then "done" could otherwise have the first land second,
+    /// leaving the row saying the agent is thinking while it sits idle — which
+    /// is the exact drift the hook in `emit` exists to prevent, reintroduced
+    /// through the write path. The old test passed only because two spawns
+    /// usually finish in order; this one makes them compete.
+    #[tokio::test]
+    async fn a_burst_of_statuses_leaves_the_last_one_stored() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+
+        let bot = Bot::new("Bursty", "many transitions");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+
+        // More transitions than the pool can resolve in order, ending idle.
+        for i in 0..64 {
+            runtime.emit(StreamEvent::Status {
+                bot_id: bot.id,
+                thread_id: Uuid::new_v4(),
+                state: if i % 3 == 0 { "running_tool" } else { "thinking" }.to_string(),
+            });
+        }
+        runtime.emit(StreamEvent::Status {
+            bot_id: bot.id,
+            thread_id: Uuid::new_v4(),
+            state: "done".to_string(),
+        });
+
+        // Long enough for every spawn to have been scheduled and run.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+        let stored = ravenbot_db::queries::BotQueries::get(db.pool(), bot.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            stored.status,
+            ravenbot_core::BotStatus::Idle,
+            "an older status overwrote the newest one"
+        );
+    }
+
     #[tokio::test]
     async fn startup_clears_status_left_behind_by_a_crash() {
         let db = temp_db().await;
@@ -4363,6 +4573,9 @@ mod e2e_tests {
                 StreamEvent::Sources { .. } => "sources".to_string(),
                 StreamEvent::Image { name, .. } => format!("image:{}", name),
                 StreamEvent::Status { state, .. } => format!("status:{}", state),
+                StreamEvent::Delegation { to_bot_name, done, .. } => {
+                    format!("delegation:{}:{}", to_bot_name, done)
+                }
                 StreamEvent::Usage { tokens, .. } => format!("usage:{}", tokens),
                 StreamEvent::ApprovalRequested { .. } => "approval_requested".to_string(),
                 StreamEvent::ApprovalDecided { allowed, .. } => {
@@ -4460,6 +4673,161 @@ mod honesty_tests {
         let path = PathBuf::from(std::env::temp_dir())
             .join(format!("ravenbot-honesty-{}.db", Uuid::new_v4()));
         ravenbot_db::Database::new(&path).await.expect("temp db")
+    }
+
+    /// A handoff is announced to the office, twice: when it is accepted and when
+    /// it lands.
+    ///
+    /// Without this the only trace of a delegation is a tool result buried in
+    /// the calling agent's message, and the office reads as one agent going
+    /// quiet — indistinguishable from a stall. The UI's whole reason for
+    /// existing is this event, so it is asserted rather than assumed.
+    #[tokio::test]
+    async fn a_delegation_is_announced_to_the_office_when_it_lands() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+
+        let lead = Bot::new("Lead", "asks for help");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &lead)
+            .await
+            .unwrap();
+        let specialist = Bot::new("Specialist", "does the work");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &specialist)
+            .await
+            .unwrap();
+
+        let mut lead_bot = lead.clone();
+        lead_bot.delegate_to = vec![specialist.id];
+        ravenbot_db::queries::BotQueries::update(db.pool(), &lead_bot)
+            .await
+            .unwrap();
+
+        let thread = Thread::new(lead.id, "office group");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+
+        // Collected rather than streamed, so the test can assert on the sequence
+        // instead of racing a channel.
+        let seen: Arc<std::sync::Mutex<Vec<StreamEvent>>> = Arc::new(std::sync::Mutex::new(vec![]));
+        let sink = seen.clone();
+        runtime.set_thread_emitter(
+            thread.id,
+            Some(Arc::new(move |e: StreamEvent| {
+                sink.lock().unwrap().push(e);
+            })),
+        );
+
+        let mock = Arc::new(DelegatingProvider {
+            calls: AtomicUsize::new(0),
+            target_name: "Specialist".to_string(),
+        });
+        runtime.set_provider_override(Some(mock.clone() as Arc<dyn ModelProviderTrait>)).await;
+        runtime.set_auto_allow_approvals(true);
+
+        let mut run = Run::new(lead.id, thread.id);
+        ravenbot_db::queries::RunQueries::insert(db.pool(), &run).await.unwrap();
+        runtime.execute_run(&mut run).await.expect("delegating run");
+
+        let events = seen.lock().unwrap();
+        let handoffs: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Delegation {
+                    to_bot_name,
+                    done,
+                    response,
+                    error,
+                    child_thread_id,
+                    ..
+                } => Some((to_bot_name.clone(), *done, response.clone(), error.clone(), *child_thread_id)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(handoffs.len(), 2, "expected an acceptance and a completion: {handoffs:?}");
+
+        // Accepted first, and carrying the thread the work runs in.
+        let (name, done, response, error, child) = &handoffs[0];
+        assert_eq!(name, "Specialist");
+        assert!(!done);
+        assert!(response.is_none());
+        assert!(error.is_none());
+        assert!(child.is_some(), "the accepted handoff should name the child's thread");
+
+        // Then it lands, with the reply.
+        let (name, done, response, error, _) = &handoffs[1];
+        assert_eq!(name, "Specialist");
+        assert!(done);
+        assert!(error.is_none(), "unexpected error: {error:?}");
+        assert!(response.is_some(), "a landed handoff should carry the reply");
+    }
+
+    /// A handoff the delegate list refuses is announced anyway.
+    ///
+    /// The refusal is decided before any thread exists, so it is the one case
+    /// that produces a single event with no acceptance — and the case a user
+    /// most needs explained. If it were silent, an agent that had lost the
+    /// ability to ask a colleague would look exactly like one that had stopped
+    /// trying.
+    #[tokio::test]
+    async fn a_refused_delegation_is_announced_with_its_reason() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+
+        let lead = Bot::new("Lead", "cannot ask");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &lead)
+            .await
+            .unwrap();
+        // Deliberately not on the delegate list.
+        let stranger = Bot::new("Stranger", "another office");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &stranger)
+            .await
+            .unwrap();
+
+        let thread = Thread::new(lead.id, "office group");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+
+        let seen: Arc<std::sync::Mutex<Vec<StreamEvent>>> = Arc::new(std::sync::Mutex::new(vec![]));
+        let sink = seen.clone();
+        runtime.set_thread_emitter(
+            thread.id,
+            Some(Arc::new(move |e: StreamEvent| {
+                sink.lock().unwrap().push(e);
+            })),
+        );
+
+        let parent_run = Run::new(lead.id, thread.id);
+        let result = runtime
+            .exec_delegation(
+                &parent_run,
+                serde_json::json!({
+                    "bot_id": stranger.id.to_string(),
+                    "instruction": "check the logs"
+                }),
+            )
+            .await;
+        assert!(result.error.is_some(), "the handoff should have been refused");
+
+        let events = seen.lock().unwrap();
+        let refusals: Vec<_> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Delegation {
+                    done, error, child_thread_id, ..
+                } => Some((*done, error.clone(), *child_thread_id)),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(refusals.len(), 1, "a refusal is the only event there is: {refusals:?}");
+        let (done, error, child) = &refusals[0];
+        assert!(done, "a refusal is announced as already finished");
+        assert!(child.is_none(), "no thread is created for a refused handoff");
+        let reason = error.as_deref().unwrap_or("");
+        assert!(reason.contains("Stranger"), "the reason should name the target: {reason}");
     }
 
     /// Provider that delegates on round 0 and answers on later rounds.

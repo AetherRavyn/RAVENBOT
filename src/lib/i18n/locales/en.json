@@ -913,7 +913,9 @@
     "tooLarge": "This file is too large to preview.",
     "loadFailed": "Could not read the workspace: ",
     "openFailed": "Could not open the file manager: ",
-    "browseFiles": "Files"
+    "browseFiles": "Files",
+    "showReply": "Reply",
+    "hideReply": "Hide"
   },
   "connector": {
     "title": "Connectors & Tools",

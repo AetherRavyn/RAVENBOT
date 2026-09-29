@@ -1387,3 +1387,44 @@ html.sidebar-resizing .app-frame {
   border-top: 1px solid var(--hairline);
   background: var(--surface-2);
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Agent-to-agent handoff
+
+   A delegation is the moment an office behaves like an office, so it is drawn
+   as an edge between two names rather than as another bubble in the transcript.
+   The three states are the three things a user needs to tell apart at a glance:
+   in flight, landed, and refused — and a refusal is the one that gets the warm
+   colour, because it is the only one that is a problem.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.raven-handoff {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: 10px;
+  font-size: 11px;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+}
+
+.raven-handoff--done {
+  border-color: color-mix(in oklab, var(--ok) 22%, transparent);
+}
+
+.raven-handoff--refused {
+  border-color: color-mix(in oklab, var(--warning) 30%, transparent);
+  background: color-mix(in oklab, var(--warning) 5%, var(--surface-1));
+}
+
+.raven-handoff__reply {
+  margin: -0.25rem 0 0.25rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid color-mix(in oklab, var(--brand) 35%, transparent);
+  border-radius: 0 10px 10px 0;
+  background: var(--surface-2);
+  font-size: 12px;
+  max-height: 18rem;
+  overflow: auto;
+}
