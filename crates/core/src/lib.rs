@@ -4,6 +4,7 @@
 //! bots, threads, messages, skills, routines, runs, and more.
 
 pub mod bot;
+pub mod capability;
 pub mod thread;
 pub mod message;
 pub mod skill;
@@ -25,6 +26,7 @@ pub mod office_memory;
 
 // Re-exports for convenience
 pub use bot::*;
+pub use capability::*;
 pub use thread::*;
 pub use message::*;
 pub use skill::*;

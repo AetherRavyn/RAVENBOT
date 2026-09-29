@@ -876,6 +876,16 @@ impl Runtime {
         if instruction.is_empty() {
             return ravenbot_skills::SkillResult::failure("Missing 'instruction' field");
         }
+        // The tool schema advertises a `context` field, so a caller reasonably
+        // puts the background there. It used to be bound to `_context_text` and
+        // dropped on the floor, so the target received the instruction with no
+        // idea who was asking or why. Prepended here, and reported back.
+        let context = args
+            .get("context")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
 
         // Depth guard: prevent recursive delegation loops
         let depth = {
@@ -915,6 +925,38 @@ impl Runtime {
             return ravenbot_skills::SkillResult::failure("Kill switch active — delegation paused");
         }
 
+        // Who is allowed to hand work to whom.
+        //
+        // `delegate_to` was written to the database, round-tripped, and never
+        // read, and target resolution fell back to a case-insensitive name
+        // search across every bot in the database — so any agent could hand work
+        // to any other, including one in a different office. A lead may dispatch
+        // within its own roster; anyone else may only use their own list.
+        let caller = ravenbot_db::queries::BotQueries::get(self.db.pool(), parent_run.bot_id)
+            .await
+            .ok()
+            .flatten();
+        let office = self.office_of(parent_run.thread_id).await;
+        let roster: Vec<Uuid> = match &office {
+            Some(room) => ravenbot_db::queries::ChatRoomQueries::list_members(self.db.pool(), room.id)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|m| m.bot_id)
+                .collect(),
+            None => Vec::new(),
+        };
+        if let Some(caller) = &caller {
+            if let Err(denial) = ravenbot_core::delegation_permitted(
+                caller,
+                target.id,
+                &target.name,
+                &roster,
+            ) {
+                return ravenbot_skills::SkillResult::failure(denial.explain());
+            }
+        }
+
         // Run the instruction through the real runtime in a fresh thread
         let thread = ravenbot_core::Thread::new(
             target.id,
@@ -923,7 +965,29 @@ impl Runtime {
         if let Err(e) = ravenbot_db::queries::ThreadQueries::create(self.db.pool(), &thread).await {
             return ravenbot_skills::SkillResult::failure(e.to_string());
         }
-        let user_msg = ravenbot_core::Message::user(thread.id, &instruction);
+
+        // A delegated agent must stay in the office.
+        //
+        // Without this the child thread has no `chatroom_threads` row, so
+        // `resolve_working_dirs` walks the whole priority chain and lands on
+        // `default_project_dir(bot.name)` — the target is moved out of the
+        // office into a folder of its own, with no goal, no policy, no roster
+        // and no office memory, and the work it returns has been done in the
+        // wrong place. The office's own folders are stamped on the thread
+        // exactly as the graph executor stamps them for a parallel node.
+        if let Some(office) = self.office_of(parent_run.thread_id).await {
+            if let Err(e) = self.link_thread_to_office(&thread, &office).await {
+                return ravenbot_skills::SkillResult::failure(e);
+            }
+        }
+
+        // The target sees who is asking and why, not a bare instruction.
+        let prompt = if context.is_empty() {
+            instruction.clone()
+        } else {
+            format!("{context}\n\n---\n\nTask:\n{instruction}")
+        };
+        let user_msg = ravenbot_core::Message::user(thread.id, &prompt);
         if let Err(e) = ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &user_msg).await {
             return ravenbot_skills::SkillResult::failure(e.to_string());
         }
@@ -966,6 +1030,82 @@ impl Runtime {
                 target.name, e
             )),
         }
+    }
+
+    /// Record a tool call the agent's own grant refused.
+    ///
+    /// A refusal that leaves no trace is indistinguishable from a tool that was
+    /// never called, and the first question anyone would ask about an agent
+    /// "broke" this way is what did it.
+    async fn audit_denied_tool(
+        &self,
+        bot: &ravenbot_core::Bot,
+        run: &Run,
+        tool: &str,
+        denial: &ravenbot_core::Denial,
+    ) {
+        if let Err(e) = self
+            .audit_logger
+            .log_tool_call(
+                bot.id,
+                Some(run.id),
+                Some(run.thread_id),
+                tool,
+                serde_json::json!({ "denied": true, "reason": denial.explain() }),
+            )
+            .await
+        {
+            tracing::warn!(error = %e, "Could not audit a denied tool call");
+        }
+    }
+
+    /// The office a thread belongs to, if any.
+    async fn office_of(&self, thread_id: Uuid) -> Option<ravenbot_core::ChatRoom> {
+        let chatroom_id: Option<String> =
+            sqlx::query_scalar("SELECT chatroom_id FROM chatroom_threads WHERE thread_id = ?")
+                .bind(thread_id.to_string())
+                .fetch_optional(self.db.pool())
+                .await
+                .ok()
+                .flatten();
+        let cid = Uuid::parse_str(&chatroom_id?).ok()?;
+        ravenbot_db::queries::ChatRoomQueries::get(self.db.pool(), cid)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Put a newly created thread inside `office`: linked to the room, and
+    /// carrying the room's project folders so the runtime confines it there.
+    ///
+    /// This is the same treatment the graph executor gives a node's child
+    /// thread. Anything that runs work *for* an office — a parallel node, or a
+    /// delegated agent — has to be in the room, or it silently works somewhere
+    /// else and reports back having done so.
+    async fn link_thread_to_office(
+        &self,
+        thread: &ravenbot_core::Thread,
+        office: &ravenbot_core::ChatRoom,
+    ) -> Result<(), String> {
+        sqlx::query("INSERT OR REPLACE INTO chatroom_threads (chatroom_id, thread_id, created_at) VALUES (?, ?, ?)")
+            .bind(office.id.to_string())
+            .bind(thread.id.to_string())
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(self.db.pool())
+            .await
+            .map_err(|e| format!("Could not link the delegated thread to the office: {e}"))?;
+
+        if !office.project_folders.is_empty() {
+            let folders = serde_json::to_string(&office.project_folders)
+                .map_err(|e| e.to_string())?;
+            sqlx::query("UPDATE threads SET project_folders = ? WHERE id = ?")
+                .bind(folders)
+                .bind(thread.id.to_string())
+                .execute(self.db.pool())
+                .await
+                .map_err(|e| format!("Could not set the delegated thread's workspace: {e}"))?;
+        }
+        Ok(())
     }
 
     /// Resolve a tool name to its approval risk level.
@@ -1162,6 +1302,28 @@ impl Runtime {
         name: &str,
         args: &serde_json::Value,
     ) -> serde_json::Value {
+        // The capability gate.
+        //
+        // This is the check that did not exist. A skill declared what it needed
+        // via `required_permissions()`, a bot carried a `permissions` list, and
+        // the two were never compared — so the list was decorative metadata and
+        // the only thing standing between a tool and the filesystem was asking
+        // the user, which is a different question. A refusal here is the
+        // agent's own grant, not the operator's patience, and it does not
+        // consume an approval.
+        let needed: Vec<ravenbot_core::Permission> = tool_skills
+            .iter()
+            .find(|s| s.id() == name)
+            .map(|s| s.required_permissions())
+            .or_else(|| self.skill_registry.get(name).map(|s| s.required_permissions()))
+            .unwrap_or_default();
+        if !needed.is_empty() {
+            if let Err(denial) = ravenbot_core::tool_permitted(bot, name, &needed) {
+                self.audit_denied_tool(bot, run, name, &denial).await;
+                return serde_json::json!({ "error": denial.explain() });
+            }
+        }
+
         let result: Result<ravenbot_skills::SkillResult, ravenbot_skills::SkillError> =
             if name == "ask_user" {
                 return self.ask_user(run, bot, args.clone()).await;
@@ -3781,6 +3943,151 @@ mod integration_tests {
     /// at their initial values for the life of every bot. The UI compensated by
     /// deriving state from the event stream, which is right while a window is
     /// open and useless after a restart.
+    /// A delegated agent must stay in the office that asked for the work.
+    ///
+    /// `exec_delegation` created a thread with no `chatroom_threads` row, so
+    /// `resolve_working_dirs` walked its whole priority chain and landed on
+    /// `default_project_dir(bot.name)` — the target was moved out of the
+    /// office into a folder of its own, with no goal, no policy, no roster and
+    /// no office memory, and returned work done in the wrong place.
+    #[tokio::test]
+    async fn a_delegated_thread_is_linked_to_the_office_and_its_workspace() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+
+        // An office with a real workspace.
+        let mut room = ravenbot_core::ChatRoom::new("Delegation Test", "office", "it-office");
+        room.project_folders = vec!["/tmp/rb-deleg-office".to_string()];
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
+
+        let lead = Bot::new("Lead", "leads the office");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &lead)
+            .await
+            .unwrap();
+
+        let office_thread = Thread::new(lead.id, "office group");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office_thread)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO chatroom_threads (chatroom_id, thread_id, created_at) VALUES (?, ?, ?)")
+            .bind(room.id.to_string())
+            .bind(office_thread.id.to_string())
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let specialist = Bot::new("Specialist", "does the work");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &specialist)
+            .await
+            .unwrap();
+        ravenbot_db::queries::ChatRoomQueries::add_member(
+            db.pool(),
+            &ravenbot_core::ChatRoomMember {
+                chatroom_id: room.id,
+                bot_id: specialist.id,
+                rank: "Developer".into(),
+                specialty: "Implementation".into(),
+                joined_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let delegate_thread = Thread::new(specialist.id, "will be delegated to");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &delegate_thread)
+            .await
+            .unwrap();
+        let run = Run::new(specialist.id, delegate_thread.id);
+        ravenbot_db::queries::RunQueries::insert(db.pool(), &run).await.unwrap();
+
+        runtime
+            .link_thread_to_office(&delegate_thread, &room)
+            .await
+            .expect("linking the delegated thread");
+
+        // Linked to the room…
+        let linked: Option<String> = sqlx::query_scalar(
+            "SELECT chatroom_id FROM chatroom_threads WHERE thread_id = ?",
+        )
+        .bind(delegate_thread.id.to_string())
+        .fetch_optional(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(linked, Some(room.id.to_string()));
+
+        // …and carrying the office's folders, so the runtime confines it there.
+        let folders: Option<String> =
+            sqlx::query_scalar("SELECT project_folders FROM threads WHERE id = ?")
+                .bind(delegate_thread.id.to_string())
+                .fetch_optional(db.pool())
+                .await
+                .unwrap();
+        let folders: Vec<String> = serde_json::from_str(&folders.unwrap()).unwrap();
+        assert_eq!(folders, room.project_folders);
+    }
+
+    /// The capability gate refuses a tool the agent's own grant excludes.
+    ///
+    /// Nothing read `bot.permissions` before, so a list a user had carefully
+    /// narrowed in the settings changed nothing at all.
+    #[tokio::test]
+    async fn a_tool_the_agents_grant_excludes_never_runs() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+
+        // Equipped with the skill, but not allowed to use it.
+        let mut bot = Bot::new("Narrowed", "cannot shell");
+        bot.skills = vec!["shell_exec".to_string()];
+        bot.permissions = vec![ravenbot_core::Permission::FileSystem {
+            paths: vec!["/".to_string()],
+        }];
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+
+        let thread = Thread::new(bot.id, "capability");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+
+        let skill = ravenbot_skills::SkillRegistry::new_builtin()
+            .get("shell_exec")
+            .expect("shell_exec is registered");
+        let skill_ctx = SkillContext::new(
+            bot.id,
+            Uuid::new_v4(),
+            thread.id,
+            ravenbot_core::SandboxTier::OsLevel,
+        )
+        .with_working_dirs(vec![std::path::PathBuf::from("/tmp")])
+        .confined();
+
+        let result = runtime
+            .execute_tool_call(
+                &bot,
+                &Run::new(bot.id, thread.id),
+                &[skill],
+                &skill_ctx,
+                "shell_exec",
+                &serde_json::json!({ "command": "touch /tmp/should-not-exist" }),
+            )
+            .await;
+
+        let err = result["error"]
+            .as_str()
+            .expect("the call should be refused")
+            .to_string();
+        assert!(err.contains("shell"), "the refusal should name the missing capability: {err}");
+        // The strongest form of the assertion: the command did not run.
+        assert!(
+            !std::path::Path::new("/tmp/should-not-exist").exists(),
+            "a denied tool still executed"
+        );
+    }
+
     #[tokio::test]
     async fn a_run_records_the_bots_status_and_last_activity() {
         let db = temp_db().await;
@@ -3836,7 +4143,7 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
 
-        let mut bot = Bot::new("Finisher", "status round trip");
+        let bot = Bot::new("Finisher", "status round trip");
         ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
             .await
             .unwrap();
@@ -4265,6 +4572,15 @@ mod honesty_tests {
         let mock = Arc::new(DelegatingProvider { calls: AtomicUsize::new(0), target_name: "Specialist".to_string() });
         runtime.set_provider_override(Some(mock.clone() as Arc<dyn ModelProviderTrait>)).await;
         runtime.set_auto_allow_approvals(true);
+
+        // Delegation is now scoped: the target has to be on the caller's list.
+        // This test predates the check, so it grants it explicitly rather than
+        // relying on the old "any bot may reach any bot" behaviour.
+        let mut manager = manager_bot.clone();
+        manager.delegate_to = vec![specialist.id];
+        ravenbot_db::queries::BotQueries::update(db.pool(), &manager)
+            .await
+            .unwrap();
 
         let mut run = ravenbot_core::Run::new(manager_bot.id, thread.id);
         runtime.execute_run(&mut run).await.expect("delegating run should succeed");
