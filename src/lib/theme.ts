@@ -154,8 +154,14 @@ export const THEMES: ThemeDefinition[] = [
     // a single blue accent for focus/selection, and a LIGHT primary button.
     // This is the look the UI is designed against; every other theme below
     // simply re-tints the same layout.
+    // The `id` is what a user's saved preference stores, so it stays `openbot`
+    // even though nothing is called that on screen any more — renaming it would
+    // silently drop everyone back to the default.
     id: "openbot",
-    name: "OpenBot",
+    // Named for the look, like every other theme here (Onyx, Dracula, Nord).
+    // It was called "OpenBot", which put another product's name in the middle
+    // of RAVENBOT's own title bar.
+    name: "Neutral Dark",
     category: "Neutral",
     primaryColor: "#79b8ff",
     accentColor: "#a6d2ff",
@@ -167,7 +173,7 @@ export const THEMES: ThemeDefinition[] = [
     borderHex: "#2a2a2a",
     textColor: "#ffffff",
     mutedTextColor: "#9a9aa0",
-    description: "OpenBot's neutral dark system — greyscale canvas, blue accent, light primary button",
+    description: "Neutral dark system — greyscale canvas, blue accent, light primary button",
     brand: flatBrand("RAVEN", "BOT", "LOCAL OS", "Sovereign Local-First Agent OS", "A persistent fleet of agents that live on your machine"),
   },
   {

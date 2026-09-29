@@ -139,25 +139,62 @@ pub fn seed_at(root: &Path, room: &ChatRoom, roster: &[RosterEntry]) {
     write_charter(&ws, room, roster);
 }
 
-fn write_charter(ws: &Workspace, room: &ChatRoom, roster: &[RosterEntry]) {
-    write_if_changed(&ws.root.join("OFFICE.md"), &office_md(ws, room, roster));
-    write_if_changed(&ws.root.join("README.md"), &readme_md(room, ws));
-    write_if_changed(&ws.shared.join("STATUS.md"), &status_md(room, roster));
+/// Marker opening every workspace file RAVENBOT generates.
+///
+/// A file that starts with it is ours and may be rewritten. One that does not
+/// is the operator's, and is never touched — see [`write_seeded`].
+const GENERATED_MARKER: &str = "<!-- ravenbot:generated -->";
 
-    // The policy is the operator's document. Only seed it when they have not
-    // written one, so a hand-edited POLICY.md survives.
-    let policy_path = ws.root.join("POLICY.md");
-    let generated_marker = "<!-- ravenbot:generated -->";
-    let needs_write = !policy_path.exists()
-        || std::fs::read_to_string(&policy_path)
-            .map(|s| s.starts_with(generated_marker))
-            .unwrap_or(false);
-    if needs_write {
-        if let Some(policy) = room.policy.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-            let body = format!("{generated_marker}\n{policy}\n");
-            write_if_changed(&policy_path, &body);
-        }
+fn write_charter(ws: &Workspace, room: &ChatRoom, roster: &[RosterEntry]) {
+    // `OFFICE.md` is the one file we own unconditionally. It is the workspace's
+    // charter, its name is ours, and `.ravenbot-office` already declares the
+    // directory as RAVENBOT's — so the roster refresh has to be able to rewrite
+    // it, which is what makes a room's charter describe the room as it is now.
+    write_if_changed(&ws.root.join("OFFICE.md"), &office_md(ws, room, roster));
+
+    // The rest are seeded *into a directory the user chose*, so they may land on
+    // files the user already has. `README.md` is the one that really bites: point
+    // an office at `~/code/my-app` and, before this rule, its README was
+    // replaced by ours. The policy had always been protected this way; it was
+    // the only one that was.
+    write_seeded(&ws.root.join("README.md"), &readme_md(room, ws));
+    write_seeded(&ws.shared.join("STATUS.md"), &status_md(room, roster));
+
+    if let Some(policy) = room
+        .policy
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
+        write_seeded(&ws.root.join("POLICY.md"), &format!("{policy}\n"));
     }
+}
+
+/// Whether a seeded file may be written: either it is absent, or it is one we
+/// generated and are therefore free to update.
+fn may_write(path: &Path) -> bool {
+    if !path.exists() {
+        return true;
+    }
+    std::fs::read_to_string(path)
+        .map(|s| s.starts_with(GENERATED_MARKER))
+        .unwrap_or(false)
+}
+
+/// Write a seeded file, leaving a file the operator wrote alone.
+///
+/// Writes are marked, so a file we generated *is* refreshed on a later seed —
+/// otherwise the protection would also freeze our own output and an office
+/// would never update its own README.
+fn write_seeded(path: &Path, body: &str) {
+    if !may_write(path) {
+        tracing::info!(
+            path = %path.display(),
+            "Leaving a hand-written workspace file alone"
+        );
+        return;
+    }
+    write_if_changed(path, &format!("{GENERATED_MARKER}\n{body}"));
 }
 
 /// The `project_folders` value an office should persist: the room plus its
@@ -181,7 +218,12 @@ pub fn write_policy(room: &ChatRoom) {
         .map(|d| ravenbot_core::expand_home(d))
         .unwrap_or_else(|| ravenbot_core::office_workspace(&room.name));
     let path = root.join("POLICY.md");
-    match room.policy.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+    match room
+        .policy
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
         Some(policy) => {
             let body = format!("<!-- ravenbot:generated -->\n{policy}\n");
             write_if_changed(&path, &body);
@@ -205,11 +247,17 @@ fn office_md(ws: &Workspace, room: &ChatRoom, roster: &[RosterEntry]) -> String 
     s.push_str(&room.name);
     s.push_str("\n\n");
 
-    if !room.description.trim().is_empty() {
-        s.push_str(&room.description.trim());
+    let description = room.description.trim();
+    if !description.is_empty() {
+        s.push_str(description);
         s.push_str("\n\n");
     }
-    if let Some(goal) = room.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+    if let Some(goal) = room
+        .goal
+        .as_deref()
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+    {
         s.push_str("## Mission\n\n");
         s.push_str(goal);
         s.push_str("\n\n");
@@ -236,7 +284,13 @@ fn office_md(ws: &Workspace, room: &ChatRoom, roster: &[RosterEntry]) -> String 
     ));
     s.push_str(&format!(
         "- `POLICY.md` — how this office works ({})\n",
-        if room.policy.as_deref().map(str::trim).unwrap_or("").is_empty() {
+        if room
+            .policy
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+        {
             "not set yet"
         } else {
             "set"
@@ -263,8 +317,7 @@ fn office_md(ws: &Workspace, room: &ChatRoom, roster: &[RosterEntry]) -> String 
             ));
         }
         s.push('\n');
-        let mandates: Vec<&RosterEntry> =
-            roster.iter().filter(|r| r.mandate.is_some()).collect();
+        let mandates: Vec<&RosterEntry> = roster.iter().filter(|r| r.mandate.is_some()).collect();
         if !mandates.is_empty() {
             s.push_str("### How each member works\n\n");
             for r in mandates {
@@ -302,13 +355,40 @@ fn readme_md(room: &ChatRoom, ws: &Workspace) -> String {
         "This folder is the workspace of a RAVENBOT office. The agents in it \
          work here on real files; anything they produce stays here.\n\n",
     );
-    if let Some(goal) = room.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+    if let Some(goal) = room
+        .goal
+        .as_deref()
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+    {
         s.push_str(&format!("**Mission:** {goal}\n\n"));
     }
     s.push_str("| Folder | What goes here |\n|---|---|\n");
     s.push_str("| `Shared/` | Handoffs, scratch, and the live status board |\n");
     s.push_str("| `deliverables/` | Finished outputs |\n");
     s.push_str("| `notes/` | Working notes and research |\n\n");
+
+    // The folders this office may actually work in.
+    //
+    // Worth its own line because `seed_at` also seeds a folder the user pointed
+    // the office at, and a person who dropped RAVENBOT into their own project
+    // needs to know which of their directories the agents are allowed to touch.
+    // On a single-folder office that is the folder this README is in, and
+    // saying so is cheaper than leaving them to infer it.
+    let folders: Vec<&str> = room
+        .project_folders
+        .iter()
+        .map(|f| f.trim())
+        .filter(|f| !f.is_empty())
+        .collect();
+    if !folders.is_empty() {
+        s.push_str("**This office works in:**\n\n");
+        for f in &folders {
+            s.push_str(&format!("- `{f}`\n"));
+        }
+        s.push('\n');
+    }
+
     s.push_str(&format!("Created: {}\n", room.created_at.to_rfc3339()));
     s.push_str(&format!("Workspace: `{}`\n", ws.root.display()));
     s
@@ -327,10 +407,7 @@ fn status_md(room: &ChatRoom, roster: &[RosterEntry]) -> String {
     }
     s.push_str("| Agent | Working on | Status |\n|---|---|---|\n");
     for r in roster {
-        s.push_str(&format!(
-            "| {} | — | idle |\n",
-            escape_cell(&r.name)
-        ));
+        s.push_str(&format!("| {} | — | idle |\n", escape_cell(&r.name)));
     }
     s.push('\n');
     s.push_str(&format!("_Last reset: {}_\n", room.updated_at.to_rfc3339()));
@@ -433,10 +510,16 @@ mod tests {
             let body = std::fs::read_to_string(ws.root.join("OFFICE.md")).unwrap();
 
             assert!(body.contains("Ship v1 by Friday"), "mission missing");
-            assert!(body.contains("| CEO | CEO | Orchestration |"), "roster row missing");
+            assert!(
+                body.contains("| CEO | CEO | Orchestration |"),
+                "roster row missing"
+            );
             assert!(body.contains("| Coder | Developer | Implementation |"));
             assert!(body.contains("Decompose the goal"), "mandate missing");
-            assert!(body.contains(&ws.root.display().to_string()), "root path missing");
+            assert!(
+                body.contains(&ws.root.display().to_string()),
+                "root path missing"
+            );
             assert!(body.contains("deliverables/"), "layout missing");
             // The workspace contract is the point of the file.
             assert!(body.contains("nowhere else on this computer"));
@@ -456,7 +539,10 @@ mod tests {
             let second = seed(&room(), &roster());
             assert!(!second.created, "second seed must not claim a new room");
             assert_eq!(first.root, second.root);
-            assert_eq!(body, std::fs::read_to_string(second.root.join("OFFICE.md")).unwrap());
+            assert_eq!(
+                body,
+                std::fs::read_to_string(second.root.join("OFFICE.md")).unwrap()
+            );
             // Unchanged content must not be rewritten.
             assert_eq!(
                 stamp,
@@ -473,7 +559,12 @@ mod tests {
         locked(|| {
             let ws = seed(&room(), &roster());
             let mut grown = roster();
-            grown.push(RosterEntry::new("QA", "Quality Assurance", "Acceptance", false));
+            grown.push(RosterEntry::new(
+                "QA",
+                "Quality Assurance",
+                "Acceptance",
+                false,
+            ));
             seed(&room(), &grown);
 
             let body = std::fs::read_to_string(ws.root.join("OFFICE.md")).unwrap();
@@ -488,7 +579,9 @@ mod tests {
             r.policy = Some("Ship weekly. No exceptions.".into());
             let ws = seed(&r, &roster());
             let path = ws.root.join("POLICY.md");
-            assert!(std::fs::read_to_string(&path).unwrap().contains("Ship weekly"));
+            assert!(std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("Ship weekly"));
 
             // An operator edits the file directly.
             std::fs::write(&path, "Hand written, no marker.").unwrap();
@@ -526,6 +619,75 @@ mod tests {
         });
     }
 
+    /// Pointing an office at a project you already have must not cost you a file.
+    ///
+    /// `create_chatroom` takes an optional `project_folder`, and when one is
+    /// given this is seeded straight into it. The charter seeded a `README.md`
+    /// unconditionally, so creating an office over `~/code/my-app` replaced that
+    /// project's README with ours — silent, and on the most likely file to exist
+    /// of any. `POLICY.md` had always been protected by a marker; this is the
+    /// same rule, applied to the rest.
+    #[test]
+    fn seeding_a_users_own_folder_does_not_overwrite_their_files() {
+        locked(|| {
+            let root =
+                std::env::temp_dir().join(format!("ravenbot-userproj-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(root.join("Shared")).unwrap();
+
+            // The user's own project, already in place.
+            let readme = "# my-app\n\nA real project with a real README.\n";
+            let status = "# Status\n\nWhat I am working on.\n";
+            std::fs::write(root.join("README.md"), readme).unwrap();
+            std::fs::write(root.join("Shared/STATUS.md"), status).unwrap();
+
+            let r = room();
+            seed_at(&root, &r, &roster());
+
+            assert_eq!(
+                std::fs::read_to_string(root.join("README.md")).unwrap(),
+                readme,
+                "the user's README was overwritten"
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("Shared/STATUS.md")).unwrap(),
+                status,
+                "the user's STATUS.md was overwritten"
+            );
+
+            // The workspace still gets the folders the office needs, and the
+            // charter it does own.
+            assert!(root.join("deliverables").is_dir());
+            assert!(root.join("notes").is_dir());
+            assert!(root.join("OFFICE.md").is_file());
+        });
+    }
+
+    /// The protection must not freeze RAVENBOT's own output.
+    ///
+    /// If a generated file could never be rewritten, an office's README would
+    /// describe the workspace as it was when the office was made, and the
+    /// folder list in it would be wrong forever.
+    #[test]
+    fn a_generated_workspace_file_is_still_refreshed() {
+        locked(|| {
+            let mut r = room();
+            let first = seed(&r, &roster());
+            let readme = first.root.join("README.md");
+            let original = std::fs::read_to_string(&readme).unwrap();
+            assert!(original.starts_with("<!-- ravenbot:generated -->"));
+
+            // The office gains a folder, so its README is now wrong.
+            r.project_folders = vec!["/srv/second-folder".to_string()];
+            let second = seed(&r, &roster());
+            let refreshed = std::fs::read_to_string(&second.root.join("README.md")).unwrap();
+            assert_ne!(original, refreshed, "a generated README stopped updating");
+            assert!(
+                refreshed.contains("/srv/second-folder"),
+                "the refreshed README should list the new folder: {refreshed}"
+            );
+        });
+    }
+
     #[test]
     fn a_table_cell_cannot_break_the_roster_table() {
         locked(|| {
@@ -533,9 +695,15 @@ mod tests {
             entries[1].name = "Coder | drop | table".into();
             let ws = seed(&room(), &entries);
             let body = std::fs::read_to_string(ws.root.join("OFFICE.md")).unwrap();
-            let row = body.lines().find(|l| l.starts_with("| Coder")).expect("coder row");
+            let row = body
+                .lines()
+                .find(|l| l.starts_with("| Coder"))
+                .expect("coder row");
 
-            assert!(row.contains("Coder \\| drop \\| table"), "not escaped: {row}");
+            assert!(
+                row.contains("Coder \\| drop \\| table"),
+                "not escaped: {row}"
+            );
             assert_eq!(cell_count(row), 3, "row: {row}");
         });
     }
