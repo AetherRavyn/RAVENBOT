@@ -32,10 +32,7 @@ use crate::{Bot, Permission};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Denial {
     /// The agent's grant does not include a capability the tool needs.
-    MissingCapability {
-        tool: String,
-        needed: String,
-    },
+    MissingCapability { tool: String, needed: String },
     /// Delegation to an agent that is not on the delegate list.
     NotDelegable { target: String },
     /// Delegation attempted by a bot that is not allowed to hand work out.
@@ -103,12 +100,12 @@ pub fn permission_label(p: &Permission) -> String {
 /// — an open grant is a superset of any narrow one.
 pub fn grant_covers(granted: &Permission, needed: &Permission) -> bool {
     match (granted, needed) {
-        (Permission::FileSystem { paths: g }, Permission::FileSystem { paths: n }) => {
-            n.iter().all(|want| g.iter().any(|have| scope_covers(have, want)))
-        }
-        (Permission::Network { domains: g }, Permission::Network { domains: n }) => {
-            n.iter().all(|want| g.iter().any(|have| domain_covers(have, want)))
-        }
+        (Permission::FileSystem { paths: g }, Permission::FileSystem { paths: n }) => n
+            .iter()
+            .all(|want| g.iter().any(|have| scope_covers(have, want))),
+        (Permission::Network { domains: g }, Permission::Network { domains: n }) => n
+            .iter()
+            .all(|want| g.iter().any(|have| domain_covers(have, want))),
         (a, b) => a == b,
     }
 }
@@ -186,11 +183,7 @@ impl GrantMode {
 /// An agent is only `Unrestricted` in the sense that its skills decide. The
 /// settings surface shows which mode an agent is in, so "unrestricted" is never
 /// mistaken for "unsandboxed".
-pub fn tool_permitted(
-    bot: &Bot,
-    tool: &str,
-    needed: &[Permission],
-) -> Result<(), Denial> {
+pub fn tool_permitted(bot: &Bot, tool: &str, needed: &[Permission]) -> Result<(), Denial> {
     // `delegate` is gated on `delegate_to` and on being a lead, not on a
     // capability, so it is decided by `delegation_permitted`.
     if tool == "delegate" {
@@ -303,9 +296,15 @@ mod tests {
     #[test]
     fn a_wide_scope_covers_a_narrow_one() {
         assert!(grant_covers(&fs(&["/"]), &fs(&["/tmp"])));
-        assert!(grant_covers(&fs(&["/home/u"]), &fs(&["/home/u/project/src"])));
+        assert!(grant_covers(
+            &fs(&["/home/u"]),
+            &fs(&["/home/u/project/src"])
+        ));
         assert!(grant_covers(&net(&["*"]), &net(&["api.example.com"])));
-        assert!(grant_covers(&net(&["example.com"]), &net(&["api.example.com"])));
+        assert!(grant_covers(
+            &net(&["example.com"]),
+            &net(&["api.example.com"])
+        ));
     }
 
     #[test]
@@ -319,8 +318,14 @@ mod tests {
     fn a_prefix_is_not_a_parent_directory() {
         // `starts_with` on a string would say `/home/user-evil` is inside
         // `/home/user`, which is the classic prefix bug.
-        assert!(!grant_covers(&fs(&["/home/user"]), &fs(&["/home/user-evil/x"])));
-        assert!(!grant_covers(&net(&["example.com"]), &net(&["notexample.com"])));
+        assert!(!grant_covers(
+            &fs(&["/home/user"]),
+            &fs(&["/home/user-evil/x"])
+        ));
+        assert!(!grant_covers(
+            &net(&["example.com"]),
+            &net(&["notexample.com"])
+        ));
     }
 
     #[test]

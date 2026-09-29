@@ -535,6 +535,11 @@
         }
       }
       refreshSandboxReport(sandboxTier);
+      // Resolved here rather than on click, because the Files button is disabled
+      // until there is a path to browse — resolving it from the click handler
+      // meant the button could never be pressed for an agent with no override.
+      defaultWorkspace = "";
+      void resolveDefaultWorkspace();
       // Baseline for dirty tracking (after the fields are assigned).
       queueMicrotask(() => {
         savedSnapshot = currentSnapshot;
@@ -779,7 +784,7 @@
                   variant="outline"
                   class="h-8 shrink-0 gap-1.5 border-[var(--hairline)]"
                   disabled={!browsePath}
-                  onclick={() => { void resolveDefaultWorkspace(); showWorkspace = true; }}
+                  onclick={() => (showWorkspace = true)}
                   title={t("wsb.listLabel")}
                 >
                   <FolderTree class="size-3.5" /> {t("wsb.browseFiles")}

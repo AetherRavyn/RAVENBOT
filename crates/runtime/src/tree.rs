@@ -145,7 +145,15 @@ pub fn list(root: &Path, show_hidden: bool) -> Tree {
 
     let mut budget = MAX_ENTRIES;
     let mut entries = Vec::new();
-    walk(&canonical, &canonical, 0, show_hidden, &mut budget, &mut entries, &mut tree);
+    walk(
+        &canonical,
+        &canonical,
+        0,
+        show_hidden,
+        &mut budget,
+        &mut entries,
+        &mut tree,
+    );
 
     entries.sort_by(|a, b| {
         // Folders first, then case-insensitive by name. A tree that interleaves
@@ -359,7 +367,8 @@ mod tests {
     use std::fs;
 
     fn temp_root(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ravenbot-tree-{tag}-{}", uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("ravenbot-tree-{tag}-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -428,7 +437,10 @@ mod tests {
         let tree = list(&root, false);
         let link = tree.entries.iter().find(|e| e.name == "link.txt").unwrap();
         assert!(link.is_link);
-        assert!(link.preview.is_none(), "followed a symlink to read its target");
+        assert!(
+            link.preview.is_none(),
+            "followed a symlink to read its target"
+        );
     }
 
     #[test]
@@ -478,12 +490,19 @@ mod tests {
     fn a_binary_file_is_not_sent_as_text() {
         let root = temp_root("bin");
         // A PNG header, which is also the honest test: the bytes are not UTF-8.
-        fs::write(root.join("logo.png"), [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe]).unwrap();
+        fs::write(
+            root.join("logo.png"),
+            [0x89u8, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0xff, 0xfe],
+        )
+        .unwrap();
 
         let tree = list(&root, false);
         let png = tree.entries.iter().find(|e| e.name == "logo.png").unwrap();
         assert!(png.is_binary);
-        assert!(png.preview.is_none(), "binary content was sent as a text preview");
+        assert!(
+            png.preview.is_none(),
+            "binary content was sent as a text preview"
+        );
     }
 
     #[test]
