@@ -16,6 +16,7 @@
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
   import ConnectorIcon from "$lib/components/ConnectorIcon.svelte";
   import OfficeMemoryPanel from "$lib/components/OfficeMemoryPanel.svelte";
+  import WorkspaceBrowser from "$lib/components/workspace/WorkspaceBrowser.svelte";
   import { getDiceBearUrl, OFFICE_TEMPLATES, dicebearStyles } from "$lib/utils";
   import { officeTemplateName, officeTemplateDesc } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
@@ -53,6 +54,7 @@
     Clock,
     AlertTriangle,
     AlertCircle,
+    FolderTree,
   } from "@lucide/svelte";
 
   interface Props {
@@ -78,6 +80,14 @@
   let budget = $state("");
   let projectFolders = $state<string[]>([]);
   let newFolder = $state("");
+  /**
+   * Whether the workspace browser is open.
+   *
+   * Closed by default: the folder list is a configuration surface, and opening a
+   * file tree on every visit to the settings would make the thing you came to
+   * change harder to find.
+   */
+  let showWorkspace = $state(false);
   let showAvatarPicker = $state(false);
   let members = $state<any[]>([]);
   let searchQuery = $state("");
@@ -569,8 +579,30 @@
                   <Button size="sm" variant="outline" class="h-8 shrink-0 gap-1.5 border-[var(--hairline)]" onclick={browseFolders} title={t("office.browse")}>
                     <FolderOpen class="size-3.5" /> Browse…
                   </Button>
+                  <!--
+                    Look inside. Setting a path and never seeing what lands in
+                    it is the difference between a workspace and a guess, and it
+                    is the only way to confirm the folder an office is confined
+                    to is the folder it is actually using.
+                  -->
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    class="h-8 shrink-0 gap-1.5 border-[var(--hairline)]"
+                    disabled={projectFolders.length === 0}
+                    onclick={() => (showWorkspace = true)}
+                    title={t("wsb.openInFileManager")}
+                  >
+                    <FolderTree class="size-3.5" /> {t("wsb.browseFiles")}
+                  </Button>
                 </div>
               </div>
+
+              {#if showWorkspace}
+                <div class="pt-2">
+                  <WorkspaceBrowser paths={projectFolders} subject={name || room.name} onClose={() => (showWorkspace = false)} />
+                </div>
+              {/if}
 
               {#if showAvatarPicker}
                 <div class="pt-3 border-t border-[var(--hairline)]">

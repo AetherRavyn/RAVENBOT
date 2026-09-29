@@ -14,6 +14,7 @@
   import { notify } from "$lib/toast";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
+  import WorkspaceBrowser from "$lib/components/workspace/WorkspaceBrowser.svelte";
   import {
     getCatalog, providerById, modelsFor, temperatureMax, modelMetaFor, modelSummary,
     type CatalogProvider,
@@ -34,6 +35,7 @@
     Volume2,
     Monitor,
     FolderOpen,
+    FolderTree,
     KeyRound,
     Loader2,
   } from "@lucide/svelte";
@@ -188,7 +190,29 @@
     if (workingFolder.trim()) return { key: "bot.workspaceIsolated", path: workingFolder.trim() };
     if (bot) return { key: "bot.workspaceInherits", path: "" };
     return { key: "bot.workspaceDefault", path: "" };
-  });;
+  });
+
+  /**
+   * The folder to browse for this agent.
+   *
+   * The override if there is one, otherwise the folder the runtime would create
+   * for it. Resolving the default rather than showing nothing is the point: the
+   * automatically created workspace is the one a user is least able to inspect,
+   * because the only way to learn its path was to read the source.
+   */
+  let defaultWorkspace = $state("");
+  async function resolveDefaultWorkspace() {
+    if (defaultWorkspace || !bot) return;
+    try {
+      defaultWorkspace = await invoke<string>("default_workspace_for", { name: bot.name || name });
+    } catch {
+      // The path is a convenience; the panel simply offers nothing to browse.
+      defaultWorkspace = "";
+    }
+  }
+
+  const browsePath = $derived(workingFolder.trim() || defaultWorkspace);
+  let showWorkspace = $state(false);;
   // Model override for external engine CLIs.
   let engineModel = $state("");
   // Command isolation tier + the effective backend report.
@@ -749,6 +773,17 @@
                 <Button type="button" size="sm" variant="outline" class="h-8 shrink-0 gap-1.5 border-[var(--hairline)]" onclick={browseWorkingFolder}>
                   <FolderOpen class="size-3.5" /> {t("bot.browse")}
                 </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  class="h-8 shrink-0 gap-1.5 border-[var(--hairline)]"
+                  disabled={!browsePath}
+                  onclick={() => { void resolveDefaultWorkspace(); showWorkspace = true; }}
+                  title={t("wsb.listLabel")}
+                >
+                  <FolderTree class="size-3.5" /> {t("wsb.browseFiles")}
+                </Button>
               </div>
               <p class="text-[10px] text-[var(--text-muted)]">
                 {t("bot.folderDesc")}
@@ -768,6 +803,12 @@
                   {/if}
                 </span>
               </p>
+
+              {#if showWorkspace && browsePath}
+                <div class="pt-1">
+                  <WorkspaceBrowser paths={[browsePath]} subject={name} onClose={() => (showWorkspace = false)} />
+                </div>
+              {/if}
             </div>
 
             <!--

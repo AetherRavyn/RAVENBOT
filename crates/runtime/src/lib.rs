@@ -7,6 +7,7 @@ pub mod graph;
 pub mod executor;
 pub mod orchestrator;
 pub mod state;
+pub mod tree;
 pub mod workspace;
 
 use ravenbot_core::{Run, RunState};
@@ -4693,6 +4694,7 @@ mod budget_tracking_tests {
 /// create a directory does so via a run, and every test that runs calls
 /// [`temp_db`] first, so the variable is always in place before anything reads
 /// it.
+#[cfg(test)]
 fn redirect_data_root_to_temp() {
     use std::sync::OnceLock;
     static INIT: OnceLock<()> = OnceLock::new();

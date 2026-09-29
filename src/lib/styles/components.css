@@ -1212,3 +1212,178 @@ html.sidebar-resizing .app-frame {
     animation: none;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Workspace browser
+
+   The point of this panel is that the isolation is no longer invisible. The
+   colours follow the rule the rest of the app uses: brand for a folder the
+   agents own, muted for anything they merely hold, and a link is never given a
+   file's colour because it is not a file in the room — it is a way out of it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.raven-wsb {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.raven-wsb__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+.raven-wsb__tab {
+  padding: 0.1875rem 0.5rem;
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+  max-width: 10rem;
+}
+.raven-wsb__tab:hover { color: var(--text-secondary); background: var(--surface-3); }
+.raven-wsb__tab--on {
+  color: var(--brand-text);
+  background: var(--brand-soft);
+  border-color: color-mix(in oklab, var(--brand) 30%, transparent);
+}
+
+.raven-wsb__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.raven-wsb__icon:hover { color: var(--text-primary); background: var(--surface-3); }
+.raven-wsb__icon[aria-pressed="true"] {
+  color: var(--brand-text);
+  background: var(--brand-soft);
+  border-color: color-mix(in oklab, var(--brand) 25%, transparent);
+}
+
+.raven-wsb__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  min-height: 0;
+  flex: 1;
+}
+@media (max-width: 720px) {
+  .raven-wsb__body { grid-template-columns: minmax(0, 1fr); }
+}
+
+.raven-wsb__list {
+  overflow: auto;
+  min-height: 0;
+  padding: 0.25rem 0.25rem 0.5rem;
+  border-right: 1px solid var(--hairline);
+  max-height: 26rem;
+}
+@media (max-width: 720px) {
+  .raven-wsb__list { border-right: none; border-bottom: 1px solid var(--hairline); }
+}
+
+.raven-wsb__row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+}
+.raven-wsb__row:hover { background: var(--surface-2); color: var(--text-primary); }
+.raven-wsb__row--on {
+  background: var(--brand-soft);
+  color: var(--brand-text);
+}
+
+.raven-wsb__size {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.raven-wsb__preview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 26rem;
+}
+
+.raven-wsb__preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+.raven-wsb__text {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 0.75rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 2;
+}
+
+.raven-wsb__md {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.75rem 0.875rem;
+}
+
+.raven-wsb__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.raven-wsb__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.375rem 0.625rem;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
+}

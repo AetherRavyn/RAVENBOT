@@ -2439,6 +2439,67 @@ async fn get_sandbox_report(tier: Option<String>) -> Result<ravenbot_sandbox::Sa
     Ok(ravenbot_sandbox::SandboxRunner::from_tier(tier).report())
 }
 
+/// List what is inside a workspace, so a person can see the agents' work.
+///
+/// The confinement on this side is on the way *in*: `resolve_path` plus
+/// `confined()`. Nothing in the app showed the result of it, so a user set a
+/// folder, watched an agent run, and had no way to find out whether it produced
+/// anything. This is a read of directories the user already pointed us at, and
+/// it is bounded — depth, entry count, no symlink following, hidden files
+/// opt-in — and says so when a bound bites rather than returning a short tree
+/// that reads as complete.
+#[tauri::command]
+async fn browse_workspace(path: String, show_hidden: Option<bool>) -> Result<ravenbot_runtime::tree::Tree, String> {
+    let root = ravenbot_core::expand_home(path.trim());
+    if root.as_os_str().is_empty() {
+        return Err("No folder given".to_string());
+    }
+    // Cheap and synchronous, but a big tree is real I/O, so it must not sit on
+    // the async runtime's core threads.
+    tauri::async_runtime::spawn_blocking(move || {
+        ravenbot_runtime::tree::list(&root, show_hidden.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// A one-line description of a workspace, for a header.
+#[tauri::command]
+async fn summarize_workspace(path: String) -> Result<String, String> {
+    let root = ravenbot_core::expand_home(path.trim());
+    Ok(ravenbot_runtime::tree::summarize(&root))
+}
+
+/// The folder an agent works in when nothing else is set.
+///
+/// Without this, "inherits the office workspace" is not a thing the user can
+/// look at — the default case has no path to show them, so the one workspace
+/// that is created automatically is the one workspace they can never inspect.
+#[tauri::command]
+async fn default_workspace_for(name: String) -> Result<String, String> {
+    Ok(ravenbot_core::office_workspace(&name).to_string_lossy().to_string())
+}
+
+/// Reveal a workspace in the system file manager.
+///
+/// The browser is for looking; this is for the case where the user wants the
+/// folder in their own tools, which is the natural thing to want once they can
+/// see that the agents are working in it.
+#[tauri::command]
+async fn open_workspace_in_file_manager(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<(), String> {
+    let root = ravenbot_core::expand_home(path.trim());
+    if !root.is_dir() {
+        return Err(format!("{} is not a folder", root.display()));
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .reveal_item_in_dir(&root)
+        .map_err(|e| format!("Could not open the file manager: {e}"))
+}
+
 /// Detect installed agent engines (Claude Code, Codex, configured ACP agents).
 #[tauri::command]
 async fn list_engines() -> Result<Vec<ravenbot_engines::EngineInfo>, String> {
@@ -4466,6 +4527,10 @@ pub fn run() {
             resume_run,
             get_sandbox_report,
             computer_capabilities,
+            browse_workspace,
+            summarize_workspace,
+            default_workspace_for,
+            open_workspace_in_file_manager,
             bot_desktop_status,
             start_bot_desktop,
             stop_bot_desktop,
