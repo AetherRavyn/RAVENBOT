@@ -758,7 +758,7 @@
                 onSelectBot?.(b.id);
               }}
             >
-              <RavenAvatar name={b.name} imageUrl={b.avatar_url} />
+              <RavenAvatar name={b.name} imageUrl={b.avatar_url} style={b.avatar_style} />
               <span>{b.name}</span>
               <span
                 class={cn(
@@ -1300,7 +1300,7 @@
             }}
           >
             <div class="flex items-center gap-3">
-              <RavenAvatar name={b.name} imageUrl={b.avatar_url} />
+              <RavenAvatar name={b.name} imageUrl={b.avatar_url} style={b.avatar_style} />
               <div>
                 <span class="font-bold text-xs text-[var(--text-primary)] block">{b.name}</span>
                 <span class="text-[10px] text-[var(--text-tertiary)] font-mono">{b.model || t("connector.defaultModel")}</span>

@@ -14,14 +14,37 @@
    * react to anything.
    */
   import { avatarProfile, faceFor, moodPresentation, hueVars, initials, type AvatarMood } from "$lib/avatar";
+  import { getDiceBearUrl, isNativeAvatarStyle } from "$lib/utils";
+  import { styleAnimates, currentDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
 
   interface Props {
     /** The agent's name. The only thing the face is derived from. */
     name: string;
     /** What the agent is doing. Defaults to idle. */
     mood?: AvatarMood;
-    /** A custom image URL, used instead of the generated face. */
+    /** A custom image URL, used instead of any style. */
     imageUrl?: string | null;
+    /**
+     * A DiceBear style slug, or `raven-native` for the locally drawn face.
+     *
+     * The animated styles need no help from here: DiceBear 10.x puts the CSS
+     * keyframes inside the SVG, so the `<img>` plays them and a visitor who
+     * prefers reduced motion sees a still avatar.
+     *
+     * Defaults to `clay` — an animated style at roughly a 2.9 s cadence, so an
+     * agent's face visibly changes while you are looking at it. `raven-native`
+     * is the one style with no network request, and remains the right choice
+     * offline.
+     */
+    style?: string | null;
+    /**
+     * Whether to ask for the style's animation.
+     *
+     * Defaults to whatever the style does on its own. Set false to force a
+     * still avatar — which is the state a user who has turned motion off should
+     * see, rather than a set of avatars that ignore the setting.
+     */
+    animated?: boolean;
     /** Tailwind size class for the frame. */
     class?: string;
     /** Whether the avatar is decorative beside a name, or the only label. */
@@ -32,6 +55,8 @@
     name,
     mood = "idle",
     imageUrl = null,
+    style = DEFAULT_AVATAR_STYLE,
+    animated,
     class: customClass = "",
     decorative = false,
   }: Props = $props();
@@ -41,11 +66,76 @@
   const moodStyle = $derived(moodPresentation(mood));
   const vars = $derived(hueVars(profile.hue));
 
-  // A generated face only wins when there is no custom image, and a broken
-  // custom image falls back to initials rather than a broken-image icon.
+  /**
+   * The URL to render, and whether it is a DiceBear style or a custom image.
+   *
+   * Three sources, in order: an explicit image URL, a DiceBear style, and the
+   * locally drawn face. A broken image of any kind falls back to the generated
+   * face rather than a broken-image icon, because a fleet list full of broken
+   * icons is worse than one where every face is at least a face.
+   */
   let imageFailed = $state(false);
-  const showImage = $derived(Boolean(imageUrl) && !imageFailed);
+  /**
+   * The style actually in use.
+   *
+   * Stored agent data can hold a null or an empty string, and both mean "no style
+   * was ever chosen" — which is most agents, since the column is newer than some
+   * of them. That has to mean *the default style*, not the generated face: an
+   * agent nobody configured should look like every other agent, and quietly
+   * opting it out of the animated styles is the sort of thing that looks like a
+   * bug in a fleet where one face is still and the rest are not. The generated
+   * face stays available as a style someone picks.
+   */
+  const styleId = $derived((style ?? "").trim() || DEFAULT_AVATAR_STYLE);
+
+  /**
+   * A stored DiceBear URL, brought up to date.
+   *
+   * The picker has always saved the whole URL on the agent, so anything created
+   * before the animation option existed carries a 9.x URL — and 9.x cannot
+   * animate at all. Upgrading it here rather than in a migration fixes every
+   * existing agent at once, keeps the seed so nobody's agent changes face, and
+   * keeps working for URLs older than the current API.
+   */
+  const upgraded = $derived(currentDiceBearUrl(imageUrl, animated));
+
+  /**
+   * Where the picture comes from, in priority order.
+   *
+   * A stored DiceBear URL outranks the `style` prop, because it is what the
+   * agent's own record says and it names a specific style. A genuinely custom
+   * image outranks both, since a user who uploaded a picture meant it. Only when
+   * there is neither does the `style` prop apply, and when *that* is the native
+   * style the face is drawn here.
+   */
+  const source = $derived(
+    upgraded
+      ? "dice"
+      : imageUrl
+        ? "custom"
+        : isNativeAvatarStyle(styleId)
+          ? "generated"
+          : "dice",
+  );
+  const diceUrl = $derived(
+    source === "dice" && upgraded
+      ? upgraded.url
+      : source === "dice"
+        ? getDiceBearUrl(name, styleId, "", animated)
+        : "",
+  );
+  const showImage = $derived(source !== "generated" && !imageFailed);
   const showFace = $derived(!showImage);
+  /**
+   * Whether the picture carries its own animation.
+   *
+   * Decides whether the wrapper adds motion of its own, so an already-animating
+   * face is not also breathed — two motions on unrelated periods read as a fault
+   * rather than as life.
+   */
+  const imageAnimates = $derived(
+    source === "dice" && (animated ?? (upgraded ? upgraded.animates : styleAnimates(styleId))),
+  );
 
   /**
    * The silhouette path, in a 100×100 box centred on 50,50.
@@ -125,13 +215,31 @@
   class="raven-avatar {customClass}"
   data-mood={mood}
   data-silhouette={profile.silhouette}
+  data-source={source}
+  data-animates={imageAnimates || undefined}
   style="--av-accent: {vars.accent}; --av-dim: {vars.dim}; --av-deep: {vars.deep}; --av-breathe: {moodStyle.breathe}"
   role={decorative ? undefined : "img"}
   aria-label={decorative ? undefined : name}
   aria-hidden={decorative ? "true" : undefined}
 >
   {#if showImage}
-    <img src={imageUrl} alt="" loading="lazy" onerror={() => (imageFailed = true)} />
+    <!--
+      One `<img>`, whether the source is a DiceBear style or a user's own image.
+
+      Not inlined: an SVG loaded this way is an isolated document, so it cannot
+      be reached into, and the browser still caches it and still defers it. That
+      matters here — inlining would mean fetching each avatar before it could be
+      painted, and it would put remote markup into the page for a URL a user can
+      set. The cost is that the tempo cannot be retimed from outside the SVG, so
+      mood is carried by the wrapper instead.
+    -->
+    <img
+      src={diceUrl || imageUrl}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      onerror={() => (imageFailed = true)}
+    />
   {:else if showFace}
     <svg viewBox="0 0 100 100" class="raven-avatar-svg" focusable="false">
       <!-- Orbit rings sit behind the body, so they read as activity around it

@@ -1310,7 +1310,7 @@
     <!-- Left: Bot Avatar & Info + Thread Switcher Dropdown -->
     <div class="flex items-center gap-3 min-w-0 flex-1">
       <div class="relative size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] p-0.5 shrink-0 shadow-sm">
-        <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} />
+        <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} style={bot.avatar_style} />
         <span class="absolute bottom-0 right-0 size-2 rounded-full ring-1 ring-black {botStatusTheme.dot}"></span>
       </div>
 
@@ -1879,7 +1879,7 @@
               <!-- Bot Identity Emblem -->
               <div class="relative inline-block">
                 <div class="relative size-16 rounded-2xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] mx-auto shadow-2xl p-0.5">
-                  <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} />
+                  <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} style={bot.avatar_style} />
                 </div>
                 <span class="absolute -bottom-1 -right-1 size-3.5 rounded-full ring-2 ring-black {botStatusTheme.dot}"></span>
               </div>
@@ -1964,7 +1964,7 @@
                   {@render liveMarkers()}
                   <div class="agent-activity-row flex items-center gap-2.5 min-h-[44px]">
                     <div class="size-8 rounded-full overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0">
-                      <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} />
+                      <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} style={bot.avatar_style} />
                     </div>
                     <span class="agent-activity-label">{t(activityLine)}</span>
                   </div>

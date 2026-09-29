@@ -1152,7 +1152,8 @@
     <div class="flex items-center gap-3">
       <!-- Office Avatar -->
       <div class="size-10 rounded-2xl overflow-hidden bg-[var(--surface-3)] border border-[var(--brand)]/40 p-0.5 shrink-0 shadow-md">
-        <RavenAvatar name={room.name} imageUrl={room.avatar_url} />
+        <RavenAvatar name={room.name} imageUrl={room.avatar_url}
+                 style={room.avatar_style} />
       </div>
 
       <div class="flex flex-col">
@@ -1200,6 +1201,7 @@
               name={m.bot?.name || m.rank}
               mood={fleetActivity.mood(botId)}
               imageUrl={m.bot?.avatar_url}
+                 style={m.bot?.avatar_style}
               decorative
               class={cn("size-full rounded-full", rosterRing(act))}
             />
@@ -1251,6 +1253,7 @@
                 name={m.bot?.name || m.rank}
                 mood={fleetActivity.mood(m.bot?.id ?? "")}
                 imageUrl={m.bot?.avatar_url}
+                 style={m.bot?.avatar_style}
                 decorative
                 class="size-6 rounded-md"
               />
@@ -1353,7 +1356,8 @@
                 {#each members as m}
                   <div class="flex flex-col items-center gap-1">
                     <div class="size-9 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] shadow-md">
-                      <RavenAvatar name={m.rank} imageUrl={m.bot?.avatar_url} />
+                      <RavenAvatar name={m.rank} imageUrl={m.bot?.avatar_url}
+                 style={m.bot?.avatar_style} />
                     </div>
                     <span class="text-[10px] font-bold text-[var(--text-secondary)] font-mono">{m.rank}</span>
                   </div>
@@ -2061,7 +2065,7 @@
     <div class="modal-panel w-full max-w-md p-5 space-y-4 animate-scale-in">
       <div class="flex items-center gap-3">
         <div class="size-11 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] shrink-0">
-          <RavenAvatar name={manageBot.name} imageUrl={manageBot.avatar_url} />
+          <RavenAvatar name={manageBot.name} imageUrl={manageBot.avatar_url} style={manageBot.avatar_style} />
         </div>
         <div class="min-w-0">
           <div class="font-bold text-sm text-[var(--text-primary)] truncate flex items-center gap-1.5">

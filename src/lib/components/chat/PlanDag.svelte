@@ -101,6 +101,7 @@
             <RavenAvatar
               name={nameFor(task.botId)}
               imageUrl={memberFor(task.botId)?.bot?.avatar_url}
+               style={memberFor(task.botId)?.bot?.avatar_style}
               decorative
               class="size-5 rounded-full shrink-0"
             />

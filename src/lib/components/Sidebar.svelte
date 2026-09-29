@@ -416,6 +416,7 @@
               name={bot.name}
               mood={fleetActivity.mood(bot.id)}
               imageUrl={bot.avatar_url}
+               style={bot.avatar_style}
               decorative
               class="size-9 rounded-lg"
             />

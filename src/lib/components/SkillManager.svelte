@@ -127,7 +127,7 @@
     <Dialog.Content class="sm:max-w-xl max-h-[85vh] overflow-y-auto no-scrollbar">
       <Dialog.Header class="flex flex-row items-center gap-3 pb-3 pr-8 border-b border-[var(--hairline)]">
         <div class="size-10 shrink-0 rounded-full overflow-hidden border border-[var(--hairline)] bg-[var(--surface-2)] p-0.5">
-          <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} />
+          <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} style={bot.avatar_style} />
         </div>
         <div class="flex-1 min-w-0">
           <Dialog.Title class="text-sm font-semibold text-[var(--text-primary)] truncate">

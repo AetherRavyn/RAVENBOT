@@ -229,7 +229,7 @@
                     class="flex items-center gap-2 px-3 py-1.5 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] text-xs font-medium text-[var(--text-secondary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)] hover:border-[var(--brand)]/40 cursor-pointer transition-colors"
                     onclick={() => workspace.selectBot(b.id)}
                   >
-                    <RavenAvatar name={b.name} imageUrl={b.avatar_url} decorative />
+                    <RavenAvatar name={b.name} imageUrl={b.avatar_url} style={b.avatar_style} decorative />
                     <span>{b.name}</span>
                   </button>
                 {/each}

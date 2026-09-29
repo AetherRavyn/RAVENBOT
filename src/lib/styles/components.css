@@ -1112,6 +1112,70 @@ html.sidebar-resizing .app-frame {
   }
 }
 
+/* ── DiceBear avatars ───────────────────────────────────────────────────────
+ * A DiceBear style that animates does so inside its own SVG: the keyframes ship
+ * in the file and sit behind `prefers-reduced-motion`, so a plain `img` plays
+ * them and a visitor who asks for less motion gets a still face for free.
+ *
+ * What this side owns is *mood*. The face cannot be told what the agent is
+ * doing — a DiceBear avatar is a function of its seed and nothing else — so a
+ * working agent and an idle one would otherwise be the same picture at two
+ * moments. The frame carries that instead.
+ *
+ * And when the face is already moving, the frame must not move too. Breathing
+ * and a blink on different axes at unrelated periods read as a fault rather than
+ * as life, so an animating avatar gets a lean — a different axis, slow enough to
+ * sit under the face's own cadence — while a still one keeps the breathe, which
+ * is then the only thing telling you the agent is awake.
+ */
+.raven-avatar[data-source="dice"][data-animates][data-mood="working"],
+.raven-avatar[data-source="dice"][data-animates][data-mood="sleeping"] {
+  animation: raven-lean 4.2s ease-in-out infinite;
+}
+
+@keyframes raven-lean {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(calc(var(--av-breathe, 0.03) * 4deg));
+  }
+}
+
+/* A still style has no cadence of its own, so the frame supplies one. Slower
+ * than the generated face's, because a remote face that never changes is easier
+ * to read as broken than one that visibly ticks. */
+.raven-avatar[data-source="dice"]:not([data-animates])[data-mood="working"] {
+  animation: raven-breathe 4s ease-in-out infinite;
+}
+
+/* An avatar that cannot animate — a still style, or a custom image — still has
+ * to say "needs you" at a glance. The ring does that, and it is not motion, so
+ * it survives a reduced-motion preference. */
+.raven-avatar[data-source="dice"][data-mood="waiting"] {
+  animation: raven-attention 1.6s ease-in-out infinite;
+}
+
+@keyframes raven-attention {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(calc(1 + var(--av-breathe, 0.03) * 2));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raven-avatar[data-source="dice"][data-animates][data-mood="working"],
+  .raven-avatar[data-source="dice"][data-animates][data-mood="sleeping"],
+  .raven-avatar[data-source="dice"]:not([data-animates])[data-mood="working"],
+  .raven-avatar[data-source="dice"][data-mood="waiting"] {
+    animation: none;
+  }
+}
+
 /* ── The RAVENBOT mark ───────────────────────────────────────────────────────
  * The eyes are polylines so the whole shape can be translated as one piece by
  * two custom properties, which the compositor animates without a repaint.

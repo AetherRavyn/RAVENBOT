@@ -129,7 +129,7 @@
           >
             <div class="flex items-center gap-3">
               <div class="size-11 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline)] shrink-0">
-                <RavenAvatar name={room.name} imageUrl={room.avatar_url} />
+                <RavenAvatar name={room.name} imageUrl={room.avatar_url} style={room.avatar_style} />
               </div>
 
               <div class="flex-1 min-w-0">

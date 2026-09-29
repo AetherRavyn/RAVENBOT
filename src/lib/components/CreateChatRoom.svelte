@@ -491,7 +491,7 @@
               >
                 <div class="flex items-center gap-3 min-w-0">
                   <div class="size-9 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline)] shrink-0">
-                    <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} />
+                    <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} style={bot.avatar_style} />
                   </div>
                   <div class="min-w-0">
                     <div class="font-bold text-xs text-[var(--text-primary)] truncate">{bot.name}</div>

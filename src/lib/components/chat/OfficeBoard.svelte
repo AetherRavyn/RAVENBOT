@@ -145,6 +145,7 @@
                         name={nameFor(n.botId)}
                         mood={n.state === "running" ? "working" : n.state === "failed" ? "failed" : "idle"}
                         imageUrl={memberFor(n.botId)?.bot?.avatar_url}
+                        style={memberFor(n.botId)?.bot?.avatar_style}
                         decorative
                         class="size-4 rounded-full"
                       />

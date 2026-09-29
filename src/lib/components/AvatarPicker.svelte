@@ -3,6 +3,8 @@
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import { getDiceBearUrl, dicebearStyles } from "$lib/utils";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
+  import { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
   import { avatarAllLabel, avatarCategoryLabel, avatarStyleDescription } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
   import { t } from "$lib/i18n";
@@ -15,10 +17,10 @@
     onSelect: (url: string, style: string) => void;
   }
 
-  let { seed = "Agent", style = "bottts", customUrl = null, onSelect }: Props = $props();
+  let { seed = "Agent", style = DEFAULT_AVATAR_STYLE, customUrl = null, onSelect }: Props = $props();
 
   // svelte-ignore state_referenced_locally
-  let selectedStyle = $state(style || "bottts");
+  let selectedStyle = $state(style || DEFAULT_AVATAR_STYLE);
   // svelte-ignore state_referenced_locally
   let previewSeed = $state(seed || "Agent");
   // svelte-ignore state_referenced_locally
@@ -26,6 +28,30 @@
   // svelte-ignore state_referenced_locally
   let useCustom = $state(Boolean(customUrl && !customUrl.includes("dicebear.com")));
   let selectedCategory = $state("All");
+
+  /**
+   * Whether to ask for the animation.
+   *
+   * Three inputs, in order: an explicit choice by the user, then the stored
+   * preference, then whatever the style does on its own. The style's own default
+   * is the right answer for someone who has never opened this dialog, which is
+   * nearly everyone.
+   *
+   * Persisted rather than held, because "stop everything moving" is a decision
+   * about how the app looks and should survive a restart — and because the
+   * alternative is a user turning motion off in the system settings and still
+   * seeing a fleet of faces that ignore it.
+   */
+   const ANIMATE_KEY = "raven-avatar-animate";
+  let animate = $state(true);
+  $effect(() => {
+    const stored = localStorage.getItem(ANIMATE_KEY);
+    if (stored !== null) animate = stored !== "off";
+  });
+  function setAnimate(next: boolean) {
+    animate = next;
+    localStorage.setItem(ANIMATE_KEY, next ? "on" : "off");
+  }
 
   $effect(() => {
     if (style && style !== selectedStyle && !useCustom) {
@@ -65,8 +91,10 @@
   function pick(s: string) {
     selectedStyle = s;
     useCustom = false;
-    const url = getDiceBearUrl(previewSeed || "Agent", s);
-    onSelect(url, s);
+    // "" for a style drawn by this app rather than fetched. The avatar falls
+    // back to the style slug, so an empty URL is a valid thing to store — and
+    // storing a stale remote URL for a local style is not.
+    onSelect(getDiceBearUrl(previewSeed || "Agent", s), s);
   }
 
   function randomizeSeed() {
@@ -153,6 +181,21 @@
       </Label>
     </div>
 
+    <label class="flex items-start gap-2 text-[11px] text-[var(--text-secondary)] cursor-pointer">
+      <input
+        type="checkbox"
+        checked={animate}
+        onchange={(e) => setAnimate(e.currentTarget.checked)}
+        class="mt-0.5 accent-[var(--brand)]"
+      />
+      <span>
+        <span class="font-medium">{t("avatar.animate")}</span>
+        <span class="block text-[10px] text-[var(--text-tertiary)] leading-relaxed mt-0.5">
+          {t("avatar.animateHelp")}
+        </span>
+      </span>
+    </label>
+
     <div class="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar min-w-0">
       {#each categories as cat}
         <button
@@ -185,12 +228,32 @@
         title={avatarStyleDescription(s.value)}
       >
         <div class="relative size-10 rounded-full overflow-hidden bg-[var(--surface-3)] ring-1 ring-border/50 transition-transform group-hover:scale-105">
-          <img
-            src={getDiceBearUrl(previewSeed || "Agent", s.value)}
-            alt={s.label}
-            class="size-full object-cover"
-            loading="lazy"
+          <!--
+            Through the component rather than a bare `img`, because one style is
+            drawn locally and has no URL, and because the component is what the
+            agent list will actually render — a preview from anything else is a
+            preview of something that is not what you get.
+          -->
+          <RavenAvatar
+            name={previewSeed || "Agent"}
+            style={s.value}
+            animated={animate}
+            class="size-full"
+            decorative
           />
+          {#if s.animated}
+            <!--
+              A still thumbnail of a moving avatar undersells it, so the tile says
+              so, and says how fast. The cadence is the reason to pick one over
+              another, so it belongs where the choice is made.
+            -->
+            <span
+              class="absolute bottom-0 right-0 size-3.5 rounded-full bg-[var(--surface-0)]/85 ring-1 ring-[var(--hairline)] flex items-center justify-center"
+              title={t("avatar.animatesEvery", { s: s.loopSeconds ?? 0 })}
+            >
+              <span class="size-1 rounded-full bg-[var(--brand-text)] animate-pulse"></span>
+            </span>
+          {/if}
         </div>
         <span class="text-[10px] font-medium text-[var(--text-secondary)] truncate w-full group-hover:text-[var(--text-primary)]">
           {s.label}
