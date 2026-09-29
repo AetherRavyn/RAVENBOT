@@ -9,7 +9,7 @@
    * retrofitted.
    */
   import type { Token, Tokens } from "marked";
-  import MarkdownMessage from "./MarkdownMessage.svelte";
+  import MarkdownTokens from "./MarkdownTokens.svelte";
   import MarkdownInline from "./MarkdownInline.svelte";
   import MarkdownCode from "./MarkdownCode.svelte";
   import MarkdownTable from "./MarkdownTable.svelte";
@@ -46,12 +46,36 @@
     return tailInside(t.raw, inner(t), after) ?? after;
   }
 
+  //
+  // A note on comments in this file, since the fix is not obvious. An HTML
+  // comment in a Svelte template is a *node*. Inside a rendered branch that
+  // makes the whitespace around it significant, so Svelte emits it as a real
+  // text node and the message gains a space between every inline element —
+  // `**bold**` rendering as "bold ", and copied text carrying the extra space.
+  // Svelte has no comment form that leaves nothing behind (`{/* */}` is a parse
+  // error), so the explanations for the branches live here, in the script,
+  // rather than in the markup.
+
+  // The `space` and `def` branch below is empty on purpose. Those are the blank
+  // lines between blocks and the link reference definitions: structure the lexer
+  // reports and the reader must not see, so nothing is emitted for them.
+  //
+  // Which leaves a renderer-shaped question for each remaining branch, and the
+  // answers are here rather than in the markup for the reason in the header.
+  //
+  // `html` is shown, not executed. A model that emits a tag gets the tag as text
+  // the reader can see, which is also the only honest way to show a snippet the
+  // model meant to describe rather than render.
+  //
+  // Anything unrecognised falls through to its own source, rendered as inline
+  // text — so an unknown token is escaped by being text, not by being dropped.
+
   /** Whether a container's last child is a table closing the whole block. */
   const childStreaming = $derived(streaming && !closesFinalTable(token));
 </script>
 
+<!-- svelte-ignore block_empty -->
 {#if token.type === "space" || token.type === "def"}
-  <!-- Whitespace between blocks and link reference definitions render nothing. -->
 {:else if token.type === "heading"}
   {@const level = headingLevel((token as Tokens.Heading).depth)}
   {#if level === 1}
@@ -89,12 +113,7 @@
   {/if}
 {:else if token.type === "blockquote"}
   <blockquote>
-    <MarkdownMessage
-      content={token.raw}
-      streaming={childStreaming}
-      trailChars={0}
-      {onOpenArtifact}
-    />
+    <MarkdownTokens tokens={inner(token)} streaming={childStreaming} {onOpenArtifact} />
   </blockquote>
 {:else if token.type === "list"}
   {@const list = token as Tokens.List}
@@ -106,10 +125,9 @@
             <input type="checkbox" checked={item.checked === true} disabled aria-label={item.text} />
           {/if}
           {#if item.tokens.some((c) => c.type !== "checkbox")}
-            <MarkdownMessage
-              content={item.raw}
+            <MarkdownTokens
+              tokens={item.tokens ?? []}
               streaming={childStreaming && i === list.items.length - 1}
-              trailChars={0}
               {onOpenArtifact}
             />
           {:else}
@@ -126,10 +144,9 @@
             <input type="checkbox" checked={item.checked === true} disabled aria-label={item.text} />
           {/if}
           {#if item.tokens.some((c) => c.type !== "checkbox")}
-            <MarkdownMessage
-              content={item.raw}
+            <MarkdownTokens
+              tokens={item.tokens ?? []}
               streaming={childStreaming && i === list.items.length - 1}
-              trailChars={0}
               {onOpenArtifact}
             />
           {:else}
@@ -152,15 +169,9 @@
 {:else if token.type === "hr"}
   <hr />
 {:else if token.type === "html"}
-  <!--
-    Shown, not executed. A model that emits a tag gets the tag as text the
-    reader can see, which is also the only honest way to show a snippet the
-    model meant to describe rather than render.
-  -->
   <span class="md-raw-html">{(token as Tokens.HTML).raw}</span>
 {:else if token.type === "br"}
   <br />
 {:else}
-  <!-- Unknown token: its own source, escaped by being text. -->
   <MarkdownInline inlineSource={token.raw} {after} {streaming} {onOpenArtifact} />
 {/if}

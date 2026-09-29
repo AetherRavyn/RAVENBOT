@@ -26,13 +26,6 @@
   );
 </script>
 
-<!--
-  A scrollable region must be reachable by keyboard or it is not scrollable for
-  anyone not using a mouse (WCAG 2.1.1, and the "scrollable region must have
-  keyboard access" technique). `tabindex="0"` on a labelled region is the
-  recommended fix, and svelte's noninteractive-tabindex rule does not know
-  that, hence the suppression.
--->
 <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
 <section class="md-table-scroll" aria-label={t("markdown.table")} tabindex="0">
   <table class="md-table">

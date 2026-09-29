@@ -33,6 +33,24 @@
 
   const resolved = $derived(tokens ?? (inlineSource ? lexInline(inlineSource) : []));
 
+  //
+  // A note on comments in this file, since the fix is not obvious. An HTML
+  // comment in a Svelte template is a *node*. Inside a rendered branch that
+  // makes the whitespace around it significant, so Svelte emits it as a real
+  // space text node and the message gains a space between every inline element —
+  // `**bold**` rendering as "bold ", and copied text carrying the extra space.
+  // Svelte has no comment form that leaves nothing behind (`{/* */}` is a parse
+  // error), so the explanations for the branches live here, in the script,
+  // rather than in the markup.
+  //
+  // A link whose URL `safeHref` refuses is shown as text rather than dropped,
+  // so the reader can still see and copy what the model wrote.
+  //
+  // Each trail chunk is a fresh element, so the CSS fade-in runs once per chunk
+  // with no timer and no reactive clock. A step still fading when the next one
+  // appears is a different element with its own animation, so it never jumps to
+  // full opacity.
+  //
   /** Wrap the tail of a text run in per-step fading spans. */
   function withTrail(text: string, offset: number) {
     const { prefix, chunks } = splitTrail(text, trail, offset);
@@ -48,16 +66,7 @@
       <MarkdownInline tokens={t.tokens} after={offset} {trail} {streaming} {onOpenArtifact} />
     {:else}
       {@const parts = withTrail(t.text, offset)}
-      {#if parts.prefix}<span>{parts.prefix}</span>{/if}
-      <!--
-        Each chunk is a fresh element, so the CSS fade-in runs once per chunk
-        with no timer and no reactive clock. A step that is still fading when
-        the next one appears is a different element with its own animation, so
-        it never jumps to full opacity.
-      -->
-      {#each parts.chunks as chunk, ci (ci)}
-        <span class="md-fade">{chunk.text}</span>
-      {/each}
+      {#if parts.prefix}<span>{parts.prefix}</span>{/if}{#each parts.chunks as chunk, ci (ci)}<span class="md-fade">{chunk.text}</span>{/each}
     {/if}
   {:else if token.type === "strong"}
     <strong><MarkdownInline tokens={(token as Tokens.Strong).tokens} after={offset} {trail} {streaming} {onOpenArtifact} /></strong>
@@ -82,7 +91,6 @@
           openExternal(href);
         }}>{link.text}</a>
     {:else}
-      <!-- Refused: shown as text, so the reader can still see and copy it. -->
       <span class="md-link-refused" title="This link was not made clickable">{link.text}</span>
     {/if}
   {:else if token.type === "image"}
