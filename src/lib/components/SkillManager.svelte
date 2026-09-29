@@ -47,13 +47,16 @@
     return v === key ? fallback : v;
   }
 
-  // Backend sends Rust `Permission` Debug strings, e.g. `FileSystem { paths:
-  // ["/"] }` — show a translated label for the variant, never the raw Debug.
-  function permLabel(p: string): string {
-    const variant = p.split(/[ {]/)[0];
+  // The backend sends the real `Permission` wire shape — one object per variant,
+  // e.g. `{ FileSystem: { paths: ["/"] } }` — so the variant is read straight
+  // off the key. It used to send `format!("{:?}", p)` and this had to pull the
+  // variant name back out of a Debug string, which is what a structured
+  // transport exists to avoid.
+  function permLabel(p: any): string {
+    const variant = Object.keys(p ?? {})[0] ?? "";
     const key = `skills.perm.${variant}`;
     const v = t(key as TranslationKey);
-    return v === key ? p : v;
+    return v === key ? (variant || String(p)) : v;
   }
 
   let availableSkills = $state<any[]>([]);
@@ -185,7 +188,7 @@
               <p class="text-xs text-[var(--text-tertiary)] mt-0.5 truncate">{catalogText(skill.id, "desc", skill.rawDesc)}</p>
               {#if skill.permissions.length}
                 <div class="flex items-center gap-1.5 flex-wrap pt-1">
-                  {#each skill.permissions as p (p)}
+                  {#each skill.permissions as p, i (i)}
                     <span class="text-[10px] font-mono bg-[var(--surface-3)] text-[var(--text-tertiary)] border border-[var(--hairline)] px-1.5 py-px rounded">
                       {permLabel(p)}
                     </span>

@@ -34,6 +34,7 @@
     Volume2,
     Monitor,
     FolderOpen,
+    KeyRound,
     Loader2,
   } from "@lucide/svelte";
 
@@ -83,6 +84,111 @@
   let hostControl = $state(false);
   // Optional per-agent project folder override (else inherit office/channel)
   let workingFolder = $state("");
+
+  /**
+   * Capability narrowing.
+   *
+   * An agent's `permissions` list narrows what its equipped skills may do — it
+   * is not a grant, and an empty list means the skill list decides. Before this
+   * the field was written to the database and never read by anything, so a
+   * permission a user narrowed here changed nothing at all. The two modes are
+   * shown explicitly because "not narrowed" must never be mistaken for
+   * "unsandboxed": the workspace boundary is enforced separately and always.
+   */
+  type CapabilityKey =
+    | "FileSystem" | "Network" | "Shell" | "Screenshot"
+    | "InputControl" | "AudioCapture" | "AudioPlayback" | "Clipboard" | "Delegation";
+
+  /** Skills, with the capabilities each declares, so the toggles can show coverage. */
+  let allSkills = $state<{ id: string; name: string; permissions?: any[] }[]>([]);
+
+  async function loadSkills() {
+    try {
+      const rows = await invoke<any[]>("list_all_skills");
+      // `permissions` arrives as the real `Permission` wire shape (one object
+      // per variant), so the variant name is readable directly. It used to
+      // arrive as `format!("{:?}", p)` and had to be taken apart by hand here.
+      allSkills = rows ?? [];
+    } catch (e) {
+      // Coverage hints are a nicety; their absence must not block the dialog.
+      allSkills = [];
+    }
+  }
+  let narrowing = $state(false);
+  let capabilityToggles = $state<Record<CapabilityKey, boolean>>({
+    FileSystem: false, Network: false, Shell: false, Screenshot: false,
+    InputControl: false, AudioCapture: false, AudioPlayback: false,
+    Clipboard: false, Delegation: false,
+  });
+  /** The scope values attached to the two capabilities that carry one. */
+  let fsPaths = $state("/");
+  let netDomains = $state("*");
+
+  const CAPABILITY_ROWS: {
+    key: CapabilityKey;
+    label: string;
+    help: string;
+    scoped: boolean;
+  }[] = [
+    { key: "FileSystem", label: "File system", help: "Read, write and list files", scoped: true },
+    { key: "Shell", label: "Shell", help: "Run commands", scoped: false },
+    { key: "Network", label: "Network", help: "Reach the network", scoped: true },
+    { key: "Screenshot", label: "Screen capture", help: "Capture the screen", scoped: false },
+    { key: "InputControl", label: "Input control", help: "Move the mouse and type", scoped: false },
+    { key: "Clipboard", label: "Clipboard", help: "Read and write the clipboard", scoped: false },
+    { key: "AudioCapture", label: "Microphone", help: "Record audio", scoped: false },
+    { key: "AudioPlayback", label: "Audio output", help: "Play audio", scoped: false },
+    { key: "Delegation", label: "Delegation", help: "Hand work to another agent", scoped: false },
+  ];
+
+  /** The Rust `Permission` wire shape, so the toggle cannot invent a variant. */
+  function permissionFor(key: string): any {
+    if (key === "FileSystem") {
+      return { FileSystem: { paths: fsPaths.split(",").map((s) => s.trim()).filter(Boolean) } };
+    }
+    if (key === "Network") {
+      return { Network: { domains: netDomains.split(",").map((s) => s.trim()).filter(Boolean) } };
+    }
+    return { [key]: null };
+  }
+
+  const permissionsPayload = $derived.by(() => {
+    if (!narrowing) return [];
+    return CAPABILITY_ROWS.filter((r) => capabilityToggles[r.key as CapabilityKey])
+      .map((r) => permissionFor(r.key));
+  });
+
+  /** What this agent's enabled skills need, so the toggles can show coverage. */
+  const neededBySkills = $derived.by(() => {
+    const needed = new Set<string>();
+    for (const s of allSkills) {
+      if (!bot?.skills?.includes(s.id)) continue;
+      for (const p of s.permissions ?? []) {
+        const key = Object.keys(p)[0];
+        if (key) needed.add(key);
+      }
+    }
+    return needed;
+  });
+
+  type WsKey =
+    | "bot.workspaceIsolated"
+    | "bot.workspaceInherits"
+    | "bot.workspaceDefault";
+
+  /**
+   * Which isolation line to show under the folder field.
+   *
+   * `resolve_working_dirs` tries the per-bot override, then the thread's
+   * folders, then the office's, then a default. Whichever wins, the agent is
+   * confined to it — so this is not a claim about what *might* happen, it is
+   * the boundary the runtime will actually enforce.
+   */
+  const workspaceStatus = $derived.by((): { key: WsKey; path: string } => {
+    if (workingFolder.trim()) return { key: "bot.workspaceIsolated", path: workingFolder.trim() };
+    if (bot) return { key: "bot.workspaceInherits", path: "" };
+    return { key: "bot.workspaceDefault", path: "" };
+  });;
   // Model override for external engine CLIs.
   let engineModel = $state("");
   // Command isolation tier + the effective backend report.
@@ -281,6 +387,10 @@
         engine_model: engineModel.trim() || null,
         working_folder: workingFolder.trim() || null,
       },
+      // An empty list means "not narrowed", which is the default for an agent
+      // that has never been given one. The runtime reads this on every tool
+      // call, so it is not decorative.
+      permissions: permissionsPayload,
       updated_at: new Date().toISOString(),
     };
 
@@ -320,6 +430,8 @@
     invoke<EngineInfo[]>("list_engines")
       .then((list) => { engineOptions = list; })
       .catch(() => { engineOptions = []; });
+    // Skills, once, for the capability coverage hints.
+    if (open && allSkills.length === 0) void loadSkills();
   });
 
   $effect(() => {
@@ -344,7 +456,8 @@
       modelProvider, modelId, temperature, maxTokens,
       customPrompt, isOrchestrator, approvalMode, engine, engineModel,
       fallbackProvider, maxToolRounds, sandboxTier,
-      voiceId, autoRead, hostControl,
+      voiceId, autoRead, hostControl, workingFolder,
+      narrowing, capabilityToggles, fsPaths, netDomains,
     }),
   );
   let dirty = $derived(savedSnapshot !== "" && currentSnapshot !== savedSnapshot);
@@ -376,6 +489,27 @@
       hostControl = Boolean(bot.config?.host_control);
       workingFolder = bot.config?.working_folder || "";
       engineModel = bot.config?.engine_model || "";
+      // Hydrate the capability narrowing from the stored list. An empty list is
+      // the "not narrowed" case, and must round-trip as one.
+      const stored: any[] = bot.permissions ?? [];
+      narrowing = stored.length > 0;
+      capabilityToggles = {
+        FileSystem: false, Network: false, Shell: false, Screenshot: false,
+        InputControl: false, AudioCapture: false, AudioPlayback: false,
+        Clipboard: false, Delegation: false,
+      };
+      for (const p of stored) {
+        const key = Object.keys(p ?? {})[0] as CapabilityKey | undefined;
+        if (key && key in capabilityToggles) capabilityToggles[key] = true;
+        if (key === "FileSystem") {
+          const paths = (p as any).FileSystem?.paths ?? [];
+          fsPaths = paths.length ? paths.join(", ") : "/";
+        }
+        if (key === "Network") {
+          const domains = (p as any).Network?.domains ?? [];
+          netDomains = domains.length ? domains.join(", ") : "*";
+        }
+      }
       refreshSandboxReport(sandboxTier);
       // Baseline for dirty tracking (after the fields are assigned).
       queueMicrotask(() => {
@@ -619,6 +753,103 @@
               <p class="text-[10px] text-[var(--text-muted)]">
                 {t("bot.folderDesc")}
               </p>
+              <!--
+                The boundary, stated plainly. A user who has set a folder should
+                not have to know that `confined()` is what keeps the agent in it,
+                and a user who has not should see the agent is still confined
+                rather than be left to assume it has the whole disk.
+              -->
+              <p class="text-[10px] flex items-start gap-1.5 text-[var(--ok)]">
+                <ShieldCheck class="size-3 shrink-0 mt-px" />
+                <span>
+                  {t(workspaceStatus.key)}
+                  {#if workspaceStatus.path}
+                    <span class="font-mono text-[var(--text-secondary)] break-all">{workspaceStatus.path}</span>
+                  {/if}
+                </span>
+              </p>
+            </div>
+
+            <!--
+              Capability narrowing.
+
+              The `permissions` list used to be written to the database and read
+              by nothing, so a user who narrowed an agent here saw no effect at
+              all. It is now checked before every tool call. The toggle is off by
+              default and the state is spelled out, because "not narrowed" is the
+              common case and must not be mistaken for "unsandboxed" — the
+              workspace boundary above is separate, and always enforced.
+            -->
+            <div class="space-y-2.5 p-3.5 rounded-2xl bg-[var(--surface-1)]/80 border border-[var(--hairline)]">
+              <Label class="text-xs font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
+                <KeyRound class="size-3.5 text-[var(--brand-text)]" /> {t("bot.capabilities")}
+              </Label>
+              <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
+                {t("bot.capabilitiesHelp")}
+              </p>
+
+              <label class="flex items-start gap-2 text-xs text-[var(--text-primary)] cursor-pointer">
+                <input type="checkbox" bind:checked={narrowing} class="mt-0.5 accent-[var(--brand)]" />
+                <span>
+                  <span class="font-medium">{t("bot.narrowOn")}</span>
+                  <span class="block text-[10px] text-[var(--text-muted)] leading-relaxed mt-0.5">
+                    {t("bot.narrowOnHelp")}
+                  </span>
+                </span>
+              </label>
+
+              {#if narrowing}
+                <p class="text-[10px] font-mono px-2 py-1 rounded-lg bg-[var(--surface-3)] text-[var(--text-secondary)] border border-[var(--hairline)]">
+                  {t("bot.narrowedBy", { count: permissionsPayload.length, total: CAPABILITY_ROWS.length })}
+                </p>
+                <div class="space-y-1.5 pt-1">
+                  {#each CAPABILITY_ROWS as row (row.key)}
+                    <div class="space-y-1">
+                      <label class="flex items-center gap-2 text-xs cursor-pointer px-2 py-1 rounded-lg hover:bg-[var(--surface-2)] transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={capabilityToggles[row.key]}
+                          onchange={(e) => (capabilityToggles[row.key] = e.currentTarget.checked)}
+                          class="accent-[var(--brand)]"
+                        />
+                        <span class="flex-1">
+                          <span class="text-[var(--text-primary)]">{row.label}</span>
+                          <span class="block text-[10px] text-[var(--text-muted)]">{row.help}</span>
+                        </span>
+                        {#if neededBySkills.has(row.key)}
+                          <span
+                            class="text-[9px] px-1.5 py-px rounded border whitespace-nowrap {capabilityToggles[row.key]
+                              ? 'text-[var(--ok)] border-[var(--ok)]/30'
+                              : 'text-[var(--warning)] border-[var(--warning)]/30'}"
+                          >
+                            {capabilityToggles[row.key] ? t("bot.neededBy") : t("bot.blockedBy")}
+                          </span>
+                        {/if}
+                      </label>
+                      {#if row.scoped && capabilityToggles[row.key]}
+                        <div class="flex items-center gap-2 pl-7 pr-2">
+                          <span class="text-[10px] text-[var(--text-muted)] shrink-0">{t("bot.scopeLabel")}</span>
+                          {#if row.key === "FileSystem"}
+                            <Input
+                              bind:value={fsPaths}
+                              placeholder={t("bot.scopePh")}
+                              class="h-7 text-[10px] font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
+                            />
+                          {:else}
+                            <Input
+                              bind:value={netDomains}
+                              placeholder={t("bot.scopePh")}
+                              class="h-7 text-[10px] font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
+                            />
+                          {/if}
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <p class="text-[10px] text-[var(--text-muted)]">{t("bot.unnarrowed")}</p>
+              {/if}
             </div>
 
             <div class="grid grid-cols-2 gap-4 pt-1">

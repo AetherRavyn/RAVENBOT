@@ -114,29 +114,6 @@ impl OfficeContext {
         self
     }
 
-    /// The default policy for a template, used when the office has none.
-    pub fn default_policy_for(&self) -> String {
-        template_policy(self.template_key()).to_string()
-    }
-
-    /// Which template this office resembles, inferred from its name.
-    ///
-    /// The stored `office_template` is the authority; this is only used when a
-    /// caller has a name and no template, such as while seeding a charter.
-    fn template_key(&self) -> &str {
-        let n = self.name.to_lowercase();
-        if n.contains("marketing") || n.contains("growth") {
-            "marketing"
-        } else if n.contains("sales") {
-            "sales"
-        } else if n.contains("design") || n.contains("studio") {
-            "design"
-        } else if n.contains("archive") || n.contains("rot") {
-            "rot-archive"
-        } else {
-            "it-office"
-        }
-    }
 }
 
 // ── skill allowlist ─────────────────────────────────────────────────────────
@@ -1412,13 +1389,6 @@ mod tests {
         assert!(p.contains("placeholder"), "placeholder ban missing");
     }
 
-    #[test]
-    fn org_context_infers_a_policy_from_the_name() {
-        let marketing = OfficeContext::new("Growth Marketing Team");
-        assert!(marketing.default_policy_for().contains("claim"));
-        let eng = OfficeContext::new("Platform Engineering");
-        assert!(eng.default_policy_for().contains("Read before you change"));
-    }
 
     #[test]
     fn parses_a_proposed_org_and_filters_bad_skills() {

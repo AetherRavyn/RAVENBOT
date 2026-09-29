@@ -3882,6 +3882,7 @@ mod integration_tests {
     /// In-memory databases don't round-trip through our `sqlite:{path}?mode=rwc`
     /// URL builder, so integration tests use a unique temp file instead.
     async fn temp_db() -> ravenbot_db::Database {
+        redirect_data_root_to_temp();
         let path = PathBuf::from(std::env::temp_dir())
             .join(format!("ravenbot-test-{}.db", Uuid::new_v4()));
         ravenbot_db::Database::new(&path)
@@ -4324,6 +4325,7 @@ mod e2e_tests {
     }
 
     async fn temp_db() -> ravenbot_db::Database {
+        redirect_data_root_to_temp();
         let path = PathBuf::from(std::env::temp_dir())
             .join(format!("ravenbot-e2e-{}.db", Uuid::new_v4()));
         ravenbot_db::Database::new(&path).await.expect("temp db")
@@ -4453,6 +4455,7 @@ mod honesty_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     async fn temp_db() -> ravenbot_db::Database {
+        redirect_data_root_to_temp();
         let path = PathBuf::from(std::env::temp_dir())
             .join(format!("ravenbot-honesty-{}.db", Uuid::new_v4()));
         ravenbot_db::Database::new(&path).await.expect("temp db")
@@ -4623,6 +4626,7 @@ mod budget_tracking_tests {
     use std::path::PathBuf;
 
     async fn temp_db() -> ravenbot_db::Database {
+        redirect_data_root_to_temp();
         let path = PathBuf::from(std::env::temp_dir())
             .join(format!("ravenbot-budget-{}.db", Uuid::new_v4()));
         ravenbot_db::Database::new(&path).await.expect("temp db")
@@ -4672,6 +4676,34 @@ mod budget_tracking_tests {
     }
 }
 
+/// Point the data root at a temporary directory for the whole test binary.
+///
+/// Without this, every test that runs an agent falls through
+/// `resolve_working_dirs` to `default_project_dir(bot.name)`, which creates
+/// `~/RAVENBOT/projects/<bot>/` — the *live* data directory. Running the suite
+/// once left 273 directories there, and because the repository is checked out
+/// at exactly that path, they also showed up as untracked files in the working
+/// tree.
+///
+/// Each crate's tests are a separate OS process, so setting the variable here
+/// cannot affect `ravenbot-core`'s own `paths` tests, which save and restore it
+/// around their own assertions. Within this binary the value is the same for
+/// every call, so the write is idempotent and the mutex only exists to keep two
+/// threads from writing the environment at the same moment. Every test that can
+/// create a directory does so via a run, and every test that runs calls
+/// [`temp_db`] first, so the variable is always in place before anything reads
+/// it.
+fn redirect_data_root_to_temp() {
+    use std::sync::OnceLock;
+    static INIT: OnceLock<()> = OnceLock::new();
+    INIT.get_or_init(|| {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("ravenbot-test-root-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("RAVENBOT_HOME", &dir);
+    });
+}
+
 #[cfg(test)]
 mod parity_tests {
     use super::*;
@@ -4683,6 +4715,7 @@ mod parity_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     async fn temp_db() -> ravenbot_db::Database {
+        redirect_data_root_to_temp();
         let path = PathBuf::from(std::env::temp_dir())
             .join(format!("ravenbot-parity-{}.db", Uuid::new_v4()));
         ravenbot_db::Database::new(&path).await.expect("temp db")
@@ -5405,6 +5438,7 @@ mod office_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     async fn temp_db() -> ravenbot_db::Database {
+        redirect_data_root_to_temp();
         let path = std::path::PathBuf::from(std::env::temp_dir())
             .join(format!("ravenbot-office-{}.db", Uuid::new_v4()));
         ravenbot_db::Database::new(&path).await.expect("temp db")

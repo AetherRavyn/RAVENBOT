@@ -2895,7 +2895,15 @@ async fn get_kill_switch_status(
 async fn list_all_skills(state: State<'_, AppState>) -> Result<Vec<serde_json::Value>, String> {
     let reg = state.runtime.skill_registry();
     Ok(reg.list().iter().map(|s| serde_json::json!({
-        "id": s.id(), "name": s.name(), "description": s.description(), "permissions": s.required_permissions().iter().map(|p| format!("{:?}", p)).collect::<Vec<_>>()
+        // The real wire shape, not `{:?}`. The settings screen reads these to
+        // show which capabilities an equipped skill needs, and it has to be able
+        // to name the variant; a Debug string would have to be taken apart again
+        // in the UI to learn that `FileSystem { paths: ["/"] }` means the file
+        // system at all.
+        "id": s.id(),
+        "name": s.name(),
+        "description": s.description(),
+        "permissions": s.required_permissions()
     })).collect())
 }
 
