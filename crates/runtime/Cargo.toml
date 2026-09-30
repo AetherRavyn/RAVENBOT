@@ -1,0 +1,25 @@
+[package]
+name = "ravenbot-runtime"
+description = "RAVENBOT agent runtime and orchestration engine"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ravenbot-core = { path = "../core" }
+ravenbot-db = { path = "../db" }
+ravenbot-models = { path = "../models" }
+ravenbot-skills = { path = "../skills" }
+ravenbot-plugins = { path = "../plugins" }
+ravenbot-mcp = { path = "../mcp" }
+ravenbot-sandbox = { path = "../sandbox" }
+ravenbot-memory = { path = "../memory" }
+ravenbot-vision = { path = "../vision" }
+ravenbot-governance = { path = "../governance" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+sqlx.workspace = true
+async-trait = "0.1"

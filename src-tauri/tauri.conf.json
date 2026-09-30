@@ -1,0 +1,77 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RAVENBOT",
+  "version": "0.2.0",
+  "identifier": "com.ravenbot.desktop",
+  "build": {
+    "beforeDevCommand": "bun run dev",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "bun run build",
+    "frontendDist": "../build"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "RAVENBOT",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 960,
+        "minHeight": 640,
+        "center": true,
+        "decorations": false,
+        "transparent": false,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: https://asset.localhost https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://openrouter.ai https://api.anthropic.com https://api.openai.com http://localhost:11434 https://api.dicebear.com; media-src 'self' asset: https://asset.localhost;",
+      "capabilities": [
+        {
+          "identifier": "default",
+          "description": "Default permissions",
+          "windows": ["main"],
+          "permissions": [
+            "core:default",
+            "core:window:allow-close",
+            "core:window:allow-minimize",
+            "core:window:allow-maximize",
+            "core:window:allow-toggle-maximize",
+            "core:window:allow-is-maximized",
+            "core:window:allow-set-decorations",
+            "core:window:allow-start-dragging",
+            "opener:default",
+            "opener:allow-open-path",
+            "shell:allow-open",
+            "window-state:default",
+            "window-state:allow-restore-state",
+            "window-state:allow-save-window-state"
+          ]
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": [],
+    "category": "Productivity",
+    "shortDescription": "Sovereign, local-first multi-agent desktop OS",
+    "longDescription": "RAVENBOT is not a chatbot — it's a fleet of persistent, specialized agents that live entirely on your machine."
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": []
+    }
+  }
+}

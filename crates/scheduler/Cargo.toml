@@ -1,0 +1,17 @@
+[package]
+name = "ravenbot-scheduler"
+description = "RAVENBOT scheduler for routines and cron-based tasks"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ravenbot-core = { path = "../core" }
+ravenbot-db = { path = "../db" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+sqlx.workspace = true

@@ -1,0 +1,18 @@
+[package]
+name = "ravenbot-memory"
+description = "RAVENBOT memory system with vector embeddings and retrieval"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ravenbot-core = { path = "../core" }
+ravenbot-db = { path = "../db" }
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+async-trait = "0.1"
+sqlx.workspace = true

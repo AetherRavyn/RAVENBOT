@@ -1,0 +1,93 @@
+{
+  "app": {
+    "name": "RAVENBOT",
+    "tagline": "Deine souveräne KI-Agentenflotte",
+    "loading": "Wird geladen..."
+  },
+  "sidebar": {
+    "search": "Bots suchen...",
+    "filterWaiting": "Warten auf mich",
+    "noBots": "Keine Bots gefunden",
+    "pauseAll": "Alle pausieren",
+    "createBot": "Neuen Bot erstellen"
+  },
+  "bot": {
+    "status": {
+      "idle": "Bereit",
+      "thinking": "Denkt nach...",
+      "runningTool": "Werkzeug läuft",
+      "waitingOnUser": "Wartet auf dich",
+      "paused": "Pausiert"
+    },
+    "settings": "Bot-Einstellungen",
+    "skills": "Fähigkeiten",
+    "delete": "Bot löschen",
+    "deleteConfirm": "\"{{name}}\" löschen? Das kann nicht rückgängig gemacht werden."
+  },
+  "thread": {
+    "threads": "Unterhaltungen",
+    "noThreads": "Noch keine Unterhaltungen",
+    "welcome": "Starte eine Unterhaltung mit {{name}}",
+    "emptyWelcome": "Sende eine Nachricht, um zu beginnen.",
+    "typing": "Nachricht schreiben...",
+    "send": "Nachricht senden"
+  },
+  "settings": {
+    "title": "Einstellungen",
+    "apiKeys": "API-Schlüssel",
+    "apiKeysDesc": "Konfiguriere API-Schlüssel für Modellanbieter. Schlüssel werden sicher im Schlüsselbund deines Betriebssystems gespeichert.",
+    "localModels": "Lokale Modelle",
+    "localModelsDesc": "Konfiguriere lokale Modellinferenz über Ollama",
+    "about": "Über",
+    "save": "Speichern",
+    "saved": "Gespeichert",
+    "cancel": "Abbrechen",
+    "openrouter": "OpenRouter",
+    "anthropic": "Anthropic",
+    "openai": "OpenAI",
+    "ollamaUrl": "Ollama-URL",
+    "version": "Version {{version}}"
+  },
+  "skills": {
+    "title": "Fähigkeiten - {{botName}}",
+    "description": "Aktiviere Fähigkeiten für diesen Bot. Jede Fähigkeit erfordert spezifische Berechtigungen, die bei der Nutzung abgefragt werden.",
+    "requires": "Erfordert:",
+    "saveSkills": "Fähigkeiten speichern"
+  },
+  "killSwitch": {
+    "active": "NOT-AUS AKTIV",
+    "resume": "Alle fortsetzen",
+    "trigger": "Not-Aus",
+    "confirmTitle": "Not-Aus aktivieren?",
+    "confirmMessage": "Dies pausiert sofort alle laufenden Bots und widerruft deren Netzwerkzugriff.",
+    "reasonPlaceholder": "z. B. verdächtige Aktivität erkannt",
+    "activate": "Not-Aus aktivieren"
+  },
+  "commandPalette": {
+    "placeholder": "Befehl eingeben oder suchen...",
+    "noResults": "Keine Befehle gefunden",
+    "createBot": "Neuen Bot erstellen",
+    "createBotDesc": "Erstelle einen neuen KI-Bot",
+    "settings": "Einstellungen",
+    "settingsDesc": "Konfiguriere API-Schlüssel und Einstellungen"
+  },
+  "emptyState": {
+    "selectBot": "Wähle in der Seitenleiste einen Bot aus oder erstelle einen neuen",
+    "commandPalette": "Befehlspalette",
+    "settingsShortcut": "Einstellungen"
+  },
+  "errors": {
+    "loadFailed": "Daten konnten nicht geladen werden",
+    "sendFailed": "Nachricht konnte nicht gesendet werden",
+    "createFailed": "Bot konnte nicht erstellt werden",
+    "updateFailed": "Aktualisierung fehlgeschlagen",
+    "deleteFailed": "Löschen fehlgeschlagen"
+  },
+  "a11y": {
+    "sidebar": "Bot-Liste",
+    "thread": "Unterhaltungsverlauf",
+    "compose": "Nachrichten-Eingabebereich",
+    "settings": "Anwendungseinstellungen",
+    "killSwitch": "Not-Aus-Schaltfläche"
+  }
+}
