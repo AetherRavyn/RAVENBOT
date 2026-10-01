@@ -912,6 +912,92 @@ impl Runtime {
 
     /// Runtime-native delegation: actually run the target bot and return its
     /// answer (the registry stub only reported "delegation_initiated").
+    /// Build the message a delegated agent actually receives.
+    ///
+    /// Three parts, in the order they should be read: the conversation that
+    /// prompted the handoff, the caller's framing of it, then the task. The task
+    /// goes last because it is the last thing read and therefore the thing acted
+    /// on.
+    ///
+    /// Both transcript bounds are deliberate rather than cautious:
+    ///
+    ///  - **Eight messages** is enough to carry the ask and the constraints around
+    ///    it. A longer thread is mostly earlier attempts, and including them
+    ///    invites the specialist to solve a problem the user has moved on from.
+    ///  - **600 characters a message** stops one pasted log from crowding out the
+    ///    rest. Truncation is marked, so the specialist knows it is looking at a
+    ///    fragment and can ask rather than assume.
+    ///
+    /// Tool calls and checklists are filtered out: they are not conversation, and
+    /// including them fills the window with the caller's mechanics and pushes the
+    /// human turns out — which is the opposite of what this is for.
+    async fn delegation_prompt(
+        &self,
+        context: &str,
+        instruction: &str,
+        from: Uuid,
+        caller_name: Option<String>,
+    ) -> String {
+        const MESSAGES: usize = 8;
+        const PER_MESSAGE: usize = 600;
+
+        let caller = caller_name.as_deref().unwrap_or("Another agent");
+        let transcript = ravenbot_db::queries::MessageQueries::list_by_thread(self.db.pool(), from)
+            .await
+            .map(|msgs| {
+                let lines: Vec<String> = msgs
+                    .iter()
+                    .filter_map(|m| match &m.content {
+                        ravenbot_core::MessageContent::Text { text, .. }
+                            if !text.trim().is_empty() =>
+                        {
+                            let who = match m.role {
+                                ravenbot_core::MessageRole::User => "User",
+                                ravenbot_core::MessageRole::Assistant => caller,
+                                _ => return None,
+                            };
+                            let body = text.trim();
+                            let body = if body.chars().count() > PER_MESSAGE {
+                                let head: String = body.chars().take(PER_MESSAGE).collect();
+                                format!("{head}… [truncated]")
+                            } else {
+                                body.to_string()
+                            };
+                            Some(format!("{who}: {body}"))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                let start = lines.len().saturating_sub(MESSAGES);
+                lines[start..].join("\n")
+            })
+            .unwrap_or_default();
+
+        let mut out = String::new();
+        if !transcript.is_empty() {
+            out.push_str(
+                "You were called into a conversation in progress. The exchange so far, \
+                 verbatim — the user's own words are the requirement, not a summary \
+                 of it:\n\n",
+            );
+            out.push_str(&transcript);
+            out.push_str("\n\n---\n\n");
+        }
+        if !context.trim().is_empty() {
+            out.push_str("From the agent who called you:\n");
+            out.push_str(context.trim());
+            out.push_str("\n\n---\n\n");
+        }
+        out.push_str("Your task:\n");
+        out.push_str(instruction.trim());
+        out.push_str(
+            "\n\nAnswer the task itself. You cannot see anything beyond this point, so \
+             if you need something you do not have, say exactly what you need rather \
+             than guessing.",
+        );
+        out
+    }
+
     async fn exec_delegation(
         &self,
         parent_run: &Run,
@@ -1048,12 +1134,28 @@ impl Runtime {
             }
         }
 
-        // The target sees who is asking and why, not a bare instruction.
-        let prompt = if context.is_empty() {
-            instruction.clone()
-        } else {
-            format!("{context}\n\n---\n\nTask:\n{instruction}")
-        };
+        // The target sees the conversation it was called out of, not just the
+        // caller's summary of it.
+        //
+        // A delegation arrives as an instruction plus whatever background the
+        // calling agent chose to write, and that background is a *paraphrase*.
+        // Whatever the paraphrase dropped is gone: the exact error text, the
+        // constraint mentioned in passing, the thing already ruled out. The
+        // specialist then answers a slightly different question and returns
+        // confidently, with nothing outside it to show that it did.
+        //
+        // So the real transcript travels with the task, bounded and labelled. The
+        // caller's own framing is kept as well, because it is the one thing the
+        // transcript cannot supply: what the caller already tried, and what it
+        // wants back.
+        let prompt = self
+            .delegation_prompt(
+                &context,
+                &instruction,
+                parent_run.thread_id,
+                caller.as_ref().map(|c| c.name.clone()),
+            )
+            .await;
         let user_msg = ravenbot_core::Message::user(thread.id, &prompt);
         if let Err(e) = ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &user_msg).await {
             return ravenbot_skills::SkillResult::failure(e.to_string());
@@ -4340,6 +4442,149 @@ mod integration_tests {
             "the roster advised handing work to an agent already running it: {:?}",
             busy_roster,
         );
+    }
+
+
+    /// A delegate must receive the conversation, not just the caller's summary of it.
+    ///
+    /// This is the difference between a handoff and a relay. The calling agent
+    /// writes the instruction and whatever background it chooses to include, and
+    /// that background is a paraphrase — so whatever the paraphrase dropped is gone
+    /// permanently: the exact error text, the constraint mentioned in passing, the
+    /// thing already ruled out. The specialist then answers a slightly different
+    /// question and returns confidently, and there is nothing outside it to show
+    /// that it did.
+    #[tokio::test]
+    async fn a_delegate_sees_the_conversation_it_was_called_out_of() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let lead = Bot::new("Priya", "leads");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &lead).await.unwrap();
+        let thread = Thread::new(lead.id, "office");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+
+        // The detail that a paraphrase reliably drops: a version string.
+        let exact = "The login form 500s on POST /api/session for Safari 18.2 only. \\
+                     Console says `TypeError: undefined is not a function`.";
+        insert_text(db.pool(), thread.id, "user", "Login is broken").await;
+        insert_text(db.pool(), thread.id, "assistant", "Looking into it.").await;
+        insert_text(db.pool(), thread.id, "user", exact).await;
+
+        let prompt = runtime
+            .delegation_prompt("", "investigate the login failure", thread.id, Some("Priya".into()))
+            .await;
+
+        assert!(prompt.contains("Safari 18.2"), "the exact detail was lost:\n{prompt}");
+        assert!(prompt.contains("undefined is not a function"), "the error text was lost:\n{prompt}");
+        assert!(prompt.contains("User:"), "the user's own words are missing:\n{prompt}");
+        assert!(prompt.contains("Priya:"), "the caller is unnamed:\n{prompt}");
+        // The task goes last, because it is the last thing read.
+        let task_at = prompt.find("Your task:").expect("no task section");
+        let detail_at = prompt.find("Safari 18.2").expect("no transcript");
+        assert!(detail_at < task_at, "the task must come after the context it explains");
+        assert!(prompt.contains("investigate the login failure"));
+    }
+
+    /// The caller's own framing is kept, because the transcript cannot supply it.
+    ///
+    /// The transcript says what was said. Only the caller knows what it already
+    /// tried and what it wants back — which is the part that stops the specialist
+    /// redoing work and coming back with a variation of the same answer.
+    #[tokio::test]
+    async fn a_delegate_also_gets_the_callers_own_framing() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db);
+        let bot = Bot::new("Priya", "leads");
+        ravenbot_db::queries::BotQueries::insert(runtime.db.pool(), &bot).await.unwrap();
+        let thread = Thread::new(bot.id, "office");
+        ravenbot_db::queries::ThreadQueries::create(runtime.db.pool(), &thread).await.unwrap();
+
+        let prompt = runtime
+            .delegation_prompt(
+                "I already ruled out the CDN — do not spend time there.",
+                "find the cause",
+                thread.id,
+                Some("Priya".into()),
+            )
+            .await;
+
+        assert!(prompt.contains("ruled out the CDN"), "{prompt}");
+        assert!(prompt.contains("find the cause"), "{prompt}");
+        assert!(
+            prompt.find("ruled out the CDN") < prompt.find("Your task:"),
+            "the framing must precede the task",
+        );
+    }
+
+    /// The transcript is bounded, and honestly so.
+    ///
+    /// Unbounded history would grow every prompt in a long conversation, which is
+    /// the kind of cost that shows up as "the agent got slow" with nothing pointing
+    /// here. The marks matter as much as the bounds: a delegate looking at a
+    /// fragment must be able to tell, or it fills the gap with a guess and reports
+    /// the guess.
+    #[tokio::test]
+    async fn a_delegated_transcript_is_bounded_and_marks_its_cuts() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let bot = Bot::new("Priya", "leads");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        let thread = Thread::new(bot.id, "office");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+
+        // Twenty turns, so the eight-message window must discard some.
+        for i in 0..20 {
+            insert_text(db.pool(), thread.id, "user", &format!("message number {i}")).await;
+        }
+        // And one message long enough to be trimmed.
+        insert_text(db.pool(), thread.id, "user", &"x".repeat(2_000)).await;
+
+        let prompt = runtime
+            .delegation_prompt("", "do the thing", thread.id, Some("Priya".into()))
+            .await;
+
+        assert!(prompt.contains("[truncated]"), "a cut was not marked:\n{prompt}");
+        assert!(
+            !prompt.contains("message number 0"),
+            "the window did not drop old turns",
+        );
+        assert!(prompt.contains("message number 19"), "the most recent turn was dropped");
+
+        // The whole thing must stay a prompt, not a transcript.
+        let transcript_end = prompt.find("---\n\nYour task:").expect("no task section");
+        assert!(
+            transcript_end < 9_000,
+            "the transcript ran away: {} chars",
+            transcript_end,
+        );
+    }
+
+    /// An empty conversation must not produce a heading with nothing under it.
+    #[tokio::test]
+    async fn a_delegate_with_no_history_gets_just_the_task() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let bot = Bot::new("Priya", "leads");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        let thread = Thread::new(bot.id, "office");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+
+        let prompt = runtime
+            .delegation_prompt("", "do the thing", thread.id, Some("Priya".into()))
+            .await;
+
+        assert!(!prompt.contains("called into a conversation"), "{prompt}");
+        assert!(!prompt.contains("From the agent who called you"), "{prompt}");
+        assert!(prompt.trim_start().starts_with("Your task:"), "{prompt}");
+    }
+
+    async fn insert_text(pool: &sqlx::SqlitePool, thread: Uuid, role: &str, text: &str) {
+        let msg = if role == "user" {
+            ravenbot_core::Message::user(thread, text)
+        } else {
+            ravenbot_core::Message::assistant(thread, text)
+        };
+        ravenbot_db::queries::MessageQueries::insert(pool, &msg).await.unwrap();
     }
 
 
