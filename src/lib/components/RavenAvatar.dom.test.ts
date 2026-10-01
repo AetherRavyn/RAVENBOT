@@ -159,23 +159,40 @@ describe("RavenAvatar — the generated face", () => {
   });
 
   /**
-   * The reactivity the generated face has and a DiceBear style cannot: the
-   * geometry itself is a function of the mood.
+   * The face stays put; the frame says what is happening.
+   *
+   * This asserted the opposite once — that a working agent drew a different face
+   * — because that is what the code did. The face is identity: an agent that
+   * changes character while it works cannot be recognised at a glance, which
+   * defeats the point of a roster you learn to read. So the geometry is compared
+   * *within* one mood, to prove the mood is what moved, and the face is compared
+   * *across* moods, to prove it did not.
    */
-  it("draws a different face for a working agent than an idle one", () => {
-    const idle = render(RavenAvatar, { props: { name: "Ada", mood: "idle", style: "raven-native" } })
-      .container.querySelector("svg")!.innerHTML;
-    const working = render(RavenAvatar, { props: { name: "Ada", mood: "working", style: "raven-native" } })
-      .container.querySelector("svg")!.innerHTML;
-    expect(working).not.toBe(idle);
+  it("keeps the same face across moods and changes the state", () => {
+    // The face group only: the rings are motion, drawn in the same SVG, and are
+    // *supposed* to appear and disappear with the mood.
+    const faceFor_ = (mood: string) =>
+      render(RavenAvatar, { props: { name: "Ada", mood: mood as any, style: "raven-native" } })
+        .container.querySelector(".raven-avatar-face")!.innerHTML;
+    const faces = ["idle", "working", "failed", "responded"].map(faceFor_);
+    expect(new Set(faces).size, "the drawn face changed with the mood").toBe(1);
   });
 
-  it("draws a different face for a failed agent than a working one", () => {
-    const failed = render(RavenAvatar, { props: { name: "Ada", mood: "failed", style: "raven-native" } })
+  it("changes the frame's motion state with the mood", () => {
+    const state = (mood: string) =>
+      render(RavenAvatar, { props: { name: "Ada", mood: mood as any, style: "raven-native" } })
+        .container.querySelector(".raven-avatar")!.getAttribute("data-state");
+    expect(["idle", "working", "waiting", "failed", "responded", "sleeping"].map(state))
+      .toEqual(["idle", "thinking", "notification", "exclamation", "burst", "sleep"]);
+  });
+
+  /** The one face override, and it has to be visible. */
+  it("lets a waiting agent look attentive", () => {
+    const waiting = render(RavenAvatar, { props: { name: "Ada", mood: "waiting", style: "raven-native" } })
       .container.querySelector("svg")!.innerHTML;
-    const working = render(RavenAvatar, { props: { name: "Ada", mood: "working", style: "raven-native" } })
+    const idle = render(RavenAvatar, { props: { name: "Ada", mood: "idle", style: "raven-native" } })
       .container.querySelector("svg")!.innerHTML;
-    expect(working).not.toBe(failed);
+    expect(waiting).not.toBe(idle);
   });
 
   it("resolves a drawable expression for every mood, for any name", () => {
@@ -187,13 +204,11 @@ describe("RavenAvatar — the generated face", () => {
       for (const mood of MOODS) {
         const expression = faceFor(profile, mood);
         expect(known.has(expression), `${mood} produced ${expression}`).toBe(true);
-        if (mood === "idle") {
-          // Idle is the one mood the agent chooses rather than the situation
-          // imposing, so two agents resting are meant to look different.
-          expect(expression).toBe(profile.resting);
-        } else {
-          expect(expression).toBe(moodPresentation(mood).expression);
-        }
+        // The face is identity, so it is the agent's own resting expression
+        // unless — and only unless — the mood carries an override. `waiting` is
+        // the only one that does.
+        const override = moodPresentation(mood).expression;
+        expect(expression).toBe(override ?? profile.resting);
       }
     }
   });

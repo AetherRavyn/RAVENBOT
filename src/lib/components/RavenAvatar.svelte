@@ -214,6 +214,7 @@
 <span
   class="raven-avatar {customClass}"
   data-mood={mood}
+  data-state={moodStyle.state}
   data-silhouette={profile.silhouette}
   data-source={source}
   data-animates={imageAnimates || undefined}

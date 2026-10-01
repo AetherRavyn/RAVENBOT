@@ -6,6 +6,8 @@ import {
   hueVars,
   initials,
   moodPresentation,
+  motionFor,
+  UNREACHABLE_MOTIONS,
   SILHOUETTES,
   stableIndex,
   type AvatarMood,
@@ -142,20 +144,85 @@ describe("faceFor", () => {
     expect(faceFor(p, "idle")).toBe(p.resting);
   });
 
-  it("changes with the work", () => {
+  /**
+   * The face is identity, and identity does not change with the work.
+   *
+   * This test used to assert the opposite — that the face went
+   * attentive/curious/sad/pleased as the mood changed — because that is what the
+   * code did. It is the wrong behaviour and it was worth reversing the test
+   * rather than the code back: an agent that wears a different face while it
+   * works is a different creature, and a roster where every avatar changes
+   * character twice a minute is not a roster you can learn to read.
+   *
+   * So the face is fixed and the *motion* carries the mood, which is what the
+   * next test covers.
+   */
+  it("keeps the agent's own face across every mood but one", () => {
     const p = avatarProfile("Coder");
-    const faces = (["working", "waiting", "failed", "responded"] as AvatarMood[]).map((m) =>
+    const faces = (["idle", "working", "failed", "responded", "sleeping"] as AvatarMood[]).map((m) =>
       faceFor(p, m),
     );
-    // working → attentive, waiting → curious, failed → sad, responded → pleased
-    expect(faces).toEqual(["attentive", "curious", "sad", "pleased"]);
+    expect(new Set(faces).size, "the face changed with the mood").toBe(1);
+    expect(faces[0]).toBe(p.resting);
   });
 
-  it("gives every mood a presentation", () => {
+  /**
+   * The one override, and why it is the only one.
+   *
+   * An agent waiting on you has to read as paying attention. Without it, "waiting
+   * for you" and "idle, has not got round to it" look identical, which is the
+   * exact confusion the state exists to end. Everything else can be carried by
+   * motion alone.
+   */
+  it("lets only waiting change the face", () => {
+    const overriding = (["idle", "working", "waiting", "failed", "responded", "sleeping"] as AvatarMood[])
+      .filter((m) => moodPresentation(m).expression !== undefined);
+    expect(overriding).toEqual(["waiting"]);
+    expect(faceFor(avatarProfile("Coder"), "waiting")).toBe("attentive");
+  });
+
+  it("gives every mood a motion state", () => {
     for (const m of ["idle", "working", "waiting", "failed", "responded", "sleeping"] as AvatarMood[]) {
       const p = moodPresentation(m);
-      expect(p).toBeDefined();
-      expect(typeof p.expression).toBe("string");
+      expect(p, `${m} has no presentation`).toBeDefined();
+      expect(typeof p.state, `${m} has no state`).toBe("string");
+      expect(p.state).toBe(motionFor(m));
+    }
+  });
+
+  /**
+   * The mapping is the design, so it is pinned.
+   *
+   * Grok encodes the same thing as a test, and for the same reason: a library
+   * bump that adds or reclassifies a state silently changes what a roster means,
+   * and nothing else would notice. Written out in full because a table that
+   * only exists as a `Record` can be edited without anyone seeing what changed.
+   */
+  it("maps each roster mood to its documented motion", () => {
+    expect(
+      (["idle", "working", "waiting", "failed", "responded", "sleeping"] as AvatarMood[]).map(motionFor),
+    ).toEqual(["idle", "thinking", "notification", "exclamation", "burst", "sleep"]);
+  });
+
+  /**
+   * Every mood must look different from idle, or "needs you" and "nothing is
+   * happening" are the same picture.
+   */
+  it("never leaves a busy mood looking idle", () => {
+    const idle = motionFor("idle");
+    for (const m of ["working", "waiting", "failed", "responded", "sleeping"] as AvatarMood[]) {
+      expect(motionFor(m), `${m} looks idle`).not.toBe(idle);
+    }
+  });
+
+  /** A motion the renderer cannot draw must not be named as if it can. */
+  it("does not claim a motion it cannot draw", () => {
+    const reachable = new Set<string>([
+      "idle", "thinking", "orbit", "alert", "notification", "exclamation", "sleep", "burst",
+    ]);
+    for (const m of ["idle", "working", "waiting", "failed", "responded", "sleeping"] as AvatarMood[]) {
+      expect(reachable.has(motionFor(m)), `${m} → ${motionFor(m)}`).toBe(true);
+      expect(UNREACHABLE_MOTIONS as readonly string[]).not.toContain(motionFor(m));
     }
   });
 

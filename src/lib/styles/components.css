@@ -1176,6 +1176,70 @@ html.sidebar-resizing .app-frame {
   }
 }
 
+/* ── Motion states ─────────────────────────────────────────────────────────
+ * Grok's roster vocabulary, keyed off `data-state` rather than `data-mood`.
+ *
+ * The reason there are two attributes is the same reason there are two axes: the
+ * mood is what the runtime knows, and the state is what the face should *do*.
+ * Keying the motion off the state means a roster that reads "thinking" and one
+ * that reads "orbit" can look different without either touching the face, and a
+ * new mood does not silently inherit working's motion.
+ *
+ * Only three states carry motion. A 24-pixel avatar has about one gesture in it,
+ * and a state that moves when four others do not reads as a bug rather than a
+ * signal — the eye learns that movement means *something*, and spends that
+ * attention on the states that should be looked at.
+ */
+.raven-avatar[data-state="thinking"] {
+  animation: raven-breathe 3.2s ease-in-out infinite;
+}
+
+.raven-avatar[data-state="orbit"] .raven-avatar-rings {
+  animation: raven-orbit 4s linear infinite;
+}
+
+.raven-avatar[data-state="sleep"] {
+  animation: raven-breathe 5.6s ease-in-out infinite;
+}
+
+/* `notification` and `exclamation` are the two that need a person, so they are
+ * the two that take colour. The ring is not motion, so it survives a
+ * reduced-motion preference — which is the right way round, because the whole
+ * job of this state is to be noticed by someone who is not looking for it. */
+.raven-avatar[data-state="notification"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--warning);
+}
+
+.raven-avatar[data-state="exclamation"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--danger);
+}
+
+/* Just finished: a single short flash, which is legible and then gone. */
+.raven-avatar[data-state="burst"] {
+  animation: raven-burst 520ms cubic-bezier(0.23, 1, 0.32, 1) 1;
+}
+
+@keyframes raven-burst {
+  0% {
+    transform: scale(1);
+  }
+  38% {
+    transform: scale(calc(1 + var(--av-burst, 0.09)));
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raven-avatar[data-state="thinking"],
+  .raven-avatar[data-state="orbit"] .raven-avatar-rings,
+  .raven-avatar[data-state="sleep"],
+  .raven-avatar[data-state="burst"] {
+    animation: none;
+  }
+}
+
 /* ── The RAVENBOT mark ───────────────────────────────────────────────────────
  * The eyes are polylines so the whole shape can be translated as one piece by
  * two custom properties, which the compositor animates without a repaint.

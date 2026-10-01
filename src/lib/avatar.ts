@@ -28,7 +28,31 @@
  * the traits are actually well distributed instead of clustering.
  */
 
-/** The moods an agent's face can express. */
+/**
+ * The roster moods — what a user reads off the fleet list.
+ *
+ * These are Grok Bot's six, which is a better list than the one this started
+ * with because it is the vocabulary a roster actually needs: every state is
+ * something a person can *do something about*. `working` is happening on its
+ * own, `blocked` needs you, `done` is finished, `thinking` is a longer run.
+ * A vocabulary that cannot be acted on is decoration.
+ *
+ *   Grok        here        why
+ *   Idle        idle        nothing is happening
+ *   Working     working     work is happening now
+ *   Waiting     waiting     it needs a decision from you
+ *   Blocked     failed      it stopped and could not continue
+ *   Thinking    working     a longer run, distinguished by its motion
+ *   Done        responded   it finished and nobody has read it
+ *
+ * `thinking` is folded into `working` because a roster that distinguishes
+ * "working" from "thinking" for an agent the user cannot influence is three
+ * pixels of difference. It is kept as a *motion* below, which is where the
+ * distinction earns its keep: a long run should not look like a quick one.
+ *
+ * `sleeping` has no Grok equivalent because a sleeping agent is not a state a
+ * roster is in — it is what an avatar does when nothing is happening.
+ */
 export type AvatarMood =
   | "idle"
   | "working"
@@ -36,6 +60,52 @@ export type AvatarMood =
   | "failed"
   | "responded"
   | "sleeping";
+
+/**
+ * The motion the engine plays *over* a face.
+ *
+ * This axis is the fix for a real bug, and it is Grok Bot's model.
+ *
+ * `faceFor` used to return the mood's expression, so an agent's face was
+ * different while it worked than while it sat idle. That reads as two different
+ * agents: you cannot recognise the one you were watching a moment ago, and the
+ * whole point of a fleet is recognising your agents. So the axes are separated —
+ * **the expression is identity, derived from the name and fixed; the motion
+ * state is what the mood is doing, played over the top.**
+ *
+ * The states are named as Grok names them, so the vocabulary is the one people
+ * have already seen. Not all fifteen are reachable: a silhouette this simple
+ * cannot carry "swirl" or "comet" honestly, and a motion that looks like nothing
+ * is worse than no motion. `unreachable` below records which, so the omission is
+ * a decision rather than an oversight.
+ */
+export type MotionState =
+  | "idle"
+  | "thinking"
+  | "orbit"
+  | "alert"
+  | "notification"
+  | "exclamation"
+  | "sleep"
+  | "burst";
+
+/**
+ * The states Grok defines that this renderer deliberately does not use.
+ *
+ * `swirl`, `play`, `egg`, `hexagon`, `comet`, `wink` and `wideEyes` each need
+ * either a second element or a shape change to read at all. A 24-pixel avatar
+ * in a sidebar has no room for that, and an animation nobody can see is worse
+ * than a still frame because it costs a repaint.
+ */
+export const UNREACHABLE_MOTIONS = [
+  "swirl",
+  "play",
+  "egg",
+  "hexagon",
+  "comet",
+  "wink",
+  "wideEyes",
+] as const;
 
 /** Expression shapes, drawn as paths on the face. */
 export type Expression = "neutral" | "attentive" | "pleased" | "sad" | "curious" | "sleepy";
@@ -88,34 +158,65 @@ const EXPRESSIONS: Expression[] = ["neutral", "attentive", "pleased", "curious"]
  * the whole rendered avatar so it can never edit the silhouette — 0 holds still.
  */
 export interface MoodPresentation {
-  expression: Expression;
+  /** The motion state the engine plays. Grok's vocabulary. */
+  state: MotionState;
   /** Orbit rings, drawn around the body rather than in place of it. */
   rings: boolean;
   breathe: number;
   /** Whether this mood needs an animation clock rather than a held pose. */
   busy: boolean;
+  /**
+   * The one thing a mood is allowed to change about the face.
+   *
+   * Almost nothing, and that is the point. The face is identity; a mood that
+   * rewrites it turns a roster into a strobe. Exactly one override earns its
+   * place — see `MOODS` below for the argument on each.
+   */
+  expression?: Expression;
 }
 
 const MOODS: Readonly<Record<AvatarMood, MoodPresentation>> = {
-  idle: { expression: "neutral", rings: false, breathe: 0, busy: false },
-  // Working looks attentive rather than decorated: the agent is paying
-  // attention, which is what the face should say.
-  working: { expression: "attentive", rings: true, breathe: 0.03, busy: true },
-  // A pending question is curious — it is waiting for an answer.
-  waiting: { expression: "curious", rings: false, breathe: 0, busy: false },
-  failed: { expression: "sad", rings: false, breathe: 0, busy: false },
-  responded: { expression: "pleased", rings: false, breathe: 0, busy: false },
-  sleeping: { expression: "sleepy", rings: false, breathe: 0.02, busy: true },
+  // Idle is the resting pose: the agent's own face, not moving.
+  idle: { state: "idle", rings: false, breathe: 0, busy: false },
+  // Rings, because "work is happening and you do not need to look" is exactly
+  // what a ring means, and because it keeps the face available to be recognised.
+  working: { state: "thinking", rings: true, breathe: 0.03, busy: true },
+  // The one override. An agent waiting on you has to read as *paying attention*
+  // — otherwise it is indistinguishable from one that is idle and simply has not
+  // got round to you, which is the exact confusion this state exists to end.
+  waiting: { state: "notification", rings: false, breathe: 0, busy: false, expression: "attentive" },
+  failed: { state: "exclamation", rings: false, breathe: 0, busy: false },
+  responded: { state: "burst", rings: false, breathe: 0, busy: false },
+  sleeping: { state: "sleep", rings: false, breathe: 0.02, busy: true },
 };
 
 export function moodPresentation(mood: AvatarMood): MoodPresentation {
   return MOODS[mood] ?? MOODS.idle;
 }
 
-/** The expression to draw: the mood's, or the agent's resting face when idle. */
+/**
+ * The expression to draw.
+ *
+ * The agent's **own**, for every mood except the one that earns an override. A
+ * resting face chosen from the name is what makes an agent recognisable across
+ * states; a mood that rewrote it would mean watching an agent work makes it a
+ * different creature, and you cannot point at a colleague and say "that one".
+ *
+ * `waiting` is the exception and the reasoning is above in `MOODS`.
+ */
 export function faceFor(profile: AvatarProfile, mood: AvatarMood): Expression {
-  if (mood === "idle") return profile.resting;
-  return moodPresentation(mood).expression;
+  return moodPresentation(mood).expression ?? profile.resting;
+}
+
+/**
+ * The motion state for a mood.
+ *
+ * Separate from `faceFor` on purpose. They answer different questions — "which
+ * creature is this" and "what is it doing" — and a roster needs both, from the
+ * same avatar, at the same time.
+ */
+export function motionFor(mood: AvatarMood): MotionState {
+  return moodPresentation(mood).state;
 }
 
 /**
