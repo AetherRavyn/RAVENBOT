@@ -1556,3 +1556,106 @@ html.sidebar-resizing .app-frame {
   max-height: 18rem;
   overflow: auto;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Avatar studio
+
+   Grok's studio exists to answer one question — "will I be able to tell that one
+   is waiting on me?" — and the answer has to be given before the agent exists
+   rather than during an incident. So all six roster states are on screen at once
+   and moving, and the controls sit under them: the thing being judged stays in
+   view while the thing being changed moves underneath it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.raven-studio {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.raven-studio__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.625rem;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+.raven-studio__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 0.875rem;
+  padding: 0.875rem;
+}
+@media (max-width: 640px) {
+  .raven-studio__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.raven-studio__states {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  align-content: start;
+}
+
+.raven-studio__state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.375rem;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+}
+
+/* Room for the notification and exclamation rings, which sit outside the frame
+ * and would otherwise be clipped by the cell. */
+.raven-studio__state-frame {
+  display: inline-flex;
+  padding: 3px;
+}
+
+.raven-studio__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  min-width: 0;
+}
+
+.raven-studio__chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1875rem;
+  padding: 0.3125rem 0.375rem;
+  border-radius: 9px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+.raven-studio__chip:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+}
+.raven-studio__chip--on {
+  color: var(--brand-text);
+  background: var(--brand-soft);
+  border-color: color-mix(in oklab, var(--brand) 35%, transparent);
+}
+
+.raven-studio__foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.5rem 0.625rem;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
+}

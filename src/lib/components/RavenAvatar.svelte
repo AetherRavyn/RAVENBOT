@@ -13,7 +13,16 @@
    * animate. A remote avatar URL is a fixed bitmap, which is why it could not
    * react to anything.
    */
-  import { avatarProfile, faceFor, moodPresentation, hueVars, initials, type AvatarMood } from "$lib/avatar";
+  import {
+  avatarProfile,
+  faceFor,
+  moodPresentation,
+  hueVars,
+  initials,
+  type AvatarMood,
+  type Expression,
+  type Silhouette,
+} from "$lib/avatar";
   import { getDiceBearUrl, isNativeAvatarStyle } from "$lib/utils";
   import { styleAnimates, currentDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
 
@@ -38,6 +47,19 @@
      */
     style?: string | null;
     /**
+     * Override the derived silhouette.
+     *
+     * Only the studio needs this — everywhere else the shape comes from the
+     * name, which is what makes it identity. Exposed here rather than by a
+     * forked component so the studio previews the *real* avatar, and not a
+     * second implementation that can drift from it.
+     */
+    silhouette?: string | null;
+    /**
+     * Override the derived resting expression. The studio's other axis.
+     */
+    expression?: Expression | null;
+    /**
      * Whether to ask for the style's animation.
      *
      * Defaults to whatever the style does on its own. Set false to force a
@@ -56,13 +78,29 @@
     mood = "idle",
     imageUrl = null,
     style = DEFAULT_AVATAR_STYLE,
+    silhouette,
+    expression,
     animated,
     class: customClass = "",
     decorative = false,
   }: Props = $props();
 
   const profile = $derived(avatarProfile(name || "Agent"));
-  const face = $derived(faceFor(profile, mood));
+  /**
+   * The face: the agent's resting one, unless the mood overrides it.
+   *
+   * The `expression` prop replaces the *resting* face, not the mood's. That
+   * distinction is load-bearing: it is how the studio previews a chosen face
+   * while still showing that an agent waiting on you looks attentive. An
+   * override applied to the mood would pin every state to the same drawing and
+   * the studio would preview the opposite of what the fleet does.
+   */
+  const face = $derived(
+    (moodPresentation(mood).expression ?? expression ?? faceFor(profile, mood)) as Expression,
+  );
+  // The derived silhouette is identity, so an override wins; otherwise the
+  // name's, unchanged.
+  const shape = $derived((silhouette as Silhouette | null) ?? profile.silhouette);
   const moodStyle = $derived(moodPresentation(mood));
   const vars = $derived(hueVars(profile.hue));
 
@@ -153,7 +191,7 @@
     crystal: "M50 6 L78 30 L78 70 L50 94 L22 70 L22 30 Z",
   };
 
-  const body = $derived(SILHOUETTE_PATHS[profile.silhouette] ?? SILHOUETTE_PATHS.round);
+  const body = $derived(SILHOUETTE_PATHS[shape] ?? SILHOUETTE_PATHS.round);
 
   /**
    * Face geometry, as data rather than markup.
@@ -215,7 +253,7 @@
   class="raven-avatar {customClass}"
   data-mood={mood}
   data-state={moodStyle.state}
-  data-silhouette={profile.silhouette}
+  data-silhouette={shape}
   data-source={source}
   data-animates={imageAnimates || undefined}
   style="--av-accent: {vars.accent}; --av-dim: {vars.dim}; --av-deep: {vars.deep}; --av-breathe: {moodStyle.breathe}"

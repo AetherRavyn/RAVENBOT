@@ -2,13 +2,14 @@
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
-  import { getDiceBearUrl, dicebearStyles } from "$lib/utils";
+  import { getDiceBearUrl, dicebearStyles, isNativeAvatarStyle } from "$lib/utils";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
+  import AvatarStudio from "$lib/components/AvatarStudio.svelte";
   import { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
   import { avatarAllLabel, avatarCategoryLabel, avatarStyleDescription } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
   import { t } from "$lib/i18n";
-  import { Sparkles, RefreshCw, Image, Wand2, Check, Palette } from "@lucide/svelte";
+  import { Sparkles, RefreshCw, Image, Wand2, Check, Palette, Dices } from "@lucide/svelte";
 
   interface Props {
     seed: string;
@@ -28,6 +29,19 @@
   // svelte-ignore state_referenced_locally
   let useCustom = $state(Boolean(customUrl && !customUrl.includes("dicebear.com")));
   let selectedCategory = $state("All");
+
+  /**
+   * The studio is open.
+   *
+   * Only for the locally drawn face. A DiceBear style carries its animation
+   * inside its own SVG and offers no expression to compose, so there would be
+   * nothing here to arrange — the state strip would just be the same six
+   * pictures the picker already shows.
+   */
+  let studioOpen = $state(false);
+  // What the studio last applied, so the hero preview shows the same face.
+  let previewSilhouette = $state<string | null>(null);
+  let previewExpression = $state<any>(null);
 
   /**
    * Whether to ask for the animation.
@@ -91,10 +105,16 @@
   function pick(s: string) {
     selectedStyle = s;
     useCustom = false;
+    // Picking the drawn face is a request to design it, so the studio opens.
+    if (isNativeAvatarStyle(s)) studioOpen = true;
     // "" for a style drawn by this app rather than fetched. The avatar falls
     // back to the style slug, so an empty URL is a valid thing to store — and
     // storing a stale remote URL for a local style is not.
     onSelect(getDiceBearUrl(previewSeed || "Agent", s), s);
+  }
+
+  function openStudio() {
+    studioOpen = true;
   }
 
   function randomizeSeed() {
@@ -209,6 +229,39 @@
       {/each}
     </div>
   </div>
+
+  <!--
+    The studio. Opened by picking the drawn face, or by the button — which only
+    appears for that style, because there is nothing to arrange for a remote one.
+  -->
+  {#if studioOpen || isNativeAvatarStyle(selectedStyle)}
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        {t("studio.title")}
+      </span>
+      {#if !studioOpen}
+        <Button size="sm" variant="outline" class="h-7 gap-1.5 text-[11px]" onclick={openStudio}>
+          <Dices class="size-3" /> {t("studio.open")}
+        </Button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if studioOpen}
+    <AvatarStudio
+      seed={previewSeed || "Agent"}
+      expression={previewExpression}
+      silhouette={previewSilhouette ?? undefined}
+      onApply={(sil, expr) => {
+        previewSilhouette = sil;
+        previewExpression = expr;
+        selectedStyle = "raven-native";
+        studioOpen = false;
+        onSelect("", "raven-native");
+      }}
+      onClose={() => (studioOpen = false)}
+    />
+  {/if}
 
   <!-- Style Presets Grid -->
   <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-40 overflow-y-auto no-scrollbar pr-1 min-w-0" role="radiogroup" aria-label={t("avatar.styleLibrary", { n: allStyles.length })}>
