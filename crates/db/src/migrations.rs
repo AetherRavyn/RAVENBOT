@@ -14,7 +14,7 @@ pub enum MigrationError {
 }
 
 /// Migration version
-pub const CURRENT_VERSION: i32 = 19;
+pub const CURRENT_VERSION: i32 = 21;
 
 /// SQL for each migration version
 const MIGRATIONS: &[(i32, &str)] = &[
@@ -38,6 +38,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (18, include_str!("migrations/018_custom_providers.sql")),
     (19, include_str!("migrations/019_mcp_remote_plugins.sql")),
     (20, include_str!("migrations/020_bot_sort_order.sql")),
+    (21, include_str!("migrations/021_chatroom_office_threads.sql")),
 ];
 
 /// Run all pending migrations

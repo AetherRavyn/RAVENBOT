@@ -1197,19 +1197,55 @@ impl Runtime {
     }
 
     /// The office a thread belongs to, if any.
+    ///
+    /// Goes through `office_id_for_thread` rather than querying directly, because
+    /// "which office is this thread in" has two answers now and picking the wrong
+    /// one is how a delegated agent ends up working outside the office that
+    /// asked for the work.
     async fn office_of(&self, thread_id: Uuid) -> Option<ravenbot_core::ChatRoom> {
-        let chatroom_id: Option<String> =
+        let cid = self.office_id_for_thread(thread_id).await?;
+        ravenbot_db::queries::ChatRoomQueries::get(self.db.pool(), cid)
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Which office is this thread working inside?
+    ///
+    /// Two tables, because an office has two kinds of thread and the distinction
+    /// is the whole point. `chatroom_threads` holds the office's *own*
+    /// conversation — one per office, its `chatroom_id` being the primary key.
+    /// `chatroom_office_threads` holds threads doing work *inside* an office: a
+    /// delegated agent, or a graph node.
+    ///
+    /// They have to agree, and for one thread they cannot: a thread is either an
+    /// office's conversation or it works inside one. So the second lookup is only
+    /// consulted when the first misses, which is the case that matters for
+    /// security — a delegated agent has no row of its own in `chatroom_threads`,
+    /// so the office that confines it is found here or not at all.
+    ///
+    /// This runs on every tool call, to enforce capabilities and to resolve the
+    /// workspace, so it is worth the index it relies on.
+    async fn office_id_for_thread(&self, thread_id: Uuid) -> Option<Uuid> {
+        let owned: Option<String> =
             sqlx::query_scalar("SELECT chatroom_id FROM chatroom_threads WHERE thread_id = ?")
                 .bind(thread_id.to_string())
                 .fetch_optional(self.db.pool())
                 .await
                 .ok()
                 .flatten();
-        let cid = Uuid::parse_str(&chatroom_id?).ok()?;
-        ravenbot_db::queries::ChatRoomQueries::get(self.db.pool(), cid)
-            .await
-            .ok()
-            .flatten()
+        if let Some(cid) = owned.as_deref().and_then(|s| Uuid::parse_str(s).ok()) {
+            return Some(cid);
+        }
+        let working: Option<String> = sqlx::query_scalar(
+            "SELECT chatroom_id FROM chatroom_office_threads WHERE thread_id = ?",
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(self.db.pool())
+        .await
+        .ok()
+        .flatten();
+        working.as_deref().and_then(|s| Uuid::parse_str(s).ok())
     }
 
     /// Put a newly created thread inside `office`: linked to the room, and
@@ -1219,12 +1255,27 @@ impl Runtime {
     /// thread. Anything that runs work *for* an office — a parallel node, or a
     /// delegated agent — has to be in the room, or it silently works somewhere
     /// else and reports back having done so.
+    ///
+    /// The link goes in `chatroom_office_threads`, not `chatroom_threads`.
+    ///
+    /// Writing it to `chatroom_threads` was the bug: that table's primary key is
+    /// `chatroom_id`, so it holds the office's *own conversation* and exactly one
+    /// of them. `INSERT OR REPLACE` there therefore meant "delete the office's
+    /// conversation link and put mine in its place", and one delegation left the
+    /// office's own transcript unreachable with its messages orphaned in
+    /// `messages` under a thread id nothing pointed at any more.
+    ///
+    /// `INSERT OR REPLACE` is safe in the new table because its key is
+    /// `(chatroom_id, thread_id)`: re-linking the same thread is a no-op, so a
+    /// retry cannot duplicate it.
     async fn link_thread_to_office(
         &self,
         thread: &ravenbot_core::Thread,
         office: &ravenbot_core::ChatRoom,
     ) -> Result<(), String> {
-        sqlx::query("INSERT OR REPLACE INTO chatroom_threads (chatroom_id, thread_id, created_at) VALUES (?, ?, ?)")
+        sqlx::query(
+            "INSERT OR REPLACE INTO chatroom_office_threads (chatroom_id, thread_id, created_at) VALUES (?, ?, ?)",
+        )
             .bind(office.id.to_string())
             .bind(thread.id.to_string())
             .bind(chrono::Utc::now().to_rfc3339())
@@ -1902,15 +1953,13 @@ impl Runtime {
             }
         }
 
-        let chatroom_id: Option<Uuid> = sqlx::query_scalar::<_, String>(
-            "SELECT chatroom_id FROM chatroom_threads WHERE thread_id = ?",
-        )
-        .bind(thread_id.to_string())
-        .fetch_optional(self.db.pool())
-        .await
-        .ok()
-        .flatten()
-        .and_then(|s| Uuid::parse_str(&s).ok());
+        // Both kinds of office thread, because the thread asking for a workspace
+        // may be an office's own conversation or a delegated agent working
+        // inside one. A delegated agent resolves to the office that asked for the
+        // work, and inherits its folders — which is the confinement that stops a
+        // delegated agent quietly writing somewhere else and reporting back as
+        // though it had not.
+        let chatroom_id: Option<Uuid> = self.office_id_for_thread(thread_id).await;
 
         // 3) Office project folders (the thread's chatroom).
         if let Some(cid) = chatroom_id {
@@ -2406,18 +2455,17 @@ impl Runtime {
             });
         }
 
-        // Check if this thread belongs to a chatroom/office for shared team intelligence
-        let chatroom_row: Option<(String,)> = sqlx::query_as(
-            "SELECT chatroom_id FROM chatroom_threads WHERE thread_id = ?"
-        )
-        .bind(run.thread_id.to_string())
-        .fetch_optional(self.db.pool())
-        .await
-        .unwrap_or(None);
-
+        // Does this thread belong to an office? Either as the office's own
+        // conversation, or as work running inside one.
+        //
+        // Both, deliberately. A delegated agent that cannot see the office's
+        // goal, policy, roster and memory is an agent answering a question with
+        // no idea what it is for — which is the failure mode this whole block
+        // exists to prevent, and it is exactly what the old single-table lookup
+        // caused once a delegation had replaced the office's link.
         let mut office_context = String::new();
-        if let Some((cid_str,)) = chatroom_row {
-            if let Ok(cid) = uuid::Uuid::parse_str(&cid_str) {
+        {
+            if let Some(cid) = self.office_id_for_thread(run.thread_id).await {
                 if let Ok(Some(room)) = ravenbot_db::queries::ChatRoomQueries::get(self.db.pool(), cid).await {
                     let mut parts = vec![format!("Office: {} ({})", room.name, room.office_template)];
                     if let Some(goal) = &room.goal {
@@ -4108,6 +4156,190 @@ mod integration_tests {
     /// at their initial values for the life of every bot. The UI compensated by
     /// deriving state from the event stream, which is right while a window is
     /// open and useless after a restart.
+    /// One delegation must not cost an office its own conversation.
+    ///
+    /// The office's own thread lives in `chatroom_threads`, whose primary key is
+    /// `chatroom_id` — one thread per office, asserted by the schema. A
+    /// delegated agent's thread was being linked into *that* table with
+    /// `INSERT OR REPLACE`, which therefore meant "delete the office's own link
+    /// and put mine in its place".
+    ///
+    /// The damage was silent and total: every office that had ever delegated
+    /// opened onto its child's transcript, and its real conversation sat in
+    /// `messages` under a thread id nothing pointed at any more. Nothing errored,
+    /// nothing warned, and no row was deleted, so it presented as "the office's
+    /// history disappeared".
+    ///
+    /// Both directions matter here. The office's thread has to survive, *and* the
+    /// child's has to still resolve to the office — that reverse resolution is
+    /// what confines the delegated agent to the office's workspace and injects
+    /// its goal, policy and memory, so dropping it re-breaks the original bug
+    /// with the office's walls gone instead of its history.
+    #[tokio::test]
+    async fn a_delegation_does_not_displace_the_offices_own_thread() {
+        let (runtime, room, office, child) = office_with_a_delegation().await;
+
+        // The office still opens onto its own conversation. This is the query
+        // `get_chatroom_thread` runs, unchanged, and it must keep working.
+        let opened: Option<String> = sqlx::query_scalar(
+            "SELECT thread_id FROM chatroom_threads WHERE chatroom_id = ?",
+        )
+        .bind(room.id.to_string())
+        .fetch_optional(runtime.db.pool())
+        .await
+        .unwrap();
+        assert_eq!(
+            opened.as_deref(),
+            Some(office.id.to_string().as_str()),
+            "delegation displaced the office's own conversation",
+        );
+
+        // And the child resolves to the office, which is what keeps it inside the
+        // workspace and gives it the office's context.
+        assert_eq!(
+            runtime.office_id_for_thread(child.id).await,
+            Some(room.id),
+            "the delegated thread lost its office",
+        );
+        assert_eq!(
+            runtime.office_of(child.id).await.map(|r| r.id),
+            Some(room.id),
+            "and office_of cannot see it either",
+        );
+    }
+
+    /// The office's conversation must not resolve as if it were delegated work.
+    ///
+    /// Easy to get wrong in the other direction: if the helper consulted the
+    /// delegation table first, an office's own thread could be attributed to
+    /// whichever office happened to link it as work. Harmless today, and exactly
+    /// the kind of thing that becomes a workspace-escape bug the first time two
+    /// offices are involved.
+    #[tokio::test]
+    async fn an_offices_own_thread_resolves_to_its_own_office() {
+        let (runtime, room, office, _) = office_with_a_delegation().await;
+        assert_eq!(runtime.office_id_for_thread(office.id).await, Some(room.id));
+    }
+
+    /// Repeated delegation accumulates, and re-linking is a no-op.
+    ///
+    /// `INSERT OR REPLACE` was the instrument of the bug, so the replacement has
+    /// to be shown to be safe in its new home: the key there is
+    /// `(chatroom_id, thread_id)`, so replacing means "this exact link already
+    /// exists" rather than "delete someone else's row".
+    #[tokio::test]
+    async fn repeated_delegation_does_not_duplicate_links() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let room = ravenbot_core::ChatRoom::new("Repeated", "office", "it-office");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        let owner = Bot::new("Owner", "asks for help");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner).await.unwrap();
+
+        let office = Thread::new(owner.id, "office group");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office).await.unwrap();
+        link_own_thread(db.pool(), room.id, office.id).await;
+
+        for _ in 0..3 {
+            let child = Thread::new(owner.id, "Delegation");
+            ravenbot_db::queries::ThreadQueries::create(db.pool(), &child).await.unwrap();
+            runtime.link_thread_to_office(&child, &room).await.unwrap();
+            // A retry must not duplicate the link.
+            runtime.link_thread_to_office(&child, &room).await.unwrap();
+        }
+
+        let rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chatroom_office_threads WHERE chatroom_id = ?")
+                .bind(room.id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(rows, 3, "one row per delegated agent, not per link attempt");
+
+        // And the office's own link is still exactly where it was, in its own
+        // table, untouched.
+        let own: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM chatroom_threads WHERE chatroom_id = ?",
+        )
+        .bind(room.id.to_string())
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(own, 1);
+    }
+
+    /// An office with no delegations behaves exactly as it always did.
+    ///
+    /// The migration is additive, so the risk is not the schema but the new
+    /// lookup: if `office_id_for_thread` returned `None` for an ordinary office
+    /// thread, every office would silently lose its workspace confinement and
+    /// its goal and policy — failing *open*, into the default project directory.
+    #[tokio::test]
+    async fn an_undelegated_office_still_resolves() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let room = ravenbot_core::ChatRoom::new("Plain", "office", "it-office");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        let owner = Bot::new("Owner", "asks for help");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner).await.unwrap();
+        let office = Thread::new(owner.id, "office group");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office).await.unwrap();
+        link_own_thread(db.pool(), room.id, office.id).await;
+
+        assert_eq!(runtime.office_id_for_thread(office.id).await, Some(room.id));
+    }
+
+    /// A thread in no office resolves to nothing rather than guessing.
+    ///
+    /// The callers treat `None` as "use the default workspace", which is the safe
+    /// reading, but only if it is a real answer and not an error being swallowed.
+    #[tokio::test]
+    async fn a_thread_in_no_office_resolves_to_nothing() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let bot = Bot::new("Solo", "no office");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        let thread = Thread::new(bot.id, "direct conversation");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+
+        assert_eq!(runtime.office_id_for_thread(thread.id).await, None);
+        assert!(runtime.office_of(thread.id).await.is_none());
+    }
+
+    /// An office, its own thread, and one agent delegated inside it.
+    async fn office_with_a_delegation() -> (Runtime, ravenbot_core::ChatRoom, Thread, Thread) {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let room = ravenbot_core::ChatRoom::new("Two Threads", "office", "it-office");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+
+        let owner = Bot::new("Owner", "asks for help");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner).await.unwrap();
+
+        let office = Thread::new(owner.id, "office group");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office).await.unwrap();
+        link_own_thread(db.pool(), room.id, office.id).await;
+
+        let child = Thread::new(owner.id, "Delegation: check the logs");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &child).await.unwrap();
+        runtime.link_thread_to_office(&child, &room).await.unwrap();
+
+        (runtime, room, office, child)
+    }
+
+    /// The office's own conversation link, exactly as `ensure_chatroom_thread`
+    /// writes it.
+    async fn link_own_thread(pool: &sqlx::SqlitePool, room: Uuid, thread: Uuid) {
+        sqlx::query(
+            "INSERT OR REPLACE INTO chatroom_threads (chatroom_id, thread_id) VALUES (?, ?)",
+        )
+        .bind(room.to_string())
+        .bind(thread.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     /// A delegated agent must stay in the office that asked for the work.
     ///
     /// `exec_delegation` created a thread with no `chatroom_threads` row, so
@@ -4173,15 +4405,29 @@ mod integration_tests {
             .await
             .expect("linking the delegated thread");
 
-        // Linked to the room…
+        // Linked to the room — in the table for threads *working inside* an
+        // office, not the one holding the office's own conversation. This
+        // assertion used to read `chatroom_threads`, where the link replaced the
+        // office's own row rather than joining it.
         let linked: Option<String> = sqlx::query_scalar(
-            "SELECT chatroom_id FROM chatroom_threads WHERE thread_id = ?",
+            "SELECT chatroom_id FROM chatroom_office_threads WHERE thread_id = ?",
         )
         .bind(delegate_thread.id.to_string())
         .fetch_optional(db.pool())
         .await
         .unwrap();
         assert_eq!(linked, Some(room.id.to_string()));
+
+        // And the office's own conversation is still linked, which is the half
+        // that used to be destroyed.
+        let office_still_linked: Option<String> = sqlx::query_scalar(
+            "SELECT thread_id FROM chatroom_threads WHERE chatroom_id = ?",
+        )
+        .bind(room.id.to_string())
+        .fetch_optional(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(office_still_linked, Some(office_thread.id.to_string()));
 
         // …and carrying the office's folders, so the runtime confines it there.
         let folders: Option<String> =
