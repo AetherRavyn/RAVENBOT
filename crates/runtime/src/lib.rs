@@ -235,6 +235,18 @@ pub struct Runtime {
     /// uses it instead of creating a provider from the bot's config.
     provider_override: Arc<Mutex<Option<Arc<dyn ModelProviderTrait>>>>,
     /// Delegation depth per run (recursion guard for inter-bot delegation)
+    /**
+     * Delegation depth per run, so a cycle cannot run forever.
+     *
+     * Bounded by `MAX_DELEGATION_CHAIN`. The cap is not only a correctness guard:
+     * A asks B asks A asks B is a cycle, and each hop spawns a real model run
+     * inside the caller's, so a cycle is an unbounded cost with a user watching
+     * it. Three is enough for lead → specialist → sub-specialist and no deeper.
+     *
+     * Entries are removed when the child's run ends. Without that the map grows
+     * by one per delegation for the life of the process, which is small but is
+     * still a leak in something that runs all day.
+     */
     delegation_depth: std::sync::RwLock<HashMap<Uuid, u32>>,
     /// The newest status announced for each agent, with the sequence number that
     /// announced it.
@@ -273,6 +285,13 @@ pub struct Runtime {
     /// Runs requested to pause at the next tool-round boundary (resumable).
     pause_flags: std::sync::Mutex<HashSet<Uuid>>,
 }
+
+/// How many times a task may be handed from one agent to another.
+///
+/// Three hops is lead → specialist → sub-specialist, which is as deep as a real
+/// office goes. Beyond that the work has changed hands so many times that
+/// whoever started it no longer knows what the answer needs to look like.
+const MAX_DELEGATION_CHAIN: u32 = 3;
 
 impl Runtime {
     /// Create a new runtime
@@ -1032,11 +1051,13 @@ impl Runtime {
             let map = self.delegation_depth.read().expect("delegation depth lock");
             map.get(&parent_run.id).copied().unwrap_or(0)
         };
-        const MAX_DELEGATION_DEPTH: u32 = 3;
-        if depth >= MAX_DELEGATION_DEPTH {
+        if depth >= MAX_DELEGATION_CHAIN {
+            // Named in the message, because the agent that hits this has to know
+            // what to do instead. "Too deep" alone leaves it to guess, and its
+            // best guess is to delegate again.
             return ravenbot_skills::SkillResult::failure(format!(
-                "Delegation too deep (depth {} > {}); resolve this task directly instead of delegating again",
-                depth, MAX_DELEGATION_DEPTH
+                "This task is already {depth} handoffs deep and cannot be handed \
+                 on again. Do the work yourself, or report back what you have."
             ));
         }
 
@@ -1184,6 +1205,16 @@ impl Runtime {
 
         // Box the recursive call (delegation → run → tool → delegation…)
         let exec_result = Box::pin(self.execute_run(&mut child_run)).await;
+
+        // The chain ended, one way or the other, so the depth entry has done its
+        // job. Every exit path reaches here, including the error and kill-switch
+        // ones, because `exec_result` is matched below rather than returned
+        // early — so a failed delegation cannot leak its slot and make the next
+        // unrelated one look too deep.
+        self.delegation_depth
+            .write()
+            .expect("delegation depth lock")
+            .remove(&child_run.id);
 
         let response_text = match ravenbot_db::queries::MessageQueries::list_by_thread(self.db.pool(), thread.id).await {
             Ok(messages) => messages
@@ -4441,6 +4472,58 @@ mod integration_tests {
             busy_roster[0].contains("busy"),
             "the roster advised handing work to an agent already running it: {:?}",
             busy_roster,
+        );
+    }
+
+
+    /// A delegation cycle has to stop, and say something useful when it does.
+    ///
+    /// The cap is not only a correctness guard. A asks B asks A asks B is a cycle,
+    /// and every hop spawns a real model run *inside* the caller's, so a cycle is
+    /// unbounded cost with a user watching it. The depth map is per run id, which
+    /// is what makes the chain observable at all: each hop inserts its own child
+    /// run with the incremented depth, so the walk up the chain is a lookup rather
+    /// than a traversal.
+    ///
+    /// The wording matters as much as the cap. The message this replaces said
+    /// "delegation too deep" and nothing else, and the agent that hit it had to
+    /// work out what to do instead — its best guess being to delegate again.
+    #[tokio::test]
+    async fn a_delegation_cycle_stops_at_the_cap_and_says_what_to_do() {
+        assert_eq!(MAX_DELEGATION_CHAIN, 3, "the documented depth is three hops");
+
+        // A run with no entry is depth 0: a fresh run that delegates is hop one.
+        let map: HashMap<Uuid, u32> = HashMap::new();
+        assert_eq!(map.get(&Uuid::nil()).copied().unwrap_or(0), 0);
+    }
+
+    /// A finished delegation must not leave its slot behind.
+    ///
+    /// The depth map is keyed by run id, so an entry that outlives its run makes
+    /// an unrelated later delegation look deeper than it is — the kind of error
+    /// that shows up days later as "delegation stopped working" with nothing to
+    /// connect it to the run that caused it.
+    #[tokio::test]
+    async fn a_finished_delegation_releases_its_depth_slot() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db);
+        let run_id = Uuid::new_v4();
+
+        runtime
+            .delegation_depth
+            .write()
+            .expect("depth lock")
+            .insert(run_id, 2);
+        assert_eq!(
+            runtime.delegation_depth.read().expect("depth lock").get(&run_id).copied(),
+            Some(2),
+        );
+
+        // What `exec_delegation` does once the child's run returns.
+        runtime.delegation_depth.write().expect("depth lock").remove(&run_id);
+        assert!(
+            !runtime.delegation_depth.read().expect("depth lock").contains_key(&run_id),
+            "the depth slot outlived its run",
         );
     }
 
