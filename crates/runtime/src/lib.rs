@@ -1210,6 +1210,89 @@ impl Runtime {
             .flatten()
     }
 
+    /// Who else is in this office, and what they are doing right now.
+    ///
+    /// This is the difference between an office and a queue. Without it an agent
+    /// is a process with a prompt: it cannot tell that a colleague already has
+    /// the job, that the specialist it is about to ask for is mid-task, or that
+    /// the only other member is the one who could have done it better. So it
+    /// either duplicates work or delegates blind.
+    ///
+    /// The office-context block already claimed to give an agent its "goal,
+    /// policy, roster and memory" and supplied three of the four. This is the
+    /// fourth.
+    ///
+    /// `exclude` is the agent asking. It knows who it is, and a roster listing
+    /// itself reads as either a mistake or a sign that the roster is not what it
+    /// claims — which is exactly the doubt that makes people ignore it. So the
+    /// list is colleagues only, and the whole section is omitted when there are
+    /// none, because "Team: (nobody)" is noise dressed as information.
+    ///
+    /// Status is the reason this is not just a list of names. A roster of names
+    /// says who *could* help; a roster with status says who is free, and that is
+    /// the difference between delegating to a specialist who answers in a minute
+    /// and one who is already three tool calls deep.
+    async fn office_roster(
+        &self,
+        chatroom_id: Uuid,
+        exclude: Uuid,
+    ) -> Vec<String> {
+        #[derive(sqlx::FromRow)]
+        struct RosterRow {
+            id: String,
+            name: String,
+            rank: Option<String>,
+            specialty: Option<String>,
+            status: Option<String>,
+            hidden: Option<i64>,
+        }
+
+        let rows: Vec<RosterRow> = sqlx::query_as(
+            "SELECT b.id, b.name, m.rank, m.specialty, b.status, b.hidden
+               FROM chatroom_members m
+               JOIN bots b ON b.id = m.bot_id
+              WHERE m.chatroom_id = ?
+              ORDER BY b.sort_order, b.name",
+        )
+        .bind(chatroom_id.to_string())
+        .fetch_all(self.db.pool())
+        .await
+        .unwrap_or_default();
+
+        rows.into_iter()
+            .filter(|r| r.id != exclude.to_string())
+            // Hidden members are hidden from the roster UI, so they must be
+            // hidden here too — otherwise the agent sees a colleague the user
+            // cannot see, which is both a leak and a distraction.
+            .filter(|r| r.hidden.unwrap_or(0) == 0)
+            .map(|r| {
+                // Role and specialty first, because "who do I ask" is answered by
+                // what they do, not by what they are called.
+                let role = [r.rank.as_deref(), r.specialty.as_deref()]
+                    .into_iter()
+                    .flatten()
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                // A paused agent is not free. The user stopped it deliberately, so
+                // delegating to it means work that silently never happens — and
+                // the delegating agent gets no signal that it didn't.
+                let state = match r.status.as_deref() {
+                    Some("thinking" | "running_tool") => "busy",
+                    Some("waiting_on_user") => "waiting on the user",
+                    Some("paused") => "PAUSED — do not delegate to this agent",
+                    _ => "free",
+                };
+                if role.is_empty() {
+                    format!("• {} — {state}", r.name)
+                } else {
+                    format!("• {} ({role}) — {state}", r.name)
+                }
+            })
+            .collect()
+    }
+
     /// Which office is this thread working inside?
     ///
     /// Two tables, because an office has two kinds of thread and the distinction
@@ -2473,6 +2556,21 @@ impl Runtime {
                     }
                     if let Some(policy) = &room.policy {
                         parts.push(format!("Office Standards & Policy: {}", policy));
+                    }
+                    // The roster, before the shared knowledge: who is here is what
+                    // decides whether the answer is "ask someone" or "do it
+                    // yourself", and that judgement comes first.
+                    let colleagues = self.office_roster(cid, run.bot_id).await;
+                    if !colleagues.is_empty() {
+                        parts.push(format!(
+                            "Your colleagues here ({count}):\n{list}\n\
+                             Delegate rather than duplicate: if a colleague is free and \
+                             the work is their specialty, hand it to them with the \
+                             delegate tool. If they are busy, do it yourself rather \
+                             than queue behind them.",
+                            count = colleagues.len(),
+                            list = colleagues.join("\n"),
+                        ));
                     }
                     if let Ok(memories) = self.office_memory.retrieve(cid, last_user_message, 5, 0.3).await {
                         if !memories.is_empty() {
@@ -4156,6 +4254,207 @@ mod integration_tests {
     /// at their initial values for the life of every bot. The UI compensated by
     /// deriving state from the event stream, which is right while a window is
     /// open and useless after a restart.
+    /// An agent's stored status has to follow the run.
+    ///
+    /// `bots.status` and `bots.last_active_at` were only ever written by the
+    /// whole-row insert and update, which nothing calls mid-run, so both stayed
+    /// at their initial values for the life of every bot. The UI compensated by
+    /// deriving state from the event stream, which is right while a window is
+    /// open and useless after a restart.
+    ///
+    /// It is not only a UI concern any more. The office roster reads
+    /// `bots.status` to tell a delegating agent which colleagues are free, so a
+    /// stale status means the roster advises delegating to an agent that is
+    /// already mid-run — reintroducing, through a different door, the duplicate
+    /// work the roster exists to prevent.
+    #[tokio::test]
+    async fn a_running_agents_stored_status_follows_the_run() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let bot = Bot::new("Ledger", "keeps books");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+
+        /// Poll rather than read once, and the reason is the design rather than a
+        /// test convenience.
+        ///
+        /// The only production caller of `mark_bot_status` sits inside the stream
+        /// emitter, which is a synchronous callback into the UI, so it cannot
+        /// await. The write is therefore spawned — correctly, because a slow disk
+        /// must not stall a run's event loop to update a display hint.
+        ///
+        /// What makes that safe is `mark_all_idle` at startup: an app that is not
+        /// running cannot have working agents, so a write lost to a hard exit is
+        /// unreachable rather than merely unlikely. Persisting the final status
+        /// synchronously would buy nothing and would put a database round trip on
+        /// the path of every streamed token.
+        async fn wait_for_status(pool: &sqlx::SqlitePool, bot: Uuid, expected: &str) {
+            for _ in 0..100 {
+                let raw: Option<String> =
+                    sqlx::query_scalar("SELECT status FROM bots WHERE id = ?")
+                        .bind(bot.to_string())
+                        .fetch_one(pool)
+                        .await
+                        .unwrap();
+                if raw.as_deref() == Some(expected) {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            panic!("the stored status never reached {expected}");
+        }
+
+        runtime.mark_bot_status(bot.id, ravenbot_core::BotStatus::Thinking);
+        wait_for_status(db.pool(), bot.id, "thinking").await;
+
+        runtime.mark_bot_status(bot.id, ravenbot_core::BotStatus::RunningTool);
+        wait_for_status(db.pool(), bot.id, "running_tool").await;
+
+        runtime.mark_bot_status(bot.id, ravenbot_core::BotStatus::Idle);
+        wait_for_status(db.pool(), bot.id, "idle").await;
+
+        // And the roster must see it, because that is what the test is for.
+        let room = ravenbot_core::ChatRoom::new("Roster", "office", "it-office");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        let asker = member(&db, &room, "Asker", "Lead", "General", "idle").await;
+        ravenbot_db::queries::ChatRoomQueries::add_member(
+            db.pool(),
+            &ravenbot_core::ChatRoomMember {
+                chatroom_id: room.id,
+                bot_id: bot.id,
+                rank: "Ledger".into(),
+                specialty: "Books".into(),
+                joined_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let idle_roster = runtime.office_roster(room.id, asker.id).await;
+        assert!(idle_roster[0].contains("free"), "{:?}", idle_roster);
+
+        runtime.mark_bot_status(bot.id, ravenbot_core::BotStatus::RunningTool);
+        wait_for_status(db.pool(), bot.id, "running_tool").await;
+        let busy_roster = runtime.office_roster(room.id, asker.id).await;
+        assert!(
+            busy_roster[0].contains("busy"),
+            "the roster advised handing work to an agent already running it: {:?}",
+            busy_roster,
+        );
+    }
+
+
+    /// An office has to tell its agents who else is in it.
+    ///
+    /// Without a roster an agent is a process with a prompt. It cannot tell that a
+    /// colleague already has the job, that the specialist it is about to ask is
+    /// mid-task, or that the only other member is the one who could have done it
+    /// better — so it either duplicates work or delegates blind. This is the
+    /// difference between an office and a queue, and the office-context block
+    /// already claimed to supply it while supplying only goal, policy and memory.
+    ///
+    /// What the roster must get right:
+    ///
+    ///  - **The asking agent is not in it.** It knows who it is, and a roster
+    ///    listing itself reads as broken — which is exactly the doubt that makes
+    ///    people ignore a roster.
+    ///  - **Busy is distinguished from free.** Names say who *could* help; status
+    ///    says who is free, which is the difference between a delegation that
+    ///    returns in a minute and one that queues behind a long run.
+    ///  - **Paused is not free.** The user stopped that agent deliberately, and
+    ///    delegating to it is work that silently never happens.
+    ///  - **Hidden members are absent.** They are hidden from the roster UI, so
+    ///    showing one here would leak a colleague the user cannot see.
+    #[tokio::test]
+    async fn an_offices_roster_lists_colleagues_and_their_availability() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let room = ravenbot_core::ChatRoom::new("Roster", "office", "it-office");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+
+        member(&db, &room, "Priya", "Lead", "Orchestration", "idle").await;
+        member(&db, &room, "Sam", "Developer", "Implementation", "running_tool").await;
+        member(&db, &room, "Kim", "Auditor", "Review", "paused").await;
+        let ghost = member(&db, &room, "Ghost", "Intern", "Nothing", "idle").await;
+        // Set directly: `bots.hidden` is written outside `BotQueries`, and what is
+        // under test here is the roster's filtering, not the setter.
+        sqlx::query("UPDATE bots SET hidden = 1 WHERE id = ?")
+            .bind(ghost.id.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        // The asking agent is in the office too, and must not appear in its own
+        // roster.
+        let me = member(&db, &room, "Me", "Solver", "General", "thinking").await;
+
+        let roster = runtime.office_roster(room.id, me.id).await;
+        let joined = roster.join("\n");
+
+        assert_eq!(roster.len(), 3, "hidden members are excluded: {joined}");
+        assert!(!joined.contains("Ghost"), "a hidden member leaked: {joined}");
+        assert!(!joined.contains("Me"), "the roster listed the asker: {joined}");
+
+        // Role and specialty, because "who do I ask" is answered by what they do.
+        assert!(joined.contains("Priya (Lead, Orchestration) — free"), "{joined}");
+        assert!(joined.contains("Sam (Developer, Implementation) — busy"), "{joined}");
+        assert!(joined.contains("PAUSED"), "a paused agent reads as available: {joined}");
+        assert!(joined.contains("Kim"), "{joined}");
+
+        // Busy really is different from free — that is the whole point of the
+        // status column, and without it the roster is a list of names.
+        assert_ne!(roster[0], roster[1]);
+    }
+
+    /// A solo office gets no roster section at all.
+    ///
+    /// "Team: (nobody)" is noise dressed as information, and a section that can
+    /// be empty should be omitted rather than emitted empty — otherwise every
+    /// single-agent office's prompt carries a heading with nothing under it.
+    #[tokio::test]
+    async fn a_solo_office_has_no_colleagues() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let room = ravenbot_core::ChatRoom::new("Solo", "office", "it-office");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        let me = member(&db, &room, "Only", "Solver", "General", "idle").await;
+
+        assert!(runtime.office_roster(room.id, me.id).await.is_empty());
+    }
+
+    /// Add a bot to an office and give it a stored status.
+    async fn member(
+        db: &ravenbot_db::Database,
+        room: &ravenbot_core::ChatRoom,
+        name: &str,
+        rank: &str,
+        specialty: &str,
+        status: &str,
+    ) -> Bot {
+        let bot = Bot::new(name, "colleague");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        sqlx::query("UPDATE bots SET rank = ?, specialty = ?, status = ? WHERE id = ?")
+            .bind(rank)
+            .bind(specialty)
+            .bind(status)
+            .bind(bot.id.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        ravenbot_db::queries::ChatRoomQueries::add_member(
+            db.pool(),
+            &ravenbot_core::ChatRoomMember {
+                chatroom_id: room.id,
+                bot_id: bot.id,
+                rank: rank.into(),
+                specialty: specialty.into(),
+                joined_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .unwrap();
+        bot
+    }
+
     /// One delegation must not cost an office its own conversation.
     ///
     /// The office's own thread lives in `chatroom_threads`, whose primary key is
