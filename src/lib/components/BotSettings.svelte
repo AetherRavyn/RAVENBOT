@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
@@ -246,8 +247,15 @@
   let activeProvider = $derived(providerById(catalog, modelProvider));
 
   // Load the catalog once per dialog open (+ the global default seed).
+  let catalogRequested = $state(false);
   $effect(() => {
-    if (open && catalog.length === 0) {
+    // Same guard-as-consequence trap as the skills fetch below. This one has
+    // only been saved by `getCatalog`'s built-in fallback to a minimal catalog,
+    // so it happens to terminate today — but it terminates by accident, and a
+    // fetch that ever returned `[]` would spin exactly the way the skills one
+    // does.
+    if (open && !catalogRequested) {
+      catalogRequested = true;
       getCatalog().then((list) => { catalog = list; }).catch(() => {});
       invoke<any>("get_default_model")
         .then((d) => { if (d?.provider) globalDefault = { provider: d.provider, model: d.model }; })
@@ -450,12 +458,38 @@
     }
   }
 
+  /**
+   * "Have I asked for this yet?", as a fact rather than as a consequence.
+   *
+   * ## The bug this replaces
+   *
+   * The skills fetch was guarded with `allSkills.length === 0`. An effect that
+   * reads a value it also causes to be written re-runs when that value changes,
+   * so the moment `list_all_skills` returned an **empty array** — which it does
+   * for a fresh install, a user with no skills enabled, or any IPC hiccup where
+   * the catch sets `allSkills = []` — the guard was still true, the fetch ran
+   * again, and again, forever.
+   *
+   * The whole loop runs in microtasks: `loadSkills` awaits, its `.then` writes,
+   * the effect re-runs, it awaits again. Nothing ever yields to a macrotask, so
+   * the event loop is starved completely — timers, layout and input stop. From
+   * the outside that is not a hang and not a crash. The dialog is simply
+   * unresponsive, and the first thing anyone tries to do in it is pick a model.
+   * That is the "model selection is not working".
+   *
+   * So the intent is recorded explicitly and the fetch happens at most once per
+   * open, whether it returned rows, nothing, or failed.
+   */
+  let skillsRequested = $state(false);
+
   $effect(() => {
     invoke<EngineInfo[]>("list_engines")
       .then((list) => { engineOptions = list; })
       .catch(() => { engineOptions = []; });
-    // Skills, once, for the capability coverage hints.
-    if (open && allSkills.length === 0) void loadSkills();
+    if (open && !skillsRequested) {
+      skillsRequested = true;
+      void loadSkills();
+    }
   });
 
   $effect(() => {
@@ -534,12 +568,34 @@
           netDomains = domains.length ? domains.join(", ") : "*";
         }
       }
-      refreshSandboxReport(sandboxTier);
-      // Resolved here rather than on click, because the Files button is disabled
-      // until there is a path to browse — resolving it from the click handler
-      // meant the button could never be pressed for an agent with no override.
+      // ── Everything below is deliberately untracked ──────────────────────
+      //
+      // This effect exists to re-hydrate when `bot` changes. It must not
+      // re-run for anything else, and two calls inside it read state the effect
+      // has just written:
+      //
+      //   refreshSandboxReport(sandboxTier)   reads the tier we assigned above
+      //   resolveDefaultWorkspace()           reads `defaultWorkspace`, which
+      //                                        this effect resets to "" first
+      //
+      // An effect that reads what it writes re-runs when the value changes, so
+      // the second one ping-ponged: set the path, re-run, clear the path,
+      // re-run, resolve it again — two IPC calls per lap, forever.
+      //
+      // The whole loop runs in microtasks, so nothing ever reaches a timer:
+      // layout, input and paint stop. From outside it is not a crash and not a
+      // hang. The dialog is simply inert, and the first thing anyone does in an
+      // agent builder is pick a model. That is the bug.
+      //
+      // `untrack` says what the effect already means: re-hydrate on `bot`,
+      // and at no other time.
+      untrack(() => refreshSandboxReport(sandboxTier));
+      // Resolved here rather than on click, because the Files button is
+      // disabled until there is a path to browse — resolving it from the click
+      // handler meant the button could never be pressed for an agent with no
+      // override.
       defaultWorkspace = "";
-      void resolveDefaultWorkspace();
+      untrack(() => resolveDefaultWorkspace());
       // Baseline for dirty tracking (after the fields are assigned).
       queueMicrotask(() => {
         savedSnapshot = currentSnapshot;
