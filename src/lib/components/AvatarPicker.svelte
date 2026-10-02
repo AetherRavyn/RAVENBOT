@@ -6,6 +6,7 @@
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import AvatarStudio from "$lib/components/AvatarStudio.svelte";
   import { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
+  import type { ColourId } from "$lib/avatar";
   import { avatarAllLabel, avatarCategoryLabel, avatarStyleDescription } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
   import { t } from "$lib/i18n";
@@ -42,6 +43,7 @@
   // What the studio last applied, so the hero preview shows the same face.
   let previewSilhouette = $state<string | null>(null);
   let previewExpression = $state<any>(null);
+  let previewColour = $state<ColourId | null>(null);
 
   /**
    * Whether to ask for the animation.
@@ -252,9 +254,11 @@
       seed={previewSeed || "Agent"}
       expression={previewExpression}
       silhouette={previewSilhouette ?? undefined}
-      onApply={(sil, expr) => {
+      colour={previewColour ?? undefined}
+      onApply={(sil, expr, col) => {
         previewSilhouette = sil;
         previewExpression = expr;
+        previewColour = col;
         selectedStyle = "raven-native";
         studioOpen = false;
         onSelect("", "raven-native");
@@ -290,6 +294,7 @@
           <RavenAvatar
             name={previewSeed || "Agent"}
             style={s.value}
+            colour={previewColour ?? undefined}
             animated={animate}
             class="size-full"
             decorative

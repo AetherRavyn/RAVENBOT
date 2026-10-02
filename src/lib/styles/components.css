@@ -1009,10 +1009,13 @@ html.sidebar-resizing .app-frame {
 }
 
 /* ── Raven avatar ────────────────────────────────────────────────────────────
- * A generated SVG face. The silhouette and hue are fixed per agent; only the
- * expression changes, and only the rings and the breathing animate — the
- * outline is how a user knows which agent they are looking at, so an animation
- * that edited it would hand back a different creature mid-run. */
+ * A generated SVG face, built to Grok Bot's avatar spec: 8 shapes, 16
+ * expressions, 12 colours, 15 animation states.
+ *
+ * The outline and the colour are fixed per agent — the outline is how a user
+ * knows which agent they are looking at, so a *roster* animation never edits
+ * it. The three states that do settle into a different body (`egg`, `hexagon`,
+ * `play`) are reachable only by name, which only the studio does. */
 .raven-avatar {
   position: relative;
   display: inline-flex;
@@ -1022,6 +1025,14 @@ html.sidebar-resizing .app-frame {
   overflow: hidden;
   background: var(--av-deep, var(--surface-3));
   border: 1px solid var(--hairline);
+}
+
+/* The generated face supplies its own edge — the body outline stroke — so a
+ * frame border on top of it would double every line and, on a triangle or a
+ * droplet, cut across the shape at the corners. */
+.raven-avatar[data-source="generated"] {
+  background: transparent;
+  border-color: transparent;
 }
 
 .raven-avatar > img {
@@ -1237,6 +1248,323 @@ html.sidebar-resizing .app-frame {
   .raven-avatar[data-state="sleep"],
   .raven-avatar[data-state="burst"] {
     animation: none;
+  }
+}
+
+/* ── Avatar parts and animation states ─────────────────────────────────────
+ * Grok's fifteen states, keyed off `data-state` rather than `data-mood`.
+ *
+ * The reason there are two attributes is the reason there are two axes: the mood
+ * is what the runtime knows, and the state is what the face should *do*. Keying
+ * motion off the state means a roster that reads "thinking" and one that reads
+ * "orbit" can look different without either touching the face, and a new mood
+ * never silently inherits working's motion.
+ *
+ * The rules below are ordered so that everything whose base state is *visible*
+ * animates only by transform or opacity from a visible starting point. That
+ * matters for `prefers-reduced-motion`: the rule at the bottom of this block
+ * cancels the animations, and anything that started at `opacity: 0` would then
+ * be gone rather than still. The one exception, `.raven-av-altbody`, is
+ * explicitly restored.
+ */
+
+/* Parts. The eyes are their own groups so `wink` can close exactly one, and
+ * every transform below is anchored to the viewBox centre rather than to a
+ * bounding box, because an element that rotates about its own middle is not
+ * what an orbit or a swirl should do. */
+.raven-av-part,
+.raven-av-eye,
+.raven-avatar-rings,
+.raven-av-behind,
+.raven-av-front,
+.raven-av-dots,
+.raven-av-badges {
+  transform-box: view-box;
+}
+
+.raven-av-eyes,
+.raven-av-eye,
+.raven-avatar-rings,
+.raven-av-behind,
+.raven-av-swirl,
+.raven-av-rays,
+.raven-av-pulse,
+.raven-av-tail,
+.raven-av-dots,
+.raven-av-badge,
+.raven-av-alert,
+.raven-av-zzz,
+.raven-av-altbody {
+  transform-origin: 50px 50px;
+}
+
+/* Thinking — Grok's three dots, offset so they read as a separate gesture from
+ * the face rather than as part of the mouth. */
+.raven-av-dots circle {
+  animation: raven-dot 1.25s ease-in-out infinite;
+}
+.raven-av-dots circle:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.raven-av-dots circle:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes raven-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+  35% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+/* Wink — one eye, once. The repeat is long enough that the two avatars sitting
+ * side by side in a roster are never mid-wink together. */
+.raven-avatar[data-state="wink"] .raven-av-eye--r {
+  animation: raven-wink 3.4s ease-in-out infinite;
+}
+
+@keyframes raven-wink {
+  0%,
+  82%,
+  100% {
+    transform: scaleY(1);
+  }
+  88% {
+    transform: scaleY(0.08);
+  }
+}
+
+/* Wide eyes — both, opening and holding. Scale on the group so the two eyes
+ * stay the same distance apart, which scaling them individually would not. */
+.raven-avatar[data-state="wideEyes"] .raven-av-eyes {
+  animation: raven-wide 2.6s ease-in-out infinite;
+  transform-origin: 50px 46px;
+}
+
+@keyframes raven-wide {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.22);
+  }
+}
+
+/* Alert — one ring, expanding off the outline and fading. */
+.raven-av-pulse {
+  animation: raven-pulse 1.8s ease-out infinite;
+  opacity: 0.45;
+}
+
+@keyframes raven-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(1.32);
+    opacity: 0;
+  }
+}
+
+/* Notification — the badge holds and pulses rather than arriving, because the
+ * state means "still waiting" and not "just happened". */
+.raven-av-badge {
+  animation: raven-badge 2s ease-in-out infinite;
+}
+
+@keyframes raven-badge {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.16);
+  }
+}
+
+/* Exclamation — a short shake, then hold. It is the one state that means
+ * something went wrong, so it is allowed to be the most insistent thing on
+ * screen. */
+.raven-av-alert {
+  animation: raven-alert 1.4s ease-in-out infinite;
+}
+
+@keyframes raven-alert {
+  0%,
+  70%,
+  100% {
+    transform: scale(1);
+  }
+  75% {
+    transform: scale(1.22);
+  }
+  80% {
+    transform: scale(0.94);
+  }
+  85% {
+    transform: scale(1.14);
+  }
+}
+
+/* Sleep — the two z's rise and fade on a long offset from each other. */
+.raven-av-zzz path {
+  animation: raven-zzz 3.6s ease-in-out infinite;
+}
+.raven-av-zzz path:nth-child(2) {
+  animation-delay: 1.2s;
+}
+
+@keyframes raven-zzz {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.7);
+  }
+  30% {
+    opacity: 0.9;
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: translateY(-10px) scale(1.1);
+  }
+}
+
+/* Orbit — rings faster than the old mood-driven default, and the body drifts
+ * very slightly against them so the two read as separate systems. */
+.raven-avatar[data-state="orbit"] .raven-avatar-rings {
+  animation: raven-orbit 3s linear infinite;
+}
+
+.raven-avatar[data-state="orbit"] .raven-avatar-body {
+  animation: raven-drift 3s ease-in-out infinite;
+  transform-box: view-box;
+  transform-origin: 50px 50px;
+}
+
+@keyframes raven-drift {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(0, -1.6px);
+  }
+}
+
+/* Swirl — two arcs chasing each other round the body. */
+.raven-av-swirl {
+  animation: raven-swirl 2.4s linear infinite;
+  transform-origin: 50px 50px;
+}
+.raven-av-swirl:nth-of-type(2) {
+  animation-direction: reverse;
+}
+
+@keyframes raven-swirl {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Burst — rays out, body flashes. The only state that fires and repeats, and
+ * deliberately slow: on a roster this state lasts until the reply is read. */
+.raven-av-rays {
+  animation: raven-rays 2.4s cubic-bezier(0.23, 1, 0.32, 1) infinite;
+  transform-origin: 50px 50px;
+  opacity: 0.7;
+}
+
+@keyframes raven-rays {
+  0% {
+    transform: scale(0.88);
+    opacity: 0.15;
+  }
+  30% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.12);
+    opacity: 0.15;
+  }
+}
+
+/* Comet — the tail stretches behind and the body slides. */
+.raven-av-tail {
+  animation: raven-comet 1.5s ease-in-out infinite;
+  transform-origin: 50px 50px;
+}
+
+@keyframes raven-comet {
+  0%,
+  100% {
+    transform: translateX(0) scaleX(0.9);
+    opacity: 0.2;
+  }
+  50% {
+    transform: translateX(-3px) scaleX(1.12);
+    opacity: 0.42;
+  }
+}
+
+/* Egg / hexagon / play — the body settles into a different outline. Only ever
+ * reached from the studio; see `rosterSafeMotion`. */
+.raven-av-altbody {
+  animation: raven-altbody 620ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+  transform-origin: 50px 50px;
+}
+
+@keyframes raven-altbody {
+  from {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raven-av-dots circle,
+  .raven-avatar[data-state="wink"] .raven-av-eye--r,
+  .raven-avatar[data-state="wideEyes"] .raven-av-eyes,
+  .raven-av-pulse,
+  .raven-av-badge,
+  .raven-av-alert,
+  .raven-av-zzz path,
+  .raven-avatar[data-state="orbit"] .raven-avatar-rings,
+  .raven-avatar[data-state="orbit"] .raven-avatar-body,
+  .raven-av-swirl,
+  .raven-av-rays,
+  .raven-av-tail,
+  .raven-av-altbody {
+    animation: none !important;
+  }
+
+  /* Restore the two whose resting appearance is a keyframe rather than the
+   * element's own style. Without this, reduced motion would leave a waiting
+   * agent with no badge at all — which is the one cue that state exists for. */
+  .raven-av-altbody {
+    opacity: 1;
+    transform: none;
+  }
+  .raven-av-pulse {
+    opacity: 0.45;
+  }
+  .raven-av-dots circle {
+    opacity: 1;
+  }
+  .raven-av-rays {
+    opacity: 0.7;
   }
 }
 
@@ -1595,6 +1923,129 @@ html.sidebar-resizing .app-frame {
   .raven-studio__body {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* The two columns. The left is preview-at-a-size, the right is everything you
+ * can actually change — so the split is "look at it" / "set it", and neither
+ * column has to be scrolled to find the other. */
+.raven-studio__left,
+.raven-studio__right {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  min-width: 0;
+}
+
+/* The hero. Everything below it is 28–56px tall and cannot answer "does this
+ * read as attentive"; this can. */
+.raven-studio__hero {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.875rem;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-faint);
+}
+
+.raven-studio__hero-avatar {
+  width: 76px;
+  height: 76px;
+  flex-shrink: 0;
+}
+
+.raven-studio__hero-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  min-width: 0;
+}
+
+.raven-studio__hero-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.raven-studio__hero-state {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--brand-text);
+  letter-spacing: 0.02em;
+}
+
+/* Fifteen state previews. Four across fits the column without the chips
+ * dropping below their labels, and every tile is the same size so the row can
+ * be read left to right as a scale. */
+.raven-studio__anims {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.375rem;
+}
+
+.raven-studio__anim {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1875rem;
+  padding: 0.375rem 0.25rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: var(--surface-2);
+  color: var(--text-tertiary);
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0ms, border-color 0ms, color 0ms;
+}
+
+.raven-studio__anim:hover {
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+
+.raven-studio__anim--on {
+  border-color: var(--brand);
+  color: var(--text-primary);
+  background: var(--brand-soft);
+}
+
+/* Colour needs no label under it — the swatch is the label — so the row is
+ * tighter than the shape and expression rows and reads as one strip. */
+.raven-studio__swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.raven-studio__swatch:hover {
+  transform: scale(1.12);
+}
+
+.raven-studio__swatch--on {
+  border-color: var(--text-primary);
+  transform: scale(1.06);
+}
+
+.raven-studio__hint {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.raven-studio__controls--anim {
+  border-top: 1px solid var(--hairline-faint);
+  padding-top: 0.75rem;
 }
 
 .raven-studio__states {

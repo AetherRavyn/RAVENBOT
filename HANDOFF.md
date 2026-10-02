@@ -1,7 +1,16 @@
 # HANDOFF.md — RAVENBOT UI Rebuild (OpenBot-inspired)
 
 > Living knowledge file for agent sessions. Read this first every time context is lost.
-> Last updated: 2026-09-24 (session: analysis + handoff written, no UI code changed yet).
+>
+> **⚠️ Largely superseded.** The "no UI code changed yet" note below dates from 2026-09-24.
+> Since then the OpenBot rebuild landed (CSS-grid shell, rail/sidebar/conversation, the 424px
+> auto-compact rule, the design-token port) and the avatar was taken to Grok Bot's full
+> specification. Section 1 below is still an accurate description of the OpenBot reference.
+> Sections 2–3 describe the code as it was *before* the rebuild — treat the component sizes
+> and the "must be decomposed" notes as history, not as a to-do list.
+>
+> For the current state and the remaining gaps against Grok Bot and OpenBot, read
+> **[`docs/COMPARISON.md`](docs/COMPARISON.md)** instead. It is the shorter, current document.
 
 ## Mission
 

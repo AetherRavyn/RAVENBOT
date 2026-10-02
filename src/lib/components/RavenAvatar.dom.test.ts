@@ -27,12 +27,35 @@ import { render, cleanup } from "@testing-library/svelte";
 import { tick } from "svelte";
 import RavenAvatar from "./RavenAvatar.svelte";
 import RavenLogo from "./RavenLogo.svelte";
-import { avatarProfile, faceFor, moodPresentation } from "$lib/avatar";
+import {
+  ANIMATIONS,
+  avatarProfile,
+  COLOURS,
+  EXPRESSIONS,
+  faceFor,
+  moodPresentation,
+  SHAPES,
+  UNREACHABLE_MOTIONS,
+  type AvatarMood,
+} from "$lib/avatar";
 import { DEFAULT_AVATAR_STYLE, currentDiceBearUrl, parseDiceBearUrl } from "$lib/diceStyles";
 
 afterEach(cleanup);
 
-const MOODS = ["idle", "working", "waiting", "failed", "responded", "sleeping"] as const;
+/**
+ * Every roster mood. Kept in one place so a state added to the model shows up
+ * here as a failure rather than as coverage that quietly stopped applying.
+ */
+const MOODS: AvatarMood[] = [
+  "idle",
+  "working",
+  "thinking",
+  "waiting",
+  "failed",
+  "responded",
+  "sleeping",
+];
+
 
 /**
  * The frame element, with only the props a test actually means to set.
@@ -197,7 +220,7 @@ describe("RavenAvatar — the generated face", () => {
 
   it("resolves a drawable expression for every mood, for any name", () => {
     const names = ["Ada", "Grace", "Researcher", "", "a-very-long-agent-name"];
-    const known = new Set(["neutral", "attentive", "pleased", "sad", "curious", "sleepy"]);
+    const known = new Set<string>(EXPRESSIONS);
     for (const name of names) {
       const profile = avatarProfile(name);
       expect(profile, `no profile for ${JSON.stringify(name)}`).toBeTruthy();
@@ -329,3 +352,176 @@ describe("stored DiceBear URLs", () => {
     expect(after.url).not.toContain("animationVariant");
   });
 });
+
+/* ── The Grok avatar specification, rendered ───────────────────────────────── */
+
+describe("RavenAvatar — the eight shapes", () => {
+  /**
+   * Every shape has to draw *something*, for every name.
+   *
+   * A shape that falls through to a default is not a crash and not an error, so
+   * nothing else would notice. The check is on the outline element rather than
+   * the whole SVG because the face differs per name and would mask it.
+   */
+  it("draws a distinct outline for each of Grok's eight shapes", () => {
+    const drawn = SHAPES.map((shape) => {
+      const { container } = render(RavenAvatar, {
+        props: { name: "Ada", style: "raven-native", shape },
+      });
+      return container.querySelector(".raven-av-outline")!.getAttribute("d")!;
+    });
+    for (const d of drawn) expect(d.length).toBeGreaterThan(20);
+    expect(new Set(drawn).size, "two shapes draw the same outline").toBe(SHAPES.length);
+  });
+
+  it("normalises a stored legacy shape rather than falling back", () => {
+    const legacy = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native", shape: "crystal" },
+    }).container.querySelector(".raven-av-outline")!.getAttribute("d")!;
+    const current = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native", shape: "squircle" },
+    }).container.querySelector(".raven-av-outline")!.getAttribute("d")!;
+    expect(legacy).toBe(current);
+    expect(legacy.length).toBeGreaterThan(20);
+  });
+});
+
+describe("RavenAvatar — the twelve colours", () => {
+  it("paints the body in the chosen colour, not a hue approximation", () => {
+    for (const c of COLOURS) {
+      const root = render(RavenAvatar, {
+        props: { name: "Ada", style: "raven-native", colour: c.id },
+      }).container;
+      // The colour reaches the body as a custom property, which is what lets
+      // the CSS transition and restyle it without redrawing the SVG.
+      const wrap = root.querySelector(".raven-avatar") as HTMLElement;
+      expect(wrap.style.getPropertyValue("--av-face"), `${c.id}`).toBe(c.hex);
+      // And the body reads that property rather than an approximation of it.
+      expect(root.querySelector(".raven-avatar-body path")!.getAttribute("fill")).toBe(
+        "var(--av-face)",
+      );
+    }
+  });
+
+  it("puts the body colour in the custom properties the CSS reads", () => {
+    const el = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native", colour: "pink" },
+    }).container.querySelector(".raven-avatar") as HTMLElement;
+    expect(el.style.getPropertyValue("--av-face")).toBe(COLOURS.find((c) => c.id === "pink")!.hex);
+  });
+});
+
+describe("RavenAvatar — the fifteen animation states", () => {
+  /**
+   * Every state must render something, and must say which one it is.
+   *
+   * `data-state` is what the whole stylesheet keys off, so a state that renders
+   * with the wrong attribute is silent — it looks like a slightly less
+   * interesting avatar rather than a broken one.
+   */
+  it("marks every state it is asked to play", () => {
+    for (const a of ANIMATIONS) {
+      const el = render(RavenAvatar, {
+        props: { name: "Ada", style: "raven-native", state: a.id },
+      }).container.querySelector(".raven-avatar")!;
+      expect(el.getAttribute("data-state"), a.id).toBe(a.id);
+    }
+  });
+
+  it("draws the parts each state's own CSS animates", () => {
+    // The three states that carry a piece of SVG the others do not.
+    const needs = [
+      ["thinking", ".raven-av-dots"],
+      ["notification", ".raven-av-badge"],
+      ["exclamation", ".raven-av-alert"],
+      ["sleep", ".raven-av-zzz"],
+      ["comet", ".raven-av-tail"],
+      ["burst", ".raven-av-rays"],
+      ["alert", ".raven-av-pulse"],
+      ["swirl", ".raven-av-swirl"],
+    ] as const;
+    for (const [state, selector] of needs) {
+      const { container } = render(RavenAvatar, {
+        props: { name: "Ada", style: "raven-native", state },
+      });
+      expect(container.querySelector(selector), `${state} is missing ${selector}`).toBeTruthy();
+    }
+  });
+
+  /** Orbit's rings are mood-driven as well, so both paths must draw them. */
+  it("draws orbit rings when the state asks and when the mood asks", () => {
+    const byState = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native", state: "orbit" },
+    }).container;
+    const byMood = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native", mood: "thinking" },
+    }).container;
+    expect(byState.querySelector(".raven-avatar-rings")).toBeTruthy();
+    expect(byMood.querySelector(".raven-avatar-rings")).toBeTruthy();
+  });
+
+  /**
+   * The safety rule, at the only place it can actually be enforced.
+   *
+   * A mood may never produce one of the three states that replace an agent's
+   * outline. The component applies `rosterSafeMotion` to the mood's state, so
+   * this asserts the end-to-end behaviour rather than the helper in isolation.
+   */
+  it("never plays a body-changing state from a mood", () => {
+    for (const mood of MOODS) {
+      const el = render(RavenAvatar, {
+        props: { name: "Ada", style: "raven-native", mood },
+      }).container.querySelector(".raven-avatar")!;
+      const played = el.getAttribute("data-state")!;
+      expect(UNREACHABLE_MOTIONS as readonly string[]).not.toContain(played);
+      expect(container_alt(el), `${mood} drew an alternate body`).toBeFalsy();
+    }
+  });
+
+  it("does play one when asked by name, which is the studio previewing artwork", () => {
+    const { container } = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native", state: "egg" },
+    });
+    expect(container.querySelectorAll(".raven-av-altbody").length).toBeGreaterThan(0);
+  });
+
+  /**
+   * `wink` closes one eye. The two eyes are separate elements precisely so this
+   * is expressible, which means it is worth pinning: merging them back into one
+   * group would still draw a face and would quietly delete the state.
+   */
+  it("gives each eye its own element, so wink can close exactly one", () => {
+    const { container } = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native", expression: "neutral" },
+    });
+    expect(container.querySelectorAll(".raven-av-eye")).toHaveLength(2);
+    expect(container.querySelector(".raven-av-eye--l")).toBeTruthy();
+    expect(container.querySelector(".raven-av-eye--r")).toBeTruthy();
+  });
+});
+
+describe("RavenAvatar — the sixteen expressions", () => {
+  it("draws a face for every expression", () => {
+    const drawn = EXPRESSIONS.map((expression) =>
+      render(RavenAvatar, {
+        props: { name: "Ada", style: "raven-native", expression },
+      }).container.querySelector(".raven-avatar-face")!.innerHTML,
+    );
+    for (const html of drawn) expect(html.length).toBeGreaterThan(0);
+    expect(new Set(drawn).size, "two expressions draw the same face").toBe(EXPRESSIONS.length);
+  });
+
+  it("maps the historical expression name rather than falling back", () => {
+    const legacy = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native", expression: "pleased" },
+    }).container.querySelector(".raven-avatar-face")!.innerHTML;
+    const current = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native", expression: "happy" },
+    }).container.querySelector(".raven-avatar-face")!.innerHTML;
+    expect(legacy).toBe(current);
+  });
+});
+
+function container_alt(el: Element): Element | null {
+  return el.querySelector(".raven-av-altbody");
+}
