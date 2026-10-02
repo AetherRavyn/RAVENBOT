@@ -146,10 +146,10 @@
   <div class="flex items-center gap-2">
     <Boxes class="size-4 shrink-0 text-[var(--brand-text)]" />
     <span class="text-[13px] font-bold text-[var(--text-primary)]">{t("sync.title")}</span>
-    <span class="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)] font-mono shrink-0">
+    <span class="text-[11px] px-1.5 py-0.5 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)] font-mono shrink-0">
       {bots.length}
     </span>
-    <span class="text-[9px] font-mono px-1.5 py-0.5 rounded bg-success/10 border border-success/30 text-success flex items-center gap-1 shrink-0">
+    <span class="text-[11px] font-mono px-1.5 py-0.5 rounded bg-success/10 border border-success/30 text-success flex items-center gap-1 shrink-0">
       <ShieldCheck class="size-2.5" />
       {t("sync.signedChip")}
     </span>
@@ -168,15 +168,15 @@
             <div class="flex items-center gap-1.5">
               <span class="text-[11px] font-bold text-[var(--text-primary)] truncate">{botRow.name}</span>
               {#if botRow.id === bot?.id}
-                <span class="text-[8px] font-mono px-1 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30 shrink-0">{t("sync.current")}</span>
+                <span class="text-[11px] font-mono px-1 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30 shrink-0">{t("sync.current")}</span>
               {/if}
             </div>
-            <span class="text-[9px] font-mono text-[var(--text-muted)] truncate">{providerLabel(botRow)}</span>
+            <span class="text-[11px] font-mono text-[var(--text-muted)] truncate">{providerLabel(botRow)}</span>
           </div>
           <Button
             size="sm"
             variant="outline"
-            class="h-6 px-2 text-[10px] gap-1 cursor-pointer shrink-0"
+            class="h-6 px-2 text-[11px] gap-1 cursor-pointer shrink-0"
             disabled={exporting === botRow.id}
             onclick={() => exportBot(botRow)}
             title={t("sync.exportTip")}
@@ -204,11 +204,11 @@
       aria-label="Bot bundle JSON"
       rows={3}
       placeholder={t("sync.pastePh")}
-      class="w-full px-2.5 py-2 rounded-xl bg-[var(--surface-1)] border border-[var(--hairline)] text-[10px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
+      class="w-full px-2.5 py-2 rounded-xl bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
     ></textarea>
 
     {#if importResult}
-      <div class="flex items-start gap-1.5 text-[10px] {importResult.ok ? 'text-success' : 'text-danger'}" role={importResult.ok ? "status" : "alert"}>
+      <div class="flex items-start gap-1.5 text-[11px] {importResult.ok ? 'text-success' : 'text-danger'}" role={importResult.ok ? "status" : "alert"}>
         {#if importResult.ok}
           <CheckCircle2 class="size-3 shrink-0 mt-0.5" />
         {:else}
@@ -229,7 +229,7 @@
       <Button
         size="sm"
         variant="outline"
-        class="h-7 px-3 text-[10px] gap-1 border-[var(--hairline)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
+        class="h-7 px-3 text-[11px] gap-1 border-[var(--hairline)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] cursor-pointer"
         disabled={importing}
         onclick={openFilePicker}
         title={t("sync.openFileTip")}
@@ -239,7 +239,7 @@
       </Button>
       <Button
         size="sm"
-        class="h-7 px-3 text-[10px] gap-1 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] cursor-pointer"
+        class="h-7 px-3 text-[11px] gap-1 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] cursor-pointer"
         disabled={!importJson.trim() || importing}
         onclick={importBundle}
         title={t("sync.verifyTip")}
@@ -253,7 +253,7 @@
       </Button>
     </div>
 
-    <div class="flex items-center gap-1.5 text-[9px] text-[var(--text-muted)] font-mono">
+    <div class="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] font-mono">
       <ShieldAlert class="size-2.5 shrink-0" />
       <span>{t("sync.tamperNote")}</span>
     </div>

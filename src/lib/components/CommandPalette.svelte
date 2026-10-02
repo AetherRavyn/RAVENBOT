@@ -167,7 +167,7 @@
             {t("palette.clear")}
           </button>
         {/if}
-        <span class="px-2 py-0.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-tertiary)] font-mono text-[10px]">
+        <span class="px-2 py-0.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-tertiary)] font-mono text-[11px]">
           ESC
         </span>
       </div>
@@ -208,7 +208,7 @@
                   {#if cmd.badge}
                     <span
                       class={cn(
-                        "text-[9px] px-1.5 py-[2px] rounded font-mono uppercase border",
+                        "text-[11px] px-1.5 py-[2px] rounded font-mono uppercase border",
                         isSelected
                           ? "bg-[var(--surface-3)] border-[var(--hairline-strong)] text-[var(--text-primary)]"
                           : "bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)]"
@@ -251,20 +251,20 @@
       <div class="px-4 py-2.5 bg-[var(--surface-0)] border-t border-[var(--hairline)] flex items-center justify-between text-[11px] text-[var(--text-tertiary)]">
         <div class="flex items-center gap-4">
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">↑</kbd>
-            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">↓</kbd>
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[11px] font-mono">↑</kbd>
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[11px] font-mono">↓</kbd>
             {t("palette.navigate")}
           </span>
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">↵</kbd>
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[11px] font-mono">↵</kbd>
             {t("palette.select")}
           </span>
           <span class="flex items-center gap-1">
-            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[10px] font-mono">esc</kbd>
+            <kbd class="px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--brand)]/25 text-[var(--brand-text)] text-[11px] font-mono">esc</kbd>
             {t("palette.dismiss")}
           </span>
         </div>
-        <div class="flex items-center gap-1.5 font-mono text-[10px] text-[var(--brand-text)]/80">
+        <div class="flex items-center gap-1.5 font-mono text-[11px] text-[var(--brand-text)]/80">
           <Zap class="size-3 text-[var(--brand-text)]" />
           <span>RAVENBOT Core</span>
         </div>

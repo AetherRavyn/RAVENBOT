@@ -39,9 +39,9 @@
           <Progress value={score} class="h-2" />
         </div>
         <div class="grid grid-cols-3 gap-2 text-center">
-          <div class="p-2 rounded-xl bg-[var(--surface-2)] border"><div class="text-lg font-bold">{intel.tasks_today}</div><div class="text-[10px] text-muted-foreground">{t("intel.tasksToday")}</div></div>
-          <div class="p-2 rounded-xl bg-[var(--surface-2)] border"><div class="text-lg font-bold text-success">{intel.success_streak}</div><div class="text-[10px] text-muted-foreground">{t("intel.streak")}</div></div>
-          <div class="p-2 rounded-xl bg-[var(--surface-2)] border"><div class="text-lg font-bold">{intel.total_memories + intel.office_memories}</div><div class="text-[10px] text-muted-foreground">{t("intel.memories")}</div></div>
+          <div class="p-2 rounded-xl bg-[var(--surface-2)] border"><div class="text-lg font-bold">{intel.tasks_today}</div><div class="text-[11px] text-muted-foreground">{t("intel.tasksToday")}</div></div>
+          <div class="p-2 rounded-xl bg-[var(--surface-2)] border"><div class="text-lg font-bold text-success">{intel.success_streak}</div><div class="text-[11px] text-muted-foreground">{t("intel.streak")}</div></div>
+          <div class="p-2 rounded-xl bg-[var(--surface-2)] border"><div class="text-lg font-bold">{intel.total_memories + intel.office_memories}</div><div class="text-[11px] text-muted-foreground">{t("intel.memories")}</div></div>
         </div>
         <p class="text-xs text-muted-foreground flex items-center gap-1.5"><TrendingUp class="size-3" /> {t("intel.learnNote")}</p>
       </Card.Content>

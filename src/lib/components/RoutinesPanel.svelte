@@ -202,11 +202,11 @@
     <div class="flex items-center gap-2 min-w-0">
       <Clock class="size-4 text-[var(--brand-text)] shrink-0" />
       <span class="text-[13px] font-bold text-[var(--text-primary)] truncate">{t("routines.title")}</span>
-      <span class="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)] font-mono">
+      <span class="text-[11px] px-1.5 py-0.5 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)] font-mono">
         {routines.length}
       </span>
       {#if schedulerStatus}
-        <span class="text-[9px] font-mono px-1.5 py-0.5 rounded {schedulerStatus.running ? 'bg-success/15 text-success border border-success/30' : 'bg-[var(--surface-2)] text-[var(--text-muted)] border border-[var(--hairline)]'}">
+        <span class="text-[11px] font-mono px-1.5 py-0.5 rounded {schedulerStatus.running ? 'bg-success/15 text-success border border-success/30' : 'bg-[var(--surface-2)] text-[var(--text-muted)] border border-[var(--hairline)]'}">
           {schedulerStatus.running ? t("routines.running") : t("routines.idle")}
         </span>
       {/if}
@@ -233,7 +233,7 @@
   </div>
 
   {#if error}
-    <div class="flex items-center gap-2 text-[10px] text-danger font-mono" role="alert">
+    <div class="flex items-center gap-2 text-[11px] text-danger font-mono" role="alert">
       <AlertTriangle class="size-3 shrink-0" />
       <span>{error}</span>
     </div>
@@ -264,7 +264,7 @@
           <button
             type="button"
             aria-pressed={newSchedule === preset.value}
-            class="h-5 px-1.5 rounded-md text-[9px] font-mono text-[var(--text-tertiary)] hover:text-[var(--brand-hover)] bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--brand)]/40 cursor-pointer transition-colors {newSchedule === preset.value ? 'text-[var(--brand-text)] border-[var(--brand)]/50' : ''}"
+            class="h-5 px-1.5 rounded-md text-[11px] font-mono text-[var(--text-tertiary)] hover:text-[var(--brand-hover)] bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--brand)]/40 cursor-pointer transition-colors {newSchedule === preset.value ? 'text-[var(--brand-text)] border-[var(--brand)]/50' : ''}"
             onclick={() => (newSchedule = preset.value)}
           >
             {preset.label}
@@ -283,7 +283,7 @@
       <div class="flex justify-end">
         <Button
           size="sm"
-          class="h-7 px-3 text-[10px] gap-1 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] cursor-pointer"
+          class="h-7 px-3 text-[11px] gap-1 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] cursor-pointer"
           disabled={!newName.trim() || !newInstruction.trim() || creating}
           onclick={createRoutine}
         >
@@ -350,19 +350,19 @@
             </div>
           </div>
 
-          <div class="flex items-center gap-2 text-[9px] font-mono text-[var(--text-muted)]">
+          <div class="flex items-center gap-2 text-[11px] font-mono text-[var(--text-muted)]">
             <span class="px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)]">
               {routine.schedule}
             </span>
             <span>{t("routines.lastRun", { when: formatLastRun(routine.last_run_at) })}</span>
           </div>
 
-          <p class="text-[10px] text-[var(--text-tertiary)] leading-relaxed line-clamp-2">{routine.instruction}</p>
+          <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed line-clamp-2">{routine.instruction}</p>
 
           <button
             type="button"
             aria-pressed={routine.is_enabled}
-            class="text-[9px] font-mono text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer transition-colors"
+            class="text-[11px] font-mono text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer transition-colors"
             onclick={() => toggleRoutine(routine)}
           >
             {routine.is_enabled ? t("routines.disable") : t("routines.enable")}
@@ -370,9 +370,9 @@
 
           {#if webhookUrl?.routineId === routine.id}
             <div class="mt-1.5 rounded-lg border border-success/30 bg-success/20 p-2 space-y-1">
-              <div class="text-[9px] text-success">{t("routines.webhookHint")}</div>
+              <div class="text-[11px] text-success">{t("routines.webhookHint")}</div>
               <div class="flex items-center gap-1.5">
-                <code class="flex-1 text-[9px] font-mono text-success break-all">{webhookUrl.url}</code>
+                <code class="flex-1 text-[11px] font-mono text-success break-all">{webhookUrl.url}</code>
                 <button
                   type="button"
                   aria-label="Copy webhook URL"

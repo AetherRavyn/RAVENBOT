@@ -228,10 +228,10 @@
                 decorative
               />
             </div>
-            <span class="text-[10px] font-bold text-[var(--text-primary)]">
+            <span class="text-[11px] font-bold text-[var(--text-primary)]">
               {t(`studio.state.${s.mood}`)}
             </span>
-            <span class="text-[9px] text-[var(--text-muted)] text-center leading-tight">{s.note}</span>
+            <span class="text-[11px] text-[var(--text-muted)] text-center leading-tight">{s.note}</span>
           </button>
         {/each}
       </section>
@@ -241,7 +241,7 @@
       <!-- Shape, expression, colour. Identity. -->
       <div class="raven-studio__controls">
         <div class="space-y-1.5">
-          <span class="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
             {t("studio.shape")}
           </span>
           <div class="flex flex-wrap gap-1.5">
@@ -263,14 +263,14 @@
                   class="size-7"
                   decorative
                 />
-                <span class="text-[9px]">{t(`studio.shape.${s}`)}</span>
+                <span class="text-[11px]">{t(`studio.shape.${s}`)}</span>
               </button>
             {/each}
           </div>
         </div>
 
         <div class="space-y-1.5">
-          <span class="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
             {t("studio.expression")}
           </span>
           <div class="flex flex-wrap gap-1.5">
@@ -292,14 +292,14 @@
                   class="size-7"
                   decorative
                 />
-                <span class="text-[9px]">{t(`studio.expr.${e}`)}</span>
+                <span class="text-[11px]">{t(`studio.expr.${e}`)}</span>
               </button>
             {/each}
           </div>
         </div>
 
         <div class="space-y-1">
-          <span class="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+          <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
             {t("studio.colour")}
           </span>
           <div class="flex flex-wrap gap-1.5">
@@ -321,7 +321,7 @@
 
       <!-- All fifteen animation states. The other reason the panel exists. -->
       <div class="raven-studio__controls raven-studio__controls--anim">
-        <span class="text-[10px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
           {t("studio.animations")}
         </span>
         <div class="raven-studio__anims">
@@ -344,7 +344,7 @@
                 class="size-8"
                 decorative
               />
-              <span class="text-[9px]">{t(`studio.anim.${a.id}`)}</span>
+              <span class="text-[11px]">{t(`studio.anim.${a.id}`)}</span>
             </button>
           {/each}
         </div>

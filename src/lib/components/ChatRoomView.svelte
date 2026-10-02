@@ -1159,7 +1159,7 @@
       <div class="flex flex-col">
         <div class="flex items-center gap-2">
           <span class="font-bold text-sm text-[var(--text-primary)]">{room.name}</span>
-          <span class="font-mono text-[10px] py-[2px] px-2 rounded-md bg-[var(--surface-3)] border border-[var(--hairline)] text-[var(--brand-text)] capitalize">
+          <span class="font-mono text-[11px] py-[2px] px-2 rounded-md bg-[var(--surface-3)] border border-[var(--hairline)] text-[var(--brand-text)] capitalize">
             {room.office_template.replace("-", " ")}
           </span>
           <button
@@ -1180,7 +1180,7 @@
           <span class="text-[var(--text-muted)]">·</span>
           <span>{members.length === 1 ? t("room.specialistAssigned", { n: members.length }) : t("room.specialistsAssigned", { n: members.length })}</span>
           <span class="text-[var(--text-muted)]">·</span>
-          <span class="font-mono text-[10px] px-1.5 py-0.5 rounded bg-success/10 border border-success/30 text-success" title={t("room.telemetry")}>
+          <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-success/10 border border-success/30 text-success" title={t("room.telemetry")}>
             ${officeCost.toFixed(4)} · {officeTokens.toLocaleString()} tok
           </span>
         </div>
@@ -1211,7 +1211,7 @@
           </div>
         {/each}
         {#if members.length > 5}
-          <div class="size-8 rounded-full bg-[var(--surface-3)] border border-[var(--hairline)] ring-1 ring-[var(--brand)]/40 flex items-center justify-center text-[10px] font-bold text-[var(--brand-text)]">
+          <div class="size-8 rounded-full bg-[var(--surface-3)] border border-[var(--hairline)] ring-1 ring-[var(--brand)]/40 flex items-center justify-center text-[11px] font-bold text-[var(--brand-text)]">
             +{members.length - 5}
           </div>
         {/if}
@@ -1234,7 +1234,7 @@
   <!-- Team strip: stable chips (no layout shift, status as a dot) -->
   {#if members.length > 0}
     <div class="px-4 py-2.5 bg-[var(--surface-1)] border-b border-[var(--hairline)] flex items-center gap-3 shrink-0">
-      <span class="text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)] shrink-0 flex items-center gap-1.5">
+      <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)] shrink-0 flex items-center gap-1.5">
         <Workflow class="size-3 text-[var(--brand)]" />
         Team
         <span class="font-mono text-[var(--text-muted)]">{members.length}</span>
@@ -1260,7 +1260,7 @@
               <span class="absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-[var(--surface-2)] {statusDot(st)}"></span>
             </span>
             <span class="text-[11px] font-semibold text-[var(--text-primary)] whitespace-nowrap">{m.rank}</span>
-            <span class="hidden xl:inline text-[10px] text-[var(--text-muted)] truncate max-w-[8rem]">{m.specialty}</span>
+            <span class="hidden xl:inline text-[11px] text-[var(--text-muted)] truncate max-w-[8rem]">{m.specialty}</span>
             {#if st !== "idle"}
               <Loader2 class="size-3 text-warning animate-spin shrink-0" />
             {/if}
@@ -1359,7 +1359,7 @@
                       <RavenAvatar name={m.rank} imageUrl={m.bot?.avatar_url}
                  style={m.bot?.avatar_style} />
                     </div>
-                    <span class="text-[10px] font-bold text-[var(--text-secondary)] font-mono">{m.rank}</span>
+                    <span class="text-[11px] font-bold text-[var(--text-secondary)] font-mono">{m.rank}</span>
                   </div>
                 {/each}
               </div>
@@ -1384,7 +1384,7 @@
 
             <!-- Quick Starter Tasks -->
             <div class="space-y-2 pt-4 text-left">
-              <span class="text-[10px] font-bold text-[var(--text-muted)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+              <span class="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                 <Sparkles class="size-3 text-[var(--brand-text)]" />
                 Collaborative Directives:
               </span>
@@ -1412,10 +1412,10 @@
               <div class="text-[13px] font-semibold text-[var(--text-primary)] truncate">
                 {agentNameFor(ap.bot_id)} wants to {ap.tool_label || ap.tool_name}
               </div>
-              <span class="shrink-0 font-mono text-[10px] text-[var(--text-muted)]">{ap.tool_name}</span>
+              <span class="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">{ap.tool_name}</span>
             </div>
             {#if approvalSummary(ap.arguments)}
-              <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/50 border border-[var(--hairline)] px-3 py-2 font-mono text-[11.5px] leading-relaxed text-[var(--text-secondary)]">{approvalSummary(ap.arguments)}</pre>
+              <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/50 border border-[var(--hairline)] px-3 py-2 font-mono text-[12px] leading-relaxed text-[var(--text-secondary)]">{approvalSummary(ap.arguments)}</pre>
             {/if}
             {#if ap.risk === 'high'}
               <p class="text-[11px] text-warning/90">{t("thread.highStakes")}</p>
@@ -1437,7 +1437,7 @@
               >
                 Deny
               </button>
-              <span class="text-[10px] font-mono text-[var(--text-muted)] ml-1">the run resumes after you decide</span>
+              <span class="text-[11px] font-mono text-[var(--text-muted)] ml-1">the run resumes after you decide</span>
             </div>
           </div>
         {/each}
@@ -1447,9 +1447,9 @@
           <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border border-[var(--brand)]/40 bg-[var(--surface-1)] p-4 space-y-3 shadow-xl">
             <div class="flex items-baseline justify-between gap-3 min-w-0">
               <div class="text-[13px] font-semibold text-[var(--text-primary)] truncate">{q.header || 'Question'} — {agentNameFor(q.bot_id)}</div>
-              <span class="shrink-0 font-mono text-[10px] text-[var(--brand-text)]/80">ask_user</span>
+              <span class="shrink-0 font-mono text-[11px] text-[var(--brand-text)]/80">ask_user</span>
             </div>
-            <p class="text-[12.5px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">{q.question}</p>
+            <p class="text-[13px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">{q.question}</p>
             {#if q.options?.length}
               <div class="flex flex-wrap gap-2">
                 {#each q.options as opt}
@@ -1530,7 +1530,7 @@
                 {#if h.response}
                   <button
                     type="button"
-                    class="text-[10px] text-[var(--brand-text)] hover:underline shrink-0 cursor-pointer"
+                    class="text-[11px] text-[var(--brand-text)] hover:underline shrink-0 cursor-pointer"
                     aria-expanded={h.expanded}
                     onclick={() => handoffs.toggle(h.key)}
                   >
@@ -1557,7 +1557,7 @@
         <!-- Live team activity: streamed node lanes through the shared row shell -->
         {#if teamActive}
           <div class="space-y-3">
-            <div class="flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
+            <div class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
               <span class="size-1.5 rounded-full bg-success animate-pulse"></span>
               Live team activity · {activeMembers.length > 0 ? `${activeMembers.length} working` : "orchestrating"}
             </div>
@@ -1567,7 +1567,7 @@
                 <img src={avatar} alt="" class="size-6 rounded-lg object-cover border border-[var(--hairline)] shrink-0" />
                 <span class="text-[11px] font-bold truncate" style={`color: ${color}`}>{name}</span>
                 {#if toolName}
-                  <span class="font-mono text-[9px] px-1.5 py-0.5 rounded bg-info/10 border border-info/30 text-info inline-flex items-center gap-1 shrink-0">
+                  <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-info/10 border border-info/30 text-info inline-flex items-center gap-1 shrink-0">
                     <Wrench class="size-2.5" /> {toolName}
                   </span>
                 {/if}
@@ -1613,13 +1613,13 @@
                   {#snippet belowBubble()}
                     {#if toolName}
                       <div class="px-3">
-                        <span class="font-mono text-[9px] px-1.5 py-0.5 rounded bg-info/10 border border-info/30 text-info inline-flex items-center gap-1">
+                        <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-info/10 border border-info/30 text-info inline-flex items-center gap-1">
                           <Wrench class="size-2.5" /> {toolName}
                         </span>
                       </div>
                     {:else if st === "thinking" || st === "running_tool" || st === "waiting_on_user"}
                       <div class="px-3">
-                        <span class="font-mono text-[9px] px-1.5 py-0.5 rounded bg-warning/10 border border-warning/30 text-warning">
+                        <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-warning/10 border border-warning/30 text-warning">
                           {st === "waiting_on_user" ? "waiting" : "thinking"}
                         </span>
                       </div>
@@ -1675,16 +1675,16 @@
               {#if att.isImage}
                 <div class="relative size-12 rounded-lg overflow-hidden border border-[var(--hairline-strong)] bg-[var(--surface-2)]">
                   <img src={`data:${att.mime};base64,${att.data}`} alt={att.name} class="size-full object-cover" />
-                  <button type="button" class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} title={t("room.removeAttachment")}>✕</button>
+                  <button type="button" class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} title={t("room.removeAttachment")}>✕</button>
                 </div>
               {:else}
                 <div class="relative flex items-center gap-1.5 h-12 max-w-[200px] pl-2.5 pr-6 rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-2)]" title={att.name}>
                   <Paperclip class="size-3.5 text-[var(--brand-text)] shrink-0" />
                   <div class="min-w-0">
-                    <div class="text-[10px] text-[var(--text-secondary)] truncate">{att.name}</div>
-                    <div class="text-[9px] text-[var(--text-muted)] font-mono uppercase">{att.mime.split("/").pop()}</div>
+                    <div class="text-[11px] text-[var(--text-secondary)] truncate">{att.name}</div>
+                    <div class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{att.mime.split("/").pop()}</div>
                   </div>
-                  <button type="button" class="absolute top-1 right-1 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} aria-label={t("room.removeAttachment")} title={t("room.removeAttachment")}>✕</button>
+                  <button type="button" class="absolute top-1 right-1 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} aria-label={t("room.removeAttachment")} title={t("room.removeAttachment")}>✕</button>
                 </div>
               {/if}
             {/each}
@@ -1727,7 +1727,7 @@
               <Mic class="size-3.5" />
             </button>
 
-            <span class="text-[10px] font-mono text-[var(--text-muted)] ml-1">
+            <span class="text-[11px] font-mono text-[var(--text-muted)] ml-1">
               {members.length} Parallel Agents Assigned
             </span>
           </div>
@@ -1815,7 +1815,7 @@
               type="button"
               onclick={draftPlan}
               disabled={draftingPlan || !planGoal.trim()}
-              class="h-6 px-2.5 text-[10px] rounded-lg border border-[var(--brand)]/40 bg-[var(--brand-soft)] text-[var(--brand-text)] hover:bg-[var(--brand-soft)] cursor-pointer disabled:opacity-40 flex items-center gap-1"
+              class="h-6 px-2.5 text-[11px] rounded-lg border border-[var(--brand)]/40 bg-[var(--brand-soft)] text-[var(--brand-text)] hover:bg-[var(--brand-soft)] cursor-pointer disabled:opacity-40 flex items-center gap-1"
               title={t("room.draftTitle")}
             >
               {#if draftingPlan}
@@ -1832,14 +1832,14 @@
           <div class="p-3 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-xs text-[var(--brand-text)] space-y-1">
             <div class="font-bold flex items-center gap-1.5">❓ {t("room.leadClarify")}</div>
             <p>{planQuestion}</p>
-            <p class="text-[10px] text-[var(--brand-text)]/70">{t("room.refineHint")}</p>
+            <p class="text-[11px] text-[var(--brand-text)]/70">{t("room.refineHint")}</p>
           </div>
         {/if}
 
         {#if members.length > 0}
           <div class="flex flex-wrap gap-1.5">
             {#each members as m}
-              <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)]">{m.rank} · {m.specialty}</span>
+              <span class="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)]">{m.rank} · {m.specialty}</span>
             {/each}
           </div>
         {/if}
@@ -1847,7 +1847,7 @@
         <div class="space-y-2">
           <div class="flex items-center justify-between">
             <p class="text-xs font-bold text-[var(--text-primary)]">{t("room.tasks")} ({planTasks.length})</p>
-            <span onclick={addPlanTask} class="text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-text)] cursor-pointer" role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addPlanTask(); } }}>{t("room.addTask")}</span>
+            <span onclick={addPlanTask} class="text-[11px] text-[var(--brand-text)] hover:text-[var(--brand-text)] cursor-pointer" role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addPlanTask(); } }}>{t("room.addTask")}</span>
           </div>
           {#each planTasks as task, idx}
             <div class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] space-y-2">
@@ -1856,14 +1856,14 @@
                   value={task.botId}
                   options={members.map((m: any) => ({ value: m.bot_id, label: `${m.bot?.name || m.rank} · ${m.specialty}` }))}
                   onValueChange={(v) => updateTaskBot(idx, v)}
-                  class="h-7 w-44 text-[10px] rounded-lg"
+                  class="h-7 w-44 text-[11px] rounded-lg"
                 />
-                <input bind:value={task.label} oninput={(e) => updatePlanTaskLabel(idx, (e.target as HTMLInputElement).value)} class="flex-1 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-[var(--brand)]/50" placeholder={t("room.taskPlaceholder")} />
+                <input bind:value={task.label} oninput={(e) => updatePlanTaskLabel(idx, (e.target as HTMLInputElement).value)} class="flex-1 h-7 px-2 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-[var(--brand)]/50" placeholder={t("room.taskPlaceholder")} />
                 <button type="button" onclick={() => removePlanTask(idx)} aria-label="Remove task" class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
               </div>
               {#if idx > 0}
                 <div class="flex items-center gap-1 flex-wrap">
-                  <span class="text-[9px] font-mono text-[var(--text-muted)] uppercase tracking-wider">{t("room.dependsOn")}</span>
+                  <span class="text-[11px] font-mono text-[var(--text-muted)] uppercase tracking-wider">{t("room.dependsOn")}</span>
                   {#each planTasks as _, oidx}
                     {#if oidx < idx}
                       {@const depOn = task.dependsOn.includes(oidx)}
@@ -1871,7 +1871,7 @@
                         type="button"
                         onclick={() => togglePlanDep(idx, oidx)}
                         aria-pressed={depOn}
-                        class="h-5 px-1.5 text-[9px] font-mono rounded-md border cursor-pointer {depOn
+                        class="h-5 px-1.5 text-[11px] font-mono rounded-md border cursor-pointer {depOn
                           ? 'border-[var(--brand)]/60 bg-[var(--brand-soft)] text-[var(--brand-text)]'
                           : 'border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}"
                       >#{oidx + 1}</button>
@@ -1930,7 +1930,7 @@
         <div class="space-y-1.5">
           <div class="flex items-center justify-between">
             <label for="hire-brief" class="text-xs font-bold text-[var(--text-primary)]">{t("room.hireQuestion")}</label>
-            <span class="text-[10px] text-[var(--text-muted)]">
+            <span class="text-[11px] text-[var(--text-muted)]">
               {#if hireSource === "ceo"}{t("room.ceoProposed")}{:else if hireSource === "template"}{t("room.templateBlueprint")}{:else}{t("room.manual")}{/if}
             </span>
           </div>
@@ -1953,7 +1953,7 @@
               <Sparkles class="size-3" /> {t("room.ceoProposeBtn")}
             {/if}
           </button>
-          <p class="text-[10px] text-[var(--text-muted)] leading-relaxed pt-0.5">
+          <p class="text-[11px] text-[var(--text-muted)] leading-relaxed pt-0.5">
             {t("room.reuseHint")}
           </p>
         </div>
@@ -1968,19 +1968,19 @@
         <div class="space-y-2">
           <div class="flex items-center justify-between">
             <p class="text-xs font-bold text-[var(--text-primary)]">{t("room.roster")} ({hireRoles.length})</p>
-            <span onclick={addHireRole} class="text-[10px] text-success hover:text-success cursor-pointer" role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addHireRole(); } }}>{t("room.addRole")}</span>
+            <span onclick={addHireRole} class="text-[11px] text-success hover:text-success cursor-pointer" role="button" tabindex="0" onkeydown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); addHireRole(); } }}>{t("room.addRole")}</span>
           </div>
 
           {#each hireRoles as role, idx}
             <div class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] space-y-2">
               <div class="flex items-center gap-2">
-                <label class="flex items-center gap-1 text-[10px] text-[var(--text-tertiary)] shrink-0 cursor-pointer" title={t("room.makeLead")}>
+                <label class="flex items-center gap-1 text-[11px] text-[var(--text-tertiary)] shrink-0 cursor-pointer" title={t("room.makeLead")}>
                   <input type="radio" name="hire-lead" checked={role.is_lead} onchange={() => setHireLead(idx)} class="accent-[var(--brand)] cursor-pointer" />
                   {t("room.lead")}
                 </label>
-                <input bind:value={role.name} aria-label={t("room.name")} placeholder={t("room.name")} class="w-28 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
-                <input bind:value={role.rank} aria-label={t("room.rank")} placeholder={t("room.rank")} class="w-24 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
-                <input bind:value={role.specialty} aria-label={t("room.specialty")} placeholder={t("room.specialty")} class="flex-1 h-7 px-2 text-[10px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
+                <input bind:value={role.name} aria-label={t("room.name")} placeholder={t("room.name")} class="w-28 h-7 px-2 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
+                <input bind:value={role.rank} aria-label={t("room.rank")} placeholder={t("room.rank")} class="w-24 h-7 px-2 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
+                <input bind:value={role.specialty} aria-label={t("room.specialty")} placeholder={t("room.specialty")} class="flex-1 h-7 px-2 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
                 <button type="button" onclick={() => removeHireRole(idx)} aria-label="Remove role" class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
               </div>
               <div class="flex items-center gap-2">
@@ -1988,15 +1988,15 @@
                   type="button"
                   onclick={() => (openRolePrompt = openRolePrompt === idx ? null : idx)}
                   aria-expanded={openRolePrompt === idx}
-                  class="text-[10px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
+                  class="text-[11px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
                 >
                   {openRolePrompt === idx ? `▾ ${t("room.hideInstructions")}` : `▸ ${t("room.roleInstructions")}`}
                 </button>
                 {#if role.is_lead}
-                  <span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-bold">{t("room.ceoBadge")}</span>
+                  <span class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-bold">{t("room.ceoBadge")}</span>
                 {/if}
                 {#if role.skills.length}
-                  <span class="text-[9px] text-[var(--text-muted)] truncate">{t("room.skillsCount", { n: role.skills.length })}</span>
+                  <span class="text-[11px] text-[var(--text-muted)] truncate">{t("room.skillsCount", { n: role.skills.length })}</span>
                 {/if}
               </div>
               {#if openRolePrompt === idx}
@@ -2070,12 +2070,12 @@
         <div class="min-w-0">
           <div class="font-bold text-sm text-[var(--text-primary)] truncate flex items-center gap-1.5">
             {manageBot.name}
-            {#if manageBot.is_orchestrator}<span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-bold uppercase">{t("room.leadBadge")}</span>{/if}
+            {#if manageBot.is_orchestrator}<span class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-bold uppercase">{t("room.leadBadge")}</span>{/if}
           </div>
           <div class="text-[11px] text-[var(--text-tertiary)] truncate">
             {manageBot.rank || t("ui.fallbackAgent")} · {manageBot.specialty || t("ui.fallbackGeneralist")}
           </div>
-          <div class="text-[10px] font-mono text-[var(--text-muted)] truncate mt-0.5">
+          <div class="text-[11px] font-mono text-[var(--text-muted)] truncate mt-0.5">
             {manageBot.config?.model_provider || "?"}/{manageBot.config?.model_id || "?"}
           </div>
         </div>
@@ -2090,7 +2090,7 @@
           <Cpu class="size-4 text-[var(--brand)] shrink-0" />
           <span class="min-w-0">
             <span class="block text-xs font-bold text-[var(--text-primary)]">{t("room.manageModel")}</span>
-            <span class="block text-[10px] text-[var(--text-tertiary)]">{t("room.manageModelDesc")}</span>
+            <span class="block text-[11px] text-[var(--text-tertiary)]">{t("room.manageModelDesc")}</span>
           </span>
         </button>
 
@@ -2102,7 +2102,7 @@
           <Wrench class="size-4 text-[var(--brand)] shrink-0" />
           <span class="min-w-0">
             <span class="block text-xs font-bold text-[var(--text-primary)]">{t("room.manageSkills")}</span>
-            <span class="block text-[10px] text-[var(--text-tertiary)]">{t("room.manageSkillsDesc")}</span>
+            <span class="block text-[11px] text-[var(--text-tertiary)]">{t("room.manageSkillsDesc")}</span>
           </span>
         </button>
 
@@ -2117,7 +2117,7 @@
           <Server class="size-4 text-[var(--brand)] shrink-0" />
           <span class="min-w-0">
             <span class="block text-xs font-bold text-[var(--text-primary)]">{t("room.manageMcp")}</span>
-            <span class="block text-[10px] text-[var(--text-tertiary)]">{t("room.manageMcpDesc")}</span>
+            <span class="block text-[11px] text-[var(--text-tertiary)]">{t("room.manageMcpDesc")}</span>
           </span>
         </button>
       </div>

@@ -149,7 +149,21 @@
     "saveChanges": "Änderungen speichern",
     "deleteTitle": "\"{{name}}\" löschen?",
     "deleteDesc": "Dadurch werden dieser Agent, seine Speicherkonfigurationen und alle zugehörigen Chat-Threads dauerhaft entfernt.",
-    "confirmDelete": "Löschen bestätigen"
+    "confirmDelete": "Löschen bestätigen",
+    "workspaceIsolated": "Isoliert — jeder Pfad, den dieser Agent berührt, ist auf diesen Ordner begrenzt",
+    "workspaceInheritsOffice": "Isoliert — übernimmt den Workspace des Büros, wenn er dort läuft",
+    "workspaceInherits": "Isoliert — übernimmt den Workspace des Büros",
+    "workspaceDefault": "Isoliert — läuft in einem eigenen Ordner unter ~/RAVENBOT/projects/",
+    "capabilities": "Fähigkeiten",
+    "capabilitiesHelp": "Die Skills eines Agenten bestimmen, welche Werkzeuge ihm angeboten werden. Eine Einschränkung hier legt fest, welche davon er wirklich nutzen darf.",
+    "narrowOn": "Einschränken, was dieser Agent tun darf",
+    "narrowOnHelp": "Aus: Dieser Agent darf jedes Werkzeug nutzen, mit dem er ausgestattet wurde. An: Er darf nur Werkzeuge nutzen, die von den Fähigkeiten unten abgedeckt sind.",
+    "narrowedBy": "Auf {{count}} von {{total}} Fähigkeiten eingeschränkt",
+    "unnarrowed": "Nicht eingeschränkt — alle ausgestatteten Skills verfügbar",
+    "neededBy": "Wird von einem ausgestatteten Skill benötigt",
+    "blockedBy": "Blockiert — ein ausgestatteter Skill benötigt dies",
+    "scopeLabel": "Umfang",
+    "scopePh": "Durch Komma getrennt. / oder * bedeutet keine Einschränkung."
   },
   "thread": {
     "threads": "Unterhaltungen",
@@ -315,7 +329,9 @@
     "deleteCustomConfirm": "\"{{name}}\" löschen? Dies kann nicht rückgängig gemacht werden.",
     "forceDeleteQuestion": "Trotzdem löschen?",
     "testReply": "Antwort: {{reply}}",
-    "testOk": "Verbindung OK"
+    "testOk": "Verbindung OK",
+    "showApiKey": "API-Schlüssel anzeigen",
+    "hideApiKey": "API-Schlüssel verbergen"
   },
   "skills": {
     "title": "Fähigkeiten - {{botName}}",
@@ -1296,7 +1312,11 @@
       "thumbs": "Lustige Charakter-Daumen",
       "fun-emoji": "Fröhliche 3D-Emoji-Gesichter",
       "ravenicon": "Native Raven OS Emblem"
-    }
+    },
+    "animatesEvery": "Ändert sich alle ~{s}s",
+    "stillStyle": "Statisch",
+    "animate": "Avatare animieren",
+    "animateHelp": "Aus zeigt für jeden Agenten ein statisches Gesicht. Die App respektiert unabhängig davon die Bewegungseinstellung Ihres Systems."
   },
   "workspace": {
     "boot": "{{brand}}-Laufzeitumgebung wird initialisiert",
@@ -1385,5 +1405,30 @@
     "state.failed": "Blockiert",
     "state.responded": "Fertig",
     "state.sleeping": "Schläft"
+  },
+  "wsb": {
+    "listLabel": "Workspace-Dateien",
+    "loading": "Workspace wird gelesen…",
+    "refresh": "Neu laden",
+    "showHidden": "Versteckte Dateien anzeigen",
+    "hideHidden": "Versteckte Dateien ausblenden",
+    "treeView": "Zur Baumansicht wechseln",
+    "flatView": "Zur flachen Liste wechseln",
+    "openInFileManager": "Öffnen",
+    "noFolders": "Für diesen Workspace ist noch kein Ordner festgelegt.",
+    "notCreated": "Noch nicht erstellt",
+    "empty": "Hier ist noch nichts",
+    "emptyHidden": "Versteckte Dateien sind ausgeblendet. Schalten Sie sie ein, wenn ein Agent gesagt hat, er habe eine Punktdatei geschrieben.",
+    "selectFile": "Wählen Sie eine Datei, um sie zu lesen.",
+    "files": "Dateien",
+    "folders": "Ordner",
+    "linkNotRead": "Dies ist ein Link. Links werden aufgelistet, aber nicht verfolgt, sodass nichts außerhalb des Workspace durch einen gelesen wird.",
+    "binaryNotShown": "Diese Datei ist kein Text und wird hier daher nicht angezeigt.",
+    "tooLarge": "Diese Datei ist zu groß für eine Vorschau.",
+    "loadFailed": "Workspace konnte nicht gelesen werden: ",
+    "openFailed": "Dateimanager konnte nicht geöffnet werden: ",
+    "browseFiles": "Dateien",
+    "showReply": "Antworten",
+    "hideReply": "Ausblenden"
   }
 }

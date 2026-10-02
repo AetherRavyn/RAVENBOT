@@ -49,7 +49,7 @@
 
   let sizeClasses = $derived(
     size === "sm"
-      ? "size-6.5 p-1 text-[10px] rounded-lg"
+      ? "size-6.5 p-1 text-[11px] rounded-lg"
       : size === "lg"
         ? "size-12 p-2 text-sm rounded-2xl"
         : size === "xl"

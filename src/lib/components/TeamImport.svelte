@@ -153,30 +153,30 @@
             <div>
               <div class="text-sm font-bold text-[var(--text-primary)]">{preview.name}</div>
               {#if preview.description}<div class="text-[11px] text-[var(--text-tertiary)] mt-0.5">{preview.description}</div>{/if}
-              <div class="text-[10px] font-mono text-[var(--brand-text)] mt-1">{preview.summary}</div>
+              <div class="text-[11px] font-mono text-[var(--brand-text)] mt-1">{preview.summary}</div>
             </div>
             <div class="space-y-1.5">
-              <div class="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-bold">{t("team.bots")}</div>
+              <div class="text-[11px] uppercase tracking-wider text-[var(--text-muted)] font-bold">{t("team.bots")}</div>
               {#each preview.bots as b}
                 <div class="flex items-center gap-2 text-[12px] text-[var(--text-secondary)]">
                   <BotIcon class="size-3.5 text-[var(--brand-text)] shrink-0" />
                   <span class="font-semibold">{b.name}</span>
-                  {#if b.rank}<span class="text-[10px] font-mono text-[var(--text-muted)]">{b.rank}</span>{/if}
-                  {#if b.model}<span class="text-[10px] font-mono text-[var(--text-muted)]">{b.model}</span>{/if}
+                  {#if b.rank}<span class="text-[11px] font-mono text-[var(--text-muted)]">{b.rank}</span>{/if}
+                  {#if b.model}<span class="text-[11px] font-mono text-[var(--text-muted)]">{b.model}</span>{/if}
                 </div>
               {/each}
             </div>
             {#if preview.office}
               <div>
-                <div class="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-bold">{t("team.office")}</div>
-                <div class="text-[12px] text-[var(--text-secondary)]">{preview.office.name} {#if preview.office.template}<span class="text-[10px] font-mono text-[var(--text-muted)]">{preview.office.template}</span>{/if}</div>
+                <div class="text-[11px] uppercase tracking-wider text-[var(--text-muted)] font-bold">{t("team.office")}</div>
+                <div class="text-[12px] text-[var(--text-secondary)]">{preview.office.name} {#if preview.office.template}<span class="text-[11px] font-mono text-[var(--text-muted)]">{preview.office.template}</span>{/if}</div>
               </div>
             {/if}
             {#if preview.routines?.length}
               <div>
-                <div class="text-[10px] uppercase tracking-wider text-[var(--text-muted)] font-bold">{t("team.routinesPaused")}</div>
+                <div class="text-[11px] uppercase tracking-wider text-[var(--text-muted)] font-bold">{t("team.routinesPaused")}</div>
                 {#each preview.routines as r}
-                  <div class="text-[12px] text-[var(--text-secondary)]">{r.name} · <span class="font-mono text-[10px]">{r.bot}</span></div>
+                  <div class="text-[12px] text-[var(--text-secondary)]">{r.name} · <span class="font-mono text-[11px]">{r.bot}</span></div>
                 {/each}
               </div>
             {/if}

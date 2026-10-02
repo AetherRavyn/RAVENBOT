@@ -364,7 +364,7 @@
             <span class="font-mono text-[11px] text-[var(--text-secondary)] truncate flex-1" title={selected.path}>
               {selected.path}
             </span>
-            <Badge variant="outline" class="text-[10px] shrink-0">{fmtBytes(selected.sizeBytes)}</Badge>
+            <Badge variant="outline" class="text-[11px] shrink-0">{fmtBytes(selected.sizeBytes)}</Badge>
           </div>
           {#if selected.isLink}
             <p class="raven-wsb__empty text-[11px]">{t("wsb.linkNotRead")}</p>
@@ -384,11 +384,11 @@
     </div>
 
     <footer class="raven-wsb__foot">
-      <span class="font-mono text-[10px] text-[var(--text-muted)]">
+      <span class="font-mono text-[11px] text-[var(--text-muted)]">
         {tree.fileCount} {t("wsb.files")} · {tree.dirCount} {t("wsb.folders")} · {fmtBytes(tree.totalBytes)}
       </span>
       {#if tree.truncated}
-        <span class="flex items-center gap-1 text-[10px] text-[var(--warning)]">
+        <span class="flex items-center gap-1 text-[11px] text-[var(--warning)]">
           <AlertTriangle class="size-3" /> {tree.note}
         </span>
       {/if}

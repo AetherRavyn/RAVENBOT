@@ -13,7 +13,7 @@
   let cleanName = $derived(name.toLowerCase());
 
   let sizeClasses = $derived(
-    size === "sm" ? "size-6 text-[10px]" : size === "lg" ? "size-12 text-sm" : "size-10 text-xs"
+    size === "sm" ? "size-6 text-[11px]" : size === "lg" ? "size-12 text-sm" : "size-10 text-xs"
   );
 </script>
 

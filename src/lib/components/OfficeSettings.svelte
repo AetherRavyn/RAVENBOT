@@ -419,7 +419,7 @@
               </Avatar.Root>
               <button
                 type="button"
-                class="absolute inset-0 bg-black/60 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-[10px] font-bold text-[var(--text-primary)] cursor-pointer"
+                class="absolute inset-0 bg-black/60 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-[11px] font-bold text-[var(--text-primary)] cursor-pointer"
                 aria-pressed={showAvatarPicker}
                 onclick={() => (showAvatarPicker = !showAvatarPicker)}
               >
@@ -432,10 +432,10 @@
                 <Dialog.Title class="text-base font-extrabold text-[var(--text-primary)] tracking-wide">
                   {t("room.settings")} — {name || room.name}
                 </Dialog.Title>
-                <Badge variant="outline" class="bg-[var(--brand-soft)] border-[var(--brand)]/40 text-[var(--brand-text)] text-[10px] font-mono font-semibold px-2 py-0.5">
+                <Badge variant="outline" class="bg-[var(--brand-soft)] border-[var(--brand)]/40 text-[var(--brand-text)] text-[11px] font-mono font-semibold px-2 py-0.5">
                   {officeTemplateName(officeTemplate)}
                 </Badge>
-                <Badge variant="outline" class="bg-[var(--surface-2)] border-[var(--hairline-strong)] text-[var(--text-secondary)] text-[10px] font-mono px-2 py-0.5">
+                <Badge variant="outline" class="bg-[var(--surface-2)] border-[var(--hairline-strong)] text-[var(--text-secondary)] text-[11px] font-mono px-2 py-0.5">
                   {members.length} {members.length === 1 ? t("office.agent1") : t("office.agentN")}
                 </Badge>
               </div>
@@ -547,7 +547,7 @@
                     <FolderOpen class="size-3.5 text-[var(--brand-text)]" />
                     <span>{t("office.folders")}</span>
                   </h4>
-                  <span class="text-[10px] text-[var(--text-muted)]">{projectFolders.length} configured</span>
+                  <span class="text-[11px] text-[var(--text-muted)]">{projectFolders.length} configured</span>
                 </div>
                 <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
                   {t("office.foldersConfinement")}
@@ -657,7 +657,7 @@
                         </div>
                         <div>
                           <span class="font-bold text-xs text-[var(--text-primary)] block">{officeTemplateName(key)}</span>
-                          <span class="text-[10px] text-[var(--brand-text)]/90 font-mono">{t("office.ranksN", { n: tmpl.ranks.length })}</span>
+                          <span class="text-[11px] text-[var(--brand-text)]/90 font-mono">{t("office.ranksN", { n: tmpl.ranks.length })}</span>
                         </div>
                       </div>
 
@@ -676,12 +676,12 @@
                     {#if tmpl.ranks.length > 0}
                       <div class="flex flex-wrap gap-1 pt-1.5 border-t border-[var(--hairline)]">
                         {#each tmpl.ranks.slice(0, 3) as r}
-                          <span class="text-[9px] px-1.5 py-[2px] rounded bg-[var(--surface-2)] text-[var(--text-secondary)] font-mono border border-[var(--hairline)]">
+                          <span class="text-[11px] px-1.5 py-[2px] rounded bg-[var(--surface-2)] text-[var(--text-secondary)] font-mono border border-[var(--hairline)]">
                             {r.rank}
                           </span>
                         {/each}
                         {#if tmpl.ranks.length > 3}
-                          <span class="text-[9px] px-1 py-[2px] rounded text-[var(--text-muted)] font-mono">
+                          <span class="text-[11px] px-1 py-[2px] rounded text-[var(--text-muted)] font-mono">
                             +{tmpl.ranks.length - 3}
                           </span>
                         {/if}
@@ -724,7 +724,7 @@
                           <div class="min-w-0">
                             <div class="flex items-center gap-2">
                               <span class="font-bold text-xs text-[var(--text-primary)] truncate">{m.bot?.name || m.rank}</span>
-                              <Badge variant="outline" class="text-[9px] px-1.5 py-0 bg-[var(--brand-soft)] border-[var(--brand)]/30 text-[var(--brand-text)] font-mono">
+                              <Badge variant="outline" class="text-[11px] px-1.5 py-0 bg-[var(--brand-soft)] border-[var(--brand)]/30 text-[var(--brand-text)] font-mono">
                                 {m.rank}
                               </Badge>
                             </div>
@@ -785,11 +785,11 @@
                         <div class="flex items-center gap-2 min-w-0">
                           <Avatar.Root class="size-6.5 rounded-lg shrink-0">
                             <Avatar.Image src={b.avatar_url || getDiceBearUrl(b.name, b.avatar_style || "bottts")} />
-                            <Avatar.Fallback class="text-[10px]">{b.name.slice(0, 2)}</Avatar.Fallback>
+                            <Avatar.Fallback class="text-[11px]">{b.name.slice(0, 2)}</Avatar.Fallback>
                           </Avatar.Root>
                           <span class="text-xs font-bold text-[var(--text-primary)] truncate">{b.name}</span>
                         </div>
-                        <span class="text-[10px] font-mono text-[var(--brand-text)] shrink-0 font-semibold">+ Assign</span>
+                        <span class="text-[11px] font-mono text-[var(--brand-text)] shrink-0 font-semibold">+ Assign</span>
                       </button>
                     {:else}
                       <p class="text-[11px] text-[var(--text-muted)] text-center py-3">
@@ -895,10 +895,10 @@
                           </Avatar.Root>
                           <div>
                             <span class="font-bold text-xs text-[var(--text-primary)]">{m.bot?.name || m.rank}</span>
-                            <span class="text-[10px] text-[var(--brand-text)] font-mono ml-1.5">({m.rank})</span>
+                            <span class="text-[11px] text-[var(--brand-text)] font-mono ml-1.5">({m.rank})</span>
                           </div>
                         </div>
-                        <Badge variant="outline" class="text-[10px] font-mono bg-[var(--brand-soft)] border-[var(--brand)]/30 text-[var(--brand-text)]">
+                        <Badge variant="outline" class="text-[11px] font-mono bg-[var(--brand-soft)] border-[var(--brand)]/30 text-[var(--brand-text)]">
                           {botAssigned.size} tools active
                         </Badge>
                       </div>
@@ -911,7 +911,7 @@
                             type="button"
                             aria-pressed={isEnabled}
                             class={cn(
- "px-2 py-1 rounded-lg text-[10px] font-mono transition-all flex items-center gap-1.5 cursor-pointer border",
+ "px-2 py-1 rounded-lg text-[11px] font-mono transition-all flex items-center gap-1.5 cursor-pointer border",
                               isEnabled
                                 ? "bg-[var(--brand)] text-[var(--text-on-light)] border-[var(--brand)] font-bold shadow-sm"
                                 : "bg-[var(--surface-3)] text-[var(--text-tertiary)] border-[var(--hairline)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
@@ -952,11 +952,11 @@
 
               <!-- Quick Templates -->
               <div class="flex items-center gap-2 flex-wrap">
-                <span class="text-[10px] font-mono text-[var(--text-muted)] uppercase">{t("office.presets")}</span>
+                <span class="text-[11px] font-mono text-[var(--text-muted)] uppercase">{t("office.presets")}</span>
                 {#each POLICY_TEMPLATES as pt}
                   <button
                     type="button"
-                    class="text-[10px] font-mono bg-[var(--surface-3)] hover:bg-[var(--brand-soft)] border border-[var(--hairline)] hover:border-[var(--brand)]/40 text-[var(--brand-text)] px-2 py-0.5 rounded-md cursor-pointer transition-colors"
+                    class="text-[11px] font-mono bg-[var(--surface-3)] hover:bg-[var(--brand-soft)] border border-[var(--hairline)] hover:border-[var(--brand)]/40 text-[var(--brand-text)] px-2 py-0.5 rounded-md cursor-pointer transition-colors"
                     onclick={() => (policy = pt.content)}
                   >
                     + {pt.title}
@@ -991,11 +991,11 @@
 
               <!-- Quick Templates -->
               <div class="flex items-center gap-2 flex-wrap">
-                <span class="text-[10px] font-mono text-[var(--text-muted)] uppercase">{t("office.presets")}</span>
+                <span class="text-[11px] font-mono text-[var(--text-muted)] uppercase">{t("office.presets")}</span>
                 {#each TERMS_TEMPLATES as tt}
                   <button
                     type="button"
-                    class="text-[10px] font-mono bg-[var(--surface-3)] hover:bg-warning/40 border border-[var(--hairline)] hover:border-warning/40 text-warning px-2 py-0.5 rounded-md cursor-pointer transition-colors"
+                    class="text-[11px] font-mono bg-[var(--surface-3)] hover:bg-warning/40 border border-[var(--hairline)] hover:border-warning/40 text-warning px-2 py-0.5 rounded-md cursor-pointer transition-colors"
                     onclick={() => (terms = tt.content)}
                   >
                     + {tt.title}
@@ -1063,14 +1063,14 @@
                       <div class="flex items-center gap-2.5">
                         <Avatar.Root class="size-6.5 rounded-lg">
                           <Avatar.Image src={m.bot?.avatar_url || getDiceBearUrl(m.rank, "bottts")} />
-                          <Avatar.Fallback class="text-[10px]">{m.rank.slice(0, 2)}</Avatar.Fallback>
+                          <Avatar.Fallback class="text-[11px]">{m.rank.slice(0, 2)}</Avatar.Fallback>
                         </Avatar.Root>
                         <div>
                           <span class="font-bold text-xs text-[var(--text-primary)]">{m.bot?.name || m.rank}</span>
-                          <span class="text-[10px] text-[var(--text-tertiary)] font-mono ml-1.5">— {m.rank}</span>
+                          <span class="text-[11px] text-[var(--text-tertiary)] font-mono ml-1.5">— {m.rank}</span>
                         </div>
                       </div>
-                      <Badge variant="outline" class="text-[10px] font-mono text-success border-success/30 bg-success/40">
+                      <Badge variant="outline" class="text-[11px] font-mono text-success border-success/30 bg-success/40">
                         {m.specialty}
                       </Badge>
                     </div>

@@ -180,7 +180,7 @@
               <div class="flex items-center gap-2 min-w-0">
                 <span class="text-sm font-medium text-[var(--text-primary)] truncate">{skillName}</span>
                 {#if isEnabled}
-                  <span class="text-[10px] font-mono px-1.5 py-px rounded border border-[var(--brand-strong)] bg-[var(--brand-soft)] text-[var(--brand-text)] shrink-0">
+                  <span class="text-[11px] font-mono px-1.5 py-px rounded border border-[var(--brand-strong)] bg-[var(--brand-soft)] text-[var(--brand-text)] shrink-0">
                     {t("ui.on")}
                   </span>
                 {/if}
@@ -189,7 +189,7 @@
               {#if skill.permissions.length}
                 <div class="flex items-center gap-1.5 flex-wrap pt-1">
                   {#each skill.permissions as p, i (i)}
-                    <span class="text-[10px] font-mono bg-[var(--surface-3)] text-[var(--text-tertiary)] border border-[var(--hairline)] px-1.5 py-px rounded">
+                    <span class="text-[11px] font-mono bg-[var(--surface-3)] text-[var(--text-tertiary)] border border-[var(--hairline)] px-1.5 py-px rounded">
                       {permLabel(p)}
                     </span>
                   {/each}

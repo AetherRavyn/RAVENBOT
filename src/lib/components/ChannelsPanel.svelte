@@ -144,7 +144,7 @@
       <div class="flex items-center gap-2">
         <Hash class="size-4 text-success" />
         <span class="font-bold text-sm text-[var(--text-primary)]">{t("channel.title")}</span>
-        <span class="text-[10px] text-[var(--text-muted)]">{t("channel.subtitle")}</span>
+        <span class="text-[11px] text-[var(--text-muted)]">{t("channel.subtitle")}</span>
       </div>
       <div class="flex items-center gap-2">
         <button
@@ -184,7 +184,7 @@
               <Hash class="size-3 text-success shrink-0" style={c.color ? `color:${c.color}` : ''} />
               <span class="truncate">{c.name}</span>
             </div>
-            <div class="text-[10px] text-[var(--text-muted)] mt-0.5 truncate">{t("channel.botsN", { n: c.bot_ids.length })}</div>
+            <div class="text-[11px] text-[var(--text-muted)] mt-0.5 truncate">{t("channel.botsN", { n: c.bot_ids.length })}</div>
           </button>
         {/each}
       </div>
@@ -228,7 +228,7 @@
               <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)] flex items-center gap-1.5">
                 <Users class="size-3.5" /> {t("channel.rules")}
               </Label>
-              <p class="text-[10px] text-[var(--text-muted)]">
+              <p class="text-[11px] text-[var(--text-muted)]">
                 {t("channel.rulesHint")}
               </p>
               <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label={t("channel.rules")}>
@@ -259,7 +259,7 @@
                 />
               {/if}
               {#if (selected!.responder_rules?.mode ?? "all") === "manual"}
-                <p class="text-[10px] text-[var(--text-muted)]">{t("channel.manualHint")}</p>
+                <p class="text-[11px] text-[var(--text-muted)]">{t("channel.manualHint")}</p>
               {/if}
             </div>
 

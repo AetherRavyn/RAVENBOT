@@ -107,6 +107,7 @@
         class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/[0.06] transition-colors cursor-pointer"
         onclick={onToggleSidebar}
         title={t("titlebar.toggleSidebar")}
+        aria-label={t("titlebar.toggleSidebar")}
       >
         <PanelLeft class="size-3.5" />
       </button>
@@ -121,11 +122,22 @@
   </div>
 
   <!-- Center Draggable Window Zone -->
-  <div data-tauri-drag-region class="flex-1 h-full flex items-center justify-center text-[10px] text-[var(--text-muted)] font-mono pointer-events-auto">
+  <div data-tauri-drag-region class="flex-1 h-full flex items-center justify-center text-[11px] text-[var(--text-muted)] font-mono pointer-events-auto">
+    <!--
+      The theme picker, and the only control in the bar that is not an icon.
+      It was `py-0.5` around 10px text, so it came out 17px tall — below the
+      24×24 WCAG 2.2 floor, and visibly so next to the 24px window buttons
+      either side of it. `py-1.5` brings it to 24 and lines it up with its
+      neighbours; the drag region is on the parent, so growing the button
+      costs nothing in window-drag area.
+    -->
     <button
       type="button"
-      class="opacity-70 hover:opacity-100 transition-opacity flex items-center gap-1.5 cursor-pointer bg-transparent border-0 text-[10px] text-[var(--text-tertiary)] font-mono py-0.5 px-2 rounded hover:bg-white/[0.06]"
+      class="opacity-70 hover:opacity-100 transition-opacity flex items-center gap-1.5 cursor-pointer bg-transparent border-0 text-[11px] text-[var(--text-tertiary)] font-mono py-1.5 px-2 rounded hover:bg-white/[0.06] h-6"
       onclick={() => (showThemeDropdown = !showThemeDropdown)}
+      aria-haspopup="menu"
+      aria-expanded={showThemeDropdown}
+      aria-label={`${t("titlebar.theme")}: ${currentTheme.name}`}
     >
       <span class="size-1.5 rounded-full" style="background-color: {currentTheme.primaryColor}"></span>
       {currentTheme.name}
@@ -146,7 +158,7 @@
         title={t("titlebar.switchTheme")}
       >
         <span class="size-2.5 rounded-full ring-1 ring-white/30" style="background-color: {currentTheme.primaryColor}"></span>
-        <span class="hidden md:inline text-[10px] font-medium text-[var(--text-secondary)]">{t("titlebar.theme")}</span>
+        <span class="hidden md:inline text-[11px] font-medium text-[var(--text-secondary)]">{t("titlebar.theme")}</span>
       </button>
 
       <!-- Theme Switcher Popover -->
@@ -162,7 +174,7 @@
               <Palette class="size-3.5" style="color: {currentTheme.primaryColor}" />
               {t("titlebar.visualWorld")}
             </span>
-            <span class="text-[10px] text-[var(--text-muted)] font-mono">{t("titlebar.worlds", { n: THEMES.length })}</span>
+            <span class="text-[11px] text-[var(--text-muted)] font-mono">{t("titlebar.worlds", { n: THEMES.length })}</span>
           </div>
 
           <div class="space-y-1 max-h-72 overflow-y-auto pr-0.5">
@@ -182,7 +194,7 @@
                   </div>
                   <div class="min-w-0">
                     <div class="font-bold text-xs text-[var(--text-primary)] truncate">{t.name}</div>
-                    <div class="text-[10px] text-[var(--text-muted)] truncate">{t.category}</div>
+                    <div class="text-[11px] text-[var(--text-muted)] truncate">{t.category}</div>
                   </div>
                 </div>
 

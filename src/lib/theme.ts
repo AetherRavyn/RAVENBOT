@@ -106,6 +106,50 @@ function readableOn(hex: string): string {
   return luminance(hex) > 0.45 ? "#0b0b0f" : "#ffffff";
 }
 
+/** WCAG 2.1 relative contrast between two hex colours. 1 … 21. */
+export function contrastRatio(a: string, b: string): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/**
+ * Push `hex` away from `bg` until it clears `ratio`, or until it runs out of
+ * room.
+ *
+ * ## Why this exists
+ *
+ * The text ramp used to be built by mixing fixed proportions towards the
+ * background — `--text-muted` was `mixHex(muted, bg, 0.28)`. That is a
+ * *relative* recipe, so its contrast is whatever the theme's own muted colour
+ * happens to produce, and for every dark theme in the catalogue it produced
+ * 2.6–4.0:1. Just under the 4.5:1 that WCAG AA asks of body text, which means
+ * every piece of secondary text in the app failed and nothing said so.
+ *
+ * A themeable token cannot be specified as a mix ratio and also be guaranteed
+ * to pass. So the ramp is specified as a *ratio*, and this is what turns the
+ * ratio back into a colour: step the candidate away from its background until
+ * it clears the floor. It costs a few dozen arithmetic operations once per
+ * theme change and it makes the guarantee hold for every theme, including ones
+ * added later, which is the part a hand-tuned hex cannot do.
+ *
+ * Direction is chosen from the background, not from the candidate, so a theme
+ * with an unusual primary colour still moves the right way.
+ */
+export function ensureContrast(hex: string, bg: string, ratio: number): string {
+  if (contrastRatio(hex, bg) >= ratio) return hex;
+  const dark = luminance(bg) < 0.5;
+  // Fully clear and fully dark are the two stops available.
+  const target = dark ? "#ffffff" : "#000000";
+  // 2% steps: fine enough that the result is indistinguishable from a
+  // continuous solve, coarse enough to be obviously correct and terminate.
+  for (let step = 0.02; step <= 1.0001; step += 0.02) {
+    const candidate = mixHex(hex, target, step);
+    if (contrastRatio(candidate, bg) >= ratio) return candidate;
+  }
+  return target;
+}
+
 /** Flat colour blend — a solid hex, never a gradient. */
 function mixHex(a: string, b: string, amount: number): string {
   const [r1, g1, b1] = hexToRgb(a);
@@ -376,6 +420,16 @@ export const THEMES: ThemeDefinition[] = [
 let activeThemeId = "openbot";
 const listeners = new Set<(theme: ThemeDefinition) => void>();
 
+/**
+ * The contrast floor every body-text token in the ramp is held to.
+ *
+ * WCAG 2.1 AA asks 4.5:1 for text under 18.66px. The text ramp is specified
+ * against that number rather than against whatever each theme happened to
+ * produce, so the guarantee is a property of the theme engine rather than a
+ * coincidence of the current palette.
+ */
+export const AA_TEXT = 4.5;
+
 export function getStoredTheme(): ThemeDefinition {
   if (typeof window === "undefined") return THEMES[0];
   const saved = localStorage.getItem("raven-theme");
@@ -403,6 +457,10 @@ export function applyTheme(themeId: string) {
     const buttonFg = theme.buttonForegroundHex ?? readableOn(button);
     const text = theme.textColor || readableOn(bg);
     const muted = theme.mutedTextColor || mixHex(text, bg, 0.5);
+    // Named because the contrast floor below is measured against it, and a
+    // reader of `ensureContrast(…, surface2, …)` should not have to go and
+    // find where surface2 came from.
+    const surface2 = mixHex(card, text, 0.05);
 
     // Raw theme colours (consumed by layout chrome + components)
     root.style.setProperty("--theme-primary", accent);
@@ -427,14 +485,24 @@ export function applyTheme(themeId: string) {
     // Semantic surfaces (solid)
     root.style.setProperty("--surface-0", bg);
     root.style.setProperty("--surface-1", card);
-    root.style.setProperty("--surface-2", mixHex(card, text, 0.05));
+    root.style.setProperty("--surface-2", surface2);
     root.style.setProperty("--surface-3", mixHex(card, text, 0.1));
     root.style.setProperty("--surface-4", mixHex(card, text, 0.16));
     root.style.setProperty("--text-primary", text);
     root.style.setProperty("--text-secondary", mixHex(text, muted, 0.18));
     root.style.setProperty("--text-tertiary", muted);
-    root.style.setProperty("--text-muted", mixHex(muted, bg, 0.28));
-    root.style.setProperty("--text-faint", mixHex(muted, bg, 0.45));
+    // The three steps below the primary are *specified as contrast ratios*,
+    // not as mix proportions — see `ensureContrast` for why, and for what it
+    // cost to get this wrong first.
+    //
+    // The reference surface is `surface-2`, not the canvas. Secondary text
+    // overwhelmingly sits on a panel or a raised row rather than on the bare
+    // background, and measuring against the canvas is how a ramp ends up
+    // passing everywhere it was checked and failing everywhere it was used.
+    root.style.setProperty("--text-muted", ensureContrast(mixHex(muted, bg, 0.28), surface2, AA_TEXT));
+    // `faint` is decoration and placeholder text, which WCAG treats as
+    // non-text: the 3:1 large-text floor, not the 4.5:1 body floor.
+    root.style.setProperty("--text-faint", ensureContrast(mixHex(muted, bg, 0.45), surface2, 3));
     root.style.setProperty("--hairline", border);
     root.style.setProperty("--hairline-strong", mixHex(border, text, 0.14));
 

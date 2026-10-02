@@ -20,7 +20,7 @@
   import { Input } from "$lib/components/ui/input";
   import { Loader2, Bot as BotIcon } from "@lucide/svelte";
   import { getDiceBearUrl } from "$lib/utils";
-  import { workspace } from "$lib/workspace.svelte";
+  import { workspace, RAIL_WIDTH, SIDEBAR_MIN, SIDEBAR_MAX } from "$lib/workspace.svelte";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { initI18n, t } from "$lib/i18n";
   import { prefersReducedMotion, keyboardShortcuts } from "$lib/a11y";
@@ -33,6 +33,49 @@
 
   let skillsModalBot = $derived(workspace.bots.find((b: any) => b.id === skillsModalBotId));
   let marketplaceModalBot = $derived(workspace.bots.find((b: any) => b.id === marketplaceModalBotId));
+
+  /**
+   * Sidebar drag, living in the frame alongside the handle it drives.
+   *
+   * Pointer capture on the handle, then listening on the handle itself rather
+   * than on `window`: capture already routes every move to the element that
+   * started the gesture, so a window listener would only add a second path for
+   * the same events.
+   */
+  function startResize(e: PointerEvent) {
+    const handle = e.currentTarget as HTMLElement;
+    handle.setPointerCapture(e.pointerId);
+    document.documentElement.classList.add("sidebar-resizing");
+    const move = (ev: PointerEvent) => workspace.setSidebarWidth(ev.clientX - RAIL_WIDTH);
+    const up = () => {
+      document.documentElement.classList.remove("sidebar-resizing");
+      workspace.commitSidebarWidth();
+      handle.removeEventListener("pointermove", move);
+      handle.removeEventListener("pointerup", up);
+      handle.removeEventListener("pointercancel", up);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+    handle.addEventListener("pointercancel", up);
+  }
+
+  /**
+   * Keyboard resize. The handle is focusable and has a role and a name, so it
+   * is operable without a pointer — which is also why its small visual size is
+   * not the only way to reach it.
+   */
+  function resizeKeys(e: KeyboardEvent) {
+    const step = e.shiftKey ? 32 : 8;
+    if (e.key === "ArrowLeft") workspace.setSidebarWidth(workspace.sidebarUserWidth - step);
+    else if (e.key === "ArrowRight") workspace.setSidebarWidth(workspace.sidebarUserWidth + step);
+    else if (e.key === "Home") {
+      e.preventDefault();
+      workspace.resetSidebarWidth();
+      return;
+    } else return;
+    e.preventDefault();
+    workspace.commitSidebarWidth();
+  }
 
   // Rail launchers act on the agent you're looking at, falling back to the first one.
   function targetBotId(): string | null {
@@ -167,6 +210,39 @@
       <WorkspaceSidebar theme={currentTheme} />
     {:else}
       <div aria-hidden="true"></div>
+    {/if}
+
+    <!--
+      The sidebar's drag handle.
+
+      It lives here, in the frame, rather than inside the sidebar, and that is
+      the whole fix. WCAG 2.2 asks pointer targets to be 24px, and the obvious
+      way to get there — widen the 5px strip that sat on the sidebar's right
+      edge — silently steals clicks: the sidebar's own controls run to within
+      9px of that edge, so a 24px strip laid inward covers "New Chat", the
+      fleet filter and "Pause Fleet". Measured, not assumed.
+
+      Out here the handle can straddle the border instead: 9px into the
+      sidebar's dead space and 15px into the conversation's empty left gutter,
+      which starts 212px wide. Twenty-four pixels that hit nothing but the
+      handle.
+    -->
+    {#if showSidebar && !workspace.sidebarCompact}
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <div
+        class="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        tabindex="0"
+        aria-label={t("sidebar.resize")}
+        title={t("sidebar.resize")}
+        aria-valuenow={workspace.sidebarUserWidth}
+        aria-valuemin={SIDEBAR_MIN}
+        aria-valuemax={SIDEBAR_MAX}
+        onpointerdown={startResize}
+        onkeydown={resizeKeys}
+      ></div>
     {/if}
 
     <main class="min-w-0 flex flex-col overflow-hidden relative bg-[var(--surface-0)]" aria-label={t("a11y.thread")}>

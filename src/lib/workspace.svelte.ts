@@ -9,8 +9,10 @@ export type RailDest = "home" | "agents" | "offices" | "connectors" | "routines"
 // OpenBot layout-constants (WorkspaceShell / layout-constants.ts): the sidebar
 // drags between 128–400px; below the 424px conversation minimum it auto-compact
 // to an 88px icon strip.
-const SIDEBAR_MIN = 128;
-const SIDEBAR_MAX = 400;
+/** Bounds of the sidebar drag. Exported so the frame's handle can declare the
+ *  same value range it actually enforces, rather than a copy that drifts. */
+export const SIDEBAR_MIN = 128;
+export const SIDEBAR_MAX = 400;
 const SIDEBAR_DEFAULT = 280;
 const SIDEBAR_COMPACT = 88;
 const CONVERSATION_MIN = 424;

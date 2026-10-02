@@ -695,7 +695,7 @@
       <div class="flex items-center gap-2 min-w-0">
         <Layers class="size-4 text-[var(--brand-text)] shrink-0" />
         <h2 class="text-[13px] font-bold text-[var(--text-primary)] tracking-wide truncate">{t("connector.title")}</h2>
-        <span class="text-[10px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30 px-1.5 py-0.5 rounded-md font-mono font-bold shrink-0">
+        <span class="text-[11px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30 px-1.5 py-0.5 rounded-md font-mono font-bold shrink-0">
           {t("connector.count", { n: servers.length })}
         </span>
       </div>
@@ -762,7 +762,7 @@
               <span>{b.name}</span>
               <span
                 class={cn(
- "text-[10px] font-mono px-1.5 py-[2px] rounded-full",
+ "text-[11px] font-mono px-1.5 py-[2px] rounded-full",
                   isSelected ? "bg-[var(--surface-3)] text-[var(--text-primary)]" : "bg-[var(--surface-1)] text-[var(--brand-text)]"
                 )}
               >
@@ -821,7 +821,7 @@
         >
           <Globe class="size-3" />
           <span>{t("connector.tabAll")}</span>
-          <span class="text-[10px] font-mono opacity-80">({servers.length})</span>
+          <span class="text-[11px] font-mono opacity-80">({servers.length})</span>
         </button>
 
         {#if currentBot}
@@ -838,7 +838,7 @@
           >
             <BotIcon class="size-3 text-[var(--brand-text)]" />
             <span>{t("connector.tabActiveFor", { name: currentBot.name })}</span>
-            <span class="text-[10px] font-mono opacity-80">({activeBotCount})</span>
+            <span class="text-[11px] font-mono opacity-80">({activeBotCount})</span>
           </button>
         {/if}
 
@@ -855,7 +855,7 @@
         >
           <Server class="size-3 text-[var(--brand-text)]" />
           <span>{t("connector.tabGlobal")}</span>
-          <span class="text-[10px] font-mono opacity-80">({globalCount})</span>
+          <span class="text-[11px] font-mono opacity-80">({globalCount})</span>
         </button>
 
         {#if missingKeysCount > 0}
@@ -872,7 +872,7 @@
           >
             <Key class="size-3 text-warning" />
             <span>{t("connector.tabNeedsKeys")}</span>
-            <span class="text-[10px] font-mono opacity-80">({missingKeysCount})</span>
+            <span class="text-[11px] font-mono opacity-80">({missingKeysCount})</span>
           </button>
         {/if}
 
@@ -890,7 +890,7 @@
           >
             <Sparkles class="size-3 text-[var(--brand-text)]" />
             <span>{t("connector.tabCustom")}</span>
-            <span class="text-[10px] font-mono opacity-80">({customCount})</span>
+            <span class="text-[11px] font-mono opacity-80">({customCount})</span>
           </button>
         {/if}
       </div>
@@ -917,7 +917,7 @@
             <span>{cat.label}</span>
             <span
               class={cn(
- "text-[10px] font-mono px-1 rounded",
+ "text-[11px] font-mono px-1 rounded",
                 selectedCategory === cat.id ? "bg-[var(--brand-soft)] text-[var(--brand-text)]" : "text-[var(--text-muted)]"
               )}
             >
@@ -1028,13 +1028,13 @@
               <div class="flex items-center gap-1.5 min-w-0">
                 <h4 class="font-bold text-xs text-[var(--text-primary)] truncate" title={s.name}>{s.name}</h4>
                 {#if s.is_custom}
-                  <span class="text-[9px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/40 px-1.5 py-[2px] rounded font-bold shrink-0">{t("connector.customBadge")}</span>
+                  <span class="text-[11px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/40 px-1.5 py-[2px] rounded font-bold shrink-0">{t("connector.customBadge")}</span>
                 {/if}
                 {#if s.transport === "http"}
-                  <span class="text-[9px] bg-info/10 text-info border border-info/25 px-1.5 py-[2px] rounded font-bold shrink-0" title={s.url || ""}>{t("connector.remoteBadge")}</span>
+                  <span class="text-[11px] bg-info/10 text-info border border-info/25 px-1.5 py-[2px] rounded font-bold shrink-0" title={s.url || ""}>{t("connector.remoteBadge")}</span>
                 {/if}
               </div>
-              <div class="flex items-center gap-1.5 mt-0.5 text-[10px] text-[var(--text-muted)] min-w-0">
+              <div class="flex items-center gap-1.5 mt-0.5 text-[11px] text-[var(--text-muted)] min-w-0">
                 <span class="truncate">{categoryLabel(s.category)}</span>
                 <span>·</span>
                 <span class="font-mono shrink-0">{t("connector.toolsCount", { n: s.tools_count })}</span>
@@ -1088,7 +1088,7 @@
           <!-- Single status line -->
           <button
             type="button"
-            class="flex items-center gap-1.5 text-[10px] w-fit text-left cursor-pointer"
+            class="flex items-center gap-1.5 text-[11px] w-fit text-left cursor-pointer"
             aria-label={`${s.name}: ${s.verified ? (hasRequiredKeys && !isKeyConfigured ? t("connector.statusNeedsKeys", { keys: s.env_keys.slice(0, 2).join(", ") }) : isCurrentBotEnabled ? t("connector.tabActiveFor", { name: currentBot?.name }) : isGlobalEnabled ? t("connector.statusGlobalReady") : t("connector.statusReady")) : t("connector.statusUnverified")}`}
             title={hasRequiredKeys && !isKeyConfigured ? t("connector.tipConfigure") : s.description}
             onclick={() => { if (hasRequiredKeys) openEnvConfig(s); }}
@@ -1146,7 +1146,7 @@
             <button
               type="button"
               class={cn(
- "h-8 px-2.5 rounded-lg border text-[10px] font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0",
+ "h-8 px-2.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-colors cursor-pointer shrink-0",
                 isGlobalEnabled
                   ? "border-[var(--brand)]/40 bg-[var(--brand-soft)] text-[var(--brand-text)]"
                   : "border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]"
@@ -1244,9 +1244,9 @@
 
             <!-- Connector Tags Included -->
             <div class="flex flex-wrap items-center gap-1.5 pt-2 border-t border-[var(--hairline)]">
-              <span class="text-[10px] font-mono text-[var(--text-muted)] uppercase">{t("connector.includes")}</span>
+              <span class="text-[11px] font-mono text-[var(--text-muted)] uppercase">{t("connector.includes")}</span>
               {#each stack.connectors as cid}
-                <span class="text-[10px] bg-[var(--brand-soft)] border border-[var(--hairline)] text-[var(--brand-text)] px-2 py-0.5 rounded-md font-mono">
+                <span class="text-[11px] bg-[var(--brand-soft)] border border-[var(--hairline)] text-[var(--brand-text)] px-2 py-0.5 rounded-md font-mono">
                   {cid}
                 </span>
               {/each}
@@ -1303,7 +1303,7 @@
               <RavenAvatar name={b.name} imageUrl={b.avatar_url} style={b.avatar_style} />
               <div>
                 <span class="font-bold text-xs text-[var(--text-primary)] block">{b.name}</span>
-                <span class="text-[10px] text-[var(--text-tertiary)] font-mono">{b.model || t("connector.defaultModel")}</span>
+                <span class="text-[11px] text-[var(--text-tertiary)] font-mono">{b.model || t("connector.defaultModel")}</span>
               </div>
             </div>
 
@@ -1467,7 +1467,7 @@
               rows={3}
               class="text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
             />
-            <p class="text-[10px] text-[var(--text-muted)]">{t("connector.headersHint")}</p>
+            <p class="text-[11px] text-[var(--text-muted)]">{t("connector.headersHint")}</p>
           </div>
         {:else}
           <div class="grid grid-cols-3 gap-3">
@@ -1502,7 +1502,7 @@
             rows={3}
             class="text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
           />
-          <p class="text-[10px] text-[var(--text-muted)]">{t("connector.envHint")}</p>
+          <p class="text-[11px] text-[var(--text-muted)]">{t("connector.envHint")}</p>
         </div>
       </div>
 
@@ -1543,7 +1543,7 @@
           <div class="space-y-1.5">
             <Label class="text-xs font-bold text-[var(--text-secondary)] font-mono flex items-center justify-between">
               <span>{k}</span>
-              <span class="text-[9px] text-[var(--text-muted)] uppercase">{t("connector.secretToken")}</span>
+              <span class="text-[11px] text-[var(--text-muted)] uppercase">{t("connector.secretToken")}</span>
             </Label>
             <div class="relative">
               <Input
@@ -1622,7 +1622,7 @@
               </div>
             </div>
             {#if testResult.success}
-              <Badge variant="outline" class="bg-success/40 border-success/40 text-success font-mono text-[10px]">
+              <Badge variant="outline" class="bg-success/40 border-success/40 text-success font-mono text-[11px]">
                 {t("connector.latency", { ms: testResult.latency_ms })}
               </Badge>
             {/if}

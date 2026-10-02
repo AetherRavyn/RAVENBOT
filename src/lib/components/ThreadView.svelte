@@ -1282,7 +1282,7 @@
 {#snippet sourcesChips(sources: any[])}
   {#if sources && sources.length > 0}
     <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-2.5 space-y-1.5">
-      <div class="flex items-center gap-1.5 text-[10px] font-mono text-[var(--text-tertiary)] uppercase tracking-wider">
+      <div class="flex items-center gap-1.5 text-[11px] font-mono text-[var(--text-tertiary)] uppercase tracking-wider">
         <Globe class="size-3 text-[var(--brand-text)]" />
         <span>Sources ({sources.length})</span>
       </div>
@@ -1291,11 +1291,11 @@
           {@const label = domainOf(src.url)}
           <button
             type="button"
-            class="max-w-[220px] h-6 px-2 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)] hover:bg-[var(--brand-soft)] hover:border-[var(--brand)]/40 flex items-center gap-1.5 text-[10px] text-[var(--text-secondary)] hover:text-[var(--brand-hover)] transition-colors cursor-pointer"
+            class="max-w-[220px] h-6 px-2 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)] hover:bg-[var(--brand-soft)] hover:border-[var(--brand)]/40 flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--brand-hover)] transition-colors cursor-pointer"
             title={src.title || src.url}
             onclick={() => openSource(src.url)}
           >
-            <span class="size-3.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] font-mono flex items-center justify-center text-[8px] shrink-0">{idx + 1}</span>
+            <span class="size-3.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] font-mono flex items-center justify-center text-[11px] shrink-0">{idx + 1}</span>
             <span class="truncate font-mono">{label}</span>
           </button>
         {/each}
@@ -1319,7 +1319,7 @@
 
         {#if bot?.config?.engine && bot.config.engine !== "native"}
           <span
-            class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] hidden sm:inline-flex items-center gap-1"
+            class="text-[11px] font-mono py-0.5 px-2 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] hidden sm:inline-flex items-center gap-1"
             title={t("thread.cliBot")}
           >
             <Cpu class="size-2.5" /> {bot.config.engine}
@@ -1330,7 +1330,7 @@
         <div class="relative">
           <button
             type="button"
-            class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] truncate cursor-pointer transition-colors hidden sm:inline-flex items-center gap-1 max-w-[220px] {bot?.config?.engine && bot.config.engine !== 'native' ? 'opacity-40' : ''}"
+            class="text-[11px] font-mono py-0.5 px-2 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] truncate cursor-pointer transition-colors hidden sm:inline-flex items-center gap-1 max-w-[220px] {bot?.config?.engine && bot.config.engine !== 'native' ? 'opacity-40' : ''}"
             onclick={(e) => {
               e.stopPropagation();
               openModelSwitcher();
@@ -1350,7 +1350,7 @@
               class="absolute left-0 top-7 z-50 w-[26rem] max-w-[calc(100vw-2rem)] bg-[var(--surface-1)] border border-[var(--hairline)] rounded-2xl shadow-2xl animate-in fade-in zoom-in-95  overflow-hidden"
               onclick={(e) => e.stopPropagation()}
             >
-              <span class="block px-3 py-2 text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono border-b border-[var(--hairline)]">
+              <span class="block px-3 py-2 text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono border-b border-[var(--hairline)]">
                 Switch Model · {bot?.config?.model_provider}/{bot?.config?.model_id?.split("/").pop()}
               </span>
 
@@ -1383,7 +1383,7 @@
                   bind:value={switcherModel}
                   aria-label="Custom model id"
                   placeholder="model id…"
-                  class="flex-1 min-w-0 h-6 px-2 rounded-lg bg-[var(--surface-0)] border border-[var(--hairline)] text-[10px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
+                  class="flex-1 min-w-0 h-6 px-2 rounded-lg bg-[var(--surface-0)] border border-[var(--hairline)] text-[11px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
                   onkeydown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -1394,7 +1394,7 @@
                 />
                 <Button
                   size="sm"
-                  class="h-6 px-2 text-[10px] bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white cursor-pointer shrink-0"
+                  class="h-6 px-2 text-[11px] bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white cursor-pointer shrink-0"
                   onclick={applySwitcherModel}
                 >
                   Apply
@@ -1405,7 +1405,7 @@
         </div>
 
         {#if currentThread?.ephemeral}
-          <span class="text-[10px] font-mono py-0.5 px-2 rounded-md bg-warning/15 border border-warning/30 text-warning flex items-center gap-1 shrink-0" title={t("thread.tempTip")}>
+          <span class="text-[11px] font-mono py-0.5 px-2 rounded-md bg-warning/15 border border-warning/30 text-warning flex items-center gap-1 shrink-0" title={t("thread.tempTip")}>
             <Ghost class="size-3" />
             <span>{t("thread.temp")}</span>
           </span>
@@ -1439,10 +1439,10 @@
             onclick={(e) => e.stopPropagation()}
           >
             <div class="flex items-center justify-between px-2 py-1 border-b border-[var(--hairline)]">
-              <span class="text-[10px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono">{t("thread.chatHistory")}</span>
+              <span class="text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono">{t("thread.chatHistory")}</span>
               <button
                 type="button"
-                class="text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-hover)] flex items-center gap-1 cursor-pointer"
+                class="text-[11px] text-[var(--brand-text)] hover:text-[var(--brand-hover)] flex items-center gap-1 cursor-pointer"
                 onclick={createNewThread}
               >
                 <Plus class="size-3" /> New
@@ -1544,7 +1544,7 @@
           ]}
           onValueChange={(v) => (activeChannelId = v || null)}
           placeholder={t("thread.noChannel")}
-          class="h-7 w-32 rounded-lg text-[10px] font-mono"
+          class="h-7 w-32 rounded-lg text-[11px] font-mono"
         />
       {/if}
 
@@ -1633,7 +1633,7 @@
         <span>{t("thread.cost")}: <strong class="text-success">${sessionCost.toFixed(4)}</strong></span>
         <span>{t("thread.model")}: <strong class="text-[var(--brand-text)]">{getModelDisplayName(bot)}</strong></span>
       </div>
-      <span class="text-[10px] px-2 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-mono uppercase">
+      <span class="text-[11px] px-2 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-[var(--brand-text)] font-mono uppercase">
         {t("thread.enclaveBadge")}
       </span>
     </div>
@@ -1670,7 +1670,7 @@
                 if (e.key === "Enter") { e.preventDefault(); runSearch(); }
               }}
               placeholder={t("thread.searchThreads")}
-              class="w-full h-7 pl-7 pr-2 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[10px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
+              class="w-full h-7 pl-7 pr-2 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
             />
           </div>
           {#if searchResults.length > 0}
@@ -1681,16 +1681,16 @@
                   class="w-full text-left px-2 py-1.5 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--brand)]/40 transition-colors cursor-pointer"
                   onclick={() => loadMessages(hit.thread_id)}
                 >
-                  <div class="flex items-center gap-1 text-[9px] font-mono text-[var(--text-muted)]">
+                  <div class="flex items-center gap-1 text-[11px] font-mono text-[var(--text-muted)]">
                     <span class="text-[var(--brand-text)] truncate max-w-[100px]">{hit.thread_title || "Thread"}</span>
                     <span class="shrink-0">· {hit.role}</span>
                   </div>
-                  <p class="text-[10px] text-[var(--text-secondary)] leading-snug line-clamp-2 mt-0.5">{hit.snippet}</p>
+                  <p class="text-[11px] text-[var(--text-secondary)] leading-snug line-clamp-2 mt-0.5">{hit.snippet}</p>
                 </button>
               {/each}
             </div>
           {:else if searchPerformed}
-            <div class="mt-1.5 text-[10px] text-[var(--text-muted)] text-center">{t("thread.noMatches")}</div>
+            <div class="mt-1.5 text-[11px] text-[var(--text-muted)] text-center">{t("thread.noMatches")}</div>
           {/if}
         </div>
 
@@ -1982,10 +1982,10 @@
                 <div class="text-[13px] font-semibold text-[var(--text-primary)]">
                   {bot.name} wants to {ap.tool_label || ap.tool_name}
                 </div>
-                <span class="shrink-0 font-mono text-[10px] text-[var(--text-muted)]">{ap.tool_name}</span>
+                <span class="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">{ap.tool_name}</span>
               </div>
               {#if approvalSummary(ap.arguments)}
-                <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/50 border border-[var(--hairline)] px-3 py-2 font-mono text-[11.5px] leading-relaxed text-[var(--text-secondary)]">{approvalSummary(ap.arguments)}</pre>
+                <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/50 border border-[var(--hairline)] px-3 py-2 font-mono text-[12px] leading-relaxed text-[var(--text-secondary)]">{approvalSummary(ap.arguments)}</pre>
               {/if}
               {#if ap.risk === 'high'}
                 <p class="text-[11px] text-warning/90">{t("thread.highStakes")}</p>
@@ -2007,7 +2007,7 @@
                 >
                   Deny
                 </button>
-                <span class="text-[10px] font-mono text-[var(--text-muted)] ml-1">the run resumes after you decide</span>
+                <span class="text-[11px] font-mono text-[var(--text-muted)] ml-1">the run resumes after you decide</span>
               </div>
             </div>
           {/each}
@@ -2018,9 +2018,9 @@
             <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border border-[var(--brand)]/40 bg-[var(--surface-1)] p-4 space-y-3 shadow-xl">
               <div class="flex items-baseline justify-between gap-3">
                 <div class="text-[13px] font-semibold text-[var(--text-primary)]">{q.header || 'Question'}</div>
-                <span class="shrink-0 font-mono text-[10px] text-[var(--brand-text)]/80">ask_user</span>
+                <span class="shrink-0 font-mono text-[11px] text-[var(--brand-text)]/80">ask_user</span>
               </div>
-              <p class="text-[12.5px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">{q.question}</p>
+              <p class="text-[13px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">{q.question}</p>
               {#if q.options?.length}
                 <div class="flex flex-wrap gap-2">
                   {#each q.options as opt}
@@ -2093,7 +2093,7 @@
                 />
                 <button
                   type="button"
-                  class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
+                  class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
                   onclick={() => removePendingAttachment(idx)}
                   aria-label={t("room.removeAttachment")}
                   title={t("room.removeAttachment")}
@@ -2105,12 +2105,12 @@
               <div class="relative flex items-center gap-1.5 h-14 max-w-[220px] pl-2.5 pr-6 rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-2)] shadow-sm" title={att.name}>
                 <Paperclip class="size-3.5 text-[var(--brand-text)] shrink-0" />
                 <div class="min-w-0">
-                  <div class="text-[10px] text-[var(--text-secondary)] truncate">{att.name}</div>
-                  <div class="text-[9px] text-[var(--text-muted)] font-mono uppercase">{att.mime.split("/").pop()}</div>
+                  <div class="text-[11px] text-[var(--text-secondary)] truncate">{att.name}</div>
+                  <div class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{att.mime.split("/").pop()}</div>
                 </div>
                 <button
                   type="button"
-                  class="absolute top-1 right-1 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[9px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
+                  class="absolute top-1 right-1 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
                   onclick={() => removePendingAttachment(idx)}
                   aria-label={t("room.removeAttachment")}
                   title={t("room.removeAttachment")}
@@ -2159,13 +2159,13 @@
       <!-- Edit-and-resend banner -->
       {#if editingMessage}
         <div class="flex items-center justify-between pt-2 border-t border-warning/20 mt-1">
-          <div class="flex items-center gap-1.5 text-[10px] font-mono text-warning">
+          <div class="flex items-center gap-1.5 text-[11px] font-mono text-warning">
             <Pencil class="size-3" />
             <span>{t("thread.editingHint")}</span>
           </div>
           <button
             type="button"
-            class="text-[10px] font-mono text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
+            class="text-[11px] font-mono text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
             onclick={cancelEditing}
             title={t("thread.cancelEdit")}
           >
@@ -2263,7 +2263,7 @@
 
             <!-- Right Controls: Model Pill & High-Contrast Send Button -->
             <div class="flex items-center gap-2">
-              <span class="text-[10px] font-mono text-[var(--text-muted)] px-2 py-0.5 rounded border border-[var(--hairline)] bg-[var(--surface-1)] hidden sm:inline">
+              <span class="text-[11px] font-mono text-[var(--text-muted)] px-2 py-0.5 rounded border border-[var(--hairline)] bg-[var(--surface-1)] hidden sm:inline">
                 {getModelDisplayName(bot)}
               </span>
 
@@ -2288,7 +2288,7 @@
         </div>
 
         <div class="text-center mt-2">
-          <span class="text-[10px] text-[var(--text-muted)] font-mono">
+          <span class="text-[11px] text-[var(--text-muted)] font-mono">
             RAVENBOT local enclave active • ⌘K for command palette • ⌘, for settings
           </span>
         </div>

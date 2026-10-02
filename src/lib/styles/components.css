@@ -470,22 +470,48 @@
   }
 }
 
-/* Sidebar drag resizer (OpenBot left-panel resize): thin grab strip on the
-   sidebar's right edge; frame animation is disabled mid-drag so width tracks
-   the pointer 1:1. Keyboard: arrows ±8px (±32 with Shift), Home = 280px. */
+/* Sidebar drag resizer (OpenBot left-panel resize). Keyboard: arrows ±8px
+   (±32 with Shift), Home = 280px. Frame animation is disabled mid-drag so the
+   width tracks the pointer 1:1.
+
+   The handle is a child of `.app-frame`, not of the sidebar, and it straddles
+   the border: `--sidebar-handle-inset` px into the sidebar's dead space and the
+   rest into the conversation's empty left gutter. That is the only arrangement
+   that reaches the WCAG 2.2 24px target without covering something.
+
+   Laid inward from the sidebar's edge instead — the obvious fix, 24px wide and
+   simply wider than it used to be — it silently eats clicks on the sidebar's
+   own controls, which come within 9px of that edge: "New Chat", the fleet
+   filter and "Pause Fleet". Both numbers were measured with `elementFromPoint`
+   rather than assumed, and the 9px inset is the measurement.
+
+   The 5px that reads as a seam is painted by ::before, so a 24px target does
+   not look like a 24px bar. */
 .sidebar-resizer {
   position: absolute;
   top: 0;
-  right: 0;
-  width: 5px;
-  height: 100%;
+  bottom: 0;
+  left: calc(var(--rail-width) + var(--frame-sidebar, 0px) - var(--sidebar-handle-inset, 9px));
+  width: var(--sidebar-handle-width, 24px);
   cursor: col-resize;
   z-index: 30;
   background: transparent;
+  /* A drag gesture must not be interpreted as a scroll on a touchpad. */
+  touch-action: none;
+}
+.sidebar-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* Centre the 5px seam on the border it represents. */
+  left: calc(var(--sidebar-handle-inset, 9px) - 2px);
+  width: 5px;
+  background: transparent;
   transition: background var(--duration-hover) ease;
 }
-.sidebar-resizer:hover,
-.sidebar-resizer:focus-visible {
+.sidebar-resizer:hover::before,
+.sidebar-resizer:focus-visible::before {
   background: color-mix(in srgb, var(--brand) 35%, transparent);
 }
 html.sidebar-resizing .app-frame {

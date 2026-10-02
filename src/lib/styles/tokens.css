@@ -101,6 +101,29 @@
   --surface-light: #f0f0f0;
 
   /* ── Status (flat solids — 8-bit pastel) ────────────────────────────── */
+
+  /* ── Type scale ───────────────────────────────────────────────────────
+   * OpenBot's scale is 12 / 13 / 14 / 16 / 18 / 24 at a 13px base. This app is
+   * denser than that, so the floor is **11px** rather than 12: legible on hidpi,
+   * still dense enough that no panel grows a scroll container it did not already
+   * have, and it leaves the palette with one small size instead of three.
+   *
+   *     11  metadata, badges, mono hints, captions
+   *     12  secondary body            (text-xs)
+   *     13  base                      (OpenBot's density)
+   *     14  body                      (text-sm)
+   *     16  emphasis / markdown body  (text-base)
+   *     18  section headings          (text-lg)
+   *     20  sub-headings              (text-xl)
+   *     24  page headings             (text-2xl)
+   *
+   * The app shipped 312 declarations of `text-[9px]` and `text-[10px]`, plus a
+   * handful of half-pixels (10.5 / 11.5 / 12.5). Individually each was
+   * reasonable; together they meant three adjacent sub-12px sizes that nothing
+   * coordinated, which reads as unsettled type no matter how correct each line
+   * is. `src/lib/styles/type-scale.test.ts` keeps it from creeping back.
+   */
+  --type-floor: 11px;
   --status-idle: #8b8b90;
   --status-thinking: #c4b5fd; /* pastel lavender */
   --status-running: #79b8ff; /* pastel blue */

@@ -55,35 +55,7 @@
     dockTarget && !isRooms ? fleetActivity.get(dockTarget.id) : "idle",
   );
 
-  function startResize(e: PointerEvent) {
-    const handle = e.currentTarget as HTMLElement;
-    handle.setPointerCapture(e.pointerId);
-    document.documentElement.classList.add("sidebar-resizing");
-    const move = (ev: PointerEvent) => workspace.setSidebarWidth(ev.clientX - RAIL_WIDTH);
-    const up = () => {
-      document.documentElement.classList.remove("sidebar-resizing");
-      workspace.commitSidebarWidth();
-      handle.removeEventListener("pointermove", move);
-      handle.removeEventListener("pointerup", up);
-      handle.removeEventListener("pointercancel", up);
-    };
-    handle.addEventListener("pointermove", move);
-    handle.addEventListener("pointerup", up);
-    handle.addEventListener("pointercancel", up);
-  }
 
-  function resizeKeys(e: KeyboardEvent) {
-    const step = e.shiftKey ? 32 : 8;
-    if (e.key === "ArrowLeft") workspace.setSidebarWidth(workspace.sidebarUserWidth - step);
-    else if (e.key === "ArrowRight") workspace.setSidebarWidth(workspace.sidebarUserWidth + step);
-    else if (e.key === "Home") {
-      e.preventDefault();
-      workspace.resetSidebarWidth();
-      return;
-    } else return;
-    e.preventDefault();
-    workspace.commitSidebarWidth();
-  }
 </script>
 
 <aside
@@ -170,19 +142,4 @@
       <Settings class="size-3.5" strokeWidth={1.5} />
     </button>
   </div>
-
-  {#if !workspace.sidebarCompact}
-    <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <div
-      class="sidebar-resizer"
-      role="separator"
-      aria-orientation="vertical"
-      tabindex="0"
-      aria-label={t("sidebar.resize")}
-      title={t("sidebar.resize")}
-      onpointerdown={startResize}
-      onkeydown={resizeKeys}
-    ></div>
-  {/if}
 </aside>

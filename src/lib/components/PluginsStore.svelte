@@ -259,12 +259,12 @@
                 <!-- Status Badge -->
                 <div class="flex items-center gap-1">
                   {#if isEnabled}
-                    <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/50 flex items-center gap-1">
+                    <span class="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/50 flex items-center gap-1">
                       <CheckCircle2 class="size-3 text-[var(--brand-text)]" />
                       {t("store.active")}
                     </span>
                   {:else}
-                    <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[var(--surface-2)] text-[var(--text-tertiary)] border border-[var(--hairline)]">
+                    <span class="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[var(--surface-2)] text-[var(--text-tertiary)] border border-[var(--hairline)]">
                       {t("store.available")}
                     </span>
                   {/if}
@@ -274,7 +274,7 @@
               <!-- Tool Title & ID -->
               <div class="mt-2.5">
                 <h4 class="font-bold text-xs text-[var(--text-primary)] truncate">{name}</h4>
-                <span class="font-mono text-[10px] text-[var(--brand-text)]/80 block truncate">{id}</span>
+                <span class="font-mono text-[11px] text-[var(--brand-text)]/80 block truncate">{id}</span>
                 <p class="text-xs text-[var(--text-tertiary)] line-clamp-2 mt-1 leading-relaxed">
                   {desc || t("store.noDesc")}
                 </p>
@@ -283,11 +283,11 @@
 
             <!-- Card Bottom Row: Scope, Global toggle, Enable Button -->
             <div class="flex items-center justify-between pt-3 mt-3 border-t border-[var(--hairline)] gap-2">
-              <span class="text-[10px] text-[var(--text-muted)] font-mono flex items-center gap-1 min-w-0">
+              <span class="text-[11px] text-[var(--text-muted)] font-mono flex items-center gap-1 min-w-0">
                 <Shield class="size-3 text-[var(--text-tertiary)] shrink-0" />
                 {t("store.inappTool")}
                 {#if isEnabled}
-                  <span class="text-[10px] text-success">{t("store.ready")}</span>
+                  <span class="text-[11px] text-success">{t("store.ready")}</span>
                 {/if}
               </span>
 
@@ -297,7 +297,7 @@
                   onclick={() => toggleGlobal(id)}
                   aria-pressed={isGlobal}
                   title={t("store.globalHint")}
-                  class="h-7 px-2 rounded-lg text-[10px] font-mono flex items-center gap-1 transition-all cursor-pointer {isGlobal
+                  class="h-7 px-2 rounded-lg text-[11px] font-mono flex items-center gap-1 transition-all cursor-pointer {isGlobal
                     ? 'bg-success/15 text-success border border-success/40'
                     : 'bg-[var(--surface-2)] text-[var(--text-muted)] border border-[var(--hairline)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 >

@@ -574,7 +574,7 @@
               <Dialog.Title class="text-base font-bold flex items-center gap-2 text-[var(--text-primary)]">
                 <span>{name || bot.name}</span>
                 {#if isOrchestrator}
-                  <span class="text-[9px] font-bold text-[var(--brand-text)] bg-[var(--brand-soft)] border border-[var(--brand)]/50 px-1.5 py-0.5 rounded-md font-mono flex items-center gap-1">
+                  <span class="text-[11px] font-bold text-[var(--brand-text)] bg-[var(--brand-soft)] border border-[var(--brand)]/50 px-1.5 py-0.5 rounded-md font-mono flex items-center gap-1">
                     <Crown class="size-3" />
                     {t("bot.orchestrator")}
                   </span>
@@ -623,7 +623,7 @@
                 >
                   <span class="font-bold text-[var(--text-primary)] flex items-center gap-1.5"><Server class="size-3.5" /> {t("bot.native")}</span>
                   <span class="text-[11px] text-[var(--text-tertiary)] mt-1">{t("bot.builtInLoop")}</span>
-                  <span class="text-[10px] font-mono mt-1 text-success">{t("bot.alwaysAvailable")}</span>
+                  <span class="text-[11px] font-mono mt-1 text-success">{t("bot.alwaysAvailable")}</span>
                 </button>
                 {#each engineOptions as e (e.id)}
                   <button
@@ -642,7 +642,7 @@
                       {#if engine === e.id}<Check class="size-3.5 text-[var(--brand-text)] shrink-0" />{/if}
                     </span>
                     <span class="text-[11px] text-[var(--text-tertiary)] mt-1 line-clamp-2">{e.available ? (e.version || e.command) : (e.install_hint || t("bot.notInstalled"))}</span>
-                    <span class="text-[10px] font-mono mt-1 {e.available ? 'text-success' : 'text-warning'}">
+                    <span class="text-[11px] font-mono mt-1 {e.available ? 'text-success' : 'text-warning'}">
                       {e.available ? t("bot.detected") : t("bot.notInstalled")}
                     </span>
                   </button>
@@ -667,7 +667,7 @@
                       placeholder={activeEngine?.models?.length ? activeEngine.models[0] : t("bot.engineDefault")}
                       class="h-8 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
                     />
-                    <p class="text-[10px] text-[var(--text-muted)]">{t("bot.cliDefaultHint")}</p>
+                    <p class="text-[11px] text-[var(--text-muted)]">{t("bot.cliDefaultHint")}</p>
                   </div>
                 </div>
               {/if}
@@ -676,7 +676,7 @@
             <div class="space-y-2 {engine !== 'native' ? 'opacity-50 pointer-events-none' : ''}">
               <div class="flex items-center justify-between">
                 <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">{t("bot.provider")}</Label>
-                <span class="text-[10px] font-mono text-[var(--text-muted)]">{t("bot.providersN", { n: visibleProviders.length })}</span>
+                <span class="text-[11px] font-mono text-[var(--text-muted)]">{t("bot.providersN", { n: visibleProviders.length })}</span>
               </div>
 
               <ModelPicker
@@ -703,12 +703,12 @@
               />
 
               {#if modelId && !availableModels.some((m) => m.id === modelId)}
-                <p class="text-[10px] text-[var(--text-muted)]">
+                <p class="text-[11px] text-[var(--text-muted)]">
                   {t("model.notListed", { id: modelId })}
                 </p>
               {/if}
               {#if modelId && currentModelFacts}
-                <p class="text-[10px] font-mono text-[var(--text-tertiary)] flex items-center gap-1.5">
+                <p class="text-[11px] font-mono text-[var(--text-tertiary)] flex items-center gap-1.5">
                   <span class="text-[var(--brand-text)]">{modelId}</span>
                   <span>·</span>
                   <span>{currentModelFacts}</span>
@@ -722,7 +722,7 @@
                 <Label class="text-xs font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
                   <Volume2 class="size-3.5 text-[var(--brand-text)]" /> {t("bot.voiceTitle")}
                 </Label>
-                <span class="text-[10px] font-mono {ttsInfo?.multi_voice ? 'text-success' : 'text-[var(--text-muted)]'}">
+                <span class="text-[11px] font-mono {ttsInfo?.multi_voice ? 'text-success' : 'text-[var(--text-muted)]'}">
                   {t("bot.engineActive", { engine: ttsInfo?.engine || "local" })}
                 </span>
               </div>
@@ -737,7 +737,7 @@
                 class="h-9 rounded-xl"
               />
               {#if ttsInfo && !ttsInfo.multi_voice}
-                <p class="text-[10px] text-warning leading-relaxed">
+                <p class="text-[11px] text-warning leading-relaxed">
                   {t("bot.singleVoice")}
                 </p>
               {/if}
@@ -756,7 +756,7 @@
                 <input type="checkbox" bind:checked={hostControl} class="mt-0.5 accent-[var(--brand)]" />
                 <span>
                   {t("bot.allowControl")}
-                  <span class="block text-[10px] text-warning/90 mt-0.5">
+                  <span class="block text-[11px] text-warning/90 mt-0.5">
                     {t("bot.controlWarn")}
                   </span>
                 </span>
@@ -790,7 +790,7 @@
                   <FolderTree class="size-3.5" /> {t("wsb.browseFiles")}
                 </Button>
               </div>
-              <p class="text-[10px] text-[var(--text-muted)]">
+              <p class="text-[11px] text-[var(--text-muted)]">
                 {t("bot.folderDesc")}
               </p>
               <!--
@@ -799,7 +799,7 @@
                 and a user who has not should see the agent is still confined
                 rather than be left to assume it has the whole disk.
               -->
-              <p class="text-[10px] flex items-start gap-1.5 text-[var(--ok)]">
+              <p class="text-[11px] flex items-start gap-1.5 text-[var(--ok)]">
                 <ShieldCheck class="size-3 shrink-0 mt-px" />
                 <span>
                   {t(workspaceStatus.key)}
@@ -830,7 +830,7 @@
               <Label class="text-xs font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
                 <KeyRound class="size-3.5 text-[var(--brand-text)]" /> {t("bot.capabilities")}
               </Label>
-              <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
+              <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
                 {t("bot.capabilitiesHelp")}
               </p>
 
@@ -838,14 +838,14 @@
                 <input type="checkbox" bind:checked={narrowing} class="mt-0.5 accent-[var(--brand)]" />
                 <span>
                   <span class="font-medium">{t("bot.narrowOn")}</span>
-                  <span class="block text-[10px] text-[var(--text-muted)] leading-relaxed mt-0.5">
+                  <span class="block text-[11px] text-[var(--text-muted)] leading-relaxed mt-0.5">
                     {t("bot.narrowOnHelp")}
                   </span>
                 </span>
               </label>
 
               {#if narrowing}
-                <p class="text-[10px] font-mono px-2 py-1 rounded-lg bg-[var(--surface-3)] text-[var(--text-secondary)] border border-[var(--hairline)]">
+                <p class="text-[11px] font-mono px-2 py-1 rounded-lg bg-[var(--surface-3)] text-[var(--text-secondary)] border border-[var(--hairline)]">
                   {t("bot.narrowedBy", { count: permissionsPayload.length, total: CAPABILITY_ROWS.length })}
                 </p>
                 <div class="space-y-1.5 pt-1">
@@ -860,11 +860,11 @@
                         />
                         <span class="flex-1">
                           <span class="text-[var(--text-primary)]">{row.label}</span>
-                          <span class="block text-[10px] text-[var(--text-muted)]">{row.help}</span>
+                          <span class="block text-[11px] text-[var(--text-muted)]">{row.help}</span>
                         </span>
                         {#if neededBySkills.has(row.key)}
                           <span
-                            class="text-[9px] px-1.5 py-px rounded border whitespace-nowrap {capabilityToggles[row.key]
+                            class="text-[11px] px-1.5 py-px rounded border whitespace-nowrap {capabilityToggles[row.key]
                               ? 'text-[var(--ok)] border-[var(--ok)]/30'
                               : 'text-[var(--warning)] border-[var(--warning)]/30'}"
                           >
@@ -874,18 +874,18 @@
                       </label>
                       {#if row.scoped && capabilityToggles[row.key]}
                         <div class="flex items-center gap-2 pl-7 pr-2">
-                          <span class="text-[10px] text-[var(--text-muted)] shrink-0">{t("bot.scopeLabel")}</span>
+                          <span class="text-[11px] text-[var(--text-muted)] shrink-0">{t("bot.scopeLabel")}</span>
                           {#if row.key === "FileSystem"}
                             <Input
                               bind:value={fsPaths}
                               placeholder={t("bot.scopePh")}
-                              class="h-7 text-[10px] font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
+                              class="h-7 text-[11px] font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
                             />
                           {:else}
                             <Input
                               bind:value={netDomains}
                               placeholder={t("bot.scopePh")}
-                              class="h-7 text-[10px] font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
+                              class="h-7 text-[11px] font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
                             />
                           {/if}
                         </div>
@@ -894,7 +894,7 @@
                   {/each}
                 </div>
               {:else}
-                <p class="text-[10px] text-[var(--text-muted)]">{t("bot.unnarrowed")}</p>
+                <p class="text-[11px] text-[var(--text-muted)]">{t("bot.unnarrowed")}</p>
               {/if}
             </div>
 
@@ -913,7 +913,7 @@
                   bind:value={temperature}
                   class="w-full accent-[var(--brand)] h-1.5 bg-[var(--hairline)] rounded-lg cursor-pointer"
                 />
-                <div class="flex justify-between text-[10px] text-[var(--text-muted)]">
+                <div class="flex justify-between text-[11px] text-[var(--text-muted)]">
                   <span>{t("bot.deterministic")}</span>
                   <span>{t("bot.creative", { max: tempMax.toFixed(1) })}{tempMax < 2 ? t("bot.cappedByProvider") : ''}</span>
                 </div>
@@ -933,7 +933,7 @@
                   step="256"
                   class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
                 />
-                <div class="text-[10px] text-[var(--text-muted)]">
+                <div class="text-[11px] text-[var(--text-muted)]">
                   {t("bot.maxTokensDesc")}
                 </div>
               </div>
@@ -951,7 +951,7 @@
                   placeholder={t("bot.none")}
                   class="h-8"
                 />
-                <div class="text-[10px] text-[var(--text-muted)]">
+                <div class="text-[11px] text-[var(--text-muted)]">
                   {t("bot.fallbackDesc")}
                 </div>
               </div>
@@ -970,7 +970,7 @@
                   step="1"
                   class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
                 />
-                <div class="text-[10px] text-[var(--text-muted)]">
+                <div class="text-[11px] text-[var(--text-muted)]">
                   {t("bot.roundsDesc")}
                 </div>
               </div>
@@ -1082,7 +1082,7 @@
                     class="p-2.5 rounded-xl border text-left transition-all cursor-pointer {approvalMode === opt.id ? 'border-warning bg-warning/30 ring-1 ring-warning/40' : 'border-[var(--hairline)] bg-[var(--surface-2)] hover:border-warning/40'}"
                   >
                     <div class="text-xs font-bold text-[var(--text-primary)]">{opt.name}</div>
-                    <div class="text-[10px] text-[var(--text-tertiary)] mt-0.5">{opt.desc}</div>
+                    <div class="text-[11px] text-[var(--text-tertiary)] mt-0.5">{opt.desc}</div>
                   </button>
                 {/each}
               </div>
@@ -1116,7 +1116,7 @@
                     class="p-2.5 rounded-xl border text-left transition-all cursor-pointer {sandboxTier === opt.id ? 'border-[var(--brand)] bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/40' : 'border-[var(--hairline)] bg-[var(--surface-2)] hover:border-[var(--brand)]/40'}"
                   >
                     <div class="text-xs font-bold text-[var(--text-primary)]">{opt.name}</div>
-                    <div class="text-[10px] text-[var(--text-tertiary)] mt-0.5">{opt.desc}</div>
+                    <div class="text-[11px] text-[var(--text-tertiary)] mt-0.5">{opt.desc}</div>
                   </button>
                 {/each}
               </div>
@@ -1135,7 +1135,7 @@
                 <Label for="system-prompt" class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
                   {t("bot.directiveTitle")}
                 </Label>
-                <span class="text-[10px] text-[var(--text-muted)] font-mono">
+                <span class="text-[11px] text-[var(--text-muted)] font-mono">
                   {t("bot.charsN", { n: customPrompt.length })}
                 </span>
               </div>
@@ -1168,7 +1168,7 @@
 
         <div class="flex items-center gap-2">
           {#if dirty}
-            <span class="text-[10px] text-warning flex items-center gap-1" title={t("bot.unsaved")}>
+            <span class="text-[11px] text-warning flex items-center gap-1" title={t("bot.unsaved")}>
               <span class="size-1.5 rounded-full bg-warning"></span> {t("bot.unsavedChanges")}
             </span>
           {/if}

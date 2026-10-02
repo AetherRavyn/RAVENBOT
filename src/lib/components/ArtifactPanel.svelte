@@ -63,11 +63,11 @@
   <header class="h-12 px-3 border-b border-[var(--hairline)] bg-[var(--surface-0)]/95  flex items-center gap-2 shrink-0">
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2 min-w-0">
-        <span class="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] shrink-0">
+        <span class="text-[11px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] shrink-0">
           {t("artifact.title")}
         </span>
         <span class="text-xs font-bold text-[var(--text-primary)] truncate">{artifact.title}</span>
-        <span class="text-[9px] font-mono text-[var(--text-muted)] truncate hidden sm:inline">{artifact.language}</span>
+        <span class="text-[11px] font-mono text-[var(--text-muted)] truncate hidden sm:inline">{artifact.language}</span>
       </div>
     </div>
 
@@ -76,7 +76,7 @@
       <button
         type="button"
         aria-pressed={view === 'code'}
-        class="h-6 px-2 rounded-md text-[10px] font-mono flex items-center gap-1 cursor-pointer transition-colors {view === 'code'
+        class="h-6 px-2 rounded-md text-[11px] font-mono flex items-center gap-1 cursor-pointer transition-colors {view === 'code'
           ? 'bg-[var(--surface-3)] text-[var(--text-primary)]'
           : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
         onclick={() => (view = "code")}
@@ -88,7 +88,7 @@
       <button
         type="button"
         aria-pressed={view === 'preview'}
-        class="h-6 px-2 rounded-md text-[10px] font-mono flex items-center gap-1 cursor-pointer transition-colors {view === 'preview'
+        class="h-6 px-2 rounded-md text-[11px] font-mono flex items-center gap-1 cursor-pointer transition-colors {view === 'preview'
           ? 'bg-[var(--surface-3)] text-[var(--text-primary)]'
           : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
         onclick={() => (view = "preview")}
@@ -156,7 +156,7 @@
   <div class="flex-1 overflow-hidden">
     {#if view === "code"}
       <div class="h-full overflow-y-auto">
-        <pre class="p-4 text-[11.5px] font-mono leading-relaxed text-[var(--text-secondary)] whitespace-pre select-text">{artifact.content}</pre>
+        <pre class="p-4 text-[12px] font-mono leading-relaxed text-[var(--text-secondary)] whitespace-pre select-text">{artifact.content}</pre>
       </div>
     {:else if artifact.kind === "html"}
       <!-- Fully sandboxed static preview (no scripts, no forms) -->

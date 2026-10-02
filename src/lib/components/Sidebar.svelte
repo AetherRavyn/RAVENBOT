@@ -276,15 +276,15 @@
         <Plus class="size-4 group-hover:rotate-90 transition-transform duration-300" />
         <span>{t("sidebar.newChat")}</span>
       </div>
-      <span class="text-[10px] font-mono text-black/60 bg-black/10 px-1.5 py-0.5 rounded">⌘N</span>
+      <span class="text-[11px] font-mono text-black/60 bg-black/10 px-1.5 py-0.5 rounded">⌘N</span>
     </button>
   </div>
 
   <!-- Section Header: FLEET AGENTS + Actions -->
   <div class="px-3 pt-2 pb-1.5 flex items-center justify-between">
     <div class="flex items-center gap-2">
-      <span class="font-semibold text-[10px] tracking-wider uppercase text-[var(--text-muted)] font-mono">{t("sidebar.fleetAgents")}</span>
-      <span class="bg-[var(--surface-2)] text-[var(--text-muted)] text-[10px] font-mono font-medium px-1.5 py-0.5 rounded border border-[var(--hairline)]">
+      <span class="font-semibold text-[11px] tracking-wider uppercase text-[var(--text-muted)] font-mono">{t("sidebar.fleetAgents")}</span>
+      <span class="bg-[var(--surface-2)] text-[var(--text-muted)] text-[11px] font-mono font-medium px-1.5 py-0.5 rounded border border-[var(--hairline)]">
         {bots.length}
       </span>
     </div>
@@ -454,7 +454,7 @@
               <span class="flex items-center gap-1.5 min-w-0">
                 <span class="font-semibold text-[13px] text-[var(--text-primary)] truncate">{bot.name}</span>
                 {#if bot.specialty}
-                  <span class="text-[10px] px-1.5 py-px rounded shrink-0 bg-[var(--surface-3)] text-[var(--text-muted)] truncate max-w-[96px]">{bot.specialty}</span>
+                  <span class="text-[11px] px-1.5 py-px rounded shrink-0 bg-[var(--surface-3)] text-[var(--text-muted)] truncate max-w-[96px]">{bot.specialty}</span>
                 {/if}
               </span>
               <span class="flex items-center gap-1 shrink-0">
@@ -466,7 +466,7 @@
                 {/if}
                 {#if (unread[bot.id] ?? 0) > 0}
                   <span
-                    class="min-w-4 h-4 px-1 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] text-[9px] font-semibold flex items-center justify-center"
+                    class="min-w-4 h-4 px-1 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] text-[11px] font-semibold flex items-center justify-center"
                     title={t("sidebar.unread", { n: unread[bot.id] })}
                   >
                     {(unread[bot.id] ?? 0) > 99 ? "99+" : unread[bot.id]}
@@ -474,7 +474,7 @@
                 {/if}
               </span>
             </div>
-            <span class="text-[12.5px] truncate block mt-px {activity === 'attention' ? 'text-[var(--warning-text)]' : activity === 'working' ? 'text-[var(--brand-text)]' : 'text-[var(--text-muted)]'}">
+            <span class="text-[13px] truncate block mt-px {activity === 'attention' ? 'text-[var(--warning-text)]' : activity === 'working' ? 'text-[var(--brand-text)]' : 'text-[var(--text-muted)]'}">
               {activity === "working"
                 ? t("fleet.working")
                 : activity === "attention"
@@ -641,7 +641,16 @@
         <Pause class="size-3.5 fill-current text-[var(--text-tertiary)]" />
         <span>{t("sidebar.pauseAll")}</span>
       </div>
-      <span class="font-mono text-[10px] text-[var(--text-muted)] bg-[var(--surface-3)] px-1.5 py-0.5 rounded">⌘P</span>
+      <!--
+        A keyboard-shortcut chip, not a badge.
+
+        It sat on `--surface-3`, which is the *hover* surface, and at 10px
+        `--text-muted` on it measured 3.89:1 — under the 4.5:1 WCAG AA asks of
+        text this size. Moving it to `--surface-2` (OpenBot's raised/selected
+        row) and stepping the text up to tertiary fixes it without making the
+        ramp brighter everywhere.
+      -->
+      <span class="font-mono text-[11px] text-[var(--text-tertiary)] bg-[var(--surface-2)] px-1.5 py-0.5 rounded">⌘P</span>
     </button>
   </div>
 </div>

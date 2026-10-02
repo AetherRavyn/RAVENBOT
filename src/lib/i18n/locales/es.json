@@ -149,7 +149,21 @@
     "saveChanges": "Guardar cambios",
     "deleteTitle": "¿Eliminar a \"{{name}}\"?",
     "deleteDesc": "Esto eliminará permanentemente este agente, sus configuraciones de memoria y todos los hilos de chat asociados.",
-    "confirmDelete": "Confirmar eliminación"
+    "confirmDelete": "Confirmar eliminación",
+    "workspaceIsolated": "Aislado — toda ruta que toque este agente está confinada a esta carpeta",
+    "workspaceInheritsOffice": "Aislado — hereda el espacio de trabajo de la oficina cuando se ejecuta allí",
+    "workspaceInherits": "Aislado — hereda el espacio de trabajo de la oficina",
+    "workspaceDefault": "Aislado — se ejecuta en su propia carpeta en ~/RAVENBOT/projects/",
+    "capabilities": "Capacidades",
+    "capabilitiesHelp": "Las habilidades de un agente deciden qué herramientas se le ofrecen. Restringir aquí indica qué capacidades puede usar realmente.",
+    "narrowOn": "Restringir qué puede hacer este agente",
+    "narrowOnHelp": "Desactivado: este agente puede usar todas las herramientas con las que fue equipado. Activado: solo puede usar las herramientas cubiertas por las capacidades de abajo.",
+    "narrowedBy": "Restringido a {{count}} de {{total}} capacidades",
+    "unnarrowed": "Sin restringir — todas las habilidades equipadas disponibles",
+    "neededBy": "Necesario para una habilidad equipada",
+    "blockedBy": "Bloqueado — una habilidad equipada necesita esto",
+    "scopeLabel": "Alcance",
+    "scopePh": "Separado por comas. / o * significa sin restricción."
   },
   "thread": {
     "threads": "Hilos",
@@ -315,7 +329,9 @@
     "deleteCustomConfirm": "¿Eliminar \"{{name}}\"? Esta acción no se puede deshacer.",
     "forceDeleteQuestion": "¿Eliminar de todas formas?",
     "testReply": "Respuesta: {{reply}}",
-    "testOk": "Conexión correcta"
+    "testOk": "Conexión correcta",
+    "showApiKey": "Mostrar clave de API",
+    "hideApiKey": "Ocultar clave de API"
   },
   "skills": {
     "title": "Habilidades - {{botName}}",
@@ -1296,7 +1312,11 @@
       "thumbs": "Pulgares de personajes divertidos",
       "fun-emoji": "Caras de emoji 3D alegres",
       "ravenicon": "Emblema nativo de Raven OS"
-    }
+    },
+    "animatesEvery": "Cambia cada ~{s}s",
+    "stillStyle": "Estático",
+    "animate": "Animar avatares",
+    "animateHelp": "Desactivado muestra una cara estática para cada agente. La app respeta la configuración de movimiento reducido de tu sistema en cualquier caso."
   },
   "workspace": {
     "boot": "Inicializando el entorno de ejecución de {{brand}}",
@@ -1385,5 +1405,30 @@
     "state.failed": "Bloqueado",
     "state.responded": "Hecho",
     "state.sleeping": "Dormido"
+  },
+  "wsb": {
+    "listLabel": "Archivos del espacio de trabajo",
+    "loading": "Leyiendo el espacio de trabajo…",
+    "refresh": "Recargar",
+    "showHidden": "Mostrar archivos ocultos",
+    "hideHidden": "Ocultar archivos ocultos",
+    "treeView": "Cambiar a la vista de árbol",
+    "flatView": "Cambiar a la lista plana",
+    "openInFileManager": "Abrir",
+    "noFolders": "Todavía no se ha definido una carpeta para este espacio de trabajo.",
+    "notCreated": "Aún no creado",
+    "empty": "Aquí no hay nada todavía",
+    "emptyHidden": "Los archivos ocultos están desactivados. Actívalos si un agente dijo que escribió un archivo oculto.",
+    "selectFile": "Selecciona un archivo para leerlo.",
+    "files": "archivos",
+    "folders": "carpetas",
+    "linkNotRead": "Esto es un enlace. Los enlaces se listan pero no se siguen, así que nada fuera del espacio de trabajo se lee a través de uno.",
+    "binaryNotShown": "Este archivo no es texto, así que no se muestra aquí.",
+    "tooLarge": "Este archivo es demasiado grande para previsualizarlo.",
+    "loadFailed": "No se pudo leer el espacio de trabajo: ",
+    "openFailed": "No se pudo abrir el gestor de archivos: ",
+    "browseFiles": "Archivos",
+    "showReply": "Responder",
+    "hideReply": "Ocultar"
   }
 }

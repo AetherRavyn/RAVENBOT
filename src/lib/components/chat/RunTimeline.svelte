@@ -60,7 +60,7 @@
   {#each events as e (e.id)}
     {@const Icon = phaseIcon[e.phase]}
     <span
-      class="inline-flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] text-[10px] whitespace-nowrap shrink-0"
+      class="inline-flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] text-[11px] whitespace-nowrap shrink-0"
       title={`${clock(e.at)} · ${nameFor(e.botId)} ${t(phaseKey[e.phase])}${e.detail ? ` · ${e.detail}` : ""}`}
     >
       <Icon class="size-3 shrink-0 {phaseTone[e.phase]}" />

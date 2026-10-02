@@ -149,7 +149,21 @@
     "saveChanges": "Enregistrer",
     "deleteTitle": "Supprimer « {{name}} » ?",
     "deleteDesc": "Cela supprimera définitivement cet agent, ses configurations de mémoire et tous les fils de chat associés.",
-    "confirmDelete": "Confirmer la suppression"
+    "confirmDelete": "Confirmer la suppression",
+    "workspaceIsolated": "Isolé — chaque chemin touché par cet agent est confiné à ce dossier",
+    "workspaceInheritsOffice": "Isolé — hérite de l'espace de travail du bureau lorsqu'il s'y exécute",
+    "workspaceInherits": "Isolé — hérite de l'espace de travail du bureau",
+    "workspaceDefault": "Isolé — s'exécute dans son propre dossier sous ~/RAVENBOT/projects/",
+    "capabilities": "Capacités",
+    "capabilitiesHelp": "Les compétences d'un agent déterminent les outils qui lui sont proposés. Restreindre ici indique ceux qu'il peut réellement utiliser.",
+    "narrowOn": "Restreindre ce que cet agent peut faire",
+    "narrowOnHelp": "Désactivé : cet agent peut utiliser tous les outils dont il dispose. Activé : il ne peut utiliser que les outils couverts par les capacités ci-dessous.",
+    "narrowedBy": "Restreint à {{count}} capacités sur {{total}}",
+    "unnarrowed": "Non restreint — toutes les compétences équipées disponibles",
+    "neededBy": "Nécessaire à une compétence équipée",
+    "blockedBy": "Bloqué — une compétence équipée en a besoin",
+    "scopeLabel": "Portée",
+    "scopePh": "Séparé par des virgules. / ou * signifie aucune restriction."
   },
   "thread": {
     "threads": "Fils",
@@ -315,7 +329,9 @@
     "deleteCustomConfirm": "Supprimer « {{name}} » ? Cette action est irréversible.",
     "forceDeleteQuestion": "Supprimer quand même ?",
     "testReply": "Réponse : {{reply}}",
-    "testOk": "Connexion réussie"
+    "testOk": "Connexion réussie",
+    "showApiKey": "Afficher la clé API",
+    "hideApiKey": "Masquer la clé API"
   },
   "skills": {
     "title": "Compétences - {{botName}}",
@@ -1296,7 +1312,11 @@
       "thumbs": "Pouces de personnages amusants",
       "fun-emoji": "Visages d'émoji 3D joyeux",
       "ravenicon": "Emblème natif de Raven OS"
-    }
+    },
+    "animatesEvery": "Change toutes les ~{s}s",
+    "stillStyle": "Fixe",
+    "animate": "Animer les avatars",
+    "animateHelp": "Désactivé affiche un visage fixe pour chaque agent. L'application respecte de toute façon le réglage de mouvement réduit de votre système."
   },
   "workspace": {
     "boot": "Initialisation de l'environnement d'exécution {{brand}}",
@@ -1385,5 +1405,30 @@
     "state.failed": "Bloqué",
     "state.responded": "Terminé",
     "state.sleeping": "Endormi"
+  },
+  "wsb": {
+    "listLabel": "Fichiers de l'espace de travail",
+    "loading": "Lecture de l'espace de travail…",
+    "refresh": "Recharger",
+    "showHidden": "Afficher les fichiers cachés",
+    "hideHidden": "Masquer les fichiers cachés",
+    "treeView": "Passer à l'arborescence",
+    "flatView": "Passer à la liste plate",
+    "openInFileManager": "Ouvrir",
+    "noFolders": "Aucun dossier n'est encore défini pour cet espace de travail.",
+    "notCreated": "Pas encore créé",
+    "empty": "Rien ici pour l'instant",
+    "emptyHidden": "Les fichiers cachés sont désactivés. Activez-les si un agent a dit avoir écrit un fichier caché.",
+    "selectFile": "Sélectionnez un fichier pour le lire.",
+    "files": "fichiers",
+    "folders": "dossiers",
+    "linkNotRead": "Ceci est un lien. Les liens sont listés mais non suivis, donc rien en dehors de l'espace de travail n'est lu à travers eux.",
+    "binaryNotShown": "Ce fichier n'est pas du texte, il n'est donc pas affiché ici.",
+    "tooLarge": "Ce fichier est trop volumineux pour être prévisualisé.",
+    "loadFailed": "Impossible de lire l'espace de travail : ",
+    "openFailed": "Impossible d'ouvrir le gestionnaire de fichiers : ",
+    "browseFiles": "Fichiers",
+    "showReply": "Répondre",
+    "hideReply": "Masquer"
   }
 }

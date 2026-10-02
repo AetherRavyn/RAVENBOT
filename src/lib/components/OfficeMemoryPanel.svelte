@@ -77,7 +77,7 @@
       <div class="flex items-center gap-2 min-w-0">
         <Brain class="size-4 shrink-0 text-[var(--brand-text)]" />
         <span class="text-[13px] font-bold text-[var(--text-primary)] truncate">{t("memory.title")}</span>
-        <span class="text-[10px] px-1.5 py-0.5 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)] font-mono shrink-0">
+        <span class="text-[11px] px-1.5 py-0.5 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)] font-mono shrink-0">
           {memories.length}
         </span>
       </div>
@@ -160,13 +160,13 @@
           </p>
           <Badge
             variant="outline"
-            class="text-[10px] font-mono shrink-0 bg-[var(--brand-soft)] border-[var(--brand)]/30 text-[var(--brand-text)] px-2 py-0.5"
+            class="text-[11px] font-mono shrink-0 bg-[var(--brand-soft)] border-[var(--brand)]/30 text-[var(--brand-text)] px-2 py-0.5"
           >
             {m.category || "general"}
           </Badge>
         </div>
 
-        <div class="flex items-center gap-3 text-[10px] text-[var(--text-tertiary)] font-mono pt-1 border-t border-[var(--hairline)]">
+        <div class="flex items-center gap-3 text-[11px] text-[var(--text-tertiary)] font-mono pt-1 border-t border-[var(--hairline)]">
           <span class="flex items-center gap-1 text-[var(--brand-text)]">
             <Brain class="size-3" />
             <span>{t("memory.relevance", { pct: Math.round((m.importance || 0.8) * 100) })}</span>

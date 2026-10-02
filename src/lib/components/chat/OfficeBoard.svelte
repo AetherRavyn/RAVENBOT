@@ -131,7 +131,7 @@
             <div class="min-w-0 rounded-xl border border-[var(--hairline)] bg-[var(--surface-0)] p-2">
               <div class="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-bold text-[var(--text-secondary)]">
                 <span class="truncate">{col.label}</span>
-                <span class="ml-auto text-[10px] font-normal text-[var(--text-muted)] tabular-nums">{col.items.length}</span>
+                <span class="ml-auto text-[11px] font-normal text-[var(--text-muted)] tabular-nums">{col.items.length}</span>
               </div>
               <div class="space-y-1.5 min-w-0 max-h-44 overflow-y-auto no-scrollbar">
                 {#each col.items as n (n.nodeId)}
@@ -149,7 +149,7 @@
                         decorative
                         class="size-4 rounded-full"
                       />
-                      <span class="text-[10px] font-bold text-[var(--text-primary)] truncate">{nameFor(n.botId)}</span>
+                      <span class="text-[11px] font-bold text-[var(--text-primary)] truncate">{nameFor(n.botId)}</span>
                       {#if n.state === "running"}
                         <Loader2 class="size-3 animate-spin text-[var(--brand-text)] shrink-0 ml-auto" aria-hidden="true" />
                       {:else if n.state === "done"}
@@ -167,21 +167,21 @@
                       {@const botTodos = todos?.[n.botId] ?? []}
                       {@const todosDone = botTodos.filter((td) => td.done).length}
                       <div class="mt-1 space-y-0.5 min-w-0">
-                        <div class="flex items-center gap-1 text-[9px] font-mono text-[var(--text-muted)]">
+                        <div class="flex items-center gap-1 text-[11px] font-mono text-[var(--text-muted)]">
                           <ListChecks class="size-2.5 shrink-0" />
                           <span class="tabular-nums">{todosDone}/{botTodos.length}</span>
                         </div>
                         {#each botTodos.filter((td) => !td.done).slice(0, 2) as item (item.id)}
-                          <div class="text-[10px] text-[var(--text-tertiary)] truncate">◻ {item.task}</div>
+                          <div class="text-[11px] text-[var(--text-tertiary)] truncate">◻ {item.task}</div>
                         {/each}
                       </div>
                     {/if}
                     {#if n.preview}
-                      <div class="mt-1 text-[10px] text-[var(--text-muted)] leading-snug line-clamp-2">{n.preview}</div>
+                      <div class="mt-1 text-[11px] text-[var(--text-muted)] leading-snug line-clamp-2">{n.preview}</div>
                     {/if}
                   </div>
                 {:else}
-                  <div class="text-[10px] text-[var(--text-faint)] px-1 py-2">{t("room.noTasks")}</div>
+                  <div class="text-[11px] text-[var(--text-faint)] px-1 py-2">{t("room.noTasks")}</div>
                 {/each}
               </div>
             </div>
@@ -192,7 +192,7 @@
           <div class="min-w-0 rounded-xl border border-[var(--hairline)] bg-[var(--surface-0)] p-2">
             <div class="px-1 pb-1.5 text-[11px] font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
               <span>{t("room.board.dagLive")}</span>
-              <span class="text-[10px] font-normal text-[var(--text-muted)]">{t("room.dagTitle")}</span>
+              <span class="text-[11px] font-normal text-[var(--text-muted)]">{t("room.dagTitle")}</span>
             </div>
             <PlanDag tasks={dagTasks} {members} stateFor={(i) => nodes[i]?.state} />
           </div>

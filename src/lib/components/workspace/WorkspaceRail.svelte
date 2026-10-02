@@ -72,7 +72,7 @@
       <Icon class="size-5" strokeWidth={1.5} />
       {#if item.dest === "offices" && attentionCount}
         <span
-          class="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[var(--warning-text)] text-[var(--text-on-light)] text-[9px] font-bold flex items-center justify-center"
+          class="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[var(--warning-text)] text-[var(--text-on-light)] text-[11px] font-bold flex items-center justify-center"
           aria-hidden="true"
         >{attentionCount > 9 ? "9+" : attentionCount}</span>
       {:else if item.dest === "offices" && workingCount}

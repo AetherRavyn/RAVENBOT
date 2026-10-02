@@ -149,7 +149,21 @@
     "saveChanges": "保存更改",
     "deleteTitle": "删除“{{name}}”？",
     "deleteDesc": "这将永久移除此代理、其记忆配置以及所有关联的聊天线程。",
-    "confirmDelete": "确认删除"
+    "confirmDelete": "确认删除",
+    "workspaceIsolated": "已隔离 — 该智能体接触的所有路径都限制在此文件夹内",
+    "workspaceInheritsOffice": "已隔离 — 在办公室中运行时继承办公室工作区",
+    "workspaceInherits": "已隔离 — 继承办公室工作区",
+    "workspaceDefault": "已隔离 — 在 ~/RAVENBOT/projects/ 下的专属文件夹中运行",
+    "capabilities": "能力",
+    "capabilitiesHelp": "智能体的技能决定向它提供哪些工具。在此收窄即可确定它实际可以使用的能力。",
+    "narrowOn": "收窄该智能体的权限",
+    "narrowOnHelp": "关闭：可使用为其配备的全部工具。开启：只能使用下方能力覆盖的工具。",
+    "narrowedBy": "已收窄为 {{total}} 项能力中的 {{count}} 项",
+    "unnarrowed": "未收窄 — 所有已配备技能均可用",
+    "neededBy": "已配备的技能需要此项",
+    "blockedBy": "已阻止 — 已配备的技能需要此项",
+    "scopeLabel": "范围",
+    "scopePh": "以逗号分隔。/ 或 * 表示不限制。"
   },
   "thread": {
     "threads": "会话",
@@ -315,7 +329,9 @@
     "deleteCustomConfirm": "删除“{{name}}”？此操作无法撤销。",
     "forceDeleteQuestion": "仍然删除吗？",
     "testReply": "响应：{{reply}}",
-    "testOk": "连接正常"
+    "testOk": "连接正常",
+    "showApiKey": "显示 API 密钥",
+    "hideApiKey": "隐藏 API 密钥"
   },
   "skills": {
     "title": "技能 - {{botName}}",
@@ -1296,7 +1312,11 @@
       "thumbs": "趣味拇指角色",
       "fun-emoji": "欢乐3D表情",
       "ravenicon": "Raven OS 原生徽标"
-    }
+    },
+    "animatesEvery": "每约 {s} 秒变化",
+    "stillStyle": "静态",
+    "animate": "为头像添加动画",
+    "animateHelp": "关闭后每个智能体都显示静态头像。无论如何，应用也会遵循系统的减弱动态效果设置。"
   },
   "workspace": {
     "boot": "正在初始化 {{brand}} 运行时",
@@ -1385,5 +1405,30 @@
     "state.failed": "已阻塞",
     "state.responded": "已完成",
     "state.sleeping": "休眠中"
+  },
+  "wsb": {
+    "listLabel": "工作区文件",
+    "loading": "正在读取工作区…",
+    "refresh": "重新加载",
+    "showHidden": "显示隐藏文件",
+    "hideHidden": "隐藏隐藏文件",
+    "treeView": "切换到树形视图",
+    "flatView": "切换到平铺列表",
+    "openInFileManager": "打开",
+    "noFolders": "尚未为此工作区设置文件夹。",
+    "notCreated": "尚未创建",
+    "empty": "这里还没有内容",
+    "emptyHidden": "隐藏文件已关闭。如果智能体说它写了点文件，请打开。",
+    "selectFile": "选择一个文件以读取。",
+    "files": "个文件",
+    "folders": "个文件夹",
+    "linkNotRead": "这是一个链接。链接只列出而不跟随，因此不会借此读取工作区之外的任何内容。",
+    "binaryNotShown": "此文件不是文本，因此不在此显示。",
+    "tooLarge": "此文件过大，无法预览。",
+    "loadFailed": "无法读取工作区：",
+    "openFailed": "无法打开文件管理器：",
+    "browseFiles": "文件",
+    "showReply": "回复",
+    "hideReply": "隐藏"
   }
 }

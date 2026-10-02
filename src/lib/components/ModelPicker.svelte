@@ -121,7 +121,7 @@
         <span class="text-sm shrink-0">{p.icon || "🔌"}</span>
         <span class="min-w-0 flex-1">
           <span class="block text-[11px] font-semibold text-[var(--text-primary)] truncate">{p.name}</span>
-          <span class="block text-[9px] font-mono {ready ? 'text-success/80' : 'text-warning/80'}">
+          <span class="block text-[11px] font-mono {ready ? 'text-success/80' : 'text-warning/80'}">
             {p.keyless ? t("model.localTag") : ready ? t("model.ready") : t("model.keyNeeded")}
           </span>
         </span>
@@ -138,33 +138,33 @@
       <span class="flex items-center gap-2 min-w-0">
         <span class="text-xs font-bold text-[var(--text-primary)] truncate">{activeProvider?.name ?? t("model.provider")}</span>
         {#if activeProvider?.custom}
-          <span class="text-[9px] px-1.5 py-0.5 rounded-full bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/25 shrink-0">{t("model.customBadge")}</span>
+          <span class="text-[11px] px-1.5 py-0.5 rounded-full bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/25 shrink-0">{t("model.customBadge")}</span>
         {/if}
       </span>
       <span class="flex items-center gap-2 shrink-0">
         {#if onRefresh}
-          <button type="button" onclick={onRefresh} class="text-[10px] text-[var(--brand)] hover:opacity-80 cursor-pointer flex items-center gap-1">
+          <button type="button" onclick={onRefresh} class="text-[11px] text-[var(--brand)] hover:opacity-80 cursor-pointer flex items-center gap-1">
             {#if loading}<Loader2 class="size-3 animate-spin" />{/if}
             {t("model.refresh")}
           </button>
         {/if}
         {#if needsKey(activeProvider) && onAddKey}
-          <button type="button" onclick={onAddKey} class="text-[10px] font-bold text-warning bg-warning/15 border border-warning/30 rounded-md px-2 py-0.5 hover:bg-warning/25 cursor-pointer flex items-center gap-1">
+          <button type="button" onclick={onAddKey} class="text-[11px] font-bold text-warning bg-warning/15 border border-warning/30 rounded-md px-2 py-0.5 hover:bg-warning/25 cursor-pointer flex items-center gap-1">
             <Key class="size-3" /> {t("model.addKey")}
           </button>
         {/if}
       </span>
     </div>
-    <p class="px-3 text-[10px] text-[var(--text-muted)] truncate">{activeProvider?.description}</p>
+    <p class="px-3 text-[11px] text-[var(--text-muted)] truncate">{activeProvider?.description}</p>
 
     {#if error}
-      <div role="alert" class="mx-3 mt-2 text-[10px] rounded-lg px-2 py-1.5 text-warning bg-warning/30 border border-warning/20">
+      <div role="alert" class="mx-3 mt-2 text-[11px] rounded-lg px-2 py-1.5 text-warning bg-warning/30 border border-warning/20">
         {error}
       </div>
     {/if}
 
     {#if noToolsWarn}
-      <div role="status" class="mx-3 mt-2 text-[10px] rounded-lg px-2 py-1.5 text-warning bg-warning/15 border border-warning/25">
+      <div role="status" class="mx-3 mt-2 text-[11px] rounded-lg px-2 py-1.5 text-warning bg-warning/15 border border-warning/25">
         {t("model.noToolsWarn")}
       </div>
     {/if}
@@ -195,14 +195,14 @@
             <span class="min-w-0 flex-1">
               <span class="block text-[11px] text-[var(--text-secondary)] truncate">{m.name}</span>
               {#if factsOf(m)}
-                <span class="block text-[9px] font-mono text-[var(--text-muted)] truncate">{factsOf(m)}</span>
+                <span class="block text-[11px] font-mono text-[var(--text-muted)] truncate">{factsOf(m)}</span>
               {/if}
             </span>
             <span class="flex items-center gap-1 shrink-0">
-              {#if meta.reasoning && !meta.is_free}<span class="text-[9px] text-purple-300 bg-purple-400/10 border border-purple-400/20 px-1 rounded">{t("model.reasoning")}</span>{/if}
-              {#if m.is_free}<span class="text-[9px] text-success bg-success/10 border border-success/20 px-1 rounded">{t("model.free")}</span>{/if}
-              {#if meta.supports_vision}<span class="text-[9px] text-[var(--brand-text)] bg-[var(--brand-soft)] border border-[var(--brand)]/20 px-1 rounded">{t("model.vision")}</span>{/if}
-              {#if meta.supports_tools}<span class="text-[9px] text-[var(--text-tertiary)] bg-[var(--surface-2)] border border-[var(--hairline)] px-1 rounded">{t("model.tools")}</span>{/if}
+              {#if meta.reasoning && !meta.is_free}<span class="text-[11px] text-purple-300 bg-purple-400/10 border border-purple-400/20 px-1 rounded">{t("model.reasoning")}</span>{/if}
+              {#if m.is_free}<span class="text-[11px] text-success bg-success/10 border border-success/20 px-1 rounded">{t("model.free")}</span>{/if}
+              {#if meta.supports_vision}<span class="text-[11px] text-[var(--brand-text)] bg-[var(--brand-soft)] border border-[var(--brand)]/20 px-1 rounded">{t("model.vision")}</span>{/if}
+              {#if meta.supports_tools}<span class="text-[11px] text-[var(--text-tertiary)] bg-[var(--surface-2)] border border-[var(--hairline)] px-1 rounded">{t("model.tools")}</span>{/if}
               {#if isCurrent}<Check class="size-3 text-[var(--brand)]" />{/if}
             </span>
           </button>
@@ -225,14 +225,14 @@
         type="button"
         disabled={!customId.trim()}
         onclick={() => onSelectModel(customId.trim())}
-        class="text-[10px] font-bold px-2.5 py-1 rounded-lg bg-[var(--brand)] text-[var(--text-on-light)] hover:bg-[var(--brand-hover)] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0"
+        class="text-[11px] font-bold px-2.5 py-1 rounded-lg bg-[var(--brand)] text-[var(--text-on-light)] hover:bg-[var(--brand-hover)] disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer shrink-0"
       >
         {t("model.useId")}
       </button>
     </div>
 
     {#if footerNote}
-      <p class="px-3 py-1.5 border-t border-[var(--hairline)] text-[10px] text-[var(--text-muted)]">{footerNote}</p>
+      <p class="px-3 py-1.5 border-t border-[var(--hairline)] text-[11px] text-[var(--text-muted)]">{footerNote}</p>
     {/if}
   </div>
 </div>

@@ -176,7 +176,7 @@
         <Monitor class="size-4 text-[var(--brand-text)] shrink-0" />
         <span class="font-bold text-sm text-[var(--text-primary)] truncate">{botName} · {t("computer.title")}</span>
         {#if tab === "this" && capture}
-          <span class="text-[10px] font-mono text-[var(--text-muted)]">{capture.width}×{capture.height} · {fmtTime(capture.timestamp)}</span>
+          <span class="text-[11px] font-mono text-[var(--text-muted)]">{capture.width}×{capture.height} · {fmtTime(capture.timestamp)}</span>
         {/if}
       </div>
       <div class="flex items-center gap-2">
@@ -285,7 +285,7 @@
           <div class="flex items-center gap-2">
             <Boxes class="size-4 text-success" />
             <span class="text-sm font-bold text-[var(--text-primary)]">{t("computer.isolatedDesktop")}</span>
-            <span class="text-[10px] text-[var(--text-muted)]">{t("computer.desktopHint")}</span>
+            <span class="text-[11px] text-[var(--text-muted)]">{t("computer.desktopHint")}</span>
           </div>
           <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed">
             {t("computer.desktopDesc")}
@@ -347,7 +347,7 @@
           </div>
 
           {#if desktop?.url}
-            <p class="text-[10px] font-mono text-[var(--text-muted)] truncate">{desktop.url}</p>
+            <p class="text-[11px] font-mono text-[var(--text-muted)] truncate">{desktop.url}</p>
           {/if}
         </div>
 

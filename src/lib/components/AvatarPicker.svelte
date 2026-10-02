@@ -166,11 +166,11 @@
         <div class="flex items-center gap-2">
           <span class="font-bold text-sm text-[var(--text-primary)]">{t("avatar.preview")}</span>
           {#if !useCustom}
-            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30">
+            <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30">
               {selectedStyle}
             </span>
           {:else}
-            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-success/15 text-success border border-success/30">
+            <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-success/15 text-success border border-success/30">
               custom url
             </span>
           {/if}
@@ -212,7 +212,7 @@
       />
       <span>
         <span class="font-medium">{t("avatar.animate")}</span>
-        <span class="block text-[10px] text-[var(--text-tertiary)] leading-relaxed mt-0.5">
+        <span class="block text-[11px] text-[var(--text-tertiary)] leading-relaxed mt-0.5">
           {t("avatar.animateHelp")}
         </span>
       </span>
@@ -313,7 +313,7 @@
             </span>
           {/if}
         </div>
-        <span class="text-[10px] font-medium text-[var(--text-secondary)] truncate w-full group-hover:text-[var(--text-primary)]">
+        <span class="text-[11px] font-medium text-[var(--text-secondary)] truncate w-full group-hover:text-[var(--text-primary)]">
           {s.label}
         </span>
         {#if isSelected}
@@ -350,7 +350,7 @@
           {t("avatar.customUrl")}
         </Label>
         {#if useCustom}
-          <span class="text-[10px] text-[var(--brand-text)] font-mono">{t("avatar.active")}</span>
+          <span class="text-[11px] text-[var(--brand-text)] font-mono">{t("avatar.active")}</span>
         {/if}
       </div>
       <div class="flex gap-1.5">

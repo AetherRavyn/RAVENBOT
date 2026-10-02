@@ -205,7 +205,7 @@
             if (si <= step || name.trim()) step = si;
           }}
           class={cn(
-            "flex items-center gap-2 h-8 px-2.5 rounded-xl border text-[10px] font-bold uppercase tracking-wider font-mono transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40",
+            "flex items-center gap-2 h-8 px-2.5 rounded-xl border text-[11px] font-bold uppercase tracking-wider font-mono transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-40",
             si === step
               ? "border-[var(--brand)] bg-[var(--brand-soft)] text-[var(--brand-text)]"
               : "border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
@@ -213,7 +213,7 @@
         >
           <span
             class={cn(
-              "size-5 rounded-lg flex items-center justify-center text-[10px] font-bold font-mono shrink-0",
+              "size-5 rounded-lg flex items-center justify-center text-[11px] font-bold font-mono shrink-0",
               si < step
                 ? "bg-success/15 text-success"
                 : si === step
@@ -284,7 +284,7 @@
               rows={2}
               class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] resize-none"
             />
-            <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
+            <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
               {t("office.goalHint")}
             </p>
           </div>
@@ -324,9 +324,9 @@
             {/if}
             <div class="flex items-start gap-1.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-2 py-1.5">
               <FolderOpen class="size-3 mt-0.5 shrink-0 text-[var(--text-muted)]" />
-              <code class="min-w-0 flex-1 break-all text-[10px] text-[var(--text-secondary)]">{workspacePreview}</code>
+              <code class="min-w-0 flex-1 break-all text-[11px] text-[var(--text-secondary)]">{workspacePreview}</code>
             </div>
-            <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
+            <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
               {t("office.workspaceHint")}
             </p>
           </div>
@@ -342,7 +342,7 @@
               rows={3}
               class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] resize-none font-mono"
             />
-            <p class="text-[10px] text-[var(--text-muted)] leading-relaxed">
+            <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
               {t("office.policyHint")}
             </p>
           </div>
@@ -406,12 +406,12 @@
               {#if tmpl.ranks.length}
                 <div class="flex flex-wrap gap-1 mt-2.5 pt-2 border-t border-[var(--hairline)]">
                   {#each tmpl.ranks.slice(0, 3) as r}
-                    <span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--hairline)] font-mono text-[var(--text-tertiary)]">
+                    <span class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--surface-2)] border border-[var(--hairline)] font-mono text-[var(--text-tertiary)]">
                       {r.rank}
                     </span>
                   {/each}
                   {#if tmpl.ranks.length > 3}
-                    <span class="text-[9px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-muted)] font-mono">
+                    <span class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-muted)] font-mono">
                       +{tmpl.ranks.length - 3}
                     </span>
                   {/if}
@@ -498,7 +498,7 @@
                     {#if isSelected && mem}
                       <div class="flex items-center gap-1.5 mt-0.5">
                         <span
-                          class="text-[10px] py-0 px-1.5 rounded text-[var(--text-primary)] font-mono font-bold"
+                          class="text-[11px] py-0 px-1.5 rounded text-[var(--text-primary)] font-mono font-bold"
                           style="background-color: {rankInfo?.color || '#79b8ff'}"
                         >
                           {mem.rank}

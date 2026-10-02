@@ -570,7 +570,7 @@
           </div>
           <div>
             <h2 class="font-bold text-sm text-[var(--text-primary)]">{t("settings.title")}</h2>
-            <p class="text-[10px] text-[var(--text-muted)] font-mono">RAVENBOT v0.2.0</p>
+            <p class="text-[11px] text-[var(--text-muted)] font-mono">RAVENBOT v0.2.0</p>
           </div>
         </div>
       </div>
@@ -587,10 +587,17 @@
           >
             <SectionIcon class="size-4 {section.color || ''}" />
             <span class="text-sm font-medium flex-1">{section.label}</span>
+            <!--
+              The count badge sits on `--surface-3`, the *hover* surface, where
+              9px `--text-tertiary` measures 4.25:1 — under the 4.5:1 body-text
+              floor at that size. `--surface-2` is OpenBot's raised row and is
+              the right surface for a badge anyway; moving it there fixes the
+              ratio without brightening the ramp everywhere.
+            -->
             {#if section.id === "providers"}
-              <span class="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-[var(--surface-3)] text-[var(--text-tertiary)]">{providersBadge}</span>
+              <span class="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-[var(--surface-2)] text-[var(--text-tertiary)]">{providersBadge}</span>
             {:else if section.badge}
-              <span class="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-[var(--surface-3)] text-[var(--text-tertiary)]">{section.badge}</span>
+              <span class="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-[var(--surface-2)] text-[var(--text-tertiary)]">{section.badge}</span>
             {/if}
             {#if activeSection === section.id}
               <ChevronRight class="size-3 text-[var(--text-muted)]" />
@@ -601,15 +608,22 @@
 
       <!-- Bottom Stats -->
       <div class="p-4 border-t space-y-2" style="border-color: {currentTheme.borderHex};">
-        <div class="flex items-center justify-between text-[10px] font-mono text-[var(--text-muted)]">
+        <div class="flex items-center justify-between text-[11px] font-mono text-[var(--text-muted)]">
           <span>{t("settings.connected")}</span>
           <span class="text-success">{connectedCount} / {keyedProviders.length}</span>
         </div>
-        <div class="flex items-center justify-between text-[10px] font-mono text-[var(--text-muted)]">
+        <div class="flex items-center justify-between text-[11px] font-mono text-[var(--text-muted)]">
           <span>{t("settings.modelsFound")}</span>
           <span class="text-[var(--brand-text)]">{totalModels}</span>
         </div>
-        <button type="button" onclick={loadConfiguredProviders} class="w-full text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-text)] flex items-center justify-center gap-1 cursor-pointer">
+        <!--
+          A full-width action that was 15px tall. WCAG 2.2 asks 24×24 of any
+          pointer target, and a full-width strip is easy to hit — it just needs
+          the padding to be honest about that. `py-1.5` plus the 10px text
+          lands it at 28px, and the vertical padding is what stops the row from
+          looking like it grew.
+        -->
+        <button type="button" onclick={loadConfiguredProviders} class="w-full py-1.5 text-[11px] text-[var(--brand-text)] hover:text-[var(--brand-text)] flex items-center justify-center gap-1 cursor-pointer rounded-md transition-colors hover:bg-[var(--brand-soft)]">
           <RefreshCw class="size-3" /> {t("settings.refreshStatus")}
         </button>
       </div>
@@ -672,7 +686,7 @@
                       <span class="text-lg">{ps.icon}</span>
                       <div>
                         <h4 class="text-sm font-bold text-[var(--text-primary)]">{ps.name}</h4>
-                        <p class="text-[10px] text-[var(--text-muted)]">{ps.description}</p>
+                        <p class="text-[11px] text-[var(--text-muted)]">{ps.description}</p>
                       </div>
                     </div>
                     <div class="flex items-center gap-1">
@@ -687,16 +701,16 @@
                   <!-- Status badges -->
                   <div class="flex items-center gap-2 mb-3">
                     {#if st.saved}
-                      <span class="text-[10px] text-success font-bold flex items-center gap-0.5 bg-success/10 px-1.5 py-0.5 rounded-full"><Check class="size-2.5" /> {t("settings.saved")}</span>
+                      <span class="text-[11px] text-success font-bold flex items-center gap-0.5 bg-success/10 px-1.5 py-0.5 rounded-full"><Check class="size-2.5" /> {t("settings.saved")}</span>
                     {:else if connected}
-                      <span class="text-[10px] text-success font-mono bg-success/10 px-1.5 py-0.5 rounded-full">{t("settings.connected")}</span>
+                      <span class="text-[11px] text-success font-mono bg-success/10 px-1.5 py-0.5 rounded-full">{t("settings.connected")}</span>
                     {:else}
-                      <span class="text-[10px] text-[var(--text-muted)] font-mono bg-[var(--surface-3)] px-1.5 py-0.5 rounded-full">{t("settings.notConfigured")}</span>
+                      <span class="text-[11px] text-[var(--text-tertiary)] font-mono bg-[var(--surface-2)] px-1.5 py-0.5 rounded-full">{t("settings.notConfigured")}</span>
                     {/if}
                     {#if st.models !== null && st.models >= 0}
-                      <span class="text-[10px] text-[var(--brand-text)] font-mono bg-[var(--brand-soft)] px-1.5 py-0.5 rounded-full">{t("settings.modelsCount", { n: st.models })}</span>
+                      <span class="text-[11px] text-[var(--brand-text)] font-mono bg-[var(--brand-soft)] px-1.5 py-0.5 rounded-full">{t("settings.modelsCount", { n: st.models })}</span>
                     {:else if st.models === -1}
-                      <span class="text-[10px] text-danger font-mono bg-danger/10 px-1.5 py-0.5 rounded-full">{t("settings.failed")}</span>
+                      <span class="text-[11px] text-danger font-mono bg-danger/10 px-1.5 py-0.5 rounded-full">{t("settings.failed")}</span>
                     {/if}
                   </div>
 
@@ -704,36 +718,63 @@
                   <div class="flex gap-2">
                     <div class="relative flex-1">
                       <Input type={st.show ? "text" : "password"} bind:value={ui[ps.id].key} placeholder={ps.key_placeholder} class="pr-9 h-8 text-xs font-mono" />
-                      <button type="button" class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer" onclick={() => ui[ps.id].show = !ui[ps.id].show}>
+                      <!--
+                        The reveal toggle is the only way to check what you just
+                        pasted, so it needs a name — a screen reader announcing
+                        "button" for the control that shows your API key is not
+                        a detail. It was 14×14, which is also below the 24×24
+                        WCAG 2.2 floor, so the hit area is padded out to 24
+                        while the icon stays 14 and the field stays the same
+                        size. The padding is negative on the right to keep the
+                        icon where it was rather than shifting it inward.
+                      -->
+                      <button
+                        type="button"
+                        class="absolute right-0 top-1/2 -translate-y-1/2 grid place-items-center size-6 text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer"
+                        onclick={() => ui[ps.id].show = !ui[ps.id].show}
+                        aria-label={st.show ? t("settings.hideApiKey") : t("settings.showApiKey")}
+                        aria-pressed={st.show}
+                        title={st.show ? t("settings.hideApiKey") : t("settings.showApiKey")}
+                      >
                         {#if st.show}<EyeOff class="size-3.5" />{:else}<Eye class="size-3.5" />{/if}
                       </button>
                     </div>
-                    <Button size="sm" class="h-8 gap-1 text-[10px] px-3" onclick={() => saveKey(ps.id)} disabled={!st.key.trim()}>
+                    <!--
+                      Three icon-only buttons in a row. `title` does supply an
+                      accessible name, but only as a last resort — it is not
+                      reliably announced, it does not survive being read by a
+                      screen reader in browse mode, and it disappears the moment
+                      the pointer moves away. For the row that saves, tests and
+                      *deletes an API key*, "button" is not a name. All three get
+                      an explicit one, including which provider they act on,
+                      because there are eight of these rows on screen at once.
+                    -->
+                    <Button size="sm" class="h-8 gap-1 text-[11px] px-3" onclick={() => saveKey(ps.id)} disabled={!st.key.trim()} aria-label={`${t("ui.save")} — ${ps.name}`} title={t("ui.save")}>
                       <Save class="size-3" />
                     </Button>
                     {#if connected}
-                      <Button size="sm" variant="ghost" class="h-8 px-2 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onclick={() => testProvider(ps.id)} title={t("settings.testConnection")}>
+                      <Button size="sm" variant="ghost" class="h-8 px-2 text-[var(--text-tertiary)] hover:text-[var(--text-primary)]" onclick={() => testProvider(ps.id)} title={t("settings.testConnection")} aria-label={`${t("settings.testConnection")} — ${ps.name}`}>
                         {#if st.testing}<Loader2 class="size-3.5 animate-spin" />{:else}<Zap class="size-3.5" />{/if}
                       </Button>
-                      <Button size="sm" variant="ghost" class="h-8 px-2 text-[var(--text-muted)] hover:text-danger" onclick={() => clearKey(ps.id)} title={t("settings.removeKey")}>
+                      <Button size="sm" variant="ghost" class="h-8 px-2 text-[var(--text-muted)] hover:text-danger" onclick={() => clearKey(ps.id)} title={t("settings.removeKey")} aria-label={`${t("settings.removeKey")} — ${ps.name}`}>
                         <Trash2 class="size-3.5" />
                       </Button>
                     {/if}
                   </div>
                   {#if st.saveError}
-                    <p class="text-[10px] text-danger mt-2">{st.saveError}</p>
+                    <p class="text-[11px] text-danger mt-2">{st.saveError}</p>
                   {/if}
 
                   <!-- Provider rules: env-var fallback the runtime also reads -->
                   {#if ps.key_env}
-                    <p class="text-[9px] font-mono text-[var(--text-muted)] mt-1.5" title={t("settings.envHintTitle")}>
+                    <p class="text-[11px] font-mono text-[var(--text-muted)] mt-1.5" title={t("settings.envHintTitle")}>
                       env: {ps.key_env}
                     </p>
                   {/if}
 
                   <!-- Get key link -->
                   {#if !connected && ps.key_url}
-                    <a href={ps.key_url} target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-[10px] text-[var(--brand-text)] hover:text-[var(--brand-text)] mt-2">
+                    <a href={ps.key_url} target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-[11px] text-[var(--brand-text)] hover:text-[var(--brand-text)] mt-2">
                       {t("settings.getApiKey")} <ExternalLink class="size-2.5" />
                     </a>
                   {/if}
@@ -765,16 +806,16 @@
                   <div class="min-w-0 flex-1">
                     <p class="text-xs font-semibold text-[var(--text-primary)] truncate">
                       {cp.display_name}
-                      <span class="text-[9px] font-mono text-[var(--text-muted)]">· {cp.id}</span>
+                      <span class="text-[11px] font-mono text-[var(--text-muted)]">· {cp.id}</span>
                     </p>
-                    <p class="text-[10px] font-mono text-[var(--text-muted)] truncate">{cp.base_url}</p>
+                    <p class="text-[11px] font-mono text-[var(--text-muted)] truncate">{cp.base_url}</p>
                   </div>
-                  <span class="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-[var(--surface-3)] text-[var(--text-tertiary)] shrink-0">{cp.kind}</span>
+                  <span class="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-[var(--surface-2)] text-[var(--text-tertiary)] shrink-0">{cp.kind}</span>
                   {#if !cp.supports_tools}
-                    <span class="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-warning/15 text-warning shrink-0">{t("model.noToolsShort")}</span>
+                    <span class="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-warning/15 text-warning shrink-0">{t("model.noToolsShort")}</span>
                   {/if}
                   {#if cp.has_key}
-                    <span class="text-[9px] font-mono px-1.5 py-0.5 rounded-full bg-success/10 text-success shrink-0">{t("settings.keySet")}</span>
+                    <span class="text-[11px] font-mono px-1.5 py-0.5 rounded-full bg-success/10 text-success shrink-0">{t("settings.keySet")}</span>
                   {/if}
                   <button type="button" class="text-[var(--text-muted)] hover:text-[var(--text-primary)] cursor-pointer p-1" aria-label={t("settings.editProvider")} title={t("settings.editProvider")} onclick={() => openCustomDialog(cp)}>
                     <Settings class="size-3.5" />
@@ -787,10 +828,19 @@
                 <p class="text-[11px] text-[var(--text-muted)] text-center py-2">{t("settings.customEmpty")}</p>
               {/each}
               {#if customTestResult}
-                <p class="text-[10px] font-mono text-[var(--text-tertiary)] break-words">{customTestResult}</p>
+                <p class="text-[11px] font-mono text-[var(--text-tertiary)] break-words">{customTestResult}</p>
               {/if}
             </div>
-            <p class="text-[11px] text-[var(--text-muted)]">{t("settings.ollamaKeylessA")} <button type="button" class="text-[var(--brand-text)] hover:text-[var(--brand-text)] cursor-pointer" onclick={() => activeSection = "local"}>{t("settings.navLocal")}</button>{t("settings.ollamaKeylessB")}</p>
+            <!--
+              An inline link inside a sentence. An inline link is WCAG's one
+              exception to the 24×24 target floor, so the *text* keeps its size
+              — but the target is padded out vertically with a negative margin
+              so the hit area reaches 24px without the line above or below
+              moving. It also needs a name of its own: the sentence around it
+              otherwise becomes this button's label, which is a 60-character
+              description of "Local AI".
+            -->
+            <p class="text-[11px] text-[var(--text-muted)]">{t("settings.ollamaKeylessA")} <button type="button" class="inline-flex items-center h-6 -my-1.5 px-0.5 text-[var(--brand-text)] hover:text-[var(--brand-text)] cursor-pointer underline underline-offset-2 decoration-[var(--brand-text)]/40 hover:decoration-[var(--brand-text)] rounded-sm transition-colors hover:bg-[var(--brand-soft)]" onclick={() => activeSection = "local"} aria-label={t("settings.navLocal")}>{t("settings.navLocal")}</button>{t("settings.ollamaKeylessB")}</p>
           </div>
         </div>
 
@@ -807,11 +857,11 @@
             <div class="space-y-3">
               <div class="grid grid-cols-2 gap-3">
                 <div class="space-y-1">
-                  <Label for="cp-display" class="text-[10px] font-mono uppercase text-[var(--text-muted)]">{t("settings.displayName")}</Label>
+                  <Label for="cp-display" class="text-[11px] font-mono uppercase text-[var(--text-muted)]">{t("settings.displayName")}</Label>
                   <Input id="cp-display" bind:value={customForm.display_name} placeholder="LM Studio" class="h-8 text-xs" />
                 </div>
                 <div class="space-y-1">
-                  <Label class="text-[10px] font-mono uppercase text-[var(--text-muted)]">{t("settings.kindLabel")}</Label>
+                  <Label class="text-[11px] font-mono uppercase text-[var(--text-muted)]">{t("settings.kindLabel")}</Label>
                   <SimpleSelect
                     value={customForm.kind}
                     options={[
@@ -824,16 +874,16 @@
                 </div>
               </div>
               <div class="space-y-1">
-                <Label for="cp-baseurl" class="text-[10px] font-mono uppercase text-[var(--text-muted)]">{t("settings.baseUrl")}</Label>
+                <Label for="cp-baseurl" class="text-[11px] font-mono uppercase text-[var(--text-muted)]">{t("settings.baseUrl")}</Label>
                 <Input id="cp-baseurl" bind:value={customForm.base_url} placeholder="http://192.168.1.10:1234/v1" class="h-8 text-xs font-mono" />
               </div>
               <div class="grid grid-cols-2 gap-3">
                 <div class="space-y-1">
-                  <Label for="cp-model" class="text-[10px] font-mono uppercase text-[var(--text-muted)]">{t("settings.defaultModel")}</Label>
+                  <Label for="cp-model" class="text-[11px] font-mono uppercase text-[var(--text-muted)]">{t("settings.defaultModel")}</Label>
                   <Input id="cp-model" bind:value={customForm.default_model} placeholder="qwen/qwen3-8b" class="h-8 text-xs font-mono" />
                 </div>
                 <div class="space-y-1">
-                  <Label for="cp-key" class="text-[10px] font-mono uppercase text-[var(--text-muted)]">{t("settings.apiKeyWriteOnly")}</Label>
+                  <Label for="cp-key" class="text-[11px] font-mono uppercase text-[var(--text-muted)]">{t("settings.apiKeyWriteOnly")}</Label>
                   <Input id="cp-key" type="password" bind:value={customForm.api_key} placeholder={customEditing ? t("settings.apiKeyKeepBlank") : "sk-..."} class="h-8 text-xs font-mono" />
                 </div>
               </div>
@@ -842,7 +892,7 @@
                 {t("settings.supportsTools")}
               </label>
               {#if customError}
-                <p role="alert" class="text-[10px] text-danger break-words">{customError}</p>
+                <p role="alert" class="text-[11px] text-danger break-words">{customError}</p>
               {/if}
               <div class="flex items-center gap-2 pt-2">
                 {#if customEditing}
@@ -884,19 +934,19 @@
             <div class="grid grid-cols-4 gap-3">
               <div class="p-3 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-center">
                 <span class="text-2xl font-bold text-[var(--brand-text)] block">{connectedCount}</span>
-                <span class="text-[10px] text-[var(--text-muted)] font-mono uppercase">{t("settings.connected")}</span>
+                <span class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{t("settings.connected")}</span>
               </div>
               <div class="p-3 rounded-xl bg-warning/10 border border-warning/20 text-center">
                 <span class="text-2xl font-bold text-warning block">{totalModels}</span>
-                <span class="text-[10px] text-[var(--text-muted)] font-mono uppercase">{t("settings.totalModels")}</span>
+                <span class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{t("settings.totalModels")}</span>
               </div>
               <div class="p-3 rounded-xl bg-success/10 border border-success/20 text-center">
                 <span class="text-2xl font-bold text-success block">{Object.values(discoveredModels).flat().filter(m => m.is_free).length}</span>
-                <span class="text-[10px] text-[var(--text-muted)] font-mono uppercase">{t("settings.freeModels")}</span>
+                <span class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{t("settings.freeModels")}</span>
               </div>
               <div class="p-3 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-center">
                 <span class="text-2xl font-bold text-[var(--brand-text)] block">{Object.values(discoveredModels).flat().filter(m => m.supports_vision).length}</span>
-                <span class="text-[10px] text-[var(--text-muted)] font-mono uppercase">{t("settings.vision")}</span>
+                <span class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{t("settings.vision")}</span>
               </div>
             </div>
 
@@ -918,7 +968,7 @@
                   <p class="text-[11px] text-[var(--text-muted)]">{t("settings.defaultDesc", { source: defaultSource })}</p>
                 </div>
                 {#if defaultSaved}
-                  <span class="text-[10px] text-success font-bold flex items-center gap-1 bg-success/10 px-2 py-1 rounded-full"><Check class="size-3" /> {t("settings.saved")}</span>
+                  <span class="text-[11px] text-success font-bold flex items-center gap-1 bg-success/10 px-2 py-1 rounded-full"><Check class="size-3" /> {t("settings.saved")}</span>
                 {/if}
               </div>
               <ModelPicker
@@ -936,7 +986,7 @@
                 heightClass="max-h-[18rem]"
               />
               {#if defaultModel && defaultFacts}
-                <p class="text-[10px] font-mono text-[var(--text-tertiary)]">
+                <p class="text-[11px] font-mono text-[var(--text-tertiary)]">
                   <span class="text-[var(--brand-text)]">{defaultProvider}/{defaultModel}</span> · {defaultFacts}
                 </p>
               {/if}
@@ -956,7 +1006,7 @@
                     <div class="flex items-center gap-2">
                       <span class="text-lg">{entry?.icon || '🔌'}</span>
                       <h4 class="text-sm font-bold text-[var(--text-primary)]">{entry?.name || providerId}</h4>
-                      <span class="text-[10px] font-mono text-[var(--text-muted)]">{t("settings.modelsCount", { n: models.length })}</span>
+                      <span class="text-[11px] font-mono text-[var(--text-muted)]">{t("settings.modelsCount", { n: models.length })}</span>
                     </div>
                   </div>
                   <div class="p-3 max-h-64 overflow-y-auto no-scrollbar">
@@ -968,19 +1018,19 @@
                             <span class="min-w-0">
                               <span class="block truncate text-[var(--text-secondary)]">{model.name || model.id}</span>
                               {#if facts}
-                                <span class="block text-[9px] font-mono text-[var(--text-muted)] truncate">{facts}</span>
+                                <span class="block text-[11px] font-mono text-[var(--text-muted)] truncate">{facts}</span>
                               {/if}
                             </span>
                           </div>
                           <div class="flex items-center gap-1 shrink-0">
                             {#if model.is_free}
-                              <span class="text-[9px] text-success bg-success/10 px-1 py-0.5 rounded">{t("settings.free")}</span>
+                              <span class="text-[11px] text-success bg-success/10 px-1 py-0.5 rounded">{t("settings.free")}</span>
                             {/if}
                             {#if model.supports_vision}
-                              <span class="text-[9px] text-[var(--brand-text)] bg-[var(--brand-soft)] px-1 py-0.5 rounded">{t("settings.vision")}</span>
+                              <span class="text-[11px] text-[var(--brand-text)] bg-[var(--brand-soft)] px-1 py-0.5 rounded">{t("settings.vision")}</span>
                             {/if}
                             {#if model.supports_tools}
-                              <span class="text-[9px] text-[var(--text-tertiary)] bg-[var(--surface-2)] border border-[var(--hairline)] px-1 py-0.5 rounded">{t("model.tools")}</span>
+                              <span class="text-[11px] text-[var(--text-tertiary)] bg-[var(--surface-2)] border border-[var(--hairline)] px-1 py-0.5 rounded">{t("model.tools")}</span>
                             {/if}
                           </div>
                         </div>
@@ -1154,7 +1204,7 @@
                     <ThemeLogo theme={theme} size="sm" class="!size-10" />
                     <div>
                       <span class="font-bold text-sm text-[var(--text-primary)] block">{theme.name}</span>
-                      <span class="text-[10px] font-mono text-[var(--text-tertiary)]">{theme.brand.badgeLabel}</span>
+                      <span class="text-[11px] font-mono text-[var(--text-tertiary)]">{theme.brand.badgeLabel}</span>
                     </div>
                   </div>
                   <p class="text-xs text-[var(--text-tertiary)]">{theme.description}</p>
@@ -1164,7 +1214,7 @@
                     {/each}
                   </div>
                   {#if isSelected}
-                    <div class="mt-2 text-[10px] text-success font-bold flex items-center gap-1"><Check class="size-3" /> {t("settings.active")}</div>
+                    <div class="mt-2 text-[11px] text-success font-bold flex items-center gap-1"><Check class="size-3" /> {t("settings.active")}</div>
                   {/if}
                 </button>
               {/each}
@@ -1187,7 +1237,7 @@
               <div class="flex items-center justify-between">
                 <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.ollamaEndpoint")}</h4>
                 {#if ollamaSaved}
-                  <span class="text-[10px] text-success font-bold flex items-center gap-1 bg-success/10 px-2 py-1 rounded-full"><Check class="size-3" /> {t("settings.saved")}</span>
+                  <span class="text-[11px] text-success font-bold flex items-center gap-1 bg-success/10 px-2 py-1 rounded-full"><Check class="size-3" /> {t("settings.saved")}</span>
                 {/if}
               </div>
               <div class="flex gap-2">
@@ -1208,10 +1258,10 @@
                   {#if ollamaProbe.count > 0}
                     <div class="flex flex-wrap gap-1.5 mt-2">
                       {#each ollamaProbe.models.slice(0, 12) as m}
-                        <span class="text-[10px] font-mono text-[var(--text-secondary)] bg-[var(--surface-1)] border border-[var(--hairline)] px-1.5 py-0.5 rounded">{m.name}</span>
+                        <span class="text-[11px] font-mono text-[var(--text-secondary)] bg-[var(--surface-1)] border border-[var(--hairline)] px-1.5 py-0.5 rounded">{m.name}</span>
                       {/each}
                       {#if ollamaProbe.count > 12}
-                        <span class="text-[10px] font-mono text-[var(--text-muted)]">{t("settings.moreCount", { n: ollamaProbe.count - 12 })}</span>
+                        <span class="text-[11px] font-mono text-[var(--text-muted)]">{t("settings.moreCount", { n: ollamaProbe.count - 12 })}</span>
                       {/if}
                     </div>
                   {/if}
@@ -1245,19 +1295,19 @@
             <div class="grid grid-cols-4 gap-3">
               <div class="p-3 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-center">
                 <span class="text-2xl font-bold text-[var(--brand-text)] block">{catalog.length}</span>
-                <span class="text-[10px] text-[var(--text-muted)] font-mono uppercase">{t("settings.navProviders")}</span>
+                <span class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{t("settings.navProviders")}</span>
               </div>
               <div class="p-3 rounded-xl bg-warning/10 border border-warning/20 text-center">
                 <span class="text-2xl font-bold text-warning block">{curatedModelCount}+</span>
-                <span class="text-[10px] text-[var(--text-muted)] font-mono uppercase">{t("settings.statModels")}</span>
+                <span class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{t("settings.statModels")}</span>
               </div>
               <div class="p-3 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-center">
                 <span class="text-2xl font-bold text-[var(--brand-text)] block">135+</span>
-                <span class="text-[10px] text-[var(--text-muted)] font-mono uppercase">{t("settings.statMcpTools")}</span>
+                <span class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{t("settings.statMcpTools")}</span>
               </div>
               <div class="p-3 rounded-xl bg-success/10 border border-success/20 text-center">
                 <span class="text-2xl font-bold text-success block">1.5K+</span>
-                <span class="text-[10px] text-[var(--text-muted)] font-mono uppercase">{t("settings.statSkills")}</span>
+                <span class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{t("settings.statSkills")}</span>
               </div>
             </div>
             <div class="p-4 rounded-2xl border border-[var(--hairline)] bg-card/60 text-center">

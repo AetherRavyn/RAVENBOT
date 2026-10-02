@@ -106,8 +106,8 @@
               class="size-5 rounded-full shrink-0"
             />
             <div class="min-w-0">
-              <div class="text-[10px] font-bold text-[var(--text-primary)] truncate leading-tight">{nameFor(task.botId)}</div>
-              <div class="text-[9px] text-[var(--text-muted)] truncate leading-tight">{task.label}</div>
+              <div class="text-[11px] font-bold text-[var(--text-primary)] truncate leading-tight">{nameFor(task.botId)}</div>
+              <div class="text-[11px] text-[var(--text-muted)] truncate leading-tight">{task.label}</div>
             </div>
             {#if stateFor?.(i) === "running"}
               <span class="ml-auto size-1.5 rounded-full bg-[var(--brand)] animate-pulse shrink-0" aria-hidden="true"></span>

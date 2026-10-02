@@ -66,7 +66,7 @@
         <Building2 class="size-3.5" />
       </div>
       <span class="font-bold text-[11px] tracking-wider uppercase text-[var(--text-primary)]">{t("office.title")}</span>
-      <span class="bg-[var(--surface-2)] text-[var(--text-tertiary)] text-[10px] font-mono font-medium px-2 py-0.5 rounded-full border border-[var(--hairline)]">
+      <span class="bg-[var(--surface-2)] text-[var(--text-tertiary)] text-[11px] font-mono font-medium px-2 py-0.5 rounded-full border border-[var(--hairline)]">
         {rooms.length}
       </span>
     </div>
@@ -143,10 +143,10 @@
                   {room.description || officeTemplateDesc(room.office_template)}
                 </p>
                 <div class="flex items-center gap-2 mt-1.5">
-                  <span class="text-[9px] px-1.5 py-[2px] rounded bg-[var(--surface-3)] border border-[var(--hairline)] text-[var(--text-secondary)] font-mono capitalize">
+                  <span class="text-[11px] px-1.5 py-[2px] rounded bg-[var(--surface-3)] border border-[var(--hairline)] text-[var(--text-secondary)] font-mono capitalize">
                     {room.office_template.replace("-", " ")}
                   </span>
-                  <span class="text-[10px] text-success flex items-center gap-1 font-mono">
+                  <span class="text-[11px] text-success flex items-center gap-1 font-mono">
                     <Radio class="size-2.5" />
                     Parallel
                   </span>

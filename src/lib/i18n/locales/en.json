@@ -329,7 +329,9 @@
     "deleteCustomConfirm": "Delete \"{{name}}\"? This cannot be undone.",
     "forceDeleteQuestion": "Delete anyway?",
     "testReply": "Response: {{reply}}",
-    "testOk": "Connection OK"
+    "testOk": "Connection OK",
+    "showApiKey": "Show API key",
+    "hideApiKey": "Hide API key"
   },
   "skills": {
     "title": "Skills - {{botName}}",
