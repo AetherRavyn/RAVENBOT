@@ -8,7 +8,7 @@
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
-  import { getDiceBearUrl } from "$lib/utils";
+  import { getDiceBearUrl, cn } from "$lib/utils";
   import { getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition, THEMES } from "$lib/theme";
   import { setLocale, getAvailableLocales, localeState, type Locale } from "$lib/i18n";
   import { t } from "$lib/i18n";
@@ -311,10 +311,42 @@
     });
   }
 
+  /**
+   * When the provider status was last actually read.
+   *
+   * The numbers below this block — connected, models found — are a snapshot,
+   * and a snapshot with no timestamp is one the user cannot reason about: an
+   * infrastructure tool that says "2 / 16" without saying when is indistinguishable
+   * from one that is simply stale. `null` until the first read, which is a
+   * real state and is labelled "never" rather than rendered as a zero.
+   */
+  let statusCheckedAt = $state<number | null>(null);
+  /** Bumped once a minute; the only reason the "time ago" label is reactive. */
+  let statusTick = $state(0);
+  let statusTicker: ReturnType<typeof setInterval> | null = null;
+
+  /** Live "time ago", so the timestamp does not need a timer to stay true. */
+  let checkedAge = $derived.by(() => {
+    if (statusCheckedAt === null) return null;
+    void statusTick;
+    return Math.floor((Date.now() - statusCheckedAt) / 1000);
+  });
+
+  let statusLabel = $derived.by(() => {
+    const s = checkedAge;
+    if (s === null) return t("settings.never");
+    if (s < 10) return t("settings.justNow");
+    if (s < 60) return t("settings.agoSeconds", { n: s });
+    if (s < 3600) return t("settings.agoMinutes", { n: Math.floor(s / 60) });
+    return t("settings.agoHours", { n: Math.floor(s / 3600) });
+  });
+
   async function loadConfiguredProviders() {
     isLoadingConfigured = true;
     try {
       configuredProviders = await invoke<string[]>("get_configured_providers");
+      statusCheckedAt = Date.now();
+      statusTick++;
     } catch (e) {
       console.error("Failed to load configured providers:", e);
     } finally {
@@ -606,25 +638,47 @@
         {/each}
       </nav>
 
-      <!-- Bottom Stats -->
+      <!--
+        System status.
+
+        Three numbers and a timestamp, because a snapshot without one is
+        indistinguishable from a stale one — and this is the strip that stays on
+        screen for the whole session. The counts are what the reviewer liked
+        about it and they have not changed; what was missing was the third
+        question, which is always "and how old is this?".
+
+        Relabelled rather than added to, because "Connected 2 / 16" and
+        "Connections 2 / 16" are the same fact and the shorter name leaves room
+        for the timestamp on the same row width.
+      -->
       <div class="p-4 border-t space-y-2" style="border-color: {currentTheme.borderHex};">
-        <div class="flex items-center justify-between text-[11px] font-mono text-[var(--text-muted)]">
-          <span>{t("settings.connected")}</span>
+        <span class="block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)]">
+          {t("settings.systemStatus")}
+        </span>
+        <div class="flex items-center justify-between text-[11px] font-mono text-[var(--text-tertiary)]">
+          <span>{t("settings.connections")}</span>
           <span class="text-success">{connectedCount} / {keyedProviders.length}</span>
         </div>
-        <div class="flex items-center justify-between text-[11px] font-mono text-[var(--text-muted)]">
-          <span>{t("settings.modelsFound")}</span>
+        <div class="flex items-center justify-between text-[11px] font-mono text-[var(--text-tertiary)]">
+          <span>{t("settings.models")}</span>
           <span class="text-[var(--brand-text)]">{totalModels}</span>
         </div>
+        <div class="flex items-center justify-between text-[11px] font-mono text-[var(--text-tertiary)]">
+          <span>{t("settings.lastChecked")}</span>
+          <span class="text-[var(--text-secondary)]">{statusLabel}</span>
+        </div>
         <!--
-          A full-width action that was 15px tall. WCAG 2.2 asks 24×24 of any
+          A full-width action that was 15px tall. WCAG 2.2 asks 24x24 of any
           pointer target, and a full-width strip is easy to hit — it just needs
-          the padding to be honest about that. `py-1.5` plus the 10px text
-          lands it at 28px, and the vertical padding is what stops the row from
-          looking like it grew.
+          the padding to be honest about that. It also reflects the loading
+          state, which it did not before: a status strip whose refresh button
+          gives no feedback while the thing it refreshes is in flight is worse
+          than one without a button.
         -->
-        <button type="button" onclick={loadConfiguredProviders} class="w-full py-1.5 text-[11px] text-[var(--brand-text)] hover:text-[var(--brand-text)] flex items-center justify-center gap-1 cursor-pointer rounded-md transition-colors hover:bg-[var(--brand-soft)]">
-          <RefreshCw class="size-3" /> {t("settings.refreshStatus")}
+        <button type="button" onclick={loadConfiguredProviders} disabled={isLoadingConfigured}
+          class="w-full py-1.5 mt-1 text-[11px] text-[var(--brand-text)] hover:text-[var(--brand-text)] flex items-center justify-center gap-1 cursor-pointer rounded-md transition-colors hover:bg-[var(--brand-soft)] disabled:opacity-60 disabled:cursor-default">
+          <RefreshCw class={cn("size-3.5", isLoadingConfigured && "animate-spin")} />
+          {isLoadingConfigured ? t("connector.syncing") : t("settings.refreshStatus")}
         </button>
       </div>
     </div>

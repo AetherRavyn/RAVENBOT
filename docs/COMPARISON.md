@@ -207,8 +207,69 @@ is the **product surface**: the ladder, the job library, the full avatar, and `t
       keeps rendering. `UNREACHABLE_MOTIONS` is down to the three states that genuinely replace
       the outline (`egg`, `hexagon`, `play`), and `rosterSafeMotion()` enforces that at the
       component rather than at every call site.
-- [ ] **Oversight ladder** surfaced per agent (hand over / review / approve) on top of the
-      existing approval mode.
+- [x] **Connector centre: blockers broken down by cause.** "Needs Keys" was one true, useless
+      number. It is now four overlapping, actionable ones, classified from the real catalog
+      (135 connectors, 116 distinct key names) by `lib/connectors.ts`. This is the oversight
+      ladder's shape applied to configuration: name the tier, count it, make it clickable.
+- [x] **Measured UI pass** on Settings, the connector centre and the composer — contrast floor,
+      hit targets, accessible names, 11px type floor. Harness in `scripts/ui-audit/`.
 - [ ] **Job library** — metadata (`group`, `cadence`, `oversight`) over the existing skills, so
-      a new agent can be created from a template the way Grok's Marketplace works.
-- [ ] **Render polish** — split `ThreadView`, bubble-variant discipline, reduced-motion audit.
+      a new agent can be created from a template the way Grok's Marketplace works. The connector
+      centre is now the template for this shape.
+- [ ] **Render polish** — split `ThreadView` (2,416 lines) and `ChatRoomView` (~2,400), add
+      OpenBot's bubble-variant discipline (ghost bubbles for tool and code content).
+
+---
+
+## 7. The connector centre, after design review
+
+A design review said the connective tissue was right and asked for seven
+refinements. All seven are in, and the restraint was kept: no bigger cards, no
+larger logos, no gradients, no badge inflation, no wider sidebar, no table.
+
+| Asked for | Now |
+|---|---|
+| Separate status filters from category filters | Two labelled groups: **Status** and **Category** |
+| "Needs Keys" is ambiguous | **Needs configuration**, broken down by cause |
+| The card menu needs a stronger affordance | Names its card, always visible, hover-fill, `aria-haspopup` |
+| "Global" is ambiguous | **All agents**, with the scope in the tooltip |
+| "Unverified connector" deserves an explanation | Tooltip says *why*; the line offers **Test to find out** |
+| The status strip should be operational | **System status** — connections, models, **last checked** |
+| Stronger title↔action relationship | Count under the title, search full width, actions on the filter row |
+
+Plus the one *opportunity* rather than refinement — the thing the review called
+the next level:
+
+> The UI makes the user think "I have 135 connectors." It should make them think
+> "I know exactly which connectors require my attention."
+
+**Needs configuration (112)** now shows what the 112 are waiting on:
+
+| Cause | Count | What it is |
+|---|---|---|
+| Missing endpoint | 20 | a URL, URI or connection string to point it at |
+| Missing API key | 40 | a service key from the provider's dashboard |
+| Missing token or OAuth | 57 | a personal access token, password or OAuth credential |
+| Unverified launcher | — | the upstream package was not found in the catalog audit |
+
+Each is clickable and narrows the grid. They deliberately **overlap** — Elasticsearch
+wants a URL *and* a key — and the panel says so rather than implying the counts sum.
+The 23 keyless local connectors (Filesystem, Git, Docker, Playwright) appear in
+none of them, because they need nothing.
+
+### The state machine
+
+The review's closing note asked for
+`loading → ready → configured → unverified → error → disabled → assigned → globally assigned → connection testing → configuration`.
+
+Eight of nine existed. The two that did not were the two that mattered:
+
+- **error** — a connector shown as **failed** forgot the moment you dismissed the
+  modal, because the result lived only in the modal. It is now remembered per
+  connector, and a failure outranks missing credentials: a tested-and-refused
+  connection is a fact, and a missing key is a guess.
+- **connection testing** — a test in flight now says so, instead of the card sitting
+  there looking ready.
+
+`disabled` is deliberately not invented. There is no source of truth for it in the
+catalog, and a state that always reads one value teaches people to ignore it.

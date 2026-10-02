@@ -14,8 +14,10 @@
   import ConnectorIcon from "$lib/components/ConnectorIcon.svelte";
   import { notify } from "$lib/toast";
   import { t } from "$lib/i18n";
+  import { whatIsMissing, needsBreakdown, missingLabel, type Requirement } from "$lib/connectors";
   import {
     Wrench,
+    Loader2,
     Search,
     RefreshCw,
     Plus,
@@ -139,6 +141,25 @@
     tools: Array<{ name: string; description: string; input_schema: any }>;
   } | null>(null);
 
+  /**
+   * The outcome of the last connection test, per connector, kept after the
+   * modal closes.
+   *
+   * This is the difference between a status line that reports reality and one
+   * that reports only what the catalog believes. Previously the result lived in
+   * the modal and was thrown away on close, so a connector that had just been
+   * shown as **failed** went back to reading "Ready to assign" the moment you
+   * dismissed it — which is the one thing a failed connector must never do.
+   *
+   * A failure also outranks every other state on the card. Missing credentials
+   * are a problem you can see and fix; a connection that was tested and refused
+   * is a fact, and burying it under "needs a key" would hide the more specific
+   * and more expensive problem.
+   */
+  let testOutcomes = $state<Record<string, { ok: boolean; message: string }>>({});
+  /** Connectors with a test in flight, so their card can say so. */
+  let testingIds = $state<Record<string, true>>({});
+
   // Preset Stacks Drawer State
   let showPresetModal = $state(false);
   let applyingPreset = $state(false);
@@ -253,6 +274,12 @@
       } else if (activeTab === "global") {
         return s.enabled;
       } else if (activeTab === "configured") {
+        // The blocker breakdown narrows this tab rather than replacing it, so
+        // an unverified-only connector is still reachable: it has no missing
+        // key at all, and would otherwise be invisible under a tab that counts
+        // `env_keys.length > 0`.
+        if (needKindIds && !needKindIds.has(s.id)) return false;
+        if (needKind === "unverified") return !s.verified;
         return s.env_keys.length > 0 && !s.env_configured;
       } else if (activeTab === "custom") {
         return s.is_custom;
@@ -266,6 +293,67 @@
   let globalCount = $derived(servers.filter((s) => s.enabled).length);
   let missingKeysCount = $derived(servers.filter((s) => s.env_keys.length > 0 && !s.env_configured).length);
   let customCount = $derived(servers.filter((s) => s.is_custom).length);
+
+  /**
+   * Which of the four kinds of blocker is being shown, on top of the
+   * "Needs configuration" tab.
+   *
+   * `null` is the tab on its own. This is a second, narrower filter rather than
+   * a replacement, because "112 connectors need something" is a true statement
+   * that tells you nothing about what to do next, and the four buckets below it
+   * are what turn a wall into a list you can work through.
+   *
+   * The buckets overlap on purpose — Elasticsearch wants a URL *and* a key — so
+   * this narrows rather than partitions, and the panel says so rather than
+   * implying the counts sum to the tab total.
+   */
+  let needKind = $state<Requirement | null>(null);
+  let breakdown = $derived(needsBreakdown(servers));
+  /** Connector ids matching the selected blocker, for the grid to filter on. */
+  let needKindIds = $derived(needKind ? new Set(breakdown[needKind]) : null);
+
+  /**
+   * The four blockers, in the order a user should meet them.
+   *
+   * Endpoint first because "point it somewhere" is the one you can try without
+   * opening anything, and last-of-all unverified because it is not a missing
+   * value at all — it is a warning about the connector's launcher, and putting
+   * it first would imply the other three are secondary.
+   */
+  /** The i18n keys, typed as keys so `t()`'s literal union still checks them. */
+  type ConnectorKey = Parameters<typeof t>[0];
+
+  const NEED_KINDS: Array<{
+    id: Requirement;
+    label: ConnectorKey;
+    help: ConnectorKey;
+    icon: typeof Server;
+  }> = [
+    {
+      id: "endpoint",
+      label: "connector.needEndpoint",
+      help: "connector.needEndpointHelp",
+      icon: Globe,
+    },
+    {
+      id: "apikey",
+      label: "connector.needApikey",
+      help: "connector.needApikeyHelp",
+      icon: Key,
+    },
+    {
+      id: "token",
+      label: "connector.needToken",
+      help: "connector.needTokenHelp",
+      icon: Shield,
+    },
+    {
+      id: "unverified",
+      label: "connector.needUnverified",
+      help: "connector.needUnverifiedHelp",
+      icon: AlertCircle,
+    },
+  ];
 
   function getCategoryCount(catId: string): number {
     if (catId === "All") return servers.length;
@@ -516,9 +604,11 @@
     testResult = null;
     showTestModal = true;
     isTesting = true;
+    testingIds[server.id] = true;
     try {
       const res: any = await invoke("test_mcp_server", { serverId: server.id });
       testResult = res;
+      testOutcomes[server.id] = { ok: !!res?.success, message: String(res?.message ?? "") };
     } catch (e) {
       testResult = {
         success: false,
@@ -527,8 +617,10 @@
         latency_ms: 0,
         tools: [],
       };
+      testOutcomes[server.id] = { ok: false, message: String(e) };
     } finally {
       isTesting = false;
+      delete testingIds[server.id];
     }
   }
 
@@ -691,47 +783,19 @@
   <!-- Compact pane header (OpenBot design system) -->
   <div class="px-4 py-2.5 border-b border-[var(--hairline)] shrink-0 bg-[var(--surface-1)]">
     <div class="flex flex-wrap items-center justify-between gap-3">
-      <!-- Title -->
+      <!-- Title. The count sits under the title rather than beside it, so the
+           two read as one thing — "Connectors & Tools, 135 of them" — instead
+           of a title with a badge floating next to it. -->
       <div class="flex items-center gap-2 min-w-0">
         <Layers class="size-4 text-[var(--brand-text)] shrink-0" />
-        <h2 class="text-[13px] font-bold text-[var(--text-primary)] tracking-wide truncate">{t("connector.title")}</h2>
-        <span class="text-[11px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30 px-1.5 py-0.5 rounded-md font-mono font-bold shrink-0">
-          {t("connector.count", { n: servers.length })}
-        </span>
+        <div class="min-w-0">
+          <h2 class="text-[13px] font-bold text-[var(--text-primary)] tracking-wide truncate leading-tight">{t("connector.title")}</h2>
+          <span class="text-[11px] text-[var(--text-tertiary)] font-mono leading-tight">
+            {t("connector.count", { n: servers.length })}
+          </span>
+        </div>
       </div>
 
-      <!-- Header Action Controls -->
-      <div class="flex items-center gap-2.5 flex-wrap">
-        <Button
-          size="sm"
-          variant="outline"
-          class="h-8.5 gap-1.5 text-xs bg-[var(--surface-2)] border-[var(--brand)]/30 text-[var(--brand-text)] hover:bg-[var(--brand-soft)] hover:text-[var(--text-primary)] cursor-pointer shadow-sm"
-          onclick={() => (showPresetModal = true)}
-        >
-          <Sparkles class="size-3.5 text-[var(--brand-text)]" />
-          <span>{t("connector.presetStacks")}</span>
-        </Button>
-
-        <Button
-          size="sm"
-          variant="outline"
-          class="h-8.5 gap-1.5 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--hairline)] hover:text-[var(--text-primary)] cursor-pointer shadow-sm"
-          onclick={() => load()}
-          disabled={syncing}
-        >
-          <RefreshCw class={cn("size-3.5", syncing && "animate-spin text-[var(--brand-text)]")} />
-          <span>{syncing ? t("connector.syncing") : t("settings.refresh")}</span>
-        </Button>
-
-        <Button
-          size="sm"
-          class="h-8.5 gap-1.5 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] font-medium cursor-pointer"
-          onclick={() => (showAddCustom = true)}
-        >
-          <Plus class="size-3.5" />
-          <span>{t("connector.addCustom")}</span>
-        </Button>
-      </div>
     </div>
 
     <!-- Agent Quick Selector Strip -->
@@ -783,10 +847,11 @@
       </div>
     {/if}
 
-    <!-- Search Bar & Scope Filters -->
-    <div class="flex flex-col lg:flex-row gap-2.5 mt-3.5 items-stretch lg:items-center justify-between">
-      <!-- Search input -->
-      <div class="relative flex-1 min-w-[260px]">
+    <!-- Search. Its own full-width row. It was sharing a line with the status
+         filters, which meant both were narrow and neither looked primary —
+         and for a 135-item catalog the search *is* the primary way in. -->
+    <div class="relative mt-3">
+      <div class="relative">
         <Search class="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-[var(--text-tertiary)] pointer-events-none" />
         <Input
           bind:value={query}
@@ -797,17 +862,31 @@
         {#if query}
           <button
             type="button"
-            class="absolute right-2.5 top-1/2 -translate-y-1/2 text-[var(--text-muted)] hover:text-[var(--text-primary)] p-1 cursor-pointer"
+            class="absolute right-2.5 top-1/2 -translate-y-1/2 grid place-items-center size-6 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-md hover:bg-[var(--surface-3)] cursor-pointer"
             aria-label="Clear search"
+            title="Clear search"
             onclick={() => (query = "")}
           >
             <X class="size-3.5" />
           </button>
         {/if}
       </div>
+    </div>
 
-      <!-- Scope Filter Tabs -->
-      <div class="flex flex-wrap items-center gap-1.5 shrink-0">
+    <!--
+      Status filters and category filters are two different questions —
+      "what state is this connector in" versus "what kind of thing is it" —
+      and they were sitting in two unmarked rows that looked like one list of
+      fourteen chips. They are now separate groups with a label each, and the
+      actions sit on the status row so the page reads top to bottom as
+      search → what is in what state → what kind of thing.
+    -->
+    <div class="mt-3 flex flex-col lg:flex-row gap-2.5 lg:items-start justify-between">
+      <div class="min-w-0">
+        <span class="block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)] mb-1.5">
+          {t("connector.filterStatus")}
+        </span>
+        <div class="flex flex-wrap items-center gap-1.5">
         <button
           type="button"
           class={cn(
@@ -871,7 +950,7 @@
             aria-pressed={activeTab === "configured"}
           >
             <Key class="size-3 text-warning" />
-            <span>{t("connector.tabNeedsKeys")}</span>
+            <span>{t("connector.tabNeedsConfig")}</span>
             <span class="text-[11px] font-mono opacity-80">({missingKeysCount})</span>
           </button>
         {/if}
@@ -893,11 +972,100 @@
             <span class="text-[11px] font-mono opacity-80">({customCount})</span>
           </button>
         {/if}
+        </div>
+
+        <!-- The blocker breakdown. Only when the tab it refines is selected. -->
+        {#if activeTab === "configured" && missingKeysCount + (servers.filter((s) => !s.verified).length) > 0}
+          <div class="mt-2.5 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] overflow-hidden">
+            <div class="px-3 py-2 border-b border-[var(--hairline)]">
+              <p class="text-[12px] font-bold text-[var(--text-primary)]">{t("connector.needsTitle")}</p>
+              <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed mt-0.5">
+                {t("connector.needsSubtitle", { n: missingKeysCount })}
+              </p>
+            </div>
+            <div class="p-1.5 grid grid-cols-1 sm:grid-cols-2 gap-1">
+              {#each NEED_KINDS as k (k.id)}
+                {@const count = breakdown[k.id]?.length ?? 0}
+                {@const Icon = k.icon}
+                <button
+                  type="button"
+                  class={cn(
+ "group flex items-start gap-2 px-2.5 py-2 rounded-lg text-left transition-colors cursor-pointer min-h-11",
+                    needKind === k.id
+                      ? "bg-[var(--warning-soft)] ring-1 ring-warning/40"
+                      : "hover:bg-[var(--surface-3)]"
+                  )}
+                  disabled={count === 0}
+                  aria-pressed={needKind === k.id}
+                  onclick={() => (needKind = needKind === k.id ? null : k.id)}
+                >
+                  <Icon class={cn("size-3.5 shrink-0 mt-px", count ? "text-warning" : "text-[var(--text-tertiary)]")} />
+                  <span class="min-w-0 flex-1">
+                    <span class="flex items-baseline justify-between gap-2">
+                      <span class={cn("text-[12px] font-semibold", count ? "text-[var(--text-primary)]" : "text-[var(--text-tertiary)]")}>
+                        {t(k.label)}
+                      </span>
+                      <span class={cn("text-[12px] font-mono font-bold", count ? "text-warning" : "text-[var(--text-tertiary)]")}>
+                        {count}
+                      </span>
+                    </span>
+                    <span class="block text-[11px] text-[var(--text-tertiary)] leading-snug mt-0.5">
+                      {t(k.help)}
+                    </span>
+                  </span>
+                </button>
+              {/each}
+            </div>
+            <p class="px-3 py-2 border-t border-[var(--hairline)] text-[11px] text-[var(--text-tertiary)] leading-relaxed">
+              {t("connector.needsOverlapNote")}
+            </p>
+          </div>
+        {/if}
+      </div>
+
+      <!-- Page actions. Moved down from the title row so the search can be
+           full width; they sit on the status row, opposite the thing they
+           change. -->
+      <div class="flex items-center gap-2 shrink-0">
+        <Button
+          size="sm"
+          variant="outline"
+          class="h-8.5 gap-1.5 text-xs bg-[var(--surface-2)] border-[var(--brand)]/30 text-[var(--brand-text)] hover:bg-[var(--brand-soft)] hover:text-[var(--text-primary)] cursor-pointer"
+          onclick={() => (showPresetModal = true)}
+        >
+          <Sparkles class="size-3.5 text-[var(--brand-text)]" />
+          <span>{t("connector.presetStacks")}</span>
+        </Button>
+
+        <Button
+          size="sm"
+          variant="outline"
+          class="h-8.5 gap-1.5 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:border-[var(--hairline-strong)] hover:text-[var(--text-primary)] cursor-pointer"
+          onclick={() => load()}
+          disabled={syncing}
+          aria-label={syncing ? t("connector.syncing") : t("settings.refresh")}
+        >
+          <RefreshCw class={cn("size-3.5", syncing && "animate-spin text-[var(--brand-text)]")} />
+          <span>{syncing ? t("connector.syncing") : t("settings.refresh")}</span>
+        </Button>
+
+        <Button
+          size="sm"
+          class="h-8.5 gap-1.5 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] font-medium cursor-pointer"
+          onclick={() => (showAddCustom = true)}
+        >
+          <Plus class="size-3.5" />
+          <span>{t("connector.addCustom")}</span>
+        </Button>
       </div>
     </div>
 
-    <!-- Category Filter Chips with Proper Lucide Icons (No horizontal scrollbars) -->
-    <div class="flex flex-wrap items-center gap-1.5 mt-3 pt-2.5 border-t border-[var(--hairline)]">
+    <!-- Category filter chips -->
+    <div class="mt-3 pt-2.5 border-t border-[var(--hairline)]">
+      <span class="block text-[11px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)] mb-1.5">
+        {t("connector.filterCategory")}
+      </span>
+      <div class="flex flex-wrap items-center gap-1.5">
       {#each categoryDefs as cat}
         {@const count = getCategoryCount(cat.id)}
         {@const IconComponent = cat.icon}
@@ -926,6 +1094,7 @@
           </button>
         {/if}
       {/each}
+      </div>
     </div>
   </div>
 
@@ -990,10 +1159,20 @@
       {#each filtered as s (s.id)}
         {@const isCurrentBotEnabled = currentBotId ? currentBotServers.has(s.id) : false}
         {@const isGlobalEnabled = s.enabled}
+        {@const needs = whatIsMissing(s)}
         {@const hasRequiredKeys = s.env_keys.length > 0}
         {@const isKeyConfigured = s.env_configured}
         {@const isCardSelected = selectedConnectorIds.has(s.id)}
-        {@const assignedBotsCount = s.assigned_bot_ids.length}
+        <!--
+          `assigned_bot_ids` is a field the catalog returns today, but nothing
+          in the type or the payload guarantees it and this line ran during
+          render of every one of 135 cards — so a single connector without it
+          took the whole grid down with an uncaught TypeError rather than
+          rendering one card short.
+        -->
+        {@const assignedBotsCount = (s.assigned_bot_ids ?? []).length}
+        {@const outcome = testOutcomes[s.id]}
+        {@const isTestingThis = Boolean(testingIds[s.id])}
 
         <div
           class={cn(
@@ -1043,13 +1222,36 @@
 
             <!-- Overflow actions -->
             <div class="relative shrink-0">
+              <!--
+                Discoverability, without shouting.
+
+                The concern was fair: a bare "…" that is the same weight as every
+                other quiet thing on the card tells you nothing about what is
+                behind it, and on 135 cards nobody is going to open all of them
+                to find out. Three cheap changes:
+
+                  1. It says which card it belongs to. "More actions" repeated
+                     135 times is not a name.
+                  2. It is *always* visible rather than hover-only, because a
+                     control that appears on hover is not discoverable by someone
+                     using a keyboard or a screen reader, and the grid has no
+                     other way to reach these four actions.
+                  3. It gains a visible fill on the card's own hover, so it
+                     reads as part of the card's chrome rather than as a stray
+                     glyph — without becoming a second primary action.
+
+                The size stays 28px and it stays tertiary-coloured. The reviewer
+                was explicit that nothing should start shouting, and that was
+                the correct instinct to keep.
+              -->
               <button
                 type="button"
-                class="icon-btn size-7 border border-[var(--hairline)]"
+                class="icon-btn size-7 border border-[var(--hairline)] bg-[var(--surface-2)] group-hover:bg-[var(--surface-3)]"
                 onclick={(e) => { e.stopPropagation(); activeMenu = activeMenu === s.id ? null : s.id; }}
                 aria-expanded={activeMenu === s.id}
-                aria-label={t("connector.moreActions")}
-                title={t("connector.moreActions")}
+                aria-haspopup="true"
+                aria-label={t("connector.menuMore", { name: s.name })}
+                title={t("connector.menuMore", { name: s.name })}
               >
                 <MoreHorizontal class="size-4" />
               </button>
@@ -1058,22 +1260,23 @@
                 <!-- svelte-ignore a11y_click_events_have_key_events -->
                 <div
                   class="absolute right-0 top-8 z-30 w-48 rounded-xl border border-[var(--hairline-strong)] bg-[var(--surface-1)] shadow-2xl p-1 space-y-0.5"
+                  aria-label={t("connector.menuMore", { name: s.name })}
                   onclick={(e) => e.stopPropagation()}
                 >
-                  <button type="button" class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] text-left cursor-pointer" onclick={() => { activeMenu = null; openTestModal(s); }}>
+                  <button type="button" class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] text-left cursor-pointer" onclick={() => { activeMenu = null; openTestModal(s); }}>
                     <Zap class="size-3.5 text-[var(--text-tertiary)]" /> {t("connector.menuTest")}
                   </button>
                   {#if hasRequiredKeys}
-                    <button type="button" class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] text-left cursor-pointer" onclick={() => { activeMenu = null; openEnvConfig(s); }}>
+                    <button type="button" class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] text-left cursor-pointer" onclick={() => { activeMenu = null; openEnvConfig(s); }}>
                       <Key class="size-3.5 text-[var(--text-tertiary)]" /> {t("connector.menuCredentials")}
                     </button>
                   {/if}
-                  <button type="button" class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] text-left cursor-pointer" onclick={() => { activeMenu = null; copyCommand(s); }}>
+                  <button type="button" class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] text-left cursor-pointer" onclick={() => { activeMenu = null; copyCommand(s); }}>
                     {#if copiedId === s.id}<Check class="size-3.5 text-success" />{:else}<Copy class="size-3.5 text-[var(--text-tertiary)]" />{/if}
                     {copiedId === s.id ? t("connector.copied") : t("connector.copyCommand")}
                   </button>
                   {#if s.is_custom}
-                    <button type="button" class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[11px] text-danger hover:bg-danger/10 text-left cursor-pointer" onclick={() => { activeMenu = null; deleteServer(s); }}>
+                    <button type="button" class="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-[11px] text-danger hover:bg-danger/10 text-left cursor-pointer" onclick={() => { activeMenu = null; deleteServer(s); }}>
                       <Trash2 class="size-3.5" /> {t("connector.menuDelete")}
                     </button>
                   {/if}
@@ -1085,25 +1288,72 @@
           <!-- Description -->
           <p class="text-[11px] text-[var(--text-tertiary)] line-clamp-2 leading-relaxed min-h-8">{s.description}</p>
 
-          <!-- Single status line -->
+          <!--
+            One status line, and it is a button because every state on it has
+            something to do about it.
+
+            * Missing something → opens the credential drawer, and says *which*
+              value rather than "some keys". `CHROMA_URL` tells you the work.
+            * Unverified → opens the connection test, because "unverified" on its
+              own is a dead end: the user cannot tell whether it is broken or
+              merely unaudited, and the test is what turns it into an answer.
+            * Ready / assigned / global → nothing to do, so it says so and is
+              still focusable for consistency of position.
+
+            The three warning states keep the same dot-and-word shape they had.
+            That restraint is deliberate and worth preserving: a large coloured
+            badge per card would make 135 cards unreadable.
+          -->
           <button
             type="button"
-            class="flex items-center gap-1.5 text-[11px] w-fit text-left cursor-pointer"
-            aria-label={`${s.name}: ${s.verified ? (hasRequiredKeys && !isKeyConfigured ? t("connector.statusNeedsKeys", { keys: s.env_keys.slice(0, 2).join(", ") }) : isCurrentBotEnabled ? t("connector.tabActiveFor", { name: currentBot?.name }) : isGlobalEnabled ? t("connector.statusGlobalReady") : t("connector.statusReady")) : t("connector.statusUnverified")}`}
-            title={hasRequiredKeys && !isKeyConfigured ? t("connector.tipConfigure") : s.description}
-            onclick={() => { if (hasRequiredKeys) openEnvConfig(s); }}
+            class="flex items-center gap-1.5 text-[11px] w-fit min-h-6 -my-1 px-1.5 rounded-md text-left cursor-pointer hover:bg-[var(--surface-3)] transition-colors"
+            aria-label={`${s.name}: ${outcome && !outcome.ok
+              ? t("connector.statusTestFailed")
+              : isTestingThis
+                ? t("connector.statusTesting")
+                : !s.verified
+                  ? `${t("connector.statusUnverified")} — ${t("connector.unverifiedAction")}`
+                  : needs?.missing.length
+                    ? `${t("connector.missingShort", { keys: missingLabel(needs) })} — ${t("connector.configure")}`
+                    : isCurrentBotEnabled
+                      ? t("connector.tabActiveFor", { name: currentBot?.name })
+                      : isGlobalEnabled
+                        ? t("connector.statusGlobalReady")
+                        : t("connector.statusReady")}`}
+            title={outcome && !outcome.ok
+              ? outcome.message
+              : !s.verified
+                ? t("connector.unverifiedWhy")
+                : needs?.missing.length
+                  ? t("connector.tipConfigure")
+                  : s.description}
+            onclick={() => {
+              if (outcome && !outcome.ok) openTestModal(s);
+              else if (!s.verified) openTestModal(s);
+              else if (needs?.missing.length) openEnvConfig(s);
+            }}
           >
-            {#if !s.verified}
-              <span class="size-1.5 rounded-full bg-warning"></span><span class="text-warning">{t("connector.statusUnverified")}</span>
-            {:else if hasRequiredKeys && !isKeyConfigured}
-              <span class="size-1.5 rounded-full bg-warning"></span>
-              <span class="text-warning">{t("connector.statusNeedsKeys", { keys: s.env_keys.slice(0, 2).join(", ") })}</span>
+            {#if outcome && !outcome.ok}
+              <span class="size-1.5 rounded-full bg-danger shrink-0"></span>
+              <span class="text-danger">{t("connector.statusTestFailed")}</span>
+              <span class="text-[var(--text-tertiary)]">· {t("connector.menuTest")}</span>
+            {:else if isTestingThis}
+              <Loader2 class="size-3 shrink-0 animate-spin text-[var(--brand-text)]" />
+              <span class="text-[var(--text-tertiary)]">{t("connector.statusTesting")}</span>
+            {:else if !s.verified}
+              <span class="size-1.5 rounded-full bg-warning shrink-0"></span>
+              <span class="text-warning">{t("connector.statusUnverified")}</span>
+              <span class="text-[var(--text-tertiary)]">· {t("connector.unverifiedAction")}</span>
+            {:else if needs?.missing.length}
+              <span class="size-1.5 rounded-full bg-warning shrink-0"></span>
+              <span class="text-warning">{t("connector.missingShort", { keys: missingLabel(needs) })}</span>
+              <span class="text-[var(--text-tertiary)]">· {t("connector.configure")}</span>
             {:else if isCurrentBotEnabled}
-              <span class="size-1.5 rounded-full bg-success"></span><span class="text-success">{t("connector.tabActiveFor", { name: currentBot?.name })}</span>
+              <span class="size-1.5 rounded-full bg-success shrink-0"></span><span class="text-success">{t("connector.tabActiveFor", { name: currentBot?.name })}</span>
             {:else if isGlobalEnabled}
-              <span class="size-1.5 rounded-full bg-[var(--brand)]"></span><span class="text-[var(--brand-text)]">{t("connector.statusGlobalReady")}</span>
+              <span class="size-1.5 rounded-full bg-[var(--brand)] shrink-0"></span><span class="text-[var(--brand-text)]">{t("connector.statusGlobalReady")}</span>
             {:else}
-              <span class="size-1.5 rounded-full bg-[var(--surface-3)]"></span><span class="text-[var(--text-tertiary)]">{t("connector.statusReady")}</span>
+              <span class="size-1.5 rounded-full bg-[var(--surface-3)] shrink-0"></span><span class="text-[var(--text-tertiary)]">{t("connector.statusReady")}</span>
             {/if}
           </button>
 
@@ -1153,10 +1403,11 @@
               )}
               onclick={() => toggleGlobal(s.id, isGlobalEnabled)}
               aria-pressed={isGlobalEnabled}
-              title={isGlobalEnabled ? t("mcp.globalOnTip") : t("mcp.globalOffTip")}
+              aria-label={`${t("connector.allAgents")} — ${s.name}`}
+              title={t("connector.globalScopeTip")}
             >
               <Globe class="size-3.5" />
-              {t("connector.globalOn")}
+              {t("connector.allAgents")}
             </button>
           </div>
         </div>
