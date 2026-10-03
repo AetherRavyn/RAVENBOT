@@ -127,6 +127,23 @@ pub enum MessageContent {
         /// Web sources/citations backing this message (empty for most messages)
         #[serde(default)]
         sources: Vec<Source>,
+        /**
+         * The model's reasoning for this message, across every round of the run
+         * that produced it.
+         *
+         * A field of its own rather than `<think>` markers inside `text`, because
+         * the two were indistinguishable in practice: the streamed buffer was
+         * cleared at each tool round so the trace vanished, an interrupted stream
+         * left the markers open in the user's paragraph, and a renderer that
+         * missed a marker showed private notes as answer text. Stored apart, the
+         * reasoning cannot leak into the answer no matter how the front end is
+         * written.
+         *
+         * `serde(default)` because `content` is stored as a JSON blob, so this
+         * needs no migration — every existing row decodes with `None`.
+         */
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reasoning: Option<String>,
     },
     /// Structured checklist message
     Checklist {
@@ -153,7 +170,7 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::User,
-            content: MessageContent::Text { text: text.into(), sources: Vec::new() },
+            content: MessageContent::Text { text: text.into(), sources: Vec::new(), reasoning: None },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: Some("You".to_string()),
@@ -168,7 +185,7 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::Assistant,
-            content: MessageContent::Text { text: text.into(), sources: Vec::new() },
+            content: MessageContent::Text { text: text.into(), sources: Vec::new(), reasoning: None },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: None,
@@ -196,13 +213,88 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::Assistant,
-            content: MessageContent::Text { text: text.into(), sources },
+            content: MessageContent::Text { text: text.into(), sources, reasoning: None },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: None,
             reply_to_id: None,
             created_at: Utc::now(),
         }
+    }
+
+    /// An assistant reply that carries its reasoning separately from its answer.
+    ///
+    /// The reasoning is passed through rather than wrapped in markers so it stays
+    /// a distinct thing all the way to the renderer. `strip_thinking` below exists
+    /// for the messages written before this field did, which still carry markers
+    /// inside their text.
+    pub fn assistant_with_reasoning(
+        thread_id: Uuid,
+        text: impl Into<String>,
+        reasoning: impl Into<String>,
+        sources: Vec<Source>,
+    ) -> Self {
+        let reasoning = reasoning.into();
+        let reasoning = if reasoning.trim().is_empty() { None } else { Some(reasoning) };
+        Self {
+            id: Uuid::new_v4(),
+            thread_id,
+            role: MessageRole::Assistant,
+            content: MessageContent::Text { text: text.into(), sources, reasoning },
+            attachments: Vec::new(),
+            sender_bot_id: None,
+            sender_name: None,
+            reply_to_id: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    /**
+     * Pull any `<think>` block out of a message body, returning it separately.
+     *
+     * For messages stored before `MessageContent::Text::reasoning` existed, whose
+     * text still carries the markers. Handles *every* block, not just the first:
+     * a run is many model rounds and each contributed one, so a single-regex
+     * version silently dropped all but the first and left the rest in the answer
+     * as raw markup.
+     *
+     * Returns `None` when there is nothing to lift, which is the common case now.
+     */
+    pub fn split_thinking(text: &str) -> (String, Option<String>) {
+        if !text.to_ascii_lowercase().contains("<think>") {
+            return (text.to_string(), None);
+        }
+        let mut body = String::with_capacity(text.len());
+        let mut thinking: Vec<String> = Vec::new();
+        let mut rest = text;
+        // Loop rather than a single `replace`, because a model can emit more than
+        // one block and a run of rounds produced several.
+        while let Some(start) = rest.to_ascii_lowercase().find("<think>") {
+            let (before, after_open) = rest.split_at(start + "<think>".len());
+            body.push_str(before);
+            match after_open.to_ascii_lowercase().find("</think>") {
+                Some(end) => {
+                    let (block, tail) = after_open.split_at(end);
+                    let block = block.trim();
+                    if !block.is_empty() {
+                        thinking.push(block.to_string());
+                    }
+                    rest = &tail["</think>".len()..];
+                }
+                // Unterminated: a stream cut mid-thought. Treated as reasoning so
+                // it cannot be shown as answer text.
+                None => {
+                    let block = after_open.trim();
+                    if !block.is_empty() {
+                        thinking.push(block.to_string());
+                    }
+                    rest = "";
+                }
+            }
+        }
+        body.push_str(rest);
+        let joined = if thinking.is_empty() { None } else { Some(thinking.join("\n\n")) };
+        (body.trim().to_string(), joined)
     }
 
     /// Create a new checklist message

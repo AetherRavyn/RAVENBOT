@@ -24,10 +24,48 @@ pub use manager::ProviderManager;
 pub use streaming::StreamAccumulator;
 pub use discovery::{ModelDiscovery, DiscoveredModel};
 
-/// Callback receiving incremental text deltas during streaming.
+/// One piece of a streamed model response.
+///
+/// Reasoning is a *separate* variant rather than being prefixed into the text,
+/// for three reasons that all bite in practice:
+///
+///  1. **It must not be wiped.** The runtime clears the streamed text buffer at
+///     every tool round, so reasoning smuggled through the text channel
+///     disappears the moment an agent uses a tool — which is precisely when
+///     reasoning is most worth reading.
+///  2. **It must not be read as answer text.** A `<think>` marker left open
+///     mid-stream puts a model's private notes into the paragraph a user is
+///     reading, and nothing strips it reliably.
+///  3. **Order has to survive.** One tagged channel keeps reasoning interleaved
+///     with text in the order the model produced it, so a live view can show
+///     "thought, then said, then thought again" instead of two streams whose
+///     relative timing was thrown away at the callback boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamChunk<'a> {
+    /// Ordinary assistant output — what the user is meant to read.
+    Text(&'a str),
+    /// Extended-thinking / reasoning tokens. Never shown as answer text.
+    Reasoning(&'a str),
+}
+
+impl<'a> StreamChunk<'a> {
+    /// The payload, whichever variant this is.
+    pub fn as_str(&self) -> &'a str {
+        match self {
+            StreamChunk::Text(s) | StreamChunk::Reasoning(s) => s,
+        }
+    }
+
+    /// Whether this is answer text, for callers that only care about that.
+    pub fn is_text(&self) -> bool {
+        matches!(self, StreamChunk::Text(_))
+    }
+}
+
+/// Callback receiving incremental chunks during streaming.
 /// Called from within the provider's response-parsing loop; must be cheap
 /// and non-blocking (it forwards to the UI event channel).
-pub type DeltaCallback = Arc<dyn Fn(&str) + Send + Sync>;
+pub type DeltaCallback = Arc<dyn Fn(StreamChunk<'_>) + Send + Sync>;
 
 /// A no-op delta callback for callers that do not need streaming
 pub fn noop_delta_callback() -> DeltaCallback {
@@ -279,7 +317,7 @@ pub trait ModelProviderTrait: Send + Sync {
         let response = self.complete(messages, tools, temperature, max_tokens).await?;
         if let Some(content) = &response.content {
             if !content.is_empty() {
-                on_delta(content);
+                on_delta(StreamChunk::Text(content));
             }
         }
         Ok(response)

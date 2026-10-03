@@ -12,7 +12,7 @@ pub mod workspace;
 
 use ravenbot_core::{Run, RunState};
 use ravenbot_db::Database;
-use ravenbot_models::{ProviderManager, Message, ToolDefinition, DeltaCallback, ModelProviderTrait};
+use ravenbot_models::{ProviderManager, Message, ToolDefinition, DeltaCallback, ModelProviderTrait, StreamChunk};
 use ravenbot_skills::{SkillRegistry, SkillContext, SkillKind};
 use ravenbot_plugins::{PluginRegistry, store::PluginStore};
 use ravenbot_mcp::McpRegistry;
@@ -33,6 +33,18 @@ use base64::engine::general_purpose;
 pub enum StreamEvent {
     /// A new assistant token delta arrived
     Delta { bot_id: Uuid, thread_id: Uuid, content: String },
+    /// A new reasoning (extended-thinking) token arrived.
+    ///
+    /// Its own event rather than text with `<think>` markers wrapped around it,
+    /// which is how it used to travel. That conflation cost three separate things:
+    /// the streamed buffer was cleared at every tool round so the trace vanished
+    /// the moment an agent used a tool, an interrupted stream left the markers
+    /// open inside the user's paragraph, and nothing could render reasoning
+    /// without first risking showing it as answer text.
+    ///
+    /// Separate means it survives `Clear`, survives into the persisted message,
+    /// and can be shown beside the agent while it happens.
+    Reasoning { bot_id: Uuid, thread_id: Uuid, content: String },
     /// Clear streamed text (a new model round begins, e.g. after tool use)
     Clear { bot_id: Uuid, thread_id: Uuid },
     /// A tool/skill execution started
@@ -112,6 +124,7 @@ pub type StreamEmitter = Arc<dyn Fn(StreamEvent) + Send + Sync>;
 fn stream_event_thread_id(event: &StreamEvent) -> Uuid {
     match event {
         StreamEvent::Delta { thread_id, .. }
+        | StreamEvent::Reasoning { thread_id, .. }
         | StreamEvent::Clear { thread_id, .. }
         | StreamEvent::ToolStarted { thread_id, .. }
         | StreamEvent::ToolFinished { thread_id, .. }
@@ -284,6 +297,32 @@ pub struct Runtime {
     engine_cancels: std::sync::Mutex<HashMap<Uuid, ravenbot_engines::CancelToken>>,
     /// Runs requested to pause at the next tool-round boundary (resumable).
     pause_flags: std::sync::Mutex<HashSet<Uuid>>,
+}
+
+/**
+ * Append one round's reasoning to the run's accumulated trace.
+ *
+ * Rounds are separated by a rule rather than run together, because a single
+ * undifferentiated wall of thought is not something anyone reads. The rule is
+ * also stated, so the reader knows why the trace stops: what follows is the
+ * model reconsidering after seeing tool output, which is a different kind of
+ * reasoning from the first pass and the part worth reading when an answer looks
+ * wrong.
+ *
+ * `first` suppresses the leading rule. A blank separator above the first block
+ * reads as a missing section.
+ */
+fn fold_reasoning(into: &mut String, reasoning: Option<&str>, first: bool) {
+    let Some(text) = reasoning.map(str::trim).filter(|t| !t.is_empty()) else {
+        return;
+    };
+    if !into.is_empty() {
+        into.push_str("\n\n---\n\n");
+        into.push_str("*(after tool results)*\n\n");
+    } else if !first {
+        into.push_str("\n\n");
+    }
+    into.push_str(text);
 }
 
 /// How many times a task may be handed from one agent to another.
@@ -853,13 +892,24 @@ impl Runtime {
     /// Callback that forwards streamed model text to the UI for one run.
     fn delta_emitter(&self, bot_id: Uuid, thread_id: Uuid) -> DeltaCallback {
         let emitter_snapshot: Option<StreamEmitter> = self.emitter_for(thread_id);
-        Arc::new(move |content: &str| {
-            if let Some(emitter) = &emitter_snapshot {
-                emitter(StreamEvent::Delta {
+        Arc::new(move |chunk: StreamChunk<'_>| {
+            let Some(emitter) = &emitter_snapshot else {
+                return;
+            };
+            // Two events out of one tagged chunk. Nothing is filtered or merged
+            // here: the UI decides how to show reasoning, and it can only do that
+            // if it is told separately and in order.
+            match chunk {
+                StreamChunk::Text(content) => emitter(StreamEvent::Delta {
                     bot_id,
                     thread_id,
                     content: content.to_string(),
-                });
+                }),
+                StreamChunk::Reasoning(content) => emitter(StreamEvent::Reasoning {
+                    bot_id,
+                    thread_id,
+                    content: content.to_string(),
+                }),
             }
         })
     }
@@ -2926,6 +2976,20 @@ impl Runtime {
         let mut repeat_count = 0u32;
         let mut repeat_nudged = false;
 
+        // Every round's reasoning, for the whole run.
+        //
+        // A run is many model rounds — think, call a tool, think again — and
+        // each has its own reasoning. Only the last round's used to be kept, so
+        // a long tool-using turn threw away almost all of the thinking that
+        // explained it. The answer said "found three issues and fixed two"; the
+        // reasoning for how it got there was gone, and it was the part that would
+        // have said whether to trust it.
+        //
+        // Kept apart from the answer rather than prefixed into it, because one
+        // interleaved blob of thought and prose is not readable by anyone.
+
+        let mut run_reasoning = String::new();
+
         let (mut response, idx) = self
             .call_model(
                 &providers,
@@ -2942,6 +3006,7 @@ impl Runtime {
         if emulate_tools {
             last_raw_content = apply_emulated_response(&mut response);
         }
+        fold_reasoning(&mut run_reasoning, response.reasoning.as_deref(), true);
 
         // Record this round's usage against the bot's budget (every call counts)
         let _ = self.budget_manager.record_usage(
@@ -3248,6 +3313,7 @@ impl Runtime {
             if emulate_tools {
                 last_raw_content = apply_emulated_response(&mut response);
             }
+            fold_reasoning(&mut run_reasoning, response.reasoning.as_deref(), false);
 
             // Record each tool-round's usage as well
             let _ = self.budget_manager.record_usage(
@@ -3268,21 +3334,29 @@ impl Runtime {
             cost: total_cost,
         });
 
-        // Create assistant message (with any harvested web sources and tool
-        // images such as screenshots). Extended-thinking reasoning is persisted
-        // as a <think> block so the UI's Reasoning panel survives reload.
+        // Create the assistant message: the answer, its sources, any tool images,
+        // and the reasoning from *every* round of the run.
+        //
+        // Reasoning goes in its own field rather than as a `<think>` prefix on the
+        // text. Prefixing meant the answer and the trace shared one string, so a
+        // renderer that failed to strip the markers showed private notes as prose,
+        // and a second round's reasoning could not be added without a second pair
+        // of markers for a renderer to trip over.
         let has_images = !run_images.is_empty();
         if response.content.is_some() || has_images {
             let content = response.content.unwrap_or_default();
-            let final_content = match response.reasoning.filter(|r| !r.trim().is_empty()) {
-                Some(reasoning) if !content.contains("<think>") => {
-                    format!("<think>\n{}\n</think>\n\n{}", reasoning.trim(), content)
-                }
-                _ => content,
+            // Lift any markers a legacy provider still wrote into the body, so an
+            // old-shaped message never reaches the UI with markup in the prose.
+            let (clean_text, legacy_thinking) = ravenbot_core::Message::split_thinking(&content);
+            let reasoning = match (run_reasoning.trim().is_empty(), legacy_thinking) {
+                (true, Some(legacy)) => Some(legacy),
+                (true, None) => None,
+                (false, _) => Some(run_reasoning),
             };
-            let mut assistant_msg = ravenbot_core::Message::assistant_with_sources(
+            let mut assistant_msg = ravenbot_core::Message::assistant_with_reasoning(
                 run.thread_id,
-                final_content,
+                clean_text,
+                reasoning.unwrap_or_default(),
                 run_sources,
             );
             if has_images {
@@ -5374,10 +5448,13 @@ mod e2e_tests {
             self.seen_enable_reasoning.lock().unwrap().push(enable_reasoning);
 
             if round == 0 {
-                // Reasoning streams inside <think> (as the UI expects)
-                on_delta("<think>");
-                on_delta("The user wants me to remember rust facts.");
-                on_delta("</think>\n\n");
+                // Reasoning on its own tagged channel, interleaved in the order the
+                // model produced it. It used to be pushed as text wrapped in
+                // literal `<think>` markers, which is what let the trace be
+                // cleared away at the next tool round and left open markers in the
+                // answer whenever a stream was cut mid-thought.
+                on_delta(StreamChunk::Reasoning("The user wants me to remember rust facts."));
+                on_delta(StreamChunk::Text("Saving that."));
                 Ok(ModelResponse {
                     content: None,
                     tool_calls: vec![ToolCall {
@@ -5392,8 +5469,9 @@ mod e2e_tests {
                     reasoning: Some("The user wants me to remember rust facts.".to_string()),
                 })
             } else {
-                on_delta("Here");
-                on_delta(" is what I found about rust.");
+                on_delta(StreamChunk::Reasoning("Checked the saved memory."));
+                on_delta(StreamChunk::Text("Here"));
+                on_delta(StreamChunk::Text(" is what I found about rust."));
                 Ok(ModelResponse {
                     content: Some("Here is what I found about rust.".to_string()),
                     tool_calls: vec![],
@@ -5440,6 +5518,7 @@ mod e2e_tests {
         runtime.set_stream_emitter(Some(Arc::new(move |ev: StreamEvent| {
             let label = match &ev {
                 StreamEvent::Delta { content, .. } => format!("delta:{}", content),
+                StreamEvent::Reasoning { content, .. } => format!("reasoning:{}", content),
                 StreamEvent::Clear { .. } => "clear".to_string(),
                 StreamEvent::ToolStarted { name, .. } => format!("tool_start:{}", name),
                 StreamEvent::ToolFinished { name, .. } => format!("tool_end:{}", name),
@@ -5485,27 +5564,59 @@ mod e2e_tests {
             "native tool result must be fed back in a `tool` message"
         );
 
-        // 4. Stream events: reasoning + text deltas, tool lifecycle
+        // 4. Stream events: reasoning and text as *separate* events, tool lifecycle.
+        //
+        // This asserted `delta:<think>` — i.e. it pinned reasoning being smuggled
+        // through the text channel with literal markers. Which is how the trace was
+        // wiped by `Clear` at every tool round and left open markers in the answer
+        // when a stream was cut. Reasoning now arrives tagged, in its own event,
+        // and the marker must never appear again.
         {
             let ev = events.lock().unwrap();
-            assert!(ev.iter().any(|e| e.contains("delta:<think>")), "reasoning deltas streamed");
+            assert!(
+                ev.iter().any(|e| e.starts_with("reasoning:")),
+                "reasoning streamed on its own channel: {ev:?}"
+            );
+            assert!(
+                !ev.iter().any(|e| e.contains("<think>")),
+                "markers must not reappear on either channel: {ev:?}"
+            );
             assert!(ev.iter().any(|e| e.contains("tool_start:memory_save")));
             assert!(ev.iter().any(|e| e.contains("tool_end:memory_save")));
             assert!(ev.iter().any(|e| e.contains("delta:Here")));
+
+            // And the ordering is preserved across the two channels, which is the
+            // point of one tagged stream rather than two callbacks: a live view
+            // can show thought-then-said instead of guessing the interleaving.
+            let reasoning_at = ev.iter().position(|e| e.starts_with("reasoning:")).unwrap();
+            let text_at = ev.iter().position(|e| e.contains("delta:Saving")).unwrap();
+            assert!(reasoning_at < text_at, "ordering lost: {ev:?}");
         }
 
-        // 5. Final assistant message persisted: <think> reasoning block + content
+        // 5. The final message keeps its reasoning in its own field, and the
+        //    answer carries no markers at all.
+        //
+        //    Both halves matter. The field is what stops a renderer mistake from
+        //    showing private notes as prose; the marker check is what stops the
+        //    old convention creeping back in through a provider that still writes
+        //    them.
         let messages = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)
             .await
             .unwrap();
         let last = messages.last().unwrap();
-        let final_text = match &last.content {
-            ravenbot_core::MessageContent::Text { text, .. } => text.clone(),
+        let (final_text, final_reasoning) = match &last.content {
+            ravenbot_core::MessageContent::Text { text, reasoning, .. } => (text.clone(), reasoning.clone()),
             other => panic!("unexpected content: {other:?}"),
         };
-        assert!(final_text.starts_with("<think>"), "reasoning must be persisted: {final_text}");
         assert!(final_text.contains("Here is what I found about rust."));
-        assert!(final_text.contains("Checked the saved memory."));
+        assert!(!final_text.contains("<think>"), "markers in the answer: {final_text}");
+        let reasoning = final_reasoning.expect("reasoning must be persisted");
+
+        // Both rounds' reasoning, not just the last one's. The first round's is
+        // the part that used to be thrown away, and it is the part that explains
+        // why the tool was chosen at all.
+        assert!(reasoning.contains("The user wants me to remember rust facts."), "{reasoning}");
+        assert!(reasoning.contains("Checked the saved memory."), "{reasoning}");
 
         // 6. Run completed successfully
         assert!(matches!(run.state, ravenbot_core::RunState::Completed));
@@ -5759,7 +5870,7 @@ mod honesty_tests {
                 } else {
                     "The specialist answered: 4."
                 };
-                on_delta(text);
+                on_delta(StreamChunk::Text(text));
                 Ok(ModelResponse {
                     content: Some(text.to_string()),
                     tool_calls: vec![],
@@ -6029,7 +6140,7 @@ mod parity_tests {
                 });
             if let Some(text) = &resp.content {
                 if !text.is_empty() {
-                    on_delta(text);
+                    on_delta(StreamChunk::Text(text));
                 }
             }
             Ok(resp)
@@ -6729,7 +6840,7 @@ mod office_tests {
             } else {
                 "Here is the integrated final answer.".to_string()
             };
-            on_delta(&text);
+            on_delta(StreamChunk::Text(&text));
             Ok(ModelResponse {
                 content: Some(text),
                 tool_calls: vec![],

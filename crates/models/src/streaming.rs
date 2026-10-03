@@ -7,6 +7,31 @@ use serde_json::Value;
 
 use super::{ModelError, ModelResponse, ToolCall, Usage};
 
+/// Pull reasoning tokens out of an OpenAI-shaped streaming delta.
+///
+/// Every provider that speaks the OpenAI wire format ships its chain of thought
+/// under a slightly different key, and no two agree:
+///
+///  - `reasoning_content` — DeepSeek, Moonshot/Kimi, Qwen, most gateways
+///  - `reasoning` — OpenRouter, some proxies
+///  - `thinking` — a handful of Anthropic-compatible bridges
+///
+/// All three are checked in that order. This is the reason reasoning was
+/// Anthropic-only in practice: the OpenAI-shaped providers took
+/// `_enable_reasoning` — ignored — and returned a hardcoded `reasoning: None`,
+/// so a model doing exactly what it was asked and emitting its reasoning got it
+/// thrown away. One helper, used by all of them, is what stops that being fixed
+/// three times and forgotten once.
+///
+/// Returns an empty string rather than `None` when the key is absent, so callers
+/// can forward it unconditionally without a branch on every chunk.
+pub fn openai_reasoning_delta(delta: &Value) -> &str {
+    ["reasoning_content", "reasoning", "thinking"]
+        .iter()
+        .find_map(|k| delta.get(*k).and_then(|v| v.as_str()))
+        .unwrap_or("")
+}
+
 /// Incrementally assembles a `ModelResponse` from streamed chunks.
 pub struct StreamAccumulator {
     content: String,

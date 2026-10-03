@@ -864,6 +864,7 @@ impl SearchQueries {
                 .unwrap_or(ravenbot_core::MessageContent::Text {
                     text: String::new(),
                     sources: Vec::new(),
+                    reasoning: None,
                 });
             let role = match row.2.as_str() {
                 "user" => ravenbot_core::MessageRole::User,

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
+use super::{StreamChunk, ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
 
 const BASE_URL: &str = "https://api.openai.com/v1";
 
@@ -196,8 +196,16 @@ impl OpenAIProvider {
                         if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
                             if !text.is_empty() {
                                 acc.push_text(text);
-                                on_delta(text);
+                                on_delta(StreamChunk::Text(text));
                             }
+                        }
+                        // Reasoning, on its own tagged channel. `enable_reasoning`
+                        // used to be ignored outright here, so a model that thought
+                        // out loud had its thinking discarded.
+                        let reasoning = streaming::openai_reasoning_delta(delta);
+                        if !reasoning.is_empty() {
+                            acc.push_reasoning(reasoning);
+                            on_delta(StreamChunk::Reasoning(reasoning));
                         }
                         if let Some(tc) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                             for chunk in tc {

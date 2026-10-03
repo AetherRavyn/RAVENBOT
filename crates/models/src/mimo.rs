@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
+use super::{StreamChunk,ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
 
 const BASE_URL: &str = "https://api.mimo.mi.com/v1";
 
@@ -118,7 +118,7 @@ impl MiMoProvider {
                 if let Some(choice) = json.get("choices").and_then(|c| c.get(0)) {
                     if let Some(delta) = choice.get("delta") {
                         if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
-                            if !text.is_empty() { acc.push_text(text); on_delta(text); }
+                            if !text.is_empty() { acc.push_text(text); on_delta(StreamChunk::Text(text)); }
                         }
                         if let Some(tc) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                             for chunk in tc {

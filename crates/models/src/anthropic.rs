@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
+use super::{StreamChunk, ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
 
 const BASE_URL: &str = "https://api.anthropic.com/v1";
 
@@ -235,10 +235,10 @@ impl AnthropicProvider {
         if let Some(on_delta) = on_delta {
             // Streaming path: Anthropic event-based SSE
             let mut acc = StreamAccumulator::new();
-            // Extended thinking: reasoning deltas stream inside <think> tags so
-            // the UI's Reasoning panel renders them live; they are kept out of
-            // the final content (returned separately as `reasoning`).
-            let mut thinking_stream_open = false;
+            // Extended thinking: reasoning deltas stream on their own tagged
+            // channel so the UI can show them live and keep them out of the
+            // answer; they are also kept out of the final content (returned
+            // separately as `reasoning`).
             streaming::consume_sse(response, |json| {
                 match json.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                     "message_start" => {
@@ -264,24 +264,25 @@ impl AnthropicProvider {
                                 "text_delta" => {
                                     if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
                                         if !text.is_empty() {
-                                            if thinking_stream_open {
-                                                on_delta("</think>\n\n");
-                                                thinking_stream_open = false;
-                                            }
                                             acc.push_text(text);
-                                            on_delta(text);
+                                            on_delta(StreamChunk::Text(text));
                                         }
                                     }
                                 }
+                                // Reasoning goes out on its own channel, tagged.
+                                //
+                                // It used to be pushed through `on_delta` with
+                                // literal `<think>` / `</think>` markers wrapped
+                                // around it, which meant the private trace was
+                                // indistinguishable from the answer: it landed in
+                                // the same buffer, so `Clear` at the next tool
+                                // round erased it, and a stream cut mid-thought
+                                // left the markers open in the user's paragraph.
                                 "thinking_delta" => {
                                     if let Some(thinking) = delta.get("thinking").and_then(|v| v.as_str()) {
                                         if !thinking.is_empty() {
-                                            if !thinking_stream_open {
-                                                on_delta("<think>");
-                                                thinking_stream_open = true;
-                                            }
                                             acc.push_reasoning(thinking);
-                                            on_delta(thinking);
+                                            on_delta(StreamChunk::Reasoning(thinking));
                                         }
                                     }
                                 }
@@ -306,11 +307,6 @@ impl AnthropicProvider {
                 }
                 Ok(())
             }).await?;
-            if thinking_stream_open {
-                // Close an unterminated reasoning block (thinking-only responses)
-                on_delta("</think>\n\n");
-            }
-
             Ok(acc.finish())
         } else {
             // Non-streaming path

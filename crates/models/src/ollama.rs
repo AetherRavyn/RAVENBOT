@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming, ToolCall};
+use super::{StreamChunk, ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming, ToolCall};
 
 const BASE_URL: &str = "http://localhost:11434";
 
@@ -18,6 +18,14 @@ struct ChatRequest {
     /// Ollama expects tool definitions in its own flat format
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<ToolParam>>,
+    /// Ask a reasoning model to emit its thinking.
+    ///
+    /// Ollama gates this on an explicit `"think": true` rather than inferring it
+    /// from the model name, so without the field a local thinking model answers
+    /// silently. `enable_reasoning` used to be discarded at the top of `send_chat`
+    /// and the response's `reasoning` hardcoded to `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    think: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -207,6 +215,7 @@ impl OllamaProvider {
             temperature,
             stream,
             tools: tools_param,
+            think: if enable_reasoning { Some(true) } else { None },
         };
 
         let response = self
@@ -235,7 +244,16 @@ impl OllamaProvider {
                 if let Some(text) = json.pointer("/message/content").and_then(|v| v.as_str()) {
                     if !text.is_empty() {
                         acc.push_text(text);
-                        on_delta(text);
+                        on_delta(StreamChunk::Text(text));
+                    }
+                }
+                // `thinking` is where Ollama puts a thinking model's reasoning.
+                // It was never read, so a local model configured to reason gave a
+                // silent answer with no trace of the thought behind it.
+                if let Some(thinking) = json.pointer("/message/thinking").and_then(|v| v.as_str()) {
+                    if !thinking.is_empty() {
+                        acc.push_reasoning(thinking);
+                        on_delta(StreamChunk::Reasoning(thinking));
                     }
                 }
                 // Ollama delivers complete tool calls (arguments already an
