@@ -8,7 +8,7 @@
   import * as Card from "$lib/components/ui/card";
   import { Separator } from "$lib/components/ui/separator";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
-  import { getDiceBearUrl, isUserMessage, OFFICE_TEMPLATES } from "$lib/utils";
+  import { getDiceBearUrl, isUserMessage, OFFICE_TEMPLATES, DEFAULT_AVATAR_STYLE } from "$lib/utils";
   import { cn } from "$lib/utils.js";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { t } from "$lib/i18n";
@@ -1350,7 +1350,7 @@
           {@const rawText = typeof msg.content === "string" ? msg.content : msg.content?.text || JSON.stringify(msg.content)}
           {@const senderBot = msg.sender_bot_id ? bots.find((b: any) => b.id === msg.sender_bot_id) : null}
           {@const senderName = senderBot?.name || msg.sender_name || room.name}
-          {@const senderAvatar = senderBot?.avatar_url || getDiceBearUrl(senderName, senderBot?.avatar_style || "bottts")}
+          {@const senderAvatar = senderBot?.avatar_url || getDiceBearUrl(senderName, senderBot?.avatar_style || DEFAULT_AVATAR_STYLE)}
 
           <ChatMessageRow
             {isUser}
@@ -1686,7 +1686,7 @@
               {@const name = m?.bot?.name || m.rank || "?"}
               {@render statusRow(
                 name,
-                m?.bot?.avatar_url || getDiceBearUrl(name, m?.bot?.avatar_style || "bottts"),
+                m?.bot?.avatar_url || getDiceBearUrl(name, m?.bot?.avatar_style || DEFAULT_AVATAR_STYLE),
                 `hsl(${authorHue(m.bot?.id || name)} 55% 68%)`,
                 agentTool[m.bot?.id],
               )}

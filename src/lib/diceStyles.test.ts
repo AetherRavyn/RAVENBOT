@@ -62,18 +62,47 @@ describe("the style catalogue", () => {
   });
 
   /**
-   * The point of the exercise: a face should visibly change while you look at it.
+   * The point of the exercise: a face should visibly change while you look at
+   * it.
    *
-   * The bound is honest rather than aspirational — `initial-face` has one loop
-   * and `fastest` scales it by 0.75, so 2 s is not reachable for that style and
-   * the catalogue says 4.05 s instead of pretending.
+   * Two separate claims, because they fail in opposite directions. The
+   * *default* gets a hard promise — two to three seconds — because that is the
+   * cadence a user who never opens the picker sees, and it is the only number
+   * the rest of the app is tuned against. The *catalogue* gets an honest
+   * ceiling instead: `shapes` really does take 12.6 s, and the previous version
+   * of this test filtered `loopSeconds <= 12` before asserting `<= 12`, which
+   * asserted nothing at all while looking like it did.
    */
+  it("changes the default face every two to three seconds", () => {
+    const fallback = diceStyle(DEFAULT_AVATAR_STYLE)!;
+    expect(fallback.animated).toBe(true);
+    expect(fallback.loopSeconds!).toBeGreaterThanOrEqual(2);
+    expect(fallback.loopSeconds!).toBeLessThanOrEqual(3);
+  });
+
   it("animates the living styles at a cadence a reader can see", () => {
-    const living = DICE_STYLES.filter((s) => s.animated && (s.loopSeconds ?? 99) <= 12);
+    const living = DICE_STYLES.filter((s) => s.animated);
     expect(living.length).toBeGreaterThan(10);
     for (const s of living) {
-      expect(s.loopSeconds!, `${s.value} is too slow to notice`).toBeLessThanOrEqual(12);
+      expect(s.loopSeconds!, `${s.value} is too slow to notice`).toBeLessThanOrEqual(13);
     }
+    // A catalogue whose only fast style is the default is one style, not a
+    // system, so most of them have to sit well inside the ceiling.
+    expect(living.filter((s) => (s.loopSeconds ?? 99) <= 6).length).toBeGreaterThan(10);
+  });
+
+  /**
+   * The five faces this app was asked for by name all sit in the band, and the
+   * one that is still is still on purpose — `notionists-neutral` has no
+   * animation variant upstream, so the wrapper breathes instead.
+   */
+  it("keeps the hand-picked faces in the readable band", () => {
+    for (const value of ["clay", "voxel-bot", "initial-face", "pixelbot"]) {
+      const s = diceStyle(value)!;
+      expect(s.animated, `${value} should animate`).toBe(true);
+      expect(s.loopSeconds!, `${value} cadence`).toBeLessThanOrEqual(4.5);
+    }
+    expect(diceStyle("notionists-neutral")!.animated).toBe(false);
   });
 
   it("puts the animated styles where a reader will find them", () => {

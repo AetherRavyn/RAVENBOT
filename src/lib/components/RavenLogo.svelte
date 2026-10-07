@@ -2,8 +2,8 @@
   /**
    * The RAVENBOT mark.
    *
-   * The eyes follow the pointer, and the mark reacts to a click. Two details
-   * that matter more than they look:
+   * The eyes follow the pointer, the mark reacts to a click, and it says what
+   * the app is doing. Three details that matter more than they look:
    *
    *  - Pointer tracking writes CSS custom properties rather than moving the
    *    elements, so the browser animates the interpolation on the compositor
@@ -12,6 +12,9 @@
    *    follows the cursor is exactly the kind of thing that makes a motion
    *    preference worth honouring, and this mark is the app's most persistent
    *    element.
+   *  - The work state is a data attribute, not a class. Nothing here branches
+   *    on it in JS, so a run that starts does not re-render the mark — CSS
+   *    picks up the new attribute and starts the right loop.
    */
   import { prefersReducedMotion } from "$lib/a11y";
   import { t } from "$lib/i18n";
@@ -20,10 +23,34 @@
     size?: "sm" | "md" | "lg" | "xl";
     /** Let the eyes follow the pointer. */
     interactive?: boolean;
+    /**
+     * What the app is doing right now. The mark is the one element that is
+     * always on screen, so it is the one place "something is happening" can be
+     * stated without a badge, a toast, or a second glance at the sidebar.
+     *
+     * The three values are `Activity` minus `responded`, deliberately: this is
+     * fed straight from `fleetActivity.busiest`, and a prop that renames one of
+     * its values is a prop whose owner has to remember a mapping forever.
+     *
+     * - `working` — an agent is running. The frame breathes toward the brand
+     *   colour and the eyes glance, so a run you started is visibly still
+     *   alive from across the window.
+     * - `attention` — an agent is parked on a human. Faster, amber: the state
+     *   that deserves a glance is the one that is stuck.
+     *
+     * Idle is silent. A mark that animates while nothing is happening is a
+     * mark people learn to stop looking at.
+     */
+    activity?: "idle" | "working" | "attention";
     class?: string;
   }
 
-  let { size = "md", interactive = false, class: customClass = "" }: Props = $props();
+  let {
+    size = "md",
+    interactive = false,
+    activity = "idle",
+    class: customClass = "",
+  }: Props = $props();
 
   let reacted = $state(false);
   let celebrating = $state(false);
@@ -109,6 +136,7 @@
   data-reacted={reacted || undefined}
   data-celebrating={celebrating || undefined}
   data-interactive={interactive ? "true" : undefined}
+  data-activity={activity === "idle" ? undefined : activity}
   viewBox="0 0 240 240"
   role={interactive ? "button" : undefined}
   tabindex={interactive ? 0 : undefined}

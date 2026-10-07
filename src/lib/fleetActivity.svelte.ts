@@ -64,6 +64,35 @@ class FleetActivity {
     return this.states[botId] === "attention" ? 1 : 0;
   }
 
+  /**
+   * What the whole fleet is doing, for the elements that have one place to
+   * show it — the title-bar mark, the window title, anything global.
+   *
+   * Derived from `states` rather than kept as a second flag, because two
+   * sources for "is it busy" is two sources that can disagree: a mark that
+   * says working while the badge says idle is a bug nobody can reproduce.
+   *
+   * `attention` outranks `working`. An agent waiting on a person is a stricter
+   * fact than an agent running — the run has *stopped* — and a mark that
+   * glowed "busy" while a decision sat parked would be answering a question
+   * nobody asked. `responded` counts as neither: the work is over, and a logo
+   * that stayed lit after the answer arrived would teach people to ignore it.
+   *
+   * The return type is deliberately narrower than `Activity`. It *cannot* be
+   * `responded`, and if it could the type would not be the thing that caught it.
+   */
+  get busiest(): "working" | "attention" | null {
+    let running = false;
+    for (const s of Object.values(this.states)) {
+      if (s === "attention") return "attention";
+      if (s === "working") running = true;
+    }
+    // A delegation in flight counts even though its target's stream lives in
+    // another thread — the same hole `get()` plugs for a single agent.
+    if (Object.keys(handoffs.targets).length > 0) running = true;
+    return running ? "working" : null;
+  }
+
   /** Subscribe once; refcounted so HMR and re-mounts do not double-listen. */
   async start(): Promise<void> {
     this.refs++;

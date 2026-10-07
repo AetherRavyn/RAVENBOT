@@ -298,6 +298,25 @@ describe("RavenLogo", () => {
     expect(control).not.toBeNull();
     expect(control!.getAttribute("aria-label")).toBeTruthy();
   });
+
+  /**
+   * The work state is an attribute, and idle writes nothing at all.
+   *
+   * A mark that always carries `data-activity` forces its CSS to special-case
+   * "off"; one that simply omits it makes an absent attribute the whole meaning
+   * of idle, which is also what the reduced-motion branch keys off. The three
+   * values are the contract — there is no fourth state to add later without
+   * also adding a rule, and that is the point.
+   */
+  it("says what the app is doing, and says nothing when it is idle", () => {
+    const idle = render(RavenLogo, { props: {} }).container.querySelector("svg");
+    expect(idle!.hasAttribute("data-activity")).toBe(false);
+
+    for (const activity of ["working", "attention"] as const) {
+      const { container } = render(RavenLogo, { props: { activity } });
+      expect(container.querySelector("svg")!.getAttribute("data-activity")).toBe(activity);
+    }
+  });
 });
 
 describe("stored DiceBear URLs", () => {

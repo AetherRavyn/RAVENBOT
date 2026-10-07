@@ -4,6 +4,7 @@ import {
   diceStyle,
   dicebearStyles as allDiceStyles,
   avatarBackground,
+  DEFAULT_AVATAR_STYLE,
   type DiceStyle,
 } from "$lib/diceStyles";
 
@@ -86,7 +87,11 @@ export function isNativeAvatarStyle(style: string): boolean {
  */
 export function getDiceBearUrl(
   seed: string,
-  style: string = "avataaars",
+  // No style means no choice, and no choice means the app's default — the same
+  // default `RavenAvatar` falls back to. Two different fallbacks here is how
+  // one agent ends up wearing a clay face in the sidebar and a still robot in
+  // the dock, and no test would notice.
+  style: string = DEFAULT_AVATAR_STYLE,
   extra: string = "",
   animated?: boolean,
 ): string {
@@ -125,6 +130,7 @@ export function dicebearStyles(): DiceStyle[] {
 }
 
 export type { DiceStyle, DiceSpeed } from "$lib/diceStyles";
+export { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
 
 // Office templates for chatrooms with rank-based distribution
 export const OFFICE_TEMPLATES = {

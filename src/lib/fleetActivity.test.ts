@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { fleetActivity } from "./fleetActivity.svelte";
 import type { Activity } from "./fleetActivity.svelte";
+import { handoffs } from "./handoffs.svelte";
 
 /**
  * The activity state machine, driven by the stream payloads it actually
@@ -18,6 +19,7 @@ beforeEach(() => {
   fleetActivity.stop();
   fleetActivity.stop();
   while (fleetActivity.get("x") !== "idle") fleetActivity.stop();
+  handoffs.clear();
 });
 
 function feed(kind: string, botId = "b1", extra: Record<string, unknown> = {}) {
@@ -134,5 +136,77 @@ describe("attentionCount", () => {
     expect(fleetActivity.attentionCount("a")).toBe(1);
     expect(fleetActivity.attentionCount("b")).toBe(0);
     expect(fleetActivity.attentionCount("c")).toBe(0);
+  });
+});
+
+/**
+ * The one signal that has a single place to show it — the title-bar mark.
+ *
+ * Everything else in this file is per-agent, so it can afford to be nuanced.
+ * This cannot: it collapses the whole fleet into one of three values, and a
+ * value that flickers between states, or that stays lit after the work is done,
+ * teaches people to ignore the only global indicator in the window.
+ */
+describe("busiest", () => {
+  it("is nothing while the fleet is idle", () => {
+    expect(fleetActivity.busiest).toBeNull();
+    // A run that finished is finished. Leaving the mark lit would make it a
+    // decoration rather than a signal.
+    feed("run_started");
+    feed("done");
+    expect(fleetActivity.busiest).toBeNull();
+  });
+
+  it("reads working while an agent is running", () => {
+    feed("run_started");
+    expect(fleetActivity.busiest).toBe("working");
+  });
+
+  it("ranks attention above working, in either order", () => {
+    feed("run_started", "runner");
+    feed("approval_requested", "parked");
+    expect(fleetActivity.busiest).toBe("attention");
+
+    // And the other order, because the loop returns early on `attention` only
+    // if it happens to see it — a mark that depends on record insertion order
+    // would flap as agents come and go.
+    fleetActivity.stop();
+    feed("approval_requested", "parked");
+    feed("run_started", "runner");
+    expect(fleetActivity.busiest).toBe("attention");
+  });
+
+  it("ignores an agent that only replied or failed", () => {
+    feed("done", "replied");
+    feed("error", "failed");
+    expect(fleetActivity.busiest).toBeNull();
+  });
+
+  it("counts a delegation in flight even when no local agent is running", () => {
+    // The delegate's stream lives in a different thread, so `states` alone
+    // would show the whole app idle while it works.
+    handoffs.ingest({
+      kind: "delegation",
+      thread_id: "t1",
+      bot_id: "lead",
+      to_bot_id: "worker",
+      to_bot_name: "Worker",
+      instruction: "check the logs",
+      done: false,
+    });
+    expect(fleetActivity.busiest).toBe("working");
+
+    // Once it lands, the edge is history and the mark goes quiet again.
+    handoffs.ingest({
+      kind: "delegation",
+      thread_id: "t1",
+      bot_id: "lead",
+      to_bot_id: "worker",
+      to_bot_name: "Worker",
+      instruction: "check the logs",
+      done: true,
+      response: "done",
+    });
+    expect(fleetActivity.busiest).toBeNull();
   });
 });

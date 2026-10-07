@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { announce } from "$lib/a11y";
 import { t } from "$lib/i18n";
+import { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
 
 export type RailDest = "home" | "agents" | "offices" | "projects" | "connectors" | "routines";
 
@@ -115,7 +116,7 @@ class Workspace {
           name: "Raven Prime",
           description: "Primary Sovereign Fleet Assistant",
           avatarUrl: "/ravenicon.png",
-          avatarStyle: "bottts",
+          avatarStyle: DEFAULT_AVATAR_STYLE,
         });
         this.bots = [...this.bots, target];
       }
@@ -137,7 +138,7 @@ class Workspace {
       name,
       description: "",
       avatarUrl: "/ravenicon.png",
-      avatarStyle: "bottts",
+      avatarStyle: DEFAULT_AVATAR_STYLE,
     });
     this.handleBotCreated(bot);
     return bot;

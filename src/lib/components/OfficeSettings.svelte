@@ -17,7 +17,7 @@
   import ConnectorIcon from "$lib/components/ConnectorIcon.svelte";
   import OfficeMemoryPanel from "$lib/components/OfficeMemoryPanel.svelte";
   import WorkspaceBrowser from "$lib/components/workspace/WorkspaceBrowser.svelte";
-  import { getDiceBearUrl, OFFICE_TEMPLATES, dicebearStyles } from "$lib/utils";
+  import { getDiceBearUrl, OFFICE_TEMPLATES, dicebearStyles, DEFAULT_AVATAR_STYLE } from "$lib/utils";
   import { officeTemplateName, officeTemplateDesc } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
   import {
@@ -73,7 +73,7 @@
   let description = $state("");
   let officeTemplate = $state("custom");
   let avatarUrl = $state("");
-  let avatarStyle = $state("bottts");
+  let avatarStyle = $state(DEFAULT_AVATAR_STYLE);
   let goal = $state("");
   let policy = $state("");
   let terms = $state("");
@@ -110,7 +110,7 @@
       description = room.description || "";
       officeTemplate = room.office_template || "custom";
       avatarUrl = room.avatar_url || "";
-      avatarStyle = room.avatar_style || "bottts";
+      avatarStyle = room.avatar_style || DEFAULT_AVATAR_STYLE;
       goal = room.goal || "";
       policy = room.policy || "";
       terms = room.terms || "";
@@ -784,7 +784,7 @@
                       >
                         <div class="flex items-center gap-2 min-w-0">
                           <Avatar.Root class="size-6.5 rounded-lg shrink-0">
-                            <Avatar.Image src={b.avatar_url || getDiceBearUrl(b.name, b.avatar_style || "bottts")} />
+                            <Avatar.Image src={b.avatar_url || getDiceBearUrl(b.name, b.avatar_style || DEFAULT_AVATAR_STYLE)} />
                             <Avatar.Fallback class="text-[11px]">{b.name.slice(0, 2)}</Avatar.Fallback>
                           </Avatar.Root>
                           <span class="text-xs font-bold text-[var(--text-primary)] truncate">{b.name}</span>
@@ -890,7 +890,7 @@
                       <div class="flex items-center justify-between">
                         <div class="flex items-center gap-2.5">
                           <Avatar.Root class="size-7 rounded-lg ring-1 ring-[var(--brand)]/30">
-                            <Avatar.Image src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, "bottts")} />
+                            <Avatar.Image src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, m.bot?.avatar_style || DEFAULT_AVATAR_STYLE)} />
                             <Avatar.Fallback>{(m.bot?.name || m.rank).slice(0, 2)}</Avatar.Fallback>
                           </Avatar.Root>
                           <div>
@@ -1062,7 +1062,7 @@
                     <div class="flex items-center justify-between p-2.5 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)]">
                       <div class="flex items-center gap-2.5">
                         <Avatar.Root class="size-6.5 rounded-lg">
-                          <Avatar.Image src={m.bot?.avatar_url || getDiceBearUrl(m.rank, "bottts")} />
+                          <Avatar.Image src={m.bot?.avatar_url || getDiceBearUrl(m.rank, m.bot?.avatar_style || DEFAULT_AVATAR_STYLE)} />
                           <Avatar.Fallback class="text-[11px]">{m.rank.slice(0, 2)}</Avatar.Fallback>
                         </Avatar.Root>
                         <div>

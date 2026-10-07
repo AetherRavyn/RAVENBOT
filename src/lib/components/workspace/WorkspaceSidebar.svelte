@@ -4,7 +4,7 @@
   import { t } from "$lib/i18n";
   import { workspace, RAIL_WIDTH } from "$lib/workspace.svelte";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
-  import { getDiceBearUrl } from "$lib/utils";
+  import { getDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/utils";
   import { cn } from "$lib/utils.js";
   import { Settings } from "@lucide/svelte";
   import type { ThemeDefinition } from "$lib/theme";
@@ -27,7 +27,7 @@
       ? workspace.chatrooms.map((r: any) => ({
           id: r.id,
           name: r.name || "",
-          avatar: r.avatar_url || getDiceBearUrl(r.name || "room", "bottts"),
+          avatar: r.avatar_url || getDiceBearUrl(r.name || "room", DEFAULT_AVATAR_STYLE),
           activity: "idle",
           selected: workspace.selectedRoomId === r.id,
           select: () => workspace.selectRoom(r.id),
@@ -35,7 +35,7 @@
       : workspace.bots.map((b: any) => ({
           id: b.id,
           name: b.name || "",
-          avatar: b.avatar_url || getDiceBearUrl(b.name || "bot", b.avatar_style || "bottts"),
+          avatar: b.avatar_url || getDiceBearUrl(b.name || "bot", b.avatar_style || DEFAULT_AVATAR_STYLE),
           activity: fleetActivity.get(b.id),
           selected: workspace.selectedBotId === b.id,
           select: () => workspace.selectBot(b.id),
@@ -48,7 +48,7 @@
   const dockAvatar = $derived(
     dockTarget
       ? dockTarget.avatar_url ||
-          getDiceBearUrl(dockTarget.name || "chat", dockTarget.avatar_style || "bottts")
+          getDiceBearUrl(dockTarget.name || "chat", dockTarget.avatar_style || DEFAULT_AVATAR_STYLE)
       : "",
   );
   const dockActivity = $derived(

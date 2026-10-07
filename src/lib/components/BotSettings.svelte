@@ -11,7 +11,7 @@
   import { Textarea } from "$lib/components/ui/textarea";
   import { Badge } from "$lib/components/ui/badge";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
-  import { getDiceBearUrl } from "$lib/utils";
+  import { getDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/utils";
   import { notify } from "$lib/toast";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
@@ -53,7 +53,7 @@
   let name = $state("");
   let description = $state("");
   let avatarUrl = $state<string | null>(null);
-  let avatarStyle = $state("bottts");
+  let avatarStyle = $state(DEFAULT_AVATAR_STYLE);
   let showAvatarPicker = $state(false);
 
   // Seed from the owner's global default (Settings → Models) — never a
@@ -530,7 +530,7 @@
       name = bot.name || "";
       description = bot.description || "";
       avatarUrl = bot.avatar_url || null;
-      avatarStyle = bot.avatar_style || "bottts";
+      avatarStyle = bot.avatar_style || DEFAULT_AVATAR_STYLE;
       modelProvider = bot.config?.model_provider || globalDefault?.provider || "ollama";
       modelId = bot.config?.model_id || (bot.config?.model_provider ? "" : globalDefault?.model) || "";
       temperature = bot.config?.temperature ?? 0.7;

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { getDiceBearUrl } from "$lib/utils";
+  import { getDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/utils";
   import { notify } from "$lib/toast";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { t } from "$lib/i18n";
@@ -73,7 +73,10 @@
   let newBotName = $state("");
   let newBotDescription = $state("");
   let newBotAvatarUrl = $state<string | null>(null);
-  let newBotAvatarStyle = $state("bottts");
+  // A new bot starts on the default face rather than a still one: the default
+  // is the animated style, and an agent that has never done anything is still
+  // an agent you should be able to tell apart at a glance.
+  let newBotAvatarStyle = $state(DEFAULT_AVATAR_STYLE);
 
   let searchQuery = $state("");
   let showOnlyWaiting = $state(false);
@@ -232,7 +235,7 @@
       newBotName = "";
       newBotDescription = "";
       newBotAvatarUrl = null;
-      newBotAvatarStyle = "bottts";
+      newBotAvatarStyle = DEFAULT_AVATAR_STYLE;
       createModalTab = "profile";
     } catch (e) {
       console.error("Failed to create bot:", e);

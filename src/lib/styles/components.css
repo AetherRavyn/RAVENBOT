@@ -1321,14 +1321,21 @@ html.sidebar-resizing .app-frame {
 /* Parts. The eyes are their own groups so `wink` can close exactly one, and
  * every transform below is anchored to the viewBox centre rather than to a
  * bounding box, because an element that rotates about its own middle is not
- * what an orbit or a swirl should do. */
+ * what an orbit or a swirl should do.
+ *
+ * `transform-box: view-box` is the initial value, so this list is belt and
+ * braces — but the *other* list below sets `transform-origin` in viewBox user
+ * units, and an element in one list but not the other is an element whose
+ * origin silently depends on a default. `.raven-av-badge` used to be spelled
+ * `.raven-av-badges`, which matched no class the component ever emits, so the
+ * badge was the one part anchored by luck. */
 .raven-av-part,
 .raven-av-eye,
 .raven-avatar-rings,
 .raven-av-behind,
 .raven-av-front,
 .raven-av-dots,
-.raven-av-badges {
+.raven-av-badge {
   transform-box: view-box;
 }
 
@@ -1651,6 +1658,98 @@ html.sidebar-resizing .app-frame {
   border-radius: 24px;
 }
 
+/* ── Reactive on work ───────────────────────────────────────────────────────
+ * The mark is the only element that is always on screen, so it is where "the
+ * app is doing something" belongs: no badge, no toast, no second look at the
+ * sidebar required.
+ *
+ * Two states, both expressed as properties that are safe to animate on an SVG
+ * — `fill`/`stroke` on the frame, `translateX` on the eyes. `translateX`
+ * rather than `scale` because a percentage or an origin on an SVG `<g>` depends
+ * on `transform-box`, and this block has to render the same on every engine;
+ * an absolute translate is resolved in user units and needs no origin at all.
+ *
+ * Both rules sit *before* the click reactions on purpose: `data-reacted` and
+ * `data-celebrating` come later in the sheet at the same specificity, so a
+ * click still wins while a run is going instead of being swallowed by a loop
+ * that never ends. */
+.raven-logo[data-activity="working"] .app-logo-background {
+  animation: logo-working 2.6s ease-in-out infinite;
+}
+
+.raven-logo[data-activity="working"] .app-logo-eye-motion {
+  animation: logo-glance 4.6s ease-in-out infinite;
+}
+
+/* A slow breath toward the brand colour: unmistakable at a glance, quiet
+ * enough to sit in the title bar for a twenty-minute run. */
+@keyframes logo-working {
+  0%,
+  100% {
+    fill: color-mix(in srgb, var(--brand) 0%, var(--surface-2));
+    stroke: color-mix(in srgb, var(--brand) 0%, var(--hairline-strong));
+  }
+  50% {
+    fill: color-mix(in srgb, var(--brand) 16%, var(--surface-2));
+    stroke: color-mix(in srgb, var(--brand) 85%, var(--hairline-strong));
+  }
+}
+
+/* One glance — right, then left, then back to centre. */
+@keyframes logo-glance {
+  0%,
+  30% {
+    transform: translateX(0);
+  }
+  40%,
+  46% {
+    transform: translateX(16px);
+  }
+  56%,
+  62% {
+    transform: translateX(-16px);
+  }
+  72%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.raven-logo[data-activity="attention"] .app-logo-background {
+  animation: logo-attention 1.5s ease-in-out infinite;
+}
+
+.raven-logo[data-activity="attention"] .app-logo-eye-motion {
+  animation: logo-dart 0.9s ease-in-out infinite;
+}
+
+/* Amber, and quicker. `attention` outranks `working` in `busiest`, and the
+ * motion says so: this run is stuck, not busy. */
+@keyframes logo-attention {
+  0%,
+  100% {
+    fill: color-mix(in srgb, hsl(var(--warning)) 0%, var(--surface-2));
+    stroke: color-mix(in srgb, hsl(var(--warning)) 0%, var(--hairline-strong));
+  }
+  50% {
+    fill: color-mix(in srgb, hsl(var(--warning)) 26%, var(--surface-2));
+    stroke: hsl(var(--warning));
+  }
+}
+
+@keyframes logo-dart {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  35% {
+    transform: translateX(11px);
+  }
+  70% {
+    transform: translateX(-11px);
+  }
+}
+
 /* A click blinks the eyes shut. */
 .raven-logo[data-reacted] .app-logo-eye-motion {
   animation: logo-blink 360ms ease-in-out;
@@ -1714,8 +1813,21 @@ html.sidebar-resizing .app-frame {
   }
   .raven-logo[data-reacted] .app-logo-eye-motion,
   .raven-logo[data-celebrating] .app-logo-background,
-  .raven-logo[data-celebrating] .app-logo-eye-motion {
+  .raven-logo[data-celebrating] .app-logo-eye-motion,
+  .raven-logo[data-activity="working"] .app-logo-background,
+  .raven-logo[data-activity="working"] .app-logo-eye-motion,
+  .raven-logo[data-activity="attention"] .app-logo-background,
+  .raven-logo[data-activity="attention"] .app-logo-eye-motion {
     animation: none;
+  }
+
+  /* The frame still has to *say* it is running — a still frame in the brand
+   * colour instead of a breathing one. State survives; motion does not. */
+  .raven-logo[data-activity="working"] .app-logo-background {
+    stroke: var(--brand);
+  }
+  .raven-logo[data-activity="attention"] .app-logo-background {
+    stroke: hsl(var(--warning));
   }
 }
 

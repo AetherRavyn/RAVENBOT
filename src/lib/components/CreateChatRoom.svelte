@@ -8,7 +8,7 @@
   import { Label } from "$lib/components/ui/label";
   import { Textarea } from "$lib/components/ui/textarea";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
-  import { getDiceBearUrl, OFFICE_TEMPLATES, type OfficeTemplateKey } from "$lib/utils";
+  import { getDiceBearUrl, OFFICE_TEMPLATES, DEFAULT_AVATAR_STYLE, type OfficeTemplateKey } from "$lib/utils";
   import { officeTemplateName, officeTemplateDesc } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
   import {
@@ -39,7 +39,7 @@
   let description = $state("");
   let officeTemplate: OfficeTemplateKey = $state("it-office");
   let roomAvatarUrl = $state("");
-  let roomAvatarStyle = $state("bottts");
+  let roomAvatarStyle = $state(DEFAULT_AVATAR_STYLE);
   let showAvatarPicker = $state(false);
   let selectedMembers: { botId: string; rank: string; specialty: string }[] = $state([]);
   let isCreating = $state(false);
