@@ -538,6 +538,11 @@
     const threads = [
       String(threadId),
       ...boardNodes.map((n) => n.nodeThreadId).filter(Boolean).map(String),
+      // Threads seen on the wire but not yet on the board. The board is
+      // persisted and reloaded; this map is built from live events, so it knows
+      // about a node the moment it opens — which is exactly when a card can
+      // already be parked there.
+      ...[...threadToNode.keys()].filter(Boolean),
     ];
     try {
       const chunks = await Promise.all(
@@ -773,9 +778,26 @@
         // Everything else must belong to THIS room's current run — the room
         // thread or a node thread opened by it. (Fixes cross-run/cross-room
         // lanes being clobbered by foreign streams.)
+        //
+        // Interactions are the exception, and the exception is the point: a node
+        // can park an approval on its thread *before* `node_ready` has told this
+        // view that thread exists, and a gate that runs first drops it. The run
+        // then waits for a decision no card ever offers — silent, permanent,
+        // exactly what "stops working mid-run" looks like from the outside.
+        // The card carries its own identity, so it does not need the lane
+        // registry to be correct first.
         const tid = p.thread_id ? String(p.thread_id) : "";
-        if (tid && tid !== String(threadId || "") && !activeThreads.has(tid)) return;
-        runTimeline.track(p);
+        const foreign = !!tid && tid !== String(threadId || "") && !activeThreads.has(tid);
+        const isInteraction =
+          kind === "approval_requested" ||
+          kind === "approval_decided" ||
+          kind === "question_asked" ||
+          kind === "question_answered";
+        if (foreign && !isInteraction) return;
+        // A foreign interaction must not enter the timeline either: the strip
+        // narrates this room's run, and an unattributed card from another room
+        // would claim a step that never happened here.
+        if (!foreign) runTimeline.track(p);
 
         if (kind === "status") {
           const state = p.state === "done" ? "idle" : p.state;

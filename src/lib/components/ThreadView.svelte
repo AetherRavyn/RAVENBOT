@@ -151,9 +151,17 @@
   let pendingApprovals = $state<PendingApproval[]>([]);
   let decidingApproval = $state<string | null>(null);
 
-  async function refreshApprovals(threadId: string) {
+  /**
+   * Bot-scoped, not thread-scoped.
+   *
+   * A delegated child parks its approvals on its own thread, so a lookup
+   * scoped to the thread on screen cannot find them — after a reload the run
+   * would wait for a decision nothing could show or make, which reads as the
+   * app having stopped working mid-run with no error anywhere.
+   */
+  async function refreshApprovals(botId: string) {
     try {
-      pendingApprovals = await invoke<PendingApproval[]>("list_pending_approvals", { threadId });
+      pendingApprovals = await invoke<PendingApproval[]>("list_pending_approvals_for_bot", { botId });
     } catch {
       pendingApprovals = [];
     }
@@ -199,9 +207,10 @@
   let answeringQuestion = $state<string | null>(null);
   let questionDraft = $state<Record<string, string>>({});
 
-  async function refreshQuestions(threadId: string) {
+  /** Bot-scoped for the same reason as `refreshApprovals` above. */
+  async function refreshQuestions(botId: string) {
     try {
-      pendingQuestions = await invoke<PendingQuestion[]>("list_pending_questions", { threadId });
+      pendingQuestions = await invoke<PendingQuestion[]>("list_pending_questions_for_bot", { botId });
     } catch {
       pendingQuestions = [];
     }
@@ -270,6 +279,17 @@
   // OpenBot ChatActionMarker feed: one quiet mini-row per tool call in this run
   // `args` rides along so the live line can say what the call is doing rather
   // than only that a call with a given name happened.
+  /**
+   * Events the user has to act on, which must reach them regardless of which
+   * thread the run happened to park on. See the gate in the stream listener.
+   */
+  const INTERACTION_KINDS = new Set([
+    "approval_requested",
+    "approval_decided",
+    "question_asked",
+    "question_answered",
+  ]);
+
   let actionMarkers = $state<{ id: number; name: string; done: boolean; args?: unknown }[]>([]);
   let markerSeq = 0;
   let streamingSources = $state<any[]>([]);
@@ -356,7 +376,21 @@
       unlisten = await listen<any>("agent-stream", (event) => {
         const payload = event.payload;
         const tid = payload?.thread_id;
-        if (!tid || tid !== selectedThreadId) return;
+        const kind = String(payload?.kind || "");
+
+        // Interactions are addressed to whoever is waiting on the run, and that
+        // is not always the thread being read.
+        //
+        // A delegated child runs on its own thread, and its tool approvals park
+        // on *that* thread. The blanket `tid !== selectedThreadId` below dropped
+        // them, so the card never appeared: the child waited for a decision
+        // nobody could see, the parent waited on the child, and the whole thing
+        // sat there looking dead. That is precisely what "stops working mid run"
+        // looks like from the outside — no error, no spinner, nothing.
+        //
+        // So the gate applies to what the thread *displays* (tokens, tools,
+        // round boundaries, status) and not to what the user must *answer*.
+        if (!tid || (tid !== selectedThreadId && !INTERACTION_KINDS.has(kind))) return;
         switch (payload?.kind) {
           case "run_started":
             activeRunId = payload.run_id ?? null;
@@ -449,8 +483,10 @@
             activeRunId = null;
             pausedRunId = null;
             if (selectedThreadId) {
-              refreshApprovals(selectedThreadId);
-              refreshQuestions(selectedThreadId);
+              if (bot) {
+                refreshApprovals(bot.id);
+                refreshQuestions(bot.id);
+              }
             }
             break;
           }
@@ -600,8 +636,10 @@
     streamingTool = null;
     actionMarkers = [];
     streamingSources = []; streamingImages = [];
-    refreshApprovals(threadId);
-    refreshQuestions(threadId);
+    if (bot) {
+      refreshApprovals(bot.id);
+      refreshQuestions(bot.id);
+    }
     editingMessage = null;
     try {
       messages = await invoke("list_messages", { threadId });

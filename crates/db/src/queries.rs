@@ -997,6 +997,34 @@ impl ApprovalQueries {
             .collect())
     }
 
+    /// Every pending request anywhere under one bot.
+    ///
+    /// Needed because a run does not stay on the thread the user is reading.
+    /// A delegated child runs on its own thread and parks its approvals there,
+    /// so a lookup scoped to the open thread cannot find them: after a reload
+    /// the run would sit waiting for a decision nothing on screen could show or
+    /// make. Same user, same bot, same conversation — just a different row.
+    pub async fn list_pending_for_bot(
+        pool: &SqlitePool,
+        bot_id: Uuid,
+    ) -> Result<Vec<ravenbot_core::ApprovalRequest>, sqlx::Error> {
+        type Row = (String, String, String, String, String, String, String, String, String, Option<String>, String, Option<String>);
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, bot_id, thread_id, run_id, tool_name, tool_label, arguments, risk, status, note, created_at, decided_at
+             FROM approvals
+             WHERE status = 'pending'
+               AND EXISTS (SELECT 1 FROM threads WHERE threads.id = approvals.thread_id AND threads.bot_id = ?)
+             ORDER BY created_at ASC",
+        )
+        .bind(bot_id.to_string())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| Self::row_to_domain(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11))
+            .collect())
+    }
+
     /// Decide a request (allow/deny). Returns false if it wasn't pending.
     pub async fn decide(
         pool: &SqlitePool,
@@ -1130,6 +1158,36 @@ impl QuestionQueries {
              FROM questions WHERE thread_id = ? AND status = 'pending' ORDER BY created_at ASC",
         )
         .bind(thread_id.to_string())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                Self::row_to_domain(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11)
+            })
+            .collect())
+    }
+
+    /// Every pending question anywhere under one bot — same reasoning as
+    /// `ApprovalQueries::list_pending_for_bot`: a parked `ask_user` on a child
+    /// thread is invisible to a thread-scoped lookup, and an invisible question
+    /// is a run that never resumes.
+    pub async fn list_pending_for_bot(
+        pool: &SqlitePool,
+        bot_id: Uuid,
+    ) -> Result<Vec<ravenbot_core::QuestionRequest>, sqlx::Error> {
+        type Row = (
+            String, String, String, String, String, String, String, i64, String,
+            Option<String>, String, Option<String>,
+        );
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, bot_id, thread_id, run_id, header, question, options, allow_custom, status, answer, created_at, answered_at
+             FROM questions
+             WHERE status = 'pending'
+               AND EXISTS (SELECT 1 FROM threads WHERE threads.id = questions.thread_id AND threads.bot_id = ?)
+             ORDER BY created_at ASC",
+        )
+        .bind(bot_id.to_string())
         .fetch_all(pool)
         .await?;
         Ok(rows

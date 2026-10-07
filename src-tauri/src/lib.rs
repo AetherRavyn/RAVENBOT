@@ -2031,6 +2031,24 @@ async fn list_pending_approvals(
         .map_err(|e| e.to_string())
 }
 
+/// Pending approvals anywhere under one bot.
+///
+/// A run does not stay on the thread the user has open: a delegated child runs
+/// on its own thread and parks its approvals there. Scoping to the open thread
+/// — which is all the caller could ask for — meant that after a reload nothing
+/// could find those approvals, so the run waited for a decision no screen could
+/// show or make. From outside it looked like the app had stopped working
+/// mid-run, with no error and no spinner to explain it.
+#[tauri::command]
+async fn list_pending_approvals_for_bot(
+    state: State<'_, AppState>,
+    bot_id: Uuid,
+) -> Result<Vec<ApprovalRequest>, String> {
+    ravenbot_db::queries::ApprovalQueries::list_pending_for_bot(state.db.pool(), bot_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Decide a parked approval (allow/deny). Returns true if it was still pending.
 #[tauri::command]
 async fn decide_approval(
@@ -2154,6 +2172,20 @@ async fn list_pending_questions(
     thread_id: Uuid,
 ) -> Result<Vec<QuestionRequest>, String> {
     ravenbot_db::queries::QuestionQueries::list_pending_for_thread(state.db.pool(), thread_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Pending questions anywhere under one bot — the same argument as
+/// `list_pending_approvals_for_bot`: a parked `ask_user` on a child thread is
+/// invisible to a thread-scoped lookup, and an invisible question never gets
+/// answered, so the run never resumes.
+#[tauri::command]
+async fn list_pending_questions_for_bot(
+    state: State<'_, AppState>,
+    bot_id: Uuid,
+) -> Result<Vec<QuestionRequest>, String> {
+    ravenbot_db::queries::QuestionQueries::list_pending_for_bot(state.db.pool(), bot_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -4516,11 +4548,13 @@ pub fn run() {
             set_approval_mode,
             get_approval_mode,
             list_pending_approvals,
+            list_pending_approvals_for_bot,
             decide_approval,
             list_bot_todos,
             save_office_board,
             get_office_board,
             list_pending_questions,
+            list_pending_questions_for_bot,
             answer_question,
             cancel_run,
             pause_run,
