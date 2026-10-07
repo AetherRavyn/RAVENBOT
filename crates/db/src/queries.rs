@@ -1723,11 +1723,30 @@ impl BotContactQueries {
 /// rather than assembled on demand from a transcript that may have reloaded.
 pub struct FileChangeQueries;
 
+/// One `file_changes` row as sqlx hands it back.
+///
+/// Named rather than written inline, because `row_to_domain` takes it and a
+/// ten-field tuple spelled out twice is a type no reader verifies — which is
+/// how the diff column would end up bound to `created_at` and every ledger row
+/// in the table would carry a timestamp where its lines were supposed to be.
+type FileChangeRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    i64,
+    i64,
+    Option<String>,
+    String,
+);
+
 impl FileChangeQueries {
     pub async fn insert(pool: &SqlitePool, change: &ravenbot_core::FileChange) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO file_changes (id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO file_changes (id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted, diff, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(change.id.to_string())
         .bind(change.bot_id.to_string())
@@ -1737,6 +1756,7 @@ impl FileChangeQueries {
         .bind(&change.skill)
         .bind(change.lines_added)
         .bind(change.lines_deleted)
+        .bind(&change.diff)
         .bind(&change.created_at)
         .execute(pool)
         .await?;
@@ -1749,14 +1769,21 @@ impl FileChangeQueries {
     /// and an unbounded list would hand the UI a table that grows forever on
     /// every run. Ordered by time rather than grouped, so two writes to the same
     /// file in one run both appear — the second one is often the correction.
+    ///
+    /// `diff` is deliberately selected as `NULL`, which is the one rule across
+    /// this table: **the list never carries lines, the single-row fetch does.**
+    /// A diff can be a quarter of a megabyte, so `limit = 1000` would otherwise
+    /// mean 256MB through IPC to fill a two-digit badge — and a caller cannot
+    /// know that before it has asked. [`Self::diff_for`] fetches one, when
+    /// someone opens one.
     pub async fn recent_for_bot(
         pool: &SqlitePool,
         bot_id: Uuid,
         limit: i64,
     ) -> Result<Vec<ravenbot_core::FileChange>, sqlx::Error> {
-        type Row = (String, String, Option<String>, Option<String>, String, String, i64, i64, String);
-        let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted, created_at
+        let rows: Vec<FileChangeRow> = sqlx::query_as(
+            "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted,
+                    NULL AS diff, created_at
              FROM file_changes WHERE bot_id = ?
              ORDER BY created_at DESC, rowid DESC
              LIMIT ?",
@@ -1769,6 +1796,23 @@ impl FileChangeQueries {
             .into_iter()
             .filter_map(Self::row_to_domain)
             .collect())
+    }
+
+    /// The lines behind one ledger row.
+    ///
+    /// `None` means "there is nothing to expand into" — a write whose content
+    /// could not be lined up (binary, past the diff cap) or one recorded
+    /// before this column existed. Both are honest absences, and the UI shows
+    /// a sentence rather than opening onto a blank pane.
+    pub async fn diff_for(
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<String>, sqlx::Error> {
+        sqlx::query_scalar::<_, Option<String>>("SELECT diff FROM file_changes WHERE id = ?")
+            .bind(id.to_string())
+            .fetch_optional(pool)
+            .await
+            .map(|row: Option<Option<String>>| row.flatten())
     }
 
     /// Totals for every agent that has ever changed a file, in one query.
@@ -1811,7 +1855,7 @@ impl FileChangeQueries {
     /// unpacking it at the call site is the same nine names twice, which is how
     /// a field gets swapped with its neighbour and nobody notices until the
     /// ledger reports lines in the wrong column.
-    fn row_to_domain(r: (String, String, Option<String>, Option<String>, String, String, i64, i64, String)) -> Option<ravenbot_core::FileChange> {
+    fn row_to_domain(r: FileChangeRow) -> Option<ravenbot_core::FileChange> {
         Some(ravenbot_core::FileChange {
             id: Uuid::parse_str(&r.0).ok()?,
             bot_id: Uuid::parse_str(&r.1).ok()?,
@@ -1821,7 +1865,100 @@ impl FileChangeQueries {
             skill: r.5,
             lines_added: r.6,
             lines_deleted: r.7,
-            created_at: r.8,
+            diff: r.8,
+            created_at: r.9,
         })
+    }
+}
+
+#[cfg(test)]
+mod file_change_tests {
+    use super::*;
+    use crate::migrations;
+
+    /// An in-memory database, on one connection.
+    ///
+    /// `sqlite::memory:` is per-*connection*: a pool would give every query its
+    /// own empty database and the test would pass while asserting nothing. One
+    /// connection is also what the app itself effectively gets for a short
+    /// ledger read, so this is not a different shape of thing.
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    fn change(bot: Uuid, path: &str, added: i64, deleted: i64, diff: Option<&str>) -> ravenbot_core::FileChange {
+        ravenbot_core::FileChange::new(bot, None, None, path, "file_write", added, deleted)
+            .with_diff(diff.map(str::to_string))
+    }
+
+    #[tokio::test]
+    async fn a_list_carries_counts_but_not_lines() {
+        let pool = db().await;
+        let bot = Uuid::new_v4();
+        let with_diff = change(bot, "src/lib.rs", 3, 1, Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n"));
+        let without = change(bot, "README.md", 1, 0, None);
+
+        FileChangeQueries::insert(&pool, &with_diff).await.expect("insert 1");
+        FileChangeQueries::insert(&pool, &without).await.expect("insert 2");
+
+        let listed = FileChangeQueries::recent_for_bot(&pool, bot, 10).await.expect("list");
+        assert_eq!(listed.len(), 2);
+        // The rule the view depends on: asking for "Sam's changes" must not
+        // also hand over two hundred megabytes of lines nobody opened.
+        assert!(
+            listed.iter().all(|c| c.diff.is_none()),
+            "the list must not carry diffs: {listed:?}"
+        );
+        // …but nothing else is lost on the way through.
+        let first = listed.iter().find(|c| c.id == with_diff.id).expect("row survived");
+        assert_eq!(first.path, "src/lib.rs");
+        assert_eq!((first.lines_added, first.lines_deleted), (3, 1));
+
+        // The lines are still reachable, one row at a time.
+        let diff = FileChangeQueries::diff_for(&pool, with_diff.id)
+            .await
+            .expect("diff_for");
+        assert_eq!(diff.as_deref(), Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n"));
+
+        // And "no diff" reads as absence, not as an empty string the UI would
+        // render as an expandable row that opens onto nothing.
+        assert!(FileChangeQueries::diff_for(&pool, without.id).await.expect("diff_for").is_none());
+        assert!(FileChangeQueries::diff_for(&pool, Uuid::new_v4()).await.expect("diff_for").is_none());
+    }
+
+    #[tokio::test]
+    async fn totals_agree_with_the_rows_that_produced_them() {
+        let pool = db().await;
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        FileChangeQueries::insert(&pool, &change(a, "one.rs", 10, 2, Some("+10 -2\n")))
+            .await
+            .expect("insert");
+        FileChangeQueries::insert(&pool, &change(a, "two.rs", 0, 5, None))
+            .await
+            .expect("insert");
+        FileChangeQueries::insert(&pool, &change(b, "other.rs", 1, 1, None))
+            .await
+            .expect("insert");
+
+        let mut totals: Vec<(Uuid, ravenbot_core::FileChangeTotals)> =
+            FileChangeQueries::totals(&pool).await.expect("totals");
+        totals.sort_by_key(|(id, _)| *id);
+        let mut expected = vec![(a, (2, 10, 7)), (b, (1, 1, 1))];
+        expected.sort_by_key(|(id, _)| *id);
+        for ((got_id, got), (want_id, want)) in totals.iter().zip(&expected) {
+            assert_eq!(*got_id, *want_id);
+            assert_eq!(
+                (got.files, got.lines_added, got.lines_deleted),
+                *want,
+                "totals for {got_id}"
+            );
+        }
     }
 }

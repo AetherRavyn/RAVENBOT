@@ -351,6 +351,11 @@ impl Runtime {
      * files — so this is a quiet no-op rather than something the caller has to
      * guard. Failures are logged and swallowed: a journal that can fail a write
      * which already succeeded would be a worse bug than a gap in the journal.
+     *
+     * The `diff` travels with the counts when the skill produced one. It is not
+     * recomputed here, for the same reason the counts are not: by now the old
+     * version is gone from disk, and asking for it again means asking a later
+     * reader to reconstruct a difference the writer already knew exactly.
      */
     async fn journal_file_changes(
         &self,
@@ -385,7 +390,8 @@ impl Runtime {
                 skill,
                 added,
                 deleted,
-            );
+            )
+            .with_diff(entry.get("diff").and_then(|v| v.as_str()).map(str::to_string));
             if let Err(e) = ravenbot_db::queries::FileChangeQueries::insert(self.db.pool(), &change).await {
                 tracing::warn!(path = %change.path, error = %e, "failed to journal file change");
             }

@@ -25,6 +25,7 @@
   import { notify } from "$lib/toast";
   import { workspace } from "$lib/workspace.svelte";
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
+  import DiffView from "$lib/components/workspace/DiffView.svelte";
   import { buildTree, fmtBytes, type Entry, type Tree, type TreeNode } from "$lib/workspace/tree";
   import {
     Folder, FolderOpen, FileText, File, ChevronRight, Loader2, RefreshCw,
@@ -47,6 +48,8 @@
     skill: string;
     lines_added: number;
     lines_deleted: number;
+    /** Absent on purpose: see `file_change_diff`. Fetched when a row opens. */
+    diff?: string | null;
     created_at: string;
   }
 
@@ -76,6 +79,19 @@
 
   /** Agent whose changes are listed at the bottom. `null` means all of them. */
   let focusBot = $state<string | null>(null);
+
+  /**
+   * The ledger row currently opened into a diff.
+   *
+   * One at a time, because these are full files' worth of lines: three open
+   * rows is three scroll containers competing for the same eye, and the list
+   * they came from is the thing the reader was comparing them against.
+   */
+  let expandedChange = $state<string | null>(null);
+  /** `undefined` = not asked for yet, `null` = asked and there is nothing. */
+  const diffs = $state<Record<string, string | null | undefined>>({});
+  const diffLoading = $state<Record<string, boolean>>({});
+  const diffError = $state<Record<string, string>>({});
 
   onMount(() => {
     void load();
@@ -151,6 +167,38 @@
       notify(t("projects.readFailed") + String(e), "error");
     } finally {
       loadingFile = false;
+    }
+  }
+
+  /**
+   * Open a ledger row into the lines it counts.
+   *
+   * The counts travel with the list; the lines do not, because five hundred
+   * writes each carrying a quarter-megabyte diff is 128MB pushed through IPC
+   * to fill a badge two digits wide. So the diff is asked for the first time
+   * its row opens and kept afterwards — a reader flipping back and forth
+   * between two writes should not pay for it twice, and the second answer
+   * cannot have changed in the meantime: the row records a write that is
+   * already over.
+   */
+  async function toggleChange(id: string) {
+    if (expandedChange === id) {
+      expandedChange = null;
+      return;
+    }
+    expandedChange = id;
+    if (diffs[id] !== undefined || diffLoading[id]) return;
+
+    diffLoading[id] = true;
+    try {
+      diffs[id] = await invoke<string | null>("file_change_diff", { id });
+    } catch (e) {
+      diffError[id] = String(e);
+      // Cached as "asked and failed" rather than left undefined, so a failed
+      // row does not refetch on every click and repeat the same error.
+      diffs[id] = null;
+    } finally {
+      diffLoading[id] = false;
     }
   }
 
@@ -456,13 +504,46 @@
           {:else}
             <ul class="proj__changes">
               {#each shownChanges as c (c.id)}
-                <li class="proj__change" data-skill={c.skill}>
-                  <span class="proj__changebot">{botName(c.bot_id)}</span>
-                  <span class="proj__changepath">{c.path}</span>
-                  <span class="proj__diff">
-                    <span class="proj__add">+{c.lines_added}</span>
-                    <span class="proj__del">−{c.lines_deleted}</span>
-                  </span>
+                {@const isOpen = expandedChange === c.id}
+                <li class="proj__change" data-skill={c.skill} data-open={isOpen}>
+                  <button
+                    type="button"
+                    class="proj__changehead"
+                    aria-expanded={isOpen}
+                    onclick={() => void toggleChange(c.id)}
+                  >
+                    <ChevronRight
+                      class="proj__chev size-3.5 shrink-0 {isOpen ? 'proj__chev--open' : ''}"
+                      strokeWidth={2}
+                    />
+                    <span class="proj__changebot">{botName(c.bot_id)}</span>
+                    <span class="proj__changepath">{c.path}</span>
+                    <span class="proj__diff">
+                      <span class="proj__add">+{c.lines_added}</span>
+                      <span class="proj__del">−{c.lines_deleted}</span>
+                    </span>
+                  </button>
+                  {#if isOpen}
+                    <div class="proj__changediff">
+                      {#if diffLoading[c.id]}
+                        <div class="proj__empty"><Loader2 class="size-4 animate-spin" /></div>
+                      {:else if diffError[c.id]}
+                        <p class="proj__hint proj__hint--pad">
+                          {t("projects.diffFailed")}{diffError[c.id]}
+                        </p>
+                      {:else if diffs[c.id]}
+                        <DiffView diff={diffs[c.id]!} />
+                      {:else}
+                        <!--
+                          Counts with no lines behind them: a binary rewrite, a
+                          file past the diff cap, or a row from before the
+                          column existed. Saying so beats opening a blank pane
+                          that reads as a broken renderer.
+                        -->
+                        <p class="proj__hint proj__hint--pad">{t("projects.noDiff")}</p>
+                      {/if}
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ul>

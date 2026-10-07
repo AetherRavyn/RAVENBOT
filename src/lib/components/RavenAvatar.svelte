@@ -647,8 +647,8 @@
 
         {#if motion === "exclamation"}
           <g class="raven-av-alert">
-            <rect x="76.2" y="9" width="5.2" height="14" rx="2.6" fill="var(--danger)" />
-            <circle cx="78.8" cy="29.5" r="3" fill="var(--danger)" />
+            <rect x="76.2" y="9" width="5.2" height="14" rx="2.6" fill="hsl(var(--danger))" />
+            <circle cx="78.8" cy="29.5" r="3" fill="hsl(var(--danger))" />
           </g>
         {/if}
 

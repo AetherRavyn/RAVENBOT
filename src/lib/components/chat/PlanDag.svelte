@@ -30,11 +30,11 @@
       case "running":
         return "var(--brand)";
       case "done":
-        return "color-mix(in srgb, var(--success) 65%, transparent)";
+        return "color-mix(in srgb, hsl(var(--success)) 65%, transparent)";
       case "failed":
-        return "color-mix(in srgb, var(--danger) 65%, transparent)";
+        return "color-mix(in srgb, hsl(var(--danger)) 65%, transparent)";
       case "skipped":
-        return "color-mix(in srgb, var(--warning) 65%, transparent)";
+        return "color-mix(in srgb, hsl(var(--warning)) 65%, transparent)";
       default:
         return "var(--hairline)";
     }

@@ -14,7 +14,12 @@ pub enum MigrationError {
 }
 
 /// Migration version
-pub const CURRENT_VERSION: i32 = 21;
+///
+/// Kept in step with the last entry in [`MIGRATIONS`] rather than with anything
+/// else, because that is the only thing it can honestly describe: a database
+/// whose `_migrations` table tops out at 23 is at 23, whatever an earlier
+/// constant still says.
+pub const CURRENT_VERSION: i32 = 23;
 
 /// SQL for each migration version
 const MIGRATIONS: &[(i32, &str)] = &[
@@ -40,6 +45,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (20, include_str!("migrations/020_bot_sort_order.sql")),
     (21, include_str!("migrations/021_chatroom_office_threads.sql")),
     (22, include_str!("migrations/022_file_changes.sql")),
+    (23, include_str!("migrations/023_file_changes_diff.sql")),
 ];
 
 /// Run all pending migrations

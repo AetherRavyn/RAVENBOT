@@ -290,7 +290,15 @@
     "question_answered",
   ]);
 
-  let actionMarkers = $state<{ id: number; name: string; done: boolean; args?: unknown }[]>([]);
+  // `args` rides along so the live line can say what the call is doing rather
+  // than only that a call with a given name happened. `startedAt` / `ms` are
+  // the other half of the same question: how long has this been going on, and
+  // afterwards, how long did it take. Measured on this side rather than by the
+  // marker, because the marker does not mount until the row renders and the
+  // call may already have finished by then.
+  let actionMarkers = $state<
+    { id: number; name: string; done: boolean; args?: unknown; startedAt?: number; ms?: number }[]
+  >([]);
   let markerSeq = 0;
   let streamingSources = $state<any[]>([]);
   // Live images produced by tools during the run (e.g. screenshots)
@@ -431,6 +439,7 @@
                 name: payload.name || "tool",
                 done: false,
                 args: payload.arguments ?? null,
+                startedAt: Date.now(),
               },
             ];
             scrollToBottom();
@@ -439,14 +448,26 @@
             streamingTool = null;
             const nm = payload.name || "tool";
             let flipped = false;
+            // Newest open marker with this name: two calls to the same skill
+            // in one round are matched to the round they belong to, or the
+            // elapsed time lands on the wrong row.
             for (let i = actionMarkers.length - 1; i >= 0; i--) {
               if (!actionMarkers[i].done && actionMarkers[i].name === nm) {
-                actionMarkers[i].done = true;
+                const finished = actionMarkers[i];
+                actionMarkers[i] = {
+                  ...finished,
+                  done: true,
+                  ms: finished.startedAt != null ? Date.now() - finished.startedAt : undefined,
+                };
                 flipped = true;
                 break;
               }
             }
             if (!flipped) {
+              // Completed without a start we saw — the listener attached
+              // mid-run. Showing no time is right: this one's start is not
+              // something we know, and guessing would be a worse answer than
+              // none.
               actionMarkers = [...actionMarkers, { id: markerSeq++, name: nm, done: true }];
             }
             actionMarkers = actionMarkers.slice();
@@ -1985,7 +2006,13 @@
               <!-- OpenBot action markers: quiet per-tool status rows -->
               <div class="chat-action-markers">
                 {#each actionMarkers as m (m.id)}
-                  <ChatActionMarker name={m.name} done={m.done} args={m.args} />
+                  <ChatActionMarker
+                    name={m.name}
+                    done={m.done}
+                    args={m.args}
+                    startedAt={m.startedAt ?? null}
+                    ms={m.ms ?? null}
+                  />
                 {/each}
               </div>
             {/if}

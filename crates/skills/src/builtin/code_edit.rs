@@ -86,10 +86,17 @@ impl Skill for CodeEditSkill {
         };
         // Per-file, not one total: a patch touching four files is only useful
         // split, because "changed 40 lines" does not say which file to look at.
-        let file_changes: Vec<serde_json::Value> = crate::diff::patch_file_changes(patch)
+        // The patch text comes along with it so the ledger can show the hunks,
+        // not only their arithmetic.
+        let file_changes: Vec<serde_json::Value> = crate::diff::patch_file_diffs(patch)
             .into_iter()
-            .map(|(path, added, deleted)| {
-                serde_json::json!({ "path": path, "lines_added": added, "lines_deleted": deleted })
+            .map(|p| {
+                serde_json::json!({
+                    "path": p.path,
+                    "lines_added": p.added,
+                    "lines_deleted": p.deleted,
+                    "diff": p.text,
+                })
             })
             .collect();
 

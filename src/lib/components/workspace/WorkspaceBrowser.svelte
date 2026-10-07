@@ -285,7 +285,7 @@
         {tree.fileCount} {t("wsb.files")} · {tree.dirCount} {t("wsb.folders")} · {fmtBytes(tree.totalBytes)}
       </span>
       {#if tree.truncated}
-        <span class="flex items-center gap-1 text-[11px] text-[var(--warning)]">
+        <span class="flex items-center gap-1 text-[11px] text-[hsl(var(--warning))]">
           <AlertTriangle class="size-3" /> {tree.note}
         </span>
       {/if}

@@ -31,6 +31,16 @@ pub struct FileChange {
     pub skill: String,
     pub lines_added: i64,
     pub lines_deleted: i64,
+    /// The unified diff that produced the two counts above, when one could be
+    /// produced honestly.
+    ///
+    /// `None` is not an error: a file too large to line up, a rewrite of binary
+    /// content, or a row written before this field existed. The counts remain
+    /// correct in every one of those cases, and a diff that omitted most of a
+    /// file would disagree with the numbers stored beside it — so absence is
+    /// reported rather than approximated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
     /// RFC 3339, matching every other timestamp in the schema.
     pub created_at: String,
 }
@@ -54,10 +64,43 @@ impl FileChange {
             skill: skill.into(),
             lines_added: lines_added.max(0),
             lines_deleted: lines_deleted.max(0),
+            diff: None,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }
+
+    /// Attach the lines behind the counts.
+    ///
+    /// A builder rather than an eighth argument: `new` already takes seven,
+    /// and the one caller that has a diff is the only one that would care
+    /// about an eighth position — which is exactly how a `Some(...)` ends up
+    /// bound to `skill`.
+    ///
+    /// A diff larger than [`MAX_DIFF`] is dropped rather than truncated. A
+    /// truncated unified diff ends mid-hunk, and a hunk that stops before its
+    /// change is a claim about the file that was never checked — the counts it
+    /// was stored to explain would then outnumber the lines shown. The counts
+    /// are still written either way, so nothing is lost but the expansion.
+    pub fn with_diff(mut self, diff: Option<String>) -> Self {
+        self.diff = diff.filter(|d| {
+            // Whitespace-only is not "no diff", it is a diff with no lines in
+            // it — and a row that expands onto blank space reads as a broken
+            // renderer rather than as an honest absence.
+            !d.trim().is_empty() && d.len() <= MAX_DIFF
+        });
+        self
+    }
 }
+
+/// Largest diff stored per row, in bytes.
+///
+/// Generous on purpose. The interesting diffs — a function rewritten, a module
+/// split — sit in the tens of kilobytes, and a limit tight enough to catch
+/// those would also catch the ordinary ones. What it exists to stop is a
+/// whole generated file landing in the ledger: bounded above by the line cap
+/// in the skill for `file_write`, and by this for `code_edit`, whose patches
+/// are not bounded at all.
+const MAX_DIFF: usize = 256 * 1024;
 
 /// One agent's totals over a set of changes.
 ///
@@ -90,5 +133,47 @@ impl FileChangeTotals {
             t.lines_deleted += c.lines_deleted;
         }
         t
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn change() -> FileChange {
+        FileChange::new(Uuid::new_v4(), None, None, "src/lib.rs", "file_write", 3, 1)
+    }
+
+    #[test]
+    fn a_diff_rides_along_with_the_counts() {
+        let c = change().with_diff(Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n".into()));
+        assert!(c.diff.is_some());
+        // And it serialises, because the whole point is that it reaches the UI.
+        let json = serde_json::to_string(&c).expect("serialize");
+        assert!(json.contains("\"diff\""), "{json}");
+    }
+
+    #[test]
+    fn an_absent_diff_stays_absent_rather_than_empty() {
+        // `Some("")` would render as an expandable row that opens onto
+        // nothing. `None` is what the UI reads as "not expandable".
+        assert!(change().with_diff(None).diff.is_none());
+        assert!(change().with_diff(Some(String::new())).diff.is_none());
+    }
+
+    #[test]
+    fn a_diff_past_the_cap_is_dropped_not_truncated() {
+        // A truncated unified diff ends mid-hunk, and a hunk that stops before
+        // its change is a claim that was never checked — while the counts it
+        // was stored to explain still say the full number.
+        let big = "x\n".repeat(MAX_DIFF / 2 + 1);
+        assert!(change().with_diff(Some(big)).diff.is_none());
+        assert!(change().with_diff(Some("x".repeat(1024))).diff.is_some());
+    }
+
+    #[test]
+    fn counts_are_never_negative() {
+        let c = FileChange::new(Uuid::new_v4(), None, None, "a", "file_write", -5, -1);
+        assert_eq!((c.lines_added, c.lines_deleted), (0, 0));
     }
 }

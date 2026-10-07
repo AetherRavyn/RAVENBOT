@@ -21,6 +21,15 @@
    *  - **Nothing is animated per token.** A character-by-character caret on
    *    reasoning is unreadable and repaints the whole panel on every chunk; a
    *    marker on the live round says the same thing for one repaint.
+   *  - **Rendered as markdown, not as a paragraph of text.** A model's reasoning
+   *    is full of code fences, bullet lists and inline code — the exact content
+   *    that becomes unreadable when it is passed through `white-space: pre-wrap`
+   *    and shown raw. It goes through the same safe token renderer as the
+   *    answer: raw HTML is shown as text, and a `javascript:` link is not a link.
+   *  - **The reveal animates rather than pops.** The body stays mounted and its
+   *    grid track goes `0fr → 1fr`, so opening and closing are both one tween.
+   *    Mounting and unmounting instead can only animate one of the two, and a
+   *    panel that snaps shut reads as a glitch rather than as a choice.
    */
   import { t } from "$lib/i18n";
   import {
@@ -28,6 +37,7 @@
     parseStoredReasoning,
     type ReasoningRound,
   } from "$lib/chat/reasoning.svelte";
+  import MarkdownMessage from "$lib/markdown/MarkdownMessage.svelte";
   import { Brain, ChevronRight } from "@lucide/svelte";
 
   interface Props {
@@ -61,6 +71,9 @@
     live && liveTrace ? liveTrace.rounds : storedRounds.length ? storedRounds : liveTrace?.rounds ?? [],
   );
   const thinking = $derived(live && (liveTrace?.rounds.some((r) => r.live) ?? false));
+
+  /** Index of the round currently receiving chunks, or -1 when settled. */
+  const liveIndex = $derived(live && liveTrace ? liveTrace.rounds.findIndex((r) => r.live) : -1);
 
   /** `null` means "no opinion yet", so the default can follow the run. */
   let override: boolean | null = $state(null);
@@ -112,20 +125,38 @@
       <ChevronRight class="reason__chev size-3.5 shrink-0" strokeWidth={2} />
     </button>
 
-    {#if open}
-      <div class="reason__body" bind:this={body}>
-        {#each rounds as round, i (i)}
-          {#if i > 0}
-            <div class="reason__sep">
-              <span>{t("reasoning.afterTools")}</span>
-            </div>
+    <!--
+      Always mounted; the grid track is what opens and closes. A `{#if open}`
+      can only animate in, so closing would snap — and a panel that snaps shut
+      reads as a glitch rather than as a choice.
+    -->
+    <div class="reason__reveal" data-open={open}>
+      <div class="reason__revealInner" inert={!open}>
+        <div class="reason__body" bind:this={body} aria-hidden={!open}>
+          {#each rounds as round, i (i)}
+            {#if i > 0}
+              <div class="reason__sep">
+                <span>{t("reasoning.afterTools")}</span>
+              </div>
+            {/if}
+            <!--
+              Markdown, not a paragraph. Reasoning is where the code fences and
+              bullet lists live, and `pre-wrap` renders them as punctuation.
+              Only the round still receiving chunks is marked streaming, so a
+              finished round does not keep trying to fade a tail it no longer
+              has.
+            -->
+            <MarkdownMessage
+              content={round.text}
+              streaming={live && i === liveIndex}
+              class="reason__text"
+            />
+          {/each}
+          {#if thinking}
+            <p class="reason__more" aria-live="polite">{t("reasoning.working")}</p>
           {/if}
-          <p class="reason__text">{round.text}</p>
-        {/each}
-        {#if thinking}
-          <p class="reason__more" aria-live="polite">{t("reasoning.working")}</p>
-        {/if}
+        </div>
       </div>
-    {/if}
+    </div>
   </section>
 {/if}

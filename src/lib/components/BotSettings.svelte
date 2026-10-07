@@ -922,7 +922,7 @@
                           <span
                             class="text-[11px] px-1.5 py-px rounded border whitespace-nowrap {capabilityToggles[row.key]
                               ? 'text-[var(--ok)] border-[var(--ok)]/30'
-                              : 'text-[var(--warning)] border-[var(--warning)]/30'}"
+                              : 'text-[hsl(var(--warning))] border-[hsl(var(--warning))]/30'}"
                           >
                             {capabilityToggles[row.key] ? t("bot.neededBy") : t("bot.blockedBy")}
                           </span>

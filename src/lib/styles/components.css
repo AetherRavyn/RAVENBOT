@@ -683,6 +683,21 @@ html.sidebar-resizing .app-frame {
   color: var(--text-muted);
 }
 
+/* Tabular figures, or every tick reflows the row and the line twitches once a
+   second for the whole length of the call. `data-done` is the settled state:
+   still shown, but no longer competing with the spinner for attention. */
+.chat-action-marker__time {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+.chat-action-marker__time[data-done="true"] {
+  color: var(--text-muted);
+}
+
   .chat-action-marker svg {
     animation: none;
   }
@@ -1133,15 +1148,15 @@ html.sidebar-resizing .app-frame {
 /* Attention wins visually over everything else, whatever the face is saying.
  * The ring is the thing a user scanning the sidebar is looking for. */
 .raven-avatar[data-mood="waiting"] {
-  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--warning);
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--warning));
 }
 
 .raven-avatar[data-mood="failed"] {
-  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--danger);
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--danger));
 }
 
 .raven-avatar[data-mood="responded"] {
-  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--success);
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--success));
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1253,11 +1268,11 @@ html.sidebar-resizing .app-frame {
  * reduced-motion preference — which is the right way round, because the whole
  * job of this state is to be noticed by someone who is not looking for it. */
 .raven-avatar[data-state="notification"] {
-  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--warning);
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--warning));
 }
 
 .raven-avatar[data-state="exclamation"] {
-  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px var(--danger);
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--danger));
 }
 
 /* Just finished: a single short flash, which is legible and then gone. */
@@ -1905,8 +1920,8 @@ html.sidebar-resizing .app-frame {
 }
 
 .raven-handoff--refused {
-  border-color: color-mix(in oklab, var(--warning) 30%, transparent);
-  background: color-mix(in oklab, var(--warning) 5%, var(--surface-1));
+  border-color: color-mix(in oklab, hsl(var(--warning)) 30%, transparent);
+  background: color-mix(in oklab, hsl(var(--warning)) 5%, var(--surface-1));
 }
 
 .raven-handoff__reply {
@@ -2211,6 +2226,30 @@ html.sidebar-resizing .app-frame {
   transform: rotate(90deg);
 }
 
+/* The reveal. A grid track rather than a `max-height` tween, because a
+   `max-height` animation has to guess the final value and a trace that ends up
+   30px or 3000px both feel wrong at the number you picked. `0fr → 1fr` is the
+   real height, both directions, in one tween. */
+.reason__reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.reason__reveal[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.reason__revealInner {
+  /* Both are required or the track will not collapse to zero: a grid item
+     defaults to `min-height: auto`, which is its content's height. */
+  min-height: 0;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reason__reveal {
+    transition: none;
+  }
+}
+
 .reason__body {
   /* Bounded so a long trace cannot push the answer off screen. The panel
      scrolls itself; the conversation keeps its own scroll position. */
@@ -2229,8 +2268,23 @@ html.sidebar-resizing .app-frame {
   font-size: 0.8125rem;
   line-height: 1.6;
   color: var(--text-secondary);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+/* Reasoning gets the answer's typographic scale one step down, but not its
+   colour: it is supporting evidence, and evidence that reads as loudly as the
+   conclusion it supports reverses the order the panel is built for. */
+.reason__text > p {
+  margin: 0;
+}
+.reason__text > p + p,
+.reason__text > p + .md-code,
+.reason__text > .md-code + p {
+  margin-top: 0.375rem;
+}
+/* A trace capped where the answer's is not: here the code *is* the reasoning,
+   and a fence that stops mid-thought is the thing worth showing. */
+.reason__text pre {
+  max-height: 16rem;
 }
 
 .reason__sep {
@@ -2325,8 +2379,8 @@ html.sidebar-resizing .app-frame {
 /* Failure is the one state allowed to be loud, because it is the one entry
    a reader needs to find without hunting. */
 .tools__item[data-failed="true"] {
-  background: color-mix(in oklab, var(--danger) 8%, var(--surface-2));
-  box-shadow: inset 2px 0 0 color-mix(in oklab, var(--danger) 55%, transparent);
+  background: color-mix(in oklab, hsl(var(--danger)) 8%, var(--surface-2));
+  box-shadow: inset 2px 0 0 color-mix(in oklab, hsl(var(--danger)) 55%, transparent);
 }
 
 .tools__head {
@@ -2356,11 +2410,11 @@ html.sidebar-resizing .app-frame {
 /* Status glyph, not a coloured dot: a dot says "something", a tick/cross says
    "this one worked". */
 .tools__state {
-  color: var(--success);
+  color: hsl(var(--success));
   flex: 0 0 auto;
 }
 .tools__item[data-failed="true"] .tools__state {
-  color: var(--danger);
+  color: hsl(var(--danger));
 }
 
 .tools__name {
@@ -2405,7 +2459,7 @@ html.sidebar-resizing .app-frame {
   margin-bottom: 0.125rem;
 }
 .tools__label[data-failed="true"] {
-  color: var(--danger);
+  color: hsl(var(--danger));
 }
 
 .tools__pre {
@@ -2534,12 +2588,12 @@ html.sidebar-resizing .app-frame {
    version control tool reads these without a legend, and that is worth more
    than a label would be. */
 .proj__add {
-  color: var(--success);
+  color: hsl(var(--success));
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
 .proj__del {
-  color: var(--danger);
+  color: hsl(var(--danger));
   font-weight: 700;
   font-variant-numeric: tabular-nums;
 }
@@ -2768,14 +2822,33 @@ html.sidebar-resizing .app-frame {
   margin-top: 0.75rem;
 }
 .proj__change {
-  display: flex;
-  align-items: center;
-  gap: 0.625rem;
-  padding: 0.3125rem 0.5rem;
+  /* The row and whatever it expands into are one object: the diff takes the
+     row's corners so an open write reads as one card rather than a panel
+     bolted onto a bar. `overflow: hidden` is what does that, and it costs
+     nothing because the diff scrolls itself. */
   border-radius: 6px;
   background: var(--surface-1);
-  font-size: 0.6875rem;
   min-width: 0;
+  overflow: hidden;
+}
+.proj__changehead {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.3125rem 0.5rem;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 0.6875rem;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+  transition: background 100ms ease;
+}
+.proj__changehead:hover {
+  background: var(--surface-2);
 }
 .proj__changebot {
   font-weight: 600;
@@ -2794,6 +2867,122 @@ html.sidebar-resizing .app-frame {
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1 1 auto;
+}
+.proj__changediff {
+  border-top: 1px solid hsl(var(--border));
+  background: var(--surface-0, var(--bg));
+}
+
+/* ── Diff ───────────────────────────────────────────────────────────────────
+
+   A unified diff, the way git prints one. Deliberately dense: this is a
+   comparison surface, and the point of it is to spot the one line in thirty
+   that changed — a comfortable line height would halve how many of those fit
+   on screen and turn "show me what this write did" into a scroll. */
+.dif {
+  min-width: 0;
+}
+.dif__strip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid hsl(var(--border));
+  background: var(--surface-1);
+}
+.dif__count {
+  display: inline-flex;
+  gap: 0.3125rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.6875rem;
+}
+.dif__lines {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.dif__body {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  max-height: 24rem;
+  overflow-y: auto;
+  padding: 0.25rem 0;
+}
+.dif__row {
+  display: flex;
+  align-items: baseline;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  min-width: max-content;
+}
+.dif__no {
+  flex: 0 0 auto;
+  width: 2.75rem;
+  padding-right: 0.5rem;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  opacity: 0.75;
+}
+.dif__mark {
+  flex: 0 0 auto;
+  width: 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  user-select: none;
+}
+.dif__text {
+  /* `pre`, not `pre-wrap`: a diff whose indentation has been collapsed is a
+     diff that no longer matches the file it describes. The row is
+     `min-width: max-content` and the body scrolls sideways instead, which is
+     how every diff viewer behaves — wrapping would make a 120-column file
+     unreadable twice over. */
+  white-space: pre;
+  padding-right: 0.75rem;
+  color: var(--text-primary);
+}
+.dif__row[data-k="add"] {
+  background: color-mix(in srgb, hsl(var(--success)) 12%, transparent);
+}
+.dif__row[data-k="add"] .dif__text {
+  color: var(--text-primary);
+}
+.dif__row[data-k="add"] .dif__mark {
+  color: hsl(var(--success));
+}
+.dif__row[data-k="del"] {
+  background: color-mix(in srgb, hsl(var(--danger)) 12%, transparent);
+}
+.dif__row[data-k="del"] .dif__mark {
+  color: hsl(var(--danger));
+}
+.dif__row[data-k="ctx"] .dif__text {
+  color: var(--text-secondary);
+}
+.dif__row[data-k="hunk"] {
+  background: var(--surface-2);
+  padding: 0.125rem 0;
+}
+.dif__row[data-k="hunk"] .dif__text {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+.dif__row[data-k="head"] .dif__text {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+.dif__row[data-k="head"] + .dif__row[data-k="head"] .dif__text {
+  color: var(--text-secondary);
+}
+.dif__row[data-k="meta"] .dif__text {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-style: italic;
 }
 
 .proj__empty {

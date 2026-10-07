@@ -61,6 +61,26 @@ export function summarizeArgs(value: unknown): string {
   }
 }
 
+/**
+ * How long something took, or has been running.
+ *
+ * `min` and `s` are SI symbols, not words, so they need no translation — and a
+ * number ticking once a second is not a string anyone should have to re-read
+ * through a locale layer.
+ *
+ * Sub-second calls render as nothing. `320ms` next to a tool that just flashed
+ * past is noise, and a live counter that changes four times a second draws the
+ * eye to the least interesting thing on screen.
+ */
+export function fmtElapsed(ms: number | null | undefined): string {
+  if (ms == null || ms < 1000) return "";
+  const total = Math.floor(ms / 1000);
+  if (total < 60) return `${total}s`;
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+}
+
 /** Full, pretty-printed value for an expanded body. */
 export function renderToolValue(value: unknown): string {
   if (value == null || value === "null") return "";

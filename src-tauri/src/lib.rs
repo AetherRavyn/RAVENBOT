@@ -2594,6 +2594,12 @@ async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, Strin
 /// one file. The all-time totals still come from `file_change_totals`, because
 /// a bounded list cannot sum to an all-time number and pretending otherwise
 /// would show a total that shrinks as the list grows.
+///
+/// Deliberately does **not** carry `diff`. Each one may be a quarter of a
+/// megabyte and this list is fetched whole for every render of the board; a
+/// list of five hundred writes would put 128MB through IPC to populate badges
+/// that are two digits wide. The lines are fetched one at a time, when someone
+/// actually expands a row — see [`file_change_diff`].
 #[tauri::command]
 async fn list_recent_file_changes(
     state: State<'_, AppState>,
@@ -2626,10 +2632,27 @@ async fn list_recent_file_changes(
                 skill: r.5,
                 lines_added: r.6,
                 lines_deleted: r.7,
+                diff: None,
                 created_at: r.8,
             })
         })
         .collect())
+}
+
+/// The lines behind one ledger row, for expanding it.
+///
+/// Separate from the list for the reason a viewer separates a preview from a
+/// file: the list is always wanted in full and never read in full, the diff is
+/// the opposite. Returns `None` rather than an empty string when there is
+/// nothing to expand — a row whose counts could not be turned into lines
+/// (binary content, a file past the diff cap, a row from before the column
+/// existed) says so by not expanding, instead of opening onto a blank pane
+/// that reads as a bug.
+#[tauri::command]
+async fn file_change_diff(state: State<'_, AppState>, id: Uuid) -> Result<Option<String>, String> {
+    ravenbot_db::queries::FileChangeQueries::diff_for(state.db.pool(), id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Per-agent change totals for the projects view: files, writes, +lines, -lines.
@@ -4793,6 +4816,7 @@ pub fn run() {
             file_change_totals,
             list_file_changes,
             list_recent_file_changes,
+            file_change_diff,
             read_workspace_file,
             open_workspace_in_file_manager,
             bot_desktop_status,

@@ -1509,9 +1509,11 @@
     "truncated": "Showing the first part of this file; it is too long to display in full.",
     "openExternal": "Open folder outside RAVENBOT",
     "changesTitle": "Changes",
-    "changesHint": "Every write an agent has made, newest first. Counts come from the write itself, not from a later diff.",
+    "changesHint": "Every write an agent has made, newest first. Counts come from the write itself, not from a later diff. Click a row to see the lines behind its numbers.",
     "noChanges": "Nothing has been changed yet",
     "noChangesHint": "A row appears here the moment an agent writes a file.",
+    "diffFailed": "Could not load the lines for this change: ",
+    "noDiff": "No line-level diff was recorded for this write. The counts are still exact — the content was binary, too large to line up, or written before diffs were kept.",
     "loadFailed": "Could not load projects: ",
     "treeFailed": "Could not load this folder: ",
     "readFailed": "Could not read this file: "
