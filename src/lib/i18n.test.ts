@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { join } from "node:path";
 import {
   getAvailableLocales,
   getLocale,
@@ -16,7 +18,7 @@ import ja from "./i18n/locales/ja.json";
 import zh from "./i18n/locales/zh.json";
 
 /**
- * The dictionary itself, plus the two rules that keep it honest.
+ * The dictionary itself, plus the rules that keep it honest.
  *
  * The first version of this file probed eleven hardcoded sections through
  * `t()`. That test could not fail, for a reason worth stating: `t()` falls back
@@ -25,9 +27,19 @@ import zh from "./i18n/locales/zh.json";
  * it still passes. Three whole blocks — `reasoning`, `tools`, `projects` — were
  * missing from five locales and the coverage test said everything was fine.
  *
- * So coverage is checked against the locale files, not through `t()`, and the
- * section list is walked from English rather than typed by hand. A key added
- * to English tomorrow is checked against six locales tomorrow too.
+ * So the key list is walked from English rather than typed by hand, and the
+ * checks read the locale files instead of going through `t()`. Four guards,
+ * each named after the defect it would have caught:
+ *
+ *  1. every English key exists in every locale, in its own dictionary;
+ *  2. no locale carries a key English does not;
+ *  3. no string uses a single-brace placeholder `t()` will never fill, and
+ *     every `{{x}}` in every locale actually resolves;
+ *  4. a key's placeholders are the same names in all six locales, and every
+ *     call site passes the ones its string asks for.
+ *
+ * (3) and (4) are invisible to (1): the key is present, non-empty, and still
+ * renders `{{count}}` to the user.
  */
 
 const dictionaries: Record<string, unknown> = { en, de, es, fr, ja, zh };
@@ -142,5 +154,107 @@ describe("placeholders", () => {
     }
     expect(leftovers).toEqual([]);
     setLocale("en");
+  });
+
+  it("asks for the same placeholder names in every locale", () => {
+    // A translation that renames the placeholder fills nothing: the caller
+    // passes `count`, the German string asks for `n`, and the user reads
+    // `{{n}}`. Coverage cannot see it — the key exists and is not empty.
+    const names = (value: string) =>
+      [...value.matchAll(/\{\{([A-Za-z_][A-Za-z_0-9]*)\}\}/g)]
+        .map((m) => m[1])
+        .sort()
+        .join(",");
+
+    const english = flat.get("en")!;
+    const drifted: string[] = [];
+    for (const [key, value] of Object.entries(english)) {
+      for (const [code, entries] of flat) {
+        if (code === "en") continue;
+        const got = names(entries[key]);
+        if (got !== names(value)) {
+          drifted.push(`${code}:${key} — wants [${got}], English wants [${names(value)}]`);
+        }
+      }
+    }
+    expect(drifted).toEqual([]);
+  });
+});
+
+/**
+ * The other half of a placeholder: the call site that supplies it.
+ *
+ * `t("settings.testReply", { replyy })` fills nothing — the string asks for
+ * `{{reply}}` and gets it left on screen. Only the direction that produces
+ * visible text is checked; passing an unused param is harmless, and failing
+ * the build on it would be a rule with no bug behind it.
+ *
+ * Deliberately conservative. The object is matched with `[^{}]*`, so a call
+ * whose value contains a nested object or function call does not match at all
+ * and is simply not checked; a value containing a top-level comma (an array
+ * literal) parses as unrecognised and is skipped. Under-reporting is the right
+ * trade — a source-scanning test that fails on a legitimate call gets deleted,
+ * which loses every other check in this file with it.
+ */
+describe("call sites", () => {
+  /** Property names in a simple object literal, or `null` if not statically obvious. */
+  function paramNames(args: string): string[] | null {
+    const names: string[] = [];
+    for (const raw of args.split(",")) {
+      const part = raw.trim();
+      if (!part) continue;
+      const explicit = part.match(/^([A-Za-z_][A-Za-z_0-9]*)\s*:/);
+      const shorthand = part.match(/^([A-Za-z_][A-Za-z_0-9]*)$/);
+      if (explicit) names.push(explicit[1]);
+      else if (shorthand) names.push(shorthand[1]);
+      else return null;
+    }
+    return names;
+  }
+
+  function walk(dir: string, out: string[] = []): string[] {
+    for (const entry of readdirSync(dir)) {
+      const full = join(dir, entry);
+      if (statSync(full).isDirectory()) walk(full, out);
+      else if (
+        (entry.endsWith(".svelte") || entry.endsWith(".ts")) &&
+        !entry.endsWith(".test.ts")
+      ) {
+        out.push(full);
+      }
+    }
+    return out;
+  }
+
+  it("passes every placeholder its string asks for", () => {
+    const english = flat.get("en")!;
+    const gaps: string[] = [];
+
+    for (const file of walk("src")) {
+      const source = readFileSync(file, "utf8");
+      // Built per file: `matchAll` carries `lastIndex` into a clone, and a
+      // shared `g` regex is one more thing to get wrong for no benefit.
+      const call = /\bt\(\s*"([A-Za-z0-9_.]+)"\s*,\s*\{([^{}]*)\}/g;
+      for (const m of source.matchAll(call)) {
+        const key = m[1];
+        const value = english[key];
+        if (typeof value !== "string") continue;
+
+        const passed = paramNames(m[2]);
+        if (passed === null) continue;
+
+        const wanted = [...value.matchAll(/\{\{([A-Za-z_][A-Za-z_0-9]*)\}\}/g)].map((x) => x[1]);
+        const missing = wanted.filter((w) => !passed.includes(w));
+        if (!missing.length) continue;
+
+        const line = source.slice(0, m.index).split("\n").length;
+        gaps.push(
+          `${file}:${line} — t("${key}") wants ${missing
+            .map((w) => `{{${w}}}`)
+            .join(", ")}, passed {${passed.join(", ")}}`
+        );
+      }
+    }
+    expect(gaps).toEqual([]);
   });
 });
