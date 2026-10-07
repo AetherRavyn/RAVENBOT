@@ -557,7 +557,8 @@
     "agentsTitle": "Elige o crea un agente",
     "agentsHint": "Las habilidades, el mercado y los chats funcionan por agente: selecciona uno para continuar.",
     "agentsPh": "Nombre del agente…",
-    "agentsCreate": "Crear agente"
+    "agentsCreate": "Crear agente",
+    "projects": "Proyectos"
   },
   "activity": {
     "thinking": "Pensándolo bien…",
@@ -1358,7 +1359,7 @@
       "fun-emoji": "Caras de emoji 3D alegres",
       "ravenicon": "Emblema nativo de Raven OS"
     },
-    "animatesEvery": "Cambia cada ~{s}s",
+    "animatesEvery": "Cambia cada ~{{s}}s",
     "stillStyle": "Estático",
     "animate": "Animar avatares",
     "animateHelp": "Desactivado muestra una cara estática para cada agente. La app respeta la configuración de movimiento reducido de tu sistema en cualquier caso."
@@ -1475,5 +1476,45 @@
     "browseFiles": "Archivos",
     "showReply": "Responder",
     "hideReply": "Ocultar"
+  },
+  "reasoning": {
+    "title": "Razonamiento",
+    "live": "Pensando…",
+    "rounds": "Razonamiento · {{count}} pasos",
+    "afterTools": "tras los resultados de las herramientas",
+    "working": "sigue pensando…"
+  },
+  "tools": {
+    "title": "Llamadas a herramientas",
+    "input": "entrada",
+    "output": "salida",
+    "failed": "fallido"
+  },
+  "projects": {
+    "title": "Proyectos",
+    "count": "{{count}} espacios de trabajo",
+    "refresh": "Recargar",
+    "agentsLabel": "Cambios por agente",
+    "allAgents": "Todos los agentes",
+    "sideLabel": "Proyectos y sus archivos",
+    "viewLabel": "Archivo",
+    "office": "oficina",
+    "agent": "agente",
+    "none": "Aún no hay espacios de trabajo",
+    "noneHint": "Dale una carpeta a una oficina o a un agente en su configuración y su código aparecerá aquí.",
+    "missing": "Esta carpeta todavía no existe. Se crea la primera vez que un agente escribe en ella.",
+    "empty": "Esta carpeta está vacía.",
+    "binary": "Archivo binario — no se muestra como texto.",
+    "truncated": "Se muestra la primera parte de este archivo; es demasiado largo para mostrarse completo.",
+    "openExternal": "Abrir carpeta fuera de RAVENBOT",
+    "changesTitle": "Cambios",
+    "changesHint": "Cada escritura de un agente, de la más reciente a la más antigua. Los recuentos salen de la propia escritura, no de un diff posterior. Pulsa una fila para ver las líneas que hay detrás de sus cifras.",
+    "noChanges": "Todavía no se ha cambiado nada",
+    "noChangesHint": "Una fila aparece aquí en cuanto un agente escribe un archivo.",
+    "diffFailed": "No se pudieron cargar las líneas de este cambio: ",
+    "noDiff": "No se registró un diff línea a línea para esta escritura. Los recuentos siguen siendo exactos: el contenido era binario, era demasiado grande para alinearse, o se escribió antes de que se guardaran los diff.",
+    "loadFailed": "No se pudieron cargar los proyectos: ",
+    "treeFailed": "No se pudo cargar esta carpeta: ",
+    "readFailed": "No se pudo leer este archivo: "
   }
 }

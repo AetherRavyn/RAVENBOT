@@ -5,8 +5,47 @@ import {
   initI18n,
   setLocale,
   t,
+  type Locale,
   type TranslationKey,
 } from "./i18n";
+import en from "./i18n/locales/en.json";
+import de from "./i18n/locales/de.json";
+import es from "./i18n/locales/es.json";
+import fr from "./i18n/locales/fr.json";
+import ja from "./i18n/locales/ja.json";
+import zh from "./i18n/locales/zh.json";
+
+/**
+ * The dictionary itself, plus the two rules that keep it honest.
+ *
+ * The first version of this file probed eleven hardcoded sections through
+ * `t()`. That test could not fail, for a reason worth stating: `t()` falls back
+ * to **English** before it falls back to the key, so a German string that does
+ * not exist returns a perfectly good English string and every assertion below
+ * it still passes. Three whole blocks — `reasoning`, `tools`, `projects` — were
+ * missing from five locales and the coverage test said everything was fine.
+ *
+ * So coverage is checked against the locale files, not through `t()`, and the
+ * section list is walked from English rather than typed by hand. A key added
+ * to English tomorrow is checked against six locales tomorrow too.
+ */
+
+const dictionaries: Record<string, unknown> = { en, de, es, fr, ja, zh };
+
+type Flat = Record<string, string>;
+
+function flatten(obj: unknown, prefix = "", out: Flat = {}): Flat {
+  if (obj && typeof obj === "object") {
+    for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+      flatten(v, prefix ? `${prefix}.${k}` : k, out);
+    }
+  } else if (typeof obj === "string") {
+    out[prefix] = obj;
+  }
+  return out;
+}
+
+const flat = new Map(Object.entries(dictionaries).map(([code, d]) => [code, flatten(d)]));
 
 describe("t()", () => {
   it("returns the English translation by key", () => {
@@ -27,20 +66,31 @@ describe("t()", () => {
 });
 
 describe("locale switching", () => {
-  it("all 6 locales have full coverage (no fallback gaps on any key)", () => {
-    const available = getAvailableLocales();
-    expect(available).toHaveLength(6);
+  it("all 6 locales carry every English key in their own dictionary", () => {
+    expect(getAvailableLocales()).toHaveLength(6);
 
-    // Walk every key of the English dictionary and check each locale resolves
-    for (const key of enKeys()) {
-      for (const loc of available) {
-        setLocale(loc.code);
-        const translated = t(key as TranslationKey);
-        expect(translated, `${loc.code}:${key}`).not.toBe("");
-        // A missing key would fall through to the key itself
-        expect(translated, `${loc.code}:${key}`).not.toBe(key);
+    const gaps: string[] = [];
+    for (const [code, entries] of flat) {
+      for (const key of Object.keys(flat.get("en")!)) {
+        if (typeof entries[key] !== "string" || entries[key] === "") {
+          gaps.push(`${code}:${key}`);
+        }
       }
     }
+    expect(gaps).toEqual([]);
+  });
+
+  it("has no keys that only exist in a translation", () => {
+    // A key nobody reads is a typo waiting to happen — `projets.title` passes
+    // every other check in this file and is simply never shown to anybody.
+    const english = new Set(Object.keys(flat.get("en")!));
+    const strays: string[] = [];
+    for (const [code, entries] of flat) {
+      for (const key of Object.keys(entries)) {
+        if (!english.has(key)) strays.push(`${code}:${key}`);
+      }
+    }
+    expect(strays).toEqual([]);
   });
 
   it("defaults to English", () => {
@@ -50,34 +100,47 @@ describe("locale switching", () => {
   });
 });
 
-function enKeys(): string[] {
-  // The English dictionary is the source of truth for keys; reconstruct it
-  // via the public API of the module under test.
-  const keys: string[] = [];
-  const walk = (prefix: string, obj: unknown) => {
-    if (obj && typeof obj === "object") {
-      for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-        const next = prefix ? `${prefix}.${k}` : k;
-        if (v && typeof v === "object") walk(next, v);
-        else keys.push(next);
+/**
+ * `t()` fills `{{name}}`, so a string written with one brace is not a
+ * placeholder at all — it is text, shown to the user, braces and all, in
+ * every locale. Four of those shipped: the avatar cadence tooltip in all six,
+ * the reasoning step count, the workspace count, and a German office button
+ * that was a single `}}` short of working.
+ *
+ * `${VAR}` is exempt: those are shell syntax inside a connectors string and
+ * must reach the shell untouched.
+ */
+describe("placeholders", () => {
+  const stray = /(?<![$\\])\{[A-Za-z_][A-Za-z_0-9]*\}(?!\})/;
+
+  it("has no single-brace placeholders in any locale", () => {
+    const offenders: string[] = [];
+    for (const [code, entries] of flat) {
+      for (const [key, value] of Object.entries(entries)) {
+        const match = value.match(stray);
+        if (match) offenders.push(`${code}:${key} = ${JSON.stringify(value)}`);
       }
     }
-  };
-  // The module exports no dictionary accessor; instead detect fallthrough by
-  // probing known top-level sections against each locale. To keep the test
-  // self-contained, probe with the sections that exist in the app.
-  walk("", {
-    app: { name: "", tagline: "", loading: "" },
-    sidebar: { search: "", filterWaiting: "", noBots: "", pauseAll: "", createBot: "" },
-    bot: { status: { idle: "", thinking: "", runningTool: "", waitingOnUser: "", paused: "" }, settings: "", skills: "", delete: "", deleteConfirm: "" },
-    thread: { threads: "", noThreads: "", welcome: "", emptyWelcome: "", typing: "", send: "" },
-    settings: { title: "", apiKeys: "", apiKeysDesc: "", localModels: "", localModelsDesc: "", about: "", save: "", saved: "", cancel: "", openrouter: "", anthropic: "", openai: "", ollamaUrl: "", version: "" },
-    skills: { title: "", description: "", requires: "", saveSkills: "" },
-    killSwitch: { active: "", resume: "", trigger: "", confirmTitle: "", confirmMessage: "", reasonPlaceholder: "", activate: "" },
-    commandPalette: { placeholder: "", noResults: "", createBot: "", createBotDesc: "", settings: "", settingsDesc: "" },
-    emptyState: { selectBot: "", commandPalette: "", settingsShortcut: "" },
-    errors: { loadFailed: "", sendFailed: "", createFailed: "", updateFailed: "", deleteFailed: "" },
-    a11y: { sidebar: "", thread: "", compose: "", settings: "", killSwitch: "" },
+    expect(offenders).toEqual([]);
   });
-  return keys;
-}
+
+  it("fills every placeholder in every locale, not just the first", () => {
+    // A plain `String.replace` swaps one occurrence, so a string that repeats
+    // a placeholder renders the rest of them literally.
+    const leftovers: string[] = [];
+    for (const [code, entries] of flat) {
+      setLocale(code as Locale);
+      for (const [key, value] of Object.entries(entries)) {
+        const params: Record<string, string> = {};
+        for (const m of value.matchAll(/\{\{([A-Za-z_][A-Za-z_0-9]*)\}\}/g)) {
+          params[m[1]] = "X";
+        }
+        if (!Object.keys(params).length) continue;
+        const out = t(key as TranslationKey, params);
+        if (out.includes("{{")) leftovers.push(`${code}:${key} = ${JSON.stringify(out)}`);
+      }
+    }
+    expect(leftovers).toEqual([]);
+    setLocale("en");
+  });
+});

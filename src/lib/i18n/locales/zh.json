@@ -557,7 +557,8 @@
     "agentsTitle": "选择或创建智能体",
     "agentsHint": "技能、市场和对话按智能体运行——选择一个以继续。",
     "agentsPh": "智能体名称…",
-    "agentsCreate": "创建智能体"
+    "agentsCreate": "创建智能体",
+    "projects": "项目"
   },
   "activity": {
     "thinking": "正在仔细思考…",
@@ -1358,7 +1359,7 @@
       "fun-emoji": "欢乐3D表情",
       "ravenicon": "Raven OS 原生徽标"
     },
-    "animatesEvery": "每约 {s} 秒变化",
+    "animatesEvery": "每约 {{s}} 秒变化",
     "stillStyle": "静态",
     "animate": "为头像添加动画",
     "animateHelp": "关闭后每个智能体都显示静态头像。无论如何，应用也会遵循系统的减弱动态效果设置。"
@@ -1475,5 +1476,45 @@
     "browseFiles": "文件",
     "showReply": "回复",
     "hideReply": "隐藏"
+  },
+  "reasoning": {
+    "title": "推理",
+    "live": "思考中…",
+    "rounds": "推理 · {{count}} 个步骤",
+    "afterTools": "在工具结果之后",
+    "working": "仍在思考…"
+  },
+  "tools": {
+    "title": "工具调用",
+    "input": "输入",
+    "output": "输出",
+    "failed": "失败"
+  },
+  "projects": {
+    "title": "项目",
+    "count": "{{count}} 个工作区",
+    "refresh": "重新加载",
+    "agentsLabel": "按智能体查看更改",
+    "allAgents": "所有智能体",
+    "sideLabel": "项目及其文件",
+    "viewLabel": "文件",
+    "office": "办公室",
+    "agent": "智能体",
+    "none": "还没有工作区",
+    "noneHint": "在设置中为办公室或智能体指定一个文件夹，它的代码库就会出现在这里。",
+    "missing": "此文件夹尚不存在。智能体第一次写入时会创建它。",
+    "empty": "此文件夹为空。",
+    "binary": "二进制文件 — 不以文本显示。",
+    "truncated": "仅显示此文件的开头部分；文件过长，无法完整显示。",
+    "openExternal": "在 RAVENBOT 之外打开文件夹",
+    "changesTitle": "更改",
+    "changesHint": "智能体的每一次写入，最新在前。计数来自写入本身，而不是事后生成的差异。点击一行即可查看数字背后的行。",
+    "noChanges": "尚未有任何更改",
+    "noChangesHint": "智能体一写入文件，这里就会出现一行。",
+    "diffFailed": "无法加载此次更改的行： ",
+    "noDiff": "此次写入没有记录逐行差异。计数仍然准确 — 内容是二进制、过大无法比对，或是在保留差异功能之前写入的。",
+    "loadFailed": "无法加载项目： ",
+    "treeFailed": "无法加载此文件夹： ",
+    "readFailed": "无法读取此文件： "
   }
 }

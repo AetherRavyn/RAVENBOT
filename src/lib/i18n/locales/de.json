@@ -557,7 +557,8 @@
     "agentsTitle": "Agenten wählen oder erstellen",
     "agentsHint": "Skills, Markt und Chats laufen pro Agent — wähle einen aus, um fortzufahren.",
     "agentsPh": "Agentenname…",
-    "agentsCreate": "Agent erstellen"
+    "agentsCreate": "Agent erstellen",
+    "projects": "Projekte"
   },
   "activity": {
     "thinking": "Ich denke nach…",
@@ -846,7 +847,7 @@
     "removeMember": "Entfernen",
     "assignRank": "{{rank}} zuweisen",
     "establishing": "Büro wird eingerichtet...",
-    "createBtn": "„{{name}“ erstellen",
+    "createBtn": "„{{name}}“ erstellen",
     "fallbackName": "Büro",
     "stepOffice": "Büro",
     "stepTemplate": "Vorlage",
@@ -1358,7 +1359,7 @@
       "fun-emoji": "Fröhliche 3D-Emoji-Gesichter",
       "ravenicon": "Native Raven OS Emblem"
     },
-    "animatesEvery": "Ändert sich alle ~{s}s",
+    "animatesEvery": "Ändert sich alle ~{{s}}s",
     "stillStyle": "Statisch",
     "animate": "Avatare animieren",
     "animateHelp": "Aus zeigt für jeden Agenten ein statisches Gesicht. Die App respektiert unabhängig davon die Bewegungseinstellung Ihres Systems."
@@ -1475,5 +1476,45 @@
     "browseFiles": "Dateien",
     "showReply": "Antworten",
     "hideReply": "Ausblenden"
+  },
+  "reasoning": {
+    "title": "Denkprozess",
+    "live": "Denkt nach…",
+    "rounds": "Denkprozess · {{count}} Schritte",
+    "afterTools": "nach Tool-Ergebnissen",
+    "working": "denkt noch nach…"
+  },
+  "tools": {
+    "title": "Tool-Aufrufe",
+    "input": "Eingabe",
+    "output": "Ausgabe",
+    "failed": "fehlgeschlagen"
+  },
+  "projects": {
+    "title": "Projekte",
+    "count": "{{count}} Arbeitsbereiche",
+    "refresh": "Neu laden",
+    "agentsLabel": "Änderungen nach Agent",
+    "allAgents": "Alle Agenten",
+    "sideLabel": "Projekte und ihre Dateien",
+    "viewLabel": "Datei",
+    "office": "Büro",
+    "agent": "Agent",
+    "none": "Noch keine Arbeitsbereiche",
+    "noneHint": "Gib einem Büro oder einem Agenten einen Ordner in dessen Einstellungen — dann erscheint hier sein Codebasis.",
+    "missing": "Dieser Ordner existiert noch nicht. Er wird beim ersten Schreiben eines Agenten angelegt.",
+    "empty": "Dieser Ordner ist leer.",
+    "binary": "Binärdatei — wird nicht als Text angezeigt.",
+    "truncated": "Nur der Anfang dieser Datei wird angezeigt; sie ist zu lang für die vollständige Darstellung.",
+    "openExternal": "Ordner außerhalb von RAVENBOT öffnen",
+    "changesTitle": "Änderungen",
+    "changesHint": "Jedes Schreiben eines Agenten, neueste zuerst. Die Zahlen stammen aus dem Schreiben selbst, nicht aus einem späteren Diff. Klicke eine Zeile an, um die Zeilen dahinter zu sehen.",
+    "noChanges": "Es wurde noch nichts geändert",
+    "noChangesHint": "Eine Zeile erscheint hier, sobald ein Agent eine Datei schreibt.",
+    "diffFailed": "Die Zeilen dieser Änderung konnten nicht geladen werden: ",
+    "noDiff": "Für diesen Schreibvorgang wurde kein zeilenweiser Diff gespeichert. Die Zahlen stimmen trotzdem — der Inhalt war binär, zu groß zum Abgleichen oder wurde geschrieben, bevor Diffs aufbewahrt wurden.",
+    "loadFailed": "Projekte konnten nicht geladen werden: ",
+    "treeFailed": "Dieser Ordner konnte nicht geladen werden: ",
+    "readFailed": "Diese Datei konnte nicht gelesen werden: "
   }
 }

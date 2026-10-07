@@ -1417,7 +1417,7 @@
     "randomize": "Randomize Look",
     "seedName": "Avatar Seed Name",
     "customUrl": "Custom Image URL",
-    "animatesEvery": "Changes every ~{s}s",
+    "animatesEvery": "Changes every ~{{s}}s",
     "stillStyle": "Still",
     "animate": "Animate avatars",
     "animateHelp": "Off shows a still face for every agent. The app also honours your system's reduced-motion setting either way.",
@@ -1480,7 +1480,7 @@
   "reasoning": {
     "title": "Reasoning",
     "live": "Thinking…",
-    "rounds": "Reasoning · {count} steps",
+    "rounds": "Reasoning · {{count}} steps",
     "afterTools": "after tool results",
     "working": "still thinking…"
   },
@@ -1488,12 +1488,11 @@
     "title": "Tool calls",
     "input": "input",
     "output": "output",
-    "failed": "failed",
-    "running": "running"
+    "failed": "failed"
   },
   "projects": {
     "title": "Projects",
-    "count": "{count} workspaces",
+    "count": "{{count}} workspaces",
     "refresh": "Reload",
     "agentsLabel": "Changes by agent",
     "allAgents": "All agents",

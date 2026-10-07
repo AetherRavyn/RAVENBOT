@@ -557,7 +557,8 @@
     "agentsTitle": "Choisissez ou créez un agent",
     "agentsHint": "Skills, marché et discussions fonctionnent par agent — sélectionnez-en un pour continuer.",
     "agentsPh": "Nom de l’agent…",
-    "agentsCreate": "Créer un agent"
+    "agentsCreate": "Créer un agent",
+    "projects": "Projets"
   },
   "activity": {
     "thinking": "Je réfléchis…",
@@ -1358,7 +1359,7 @@
       "fun-emoji": "Visages d'émoji 3D joyeux",
       "ravenicon": "Emblème natif de Raven OS"
     },
-    "animatesEvery": "Change toutes les ~{s}s",
+    "animatesEvery": "Change toutes les ~{{s}}s",
     "stillStyle": "Fixe",
     "animate": "Animer les avatars",
     "animateHelp": "Désactivé affiche un visage fixe pour chaque agent. L'application respecte de toute façon le réglage de mouvement réduit de votre système."
@@ -1475,5 +1476,45 @@
     "browseFiles": "Fichiers",
     "showReply": "Répondre",
     "hideReply": "Masquer"
+  },
+  "reasoning": {
+    "title": "Réflexion",
+    "live": "Réflexion…",
+    "rounds": "Réflexion · {{count}} étapes",
+    "afterTools": "après les résultats des outils",
+    "working": "toujours en réflexion…"
+  },
+  "tools": {
+    "title": "Appels d'outils",
+    "input": "entrée",
+    "output": "sortie",
+    "failed": "échoué"
+  },
+  "projects": {
+    "title": "Projets",
+    "count": "{{count}} espaces de travail",
+    "refresh": "Recharger",
+    "agentsLabel": "Modifications par agent",
+    "allAgents": "Tous les agents",
+    "sideLabel": "Projets et leurs fichiers",
+    "viewLabel": "Fichier",
+    "office": "bureau",
+    "agent": "agent",
+    "none": "Aucun espace de travail pour l'instant",
+    "noneHint": "Donnez un dossier à un bureau ou à un agent dans ses paramètres, et son code apparaîtra ici.",
+    "missing": "Ce dossier n'existe pas encore. Il est créé dès qu'un agent y écrit.",
+    "empty": "Ce dossier est vide.",
+    "binary": "Fichier binaire — non affiché en texte.",
+    "truncated": "Affichage de la première partie de ce fichier ; il est trop long pour être affiché en entier.",
+    "openExternal": "Ouvrir le dossier hors de RAVENBOT",
+    "changesTitle": "Modifications",
+    "changesHint": "Chaque écriture d'un agent, de la plus récente à la plus ancienne. Les compteurs viennent de l'écriture elle-même, pas d'un diff ultérieur. Cliquez sur une ligne pour voir les lignes derrière ses chiffres.",
+    "noChanges": "Rien n'a encore été modifié",
+    "noChangesHint": "Une ligne apparaît dès qu'un agent écrit un fichier.",
+    "diffFailed": "Impossible de charger les lignes de cette modification : ",
+    "noDiff": "Aucun diff ligne à ligne n'a été enregistré pour cette écriture. Les compteurs restent exacts — le contenu était binaire, trop volumineux à aligner, ou écrit avant qu'on conserve les diff.",
+    "loadFailed": "Impossible de charger les projets : ",
+    "treeFailed": "Impossible de charger ce dossier : ",
+    "readFailed": "Impossible de lire ce fichier : "
   }
 }
