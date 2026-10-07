@@ -175,10 +175,6 @@ textarea {
   from { opacity: 0; transform: scale(0.97) translateY(4px); }
   to { opacity: 1; transform: none; }
 }
-@keyframes rb-pulse-soft {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
-}
 @keyframes rb-spin {
   to { transform: rotate(360deg); }
 }
@@ -192,15 +188,11 @@ textarea {
 .animate-scale-in {
   animation: rb-scale-in var(--duration-slow) var(--ease-out) both;
 }
-.animate-pulse-soft {
-  animation: rb-pulse-soft 1.8s var(--ease-in-out) infinite;
-}
 
 @media (prefers-reduced-motion: reduce) {
   .animate-fade-in,
   .animate-rise-in,
   .animate-scale-in,
-  .animate-pulse-soft,
   .shimmer {
     animation: none !important;
   }

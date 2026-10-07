@@ -206,26 +206,7 @@
   align-items: center;
   gap: 4px;
 }
-.md-code-copy,
-.md-code-artifact {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 26px;
-  padding-inline: 7px;
-  border-radius: var(--radius-sm);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--text-muted);
-  cursor: pointer;
-  background: transparent;
-  border: 0;
-}
-.md-code-copy:hover,
-.md-code-artifact:hover {
-  background: var(--hairline);
-  color: var(--text-secondary);
-}
+
 .md-code-pre {
   margin: 0;
   background: var(--surface-0);
@@ -298,58 +279,12 @@
  * Shared surface utilities — OpenBot flat chrome
  * ═══════════════════════════════════════════════════════════════════════ */
 
-/* App background: the plain neutral canvas. */
-.app-ambient {
-  background: var(--surface-0);
-}
-
 /* Header / palette / floating-bar surface.
  * OpenBot has no frosted glass — keep the class for existing markup but make
  * it a solid panel colour so nothing blurs or desaturates behind it. */
 .glass {
   background: var(--surface-1);
 }
-
-.glass-strong {
-  background: var(--surface-1);
-}
-
-/* Layered card — quiet hairline border, barely-there shadow. */
-.card-surface {
-  background: var(--surface-1);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-sm);
-}
-
-.card-raised {
-  background: var(--surface-2);
-  border: 1px solid var(--hairline-strong);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-md);
-}
-
-.hover-lift {
-  transition: border-color var(--duration-normal) var(--ease-out),
-    box-shadow var(--duration-normal) var(--ease-out),
-    background-color var(--duration-normal) var(--ease-out);
-}
-.hover-lift:hover {
-  border-color: var(--hairline-strong);
-  box-shadow: var(--shadow-md);
-}
-
-.brand-gradient {
-  background-color: var(--brand);
-}
-.gradient-text {
-  color: var(--brand-text);
-}
-
-.hairline-b { border-bottom: 1px solid var(--hairline); }
-.hairline-t { border-top: 1px solid var(--hairline); }
-.hairline-r { border-right: 1px solid var(--hairline); }
-.hairline-l { border-left: 1px solid var(--hairline); }
 
 /* Icon button base for consistent hit targets + hover. */
 .icon-btn {
@@ -370,27 +305,7 @@
   transform: scale(0.96);
 }
 
-/* Status dot */
-.status-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  flex: none;
-}
-.status-dot--idle { background: var(--status-idle); }
-.status-dot--thinking { background: var(--status-thinking); animation: rb-pulse-soft 1.6s infinite; }
-.status-dot--running_tool { background: var(--status-running); animation: rb-pulse-soft 1.2s infinite; }
-.status-dot--waiting_on_user { background: var(--status-waiting); animation: rb-pulse-soft 1s infinite; }
-.status-dot--paused { background: var(--status-paused); }
-.status-dot--done { background: var(--status-success); }
-
 /* Typing indicator — see OpenBot TypingDots spec at the bottom of this file. */
-
-/* Slim scroll container */
-.scroll-slim {
-  scrollbar-width: thin;
-  scrollbar-color: var(--surface-4) transparent;
-}
 
 /* Skeleton block */
 .skeleton {
@@ -421,15 +336,6 @@
   cursor: not-allowed;
 }
 
-/* Theme-driven accent helpers — follow the active palette (flat, no gradient). */
-.bg-brand { background-color: var(--brand); }
-.text-brand { color: var(--brand-text); }
-.border-brand { border-color: var(--brand); }
-.theme-selected {
-  border-color: var(--brand);
-  background-color: var(--brand-soft);
-}
-
 /* Modal shell — one consistent panel for every dialog/drawer. */
 .modal-panel {
   background: var(--surface-1);
@@ -446,13 +352,6 @@
 .modal-header {
   padding: 1.25rem 1.5rem 0.75rem;
   border-bottom: 1px solid var(--hairline);
-}
-.modal-body {
-  padding: 1rem 1.5rem;
-}
-.modal-footer {
-  padding: 0.875rem 1.5rem;
-  border-top: 1px solid var(--hairline);
 }
 
 /* ── Workspace app frame (OpenBot grid shell) ────────────────────────────
