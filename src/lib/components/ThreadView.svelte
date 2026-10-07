@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { reasoning } from "$lib/chat/reasoning.svelte";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
@@ -372,8 +373,18 @@
             streamingText += payload.content || "";
             scrollToBottom();
             break;
+          case "reasoning":
+            // Its own channel, and `clear` below does not touch it. That is the
+            // whole point: the answer's buffer is legitimately reset between model
+            // rounds, and the reasoning is not.
+            if (reasoning.ingest(payload)) scrollToBottom();
+            break;
           case "clear":
             streamingText = "";
+            // Close the current stretch rather than discarding it. Reasoning used
+            // to ride the text channel, so this line is where the entire trace of
+            // every tool-using turn went to die.
+            reasoning.endRound(String(payload?.thread_id || tid || ""));
             break;
           case "tool_started":
             streamingTool = payload.name;
@@ -414,11 +425,17 @@
               scrollToBottom();
             }
             break;
-          case "done":
+          case "done": {
             // OpenBot: snap the reveal sharp-full and HOLD the streamed text
             // until sendMessage's finally reloads history — clearing here is
             // what flashed the activity shimmer between `done` and the commit.
             reveal.finish();
+            // Close the live stretch. The run is over, so nothing is being
+            // thought — and a stream that ends without a final `clear` would
+            // otherwise leave the pulse running forever on a trace that stopped
+            // arriving minutes ago.
+            const doneTid = String(payload?.thread_id || selectedThreadId || "");
+            if (doneTid) reasoning.finish(doneTid);
             streamingTool = null;
             activeRunId = null;
             pausedRunId = null;
@@ -427,6 +444,7 @@
               refreshQuestions(selectedThreadId);
             }
             break;
+          }
           case "status":
             // Live status ring (thinking / running_tool / done → idle)
             if (payload?.bot_id === bot.id) {
@@ -1736,6 +1754,7 @@
               {isUser}
               isError={isModelError}
               text={hasChecklist ? (message.content.text || "") : rawContent}
+              reasoning={message.content.reasoning ?? null}
               time={formatTime(message.created_at)}
               {grouped}
               showMeta={!continuesRun}
@@ -1953,6 +1972,8 @@
                 showMeta={false}
                 ghost={isGhostContent(reveal.shown)}
                 fullWidthAgent={true}
+                reasoningThreadId={selectedThreadId}
+                reasoningLive={true}
               >
                 {#snippet aboveBubble()}{@render liveMarkers()}{/snippet}
                 {#snippet belowBubble()}{@render liveExtras()}{/snippet}

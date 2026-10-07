@@ -6,6 +6,7 @@
   // hover-revealed meta line. "Everything is a prop" on purpose so the two
   // views can never drift apart again.
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
+  import ReasoningPanel from "$lib/components/ReasoningPanel.svelte";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import type { AvatarMood } from "$lib/avatar";
   import { entrance } from "$lib/chat/entrance";
@@ -19,6 +20,18 @@
     streamTail?: string;
     /** Pre-formatted timestamp for the meta line (empty hides the line). */
     time?: string;
+    /**
+     * The agent's reasoning, shown above the answer.
+     *
+     * Only for agent rows. A user has no reasoning trace, and rendering an empty
+     * panel beside every user message would put a border on half the conversation
+     * to say nothing.
+     */
+    reasoning?: string | null;
+    /** Thread to read live reasoning from while this row is the streaming one. */
+    reasoningThreadId?: string | null;
+    /** True while the agent is still working, so the panel stays open. */
+    reasoningLive?: boolean;
     /** Continues the previous run — tightens spacing via [data-grouped]. */
     grouped?: boolean;
     /** Mid-run rows hide the meta line (ThreadView passes !continuesRun). */
@@ -56,6 +69,9 @@
     text,
     streamTail = "",
     time = "",
+    reasoning = null,
+    reasoningThreadId = null,
+    reasoningLive = false,
     grouped = false,
     showMeta = true,
     ghost = false,
@@ -119,6 +135,17 @@
       </div>
     {:else}
       <div class="space-y-3">
+        <!--
+          Reasoning sits above the answer, in the agent's column. Order matters:
+          the panel is the evidence and the bubble is the claim, so evidence first
+          reads as reasoning *toward* the answer rather than a footnote after it.
+        -->
+        <ReasoningPanel
+          threadId={reasoningThreadId || ""}
+          agentName={gutterName || ""}
+          stored={reasoning}
+          live={reasoningLive}
+        />
         {@render aboveBubble?.()}
         <div use:smoothHeight class={ghost ? "msg-bubble msg-bubble-ghost" : "msg-bubble msg-bubble-agent selection:bg-[var(--brand-soft)]"}>
           <MarkdownRenderer content={text} streamTail={streamTail} {onOpenArtifact} />

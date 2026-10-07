@@ -1475,5 +1475,12 @@
   },
   "logo": {
     "label": "RAVENBOT. Activate for a reaction."
+  },
+  "reasoning": {
+    "title": "Reasoning",
+    "live": "Thinking…",
+    "rounds": "Reasoning · {count} steps",
+    "afterTools": "after tool results",
+    "working": "still thinking…"
   }
 }

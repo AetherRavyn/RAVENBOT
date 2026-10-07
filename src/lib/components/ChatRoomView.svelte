@@ -33,6 +33,7 @@
   import { showAuthorHeader, authorHue, isGhostContent } from "$lib/chat/grouping";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { handoffs } from "$lib/handoffs.svelte";
+  import { reasoning } from "$lib/chat/reasoning.svelte";
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
   import { StreamReveal } from "$lib/chat/streamReveal.svelte";
   import { prefersReducedMotion } from "$lib/a11y";
@@ -284,6 +285,18 @@
   // Events from any other thread are ignored (no cross-run clobbering).
   const activeThreads = new Set<string>();
   const threadToNode = new Map<string, string>();
+  /**
+   * Reverse of `threadToNode`, for reading state that is keyed by thread —
+   * reasoning, specifically. Lanes are keyed by node so parallel runs of the same
+   * bot stay separate, but reasoning arrives addressed to its thread, and mapping
+   * one way would mean keeping a second map that drifts.
+   */
+  const laneThreadId = (key: string): string | null => {
+    if (!key.startsWith("node:")) return null;
+    const nodeId = key.slice(5);
+    for (const [threadId, id] of threadToNode) if (id === nodeId) return threadId;
+    return null;
+  };
   // Human-in-the-loop cards: an office node's tool call parks server-side
   // until it is decided/answered, so the room must surface the request.
   interface PendingApproval {
@@ -784,6 +797,12 @@
           }
         } else if (kind === "question_answered") {
           pendingQuestions = pendingQuestions.filter((q) => q.id !== p.question_id);
+        } else if (kind === "reasoning") {
+          // Its own event, and the `clear` below only closes the round — it does
+          // not wipe this. In an office this is the one that matters most: the
+          // lead's reasoning between delegations is where you can see whether it
+          // is on track, and it used to be cleared away the moment any tool ran.
+          reasoning.ingest(p);
         } else if (kind === "delta") {
           // Route the token stream to its NODE lane (parallel same-bot nodes
           // stay separate); unattributed deltas fall back to a per-bot lane.
@@ -806,6 +825,10 @@
             if (p.name === "todo") refreshBotTodos(String(p.bot_id));
           }
         } else if (kind === "clear") {
+          // Close the reasoning stretch that just ended. `endRound`, not a wipe:
+          // reasoning used to ride the text channel, so this boundary is exactly
+          // where every tool-using turn's thinking was destroyed.
+          reasoning.endRound(tid);
           // A new model round begins: KEEP the finished round's text as a
           // progress note instead of wiping it.
           const key = threadToNode.get(tid) || `bot:${p.bot_id}`;
@@ -817,6 +840,7 @@
             [key]: { ...cur, text: "", rounds: note ? [...cur.rounds, note] : cur.rounds },
           };
         } else if (kind === "done") {
+          reasoning.finish(tid);
           // Backend emits `done` only AFTER posting the persisted messages.
           // Our own send()/dispatchPlan() refetches and commits (commitLanes)
           // — no blank-gap flash. If we did NOT start this run (room reopened
@@ -1600,6 +1624,8 @@
                   gutterMood={fleetActivity.mood(lane.botId || "")}
                   author={{ name, specialty: nodeName || m?.specialty }}
                   authorColor={color}
+                  reasoningThreadId={laneThreadId(key)}
+                  reasoningLive={st === "thinking" || st === "running_tool"}
                 >
                   {#snippet aboveBubble()}
                     {#if lane.rounds.length}

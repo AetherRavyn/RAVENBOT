@@ -73,7 +73,16 @@ export interface ChecklistItem {
 // Rust serializes this enum with `#[serde(tag = "type")]` and no rename_all,
 // so the discriminants are the PascalCase variant names.
 export type MessageContent =
-  | { type: "Text"; text: string; sources?: unknown[] }
+  /**
+   * `reasoning` is the model's thinking, kept apart from `text` on purpose.
+   *
+   * It was previously prefixed into `text` as a `<think>` block, which meant the
+   * streamed buffer could be cleared mid-thought, an interrupted stream left the
+   * markers sitting in the user's paragraph, and any renderer that missed a
+   * marker showed private notes as answer text. Optional because rows written
+   * before the field existed simply do not have one.
+   */
+  | { type: "Text"; text: string; sources?: unknown[]; reasoning?: string | null }
   | { type: "Checklist"; text: string | null; items: ChecklistItem[] }
   | { type: "ToolCall"; tool_name: string; arguments: any }
   | { type: "ToolResult"; tool_name: string; result: any; is_error: boolean };
