@@ -1716,3 +1716,112 @@ impl BotContactQueries {
             .collect())
     }
 }
+
+/// Per-agent file-change journal.
+///
+/// Written by the runtime the moment a write succeeds, so the numbers are live
+/// rather than assembled on demand from a transcript that may have reloaded.
+pub struct FileChangeQueries;
+
+impl FileChangeQueries {
+    pub async fn insert(pool: &SqlitePool, change: &ravenbot_core::FileChange) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO file_changes (id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(change.id.to_string())
+        .bind(change.bot_id.to_string())
+        .bind(change.run_id.map(|id| id.to_string()))
+        .bind(change.thread_id.map(|id| id.to_string()))
+        .bind(&change.path)
+        .bind(&change.skill)
+        .bind(change.lines_added)
+        .bind(change.lines_deleted)
+        .bind(&change.created_at)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// The most recent writes for one agent.
+    ///
+    /// Bounded and newest-first: the useful question is "what is it doing now",
+    /// and an unbounded list would hand the UI a table that grows forever on
+    /// every run. Ordered by time rather than grouped, so two writes to the same
+    /// file in one run both appear — the second one is often the correction.
+    pub async fn recent_for_bot(
+        pool: &SqlitePool,
+        bot_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<ravenbot_core::FileChange>, sqlx::Error> {
+        type Row = (String, String, Option<String>, Option<String>, String, String, i64, i64, String);
+        let rows: Vec<Row> = sqlx::query_as(
+            "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted, created_at
+             FROM file_changes WHERE bot_id = ?
+             ORDER BY created_at DESC, rowid DESC
+             LIMIT ?",
+        )
+        .bind(bot_id.to_string())
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(Self::row_to_domain)
+            .collect())
+    }
+
+    /// Totals for every agent that has ever changed a file, in one query.
+    ///
+    /// `COUNT(DISTINCT path)` rather than `COUNT(*)` for the file count: an
+    /// agent that wrote the same file six times in a loop has still changed one
+    /// file, and reporting six would make a fix-up loop look like a large
+    /// change. Agents with no changes are absent rather than zeroed — the
+    /// caller decides whether a missing agent means "nothing yet" or "not
+    /// started", which is context this table does not have.
+    pub async fn totals(pool: &SqlitePool) -> Result<Vec<(Uuid, ravenbot_core::FileChangeTotals)>, sqlx::Error> {
+        let rows: Vec<(String, i64, i64, i64, i64)> = sqlx::query_as(
+            "SELECT bot_id,
+                    COUNT(DISTINCT path),
+                    COUNT(*),
+                    COALESCE(SUM(lines_added), 0),
+                    COALESCE(SUM(lines_deleted), 0)
+             FROM file_changes
+             GROUP BY bot_id
+             ORDER BY COALESCE(SUM(lines_added), 0) + COALESCE(SUM(lines_deleted), 0) DESC",
+        )
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(bot_id, files, writes, added, deleted)| {
+                Uuid::parse_str(&bot_id).ok().map(|id| {
+                    (
+                        id,
+                        ravenbot_core::FileChangeTotals { files, writes, lines_added: added, lines_deleted: deleted },
+                    )
+                })
+            })
+            .collect())
+    }
+
+    /// One tuple in, one domain row out.
+    ///
+    /// Takes the row rather than nine loose fields: sqlx hands back a tuple and
+    /// unpacking it at the call site is the same nine names twice, which is how
+    /// a field gets swapped with its neighbour and nobody notices until the
+    /// ledger reports lines in the wrong column.
+    fn row_to_domain(r: (String, String, Option<String>, Option<String>, String, String, i64, i64, String)) -> Option<ravenbot_core::FileChange> {
+        Some(ravenbot_core::FileChange {
+            id: Uuid::parse_str(&r.0).ok()?,
+            bot_id: Uuid::parse_str(&r.1).ok()?,
+            run_id: r.2.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+            thread_id: r.3.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+            path: r.4,
+            skill: r.5,
+            lines_added: r.6,
+            lines_deleted: r.7,
+            created_at: r.8,
+        })
+    }
+}

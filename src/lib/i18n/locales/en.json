@@ -629,7 +629,8 @@
     "agentsTitle": "Pick or create an agent",
     "agentsHint": "Skills, marketplace, and chats run per agent — select one to continue.",
     "agentsPh": "Agent name…",
-    "agentsCreate": "Create agent"
+    "agentsCreate": "Create agent",
+    "projects": "Projects"
   },
   "activity": {
     "thinking": "Thinking it through…",
@@ -1489,5 +1490,30 @@
     "output": "output",
     "failed": "failed",
     "running": "running"
+  },
+  "projects": {
+    "title": "Projects",
+    "count": "{count} workspaces",
+    "refresh": "Reload",
+    "agentsLabel": "Changes by agent",
+    "allAgents": "All agents",
+    "sideLabel": "Projects and their files",
+    "viewLabel": "File",
+    "office": "office",
+    "agent": "agent",
+    "none": "No workspaces yet",
+    "noneHint": "Give an office or an agent a folder in its settings, and its codebase will appear here.",
+    "missing": "This folder does not exist yet. It is created the first time an agent writes to it.",
+    "empty": "This folder is empty.",
+    "binary": "Binary file — not shown as text.",
+    "truncated": "Showing the first part of this file; it is too long to display in full.",
+    "openExternal": "Open folder outside RAVENBOT",
+    "changesTitle": "Changes",
+    "changesHint": "Every write an agent has made, newest first. Counts come from the write itself, not from a later diff.",
+    "noChanges": "Nothing has been changed yet",
+    "noChangesHint": "A row appears here the moment an agent writes a file.",
+    "loadFailed": "Could not load projects: ",
+    "treeFailed": "Could not load this folder: ",
+    "readFailed": "Could not read this file: "
   }
 }

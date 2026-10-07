@@ -2425,3 +2425,394 @@ html.sidebar-resizing .app-frame {
   border: 1px solid var(--hairline);
   border-radius: 6px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Projects — the codebase, the file, and who changed it
+
+   Three panes that answer one question, so they are laid out as one surface
+   rather than as three panels with borders between them. The tree indents with
+   a real depth variable instead of a fixed padding, because a codebase three
+   levels deep with a constant indent reads as a flat list of folders.
+
+   The change strip sits above both columns: it is the answer, and answers go
+   first.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.proj {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.proj__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--hairline);
+  flex: 0 0 auto;
+}
+
+.proj__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.proj__title h1 {
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+.proj__count {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+
+.proj__refresh {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.proj__refresh:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+}
+
+/* ── Who changed what ──────────────────────────────────────────────────── */
+
+.proj__agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid var(--hairline);
+  background: color-mix(in oklab, var(--surface-1) 55%, transparent);
+  flex: 0 0 auto;
+}
+
+.proj__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.proj__chip:hover {
+  border-color: color-mix(in oklab, var(--brand) 45%, var(--hairline));
+}
+.proj__chip--on {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--text-primary);
+}
+.proj__chipname {
+  font-weight: 600;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The git convention, kept exactly: green up, red down. Anyone who has used a
+   version control tool reads these without a legend, and that is worth more
+   than a label would be. */
+.proj__add {
+  color: var(--success);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.proj__del {
+  color: var(--danger);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.proj__diff {
+  display: inline-flex;
+  gap: 0.3125rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.625rem;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* ── Body ──────────────────────────────────────────────────────────────── */
+
+.proj__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(16rem, 22rem) 1fr;
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .proj__body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(10rem, 40%) 1fr;
+  }
+}
+
+.proj__side {
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--hairline);
+  padding: 0.375rem 0.5rem 1rem;
+}
+
+.proj__view {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Rows ──────────────────────────────────────────────────────────────── */
+
+.proj__row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  /* Real depth, so a nested file lines up under its folder rather than at a
+     constant offset that makes three levels look like one. */
+  padding-left: calc(0.5rem + var(--depth, 0) * 0.875rem);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+  transition: background 100ms ease, color 100ms ease;
+}
+.proj__row:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.proj__row--project {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  padding-left: 0.375rem;
+}
+.proj__row--sel {
+  background: var(--brand-soft);
+  color: var(--text-primary);
+}
+.proj__row[data-dir="true"] .proj__name {
+  font-weight: 600;
+}
+
+.proj__chev {
+  color: var(--text-muted);
+  transition: transform 140ms ease;
+  flex: 0 0 auto;
+}
+.proj__chev--open {
+  transform: rotate(90deg);
+}
+.proj__chev--leaf {
+  width: 0.875rem;
+  flex: 0 0 0.875rem;
+}
+.proj__icon {
+  color: var(--text-tertiary);
+  flex: 0 0 auto;
+}
+.proj__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proj__size {
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+.proj__kind {
+  margin-left: auto;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.proj__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+.proj__tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.proj__folder {
+  margin-left: 0.75rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--hairline);
+  margin-top: 0.125rem;
+  margin-bottom: 0.375rem;
+}
+.proj__folderhead {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.1875rem 0.5rem;
+}
+.proj__path {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* ── Viewer ────────────────────────────────────────────────────────────── */
+
+.proj__filehead {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-1);
+  flex: 0 0 auto;
+}
+.proj__filetitle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.proj__filepath {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.proj__filebody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.75rem 1rem 1.5rem;
+}
+
+.proj__pre {
+  /* Proportional line height and wrapping: a code viewer that scrolls
+     horizontally on every line is a viewer nobody reads. */
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  tab-size: 2;
+}
+
+/* ── Ledger ────────────────────────────────────────────────────────────── */
+
+.proj__ledger {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem;
+}
+.proj__ledger h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.proj__changes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 0.75rem;
+}
+.proj__change {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.3125rem 0.5rem;
+  border-radius: 6px;
+  background: var(--surface-1);
+  font-size: 0.6875rem;
+  min-width: 0;
+}
+.proj__changebot {
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proj__changepath {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+
+.proj__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.proj__hint {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  max-width: 32rem;
+}
+.proj__hint--pad {
+  padding: 0.5rem 0.625rem;
+}

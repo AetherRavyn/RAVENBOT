@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Building2, Sparkles, Store, Plug, Clock, Settings, Plus, Home } from "@lucide/svelte";
+  import { Building2, GitBranch, Sparkles, Store, Plug, Clock, Settings, Plus, Home } from "@lucide/svelte";
   import { workspace } from "$lib/workspace.svelte";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { t, type TranslationKey } from "$lib/i18n";
@@ -16,6 +16,10 @@
 
   const sectionItems = [
     { dest: "offices", icon: Building2, label: "rail.offices" },
+    // Placed beside Offices rather than at the bottom: the codebase is the
+    // *product* of an office, not a utility like the connector list, and
+    // utilities are where you look when something is wrong.
+    { dest: "projects", icon: GitBranch, label: "rail.projects" },
   ] as const;
 
   const bottomItems = [

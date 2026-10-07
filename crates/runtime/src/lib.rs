@@ -336,6 +336,63 @@ pub struct Runtime {
  * explicit boolean wins, then `denied`, then `error` only when it is actually
  * present *and* not null/false.
  */
+impl Runtime {
+    /**
+     * Record every file this tool call changed.
+     *
+     * The counts come from the skill, not from re-reading the file: the skill
+     * is the only thing that saw the version *before* the write, and by the
+     * time this runs that version is gone. `file_write` diffs old against new;
+     * `code_edit` counts the patch's own `+`/`-` lines per file, because it
+     * already knows precisely what it changed and inferring it again would
+     * disagree with the patch whenever the patch was a no-op.
+     *
+     * A skill that reports nothing is not an error — most tools do not touch
+     * files — so this is a quiet no-op rather than something the caller has to
+     * guard. Failures are logged and swallowed: a journal that can fail a write
+     * which already succeeded would be a worse bug than a gap in the journal.
+     */
+    async fn journal_file_changes(
+        &self,
+        run: &Run,
+        bot: &ravenbot_core::Bot,
+        skill: &str,
+        result: &serde_json::Value,
+    ) {
+        let Some(entries) = result.get("file_changes").and_then(|v| v.as_array()) else {
+            return;
+        };
+        if entries.is_empty() {
+            return;
+        }
+        for entry in entries {
+            let Some(path) = entry.get("path").and_then(|v| v.as_str()) else {
+                continue;
+            };
+            let added = entry.get("lines_added").and_then(|v| v.as_i64()).unwrap_or(0);
+            let deleted = entry.get("lines_deleted").and_then(|v| v.as_i64()).unwrap_or(0);
+            // A change that touched nothing (a context-only hunk, a rewrite with
+            // identical content) is not a change. Recording it would inflate the
+            // file count and make a no-op look like work.
+            if added == 0 && deleted == 0 {
+                continue;
+            }
+            let change = ravenbot_core::FileChange::new(
+                bot.id,
+                Some(run.id),
+                Some(run.thread_id),
+                path,
+                skill,
+                added,
+                deleted,
+            );
+            if let Err(e) = ravenbot_db::queries::FileChangeQueries::insert(self.db.pool(), &change).await {
+                tracing::warn!(path = %change.path, error = %e, "failed to journal file change");
+            }
+        }
+    }
+}
+
 fn tool_result_failed(result: &serde_json::Value) -> bool {
     if let Some(ok) = result.get("success").and_then(|v| v.as_bool()) {
         return !ok;
@@ -3311,6 +3368,17 @@ impl Runtime {
                 if run_tools.len() < ravenbot_core::MAX_MESSAGE_TOOL_TRACES {
                     run_tools.push(trace);
                 }
+
+                // Journal the write itself, the moment it happens.
+                //
+                // Assembled later from the transcript instead and this would be
+                // reconstructible only while the transcript is intact and
+                // loaded — a reload, a new run, or a different screen would each
+                // lose it, and "which agent changed what" would again be a
+                // question nobody could answer. Written here, it is a fact in
+                // the database that any view can read, live, without having
+                // seen the run happen.
+                self.journal_file_changes(run, &bot, &name, &result_json).await;
 
                 let mut extracted_sources = Vec::new();
                 extract_sources(&result_json, &mut extracted_sources);

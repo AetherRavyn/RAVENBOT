@@ -91,6 +91,16 @@ impl Skill for FileWriteSkill {
             )));
         }
 
+        // Read the previous contents *before* writing, because this is the only
+        // moment the old version still exists. Without it, "what changed" can
+        // only be guessed — and the obvious guess (count the new file's lines)
+        // reports a one-line fix as one line invented rather than one replaced.
+        //
+        // Failure here is not an error: the file may not exist yet, or may be
+        // binary. Both are handled by skipping the counts rather than failing a
+        // write that would otherwise have succeeded.
+        let before = tokio::fs::read_to_string(path).await.ok();
+
         // Create parent directories if they don't exist
         if let Some(parent) = path.parent() {
             if !parent.exists() {
@@ -121,10 +131,36 @@ impl Skill for FileWriteSkill {
             }
         }
 
+        // Diff the version that existed against the version now on disk. For an
+        // append that is old-vs-(old+new), which is what the line counts say; for
+        // an overwrite it is old-vs-new. A file that could not be read as text
+        // gets no counts rather than wrong ones — reporting a 2MB binary as
+        // "+40000 lines" would poison every total it fed.
+        let (lines_added, lines_deleted) = match &before {
+            Some(old) => {
+                let after = if mode == "append" { format!("{old}{content}") } else { content.to_string() };
+                crate::diff::line_changes(old, &after)
+            }
+            // No readable previous version: either new, or binary. An
+            // *existing* binary file still counts as a change, just an
+            // uncountable one.
+            None => (0, 0),
+        };
+
         Ok(SkillResult::success(serde_json::json!({
             "path": path.display().to_string(),
             "bytes_written": content.len(),
-            "mode": mode
+            "mode": mode,
+            "lines_added": lines_added,
+            "lines_deleted": lines_deleted,
+            "is_new_file": before.is_none(),
+            // Same shape `code_edit` reports, so the journal reads one format
+            // and adding a writer later does not mean adding a second parser.
+            "file_changes": [{
+                "path": path.display().to_string(),
+                "lines_added": lines_added,
+                "lines_deleted": lines_deleted,
+            }],
         })))
     }
 }

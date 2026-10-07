@@ -23,6 +23,7 @@ pub mod channel;
 pub mod chatroom;
 pub mod paths;
 pub mod office_memory;
+pub mod file_change;
 
 // Re-exports for convenience
 pub use bot::*;
@@ -49,3 +50,4 @@ pub use paths::{
     raven_root, slugify, APP_IDENTIFIER,
 };
 pub use office_memory::*;
+pub use file_change::*;

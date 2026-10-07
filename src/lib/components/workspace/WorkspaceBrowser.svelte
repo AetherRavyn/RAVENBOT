@@ -19,32 +19,13 @@
   import { t } from "$lib/i18n";
   import { notify } from "$lib/toast";
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
+  import { buildTree, fmtBytes, type Entry, type Tree, type TreeNode } from "$lib/workspace/tree";
   import { Button } from "$lib/components/ui/button";
   import { Badge } from "$lib/components/ui/badge";
   import {
     FolderOpen, FileText, File, Link2, Eye, EyeOff, RefreshCw,
     ExternalLink, ChevronRight, ChevronDown, Loader2, FolderTree, AlertTriangle,
   } from "@lucide/svelte";
-
-  interface Entry {
-    path: string;
-    name: string;
-    isDir: boolean;
-    isLink: boolean;
-    sizeBytes: number;
-    preview: string | null;
-    isBinary: boolean;
-  }
-  interface Tree {
-    root: string;
-    entries: Entry[];
-    missing: boolean;
-    truncated: boolean;
-    note: string | null;
-    fileCount: number;
-    dirCount: number;
-    totalBytes: number;
-  }
 
   interface Props {
     /** Folders to offer: an office's, or a single bot's. */
@@ -112,25 +93,6 @@
     );
   }
 
-  /**
-   * A byte count a person would write down.
-   *
-   * The backend sends raw bytes and formats its own summaries in Rust; this is
-   * the same scale for the per-row sizes, where sending a preformatted string
-   * per row would be a string the UI cannot sort or compare.
-   */
-  function fmtBytes(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`;
-    const units = ["KB", "MB", "GB", "TB"];
-    let value = bytes / 1024;
-    let unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit += 1;
-    }
-    return `${value.toFixed(1)} ${units[unit]}`;
-  }
-
   /** Only markdown gets the markdown renderer; everything else is plain text. */
   const isMarkdown = (name: string) => /\.mdx?$/i.test(name);
 
@@ -143,74 +105,9 @@
    * what is cheap to build and to keep sorted; the hierarchy is reconstructed
    * here so the depth cap and the entry cap are enforced in one place.
    */
-  interface Node {
-    entry: Entry;
-    depth: number;
-    children: Node[];
-  }
-
-  const treeNodes = $derived.by(() => {
-    if (!tree) return [] as Node[];
-    const roots: Node[] = [];
-    const byPath = new Map<string, Node>();
-
-    // Two passes, because a single pass would make the result depend on the
-    // order the backend happened to sort in. Every node exists before any is
-    // linked, so a child listed before its parent still finds it, and a parent
-    // listed after its children does not replace the node they attached to.
-    for (const entry of tree.entries) {
-      const depth = entry.path.split("/").length - 1;
-      byPath.set(entry.path, { entry, depth, children: [] });
-    }
-
-    for (const entry of tree.entries) {
-      const node = byPath.get(entry.path);
-      if (!node) continue;
-      const parentPath = entry.path.split("/").slice(0, -1).join("/");
-      if (!parentPath) {
-        roots.push(node);
-        continue;
-      }
-      let parent = byPath.get(parentPath);
-      if (!parent) {
-        // A directory the listing capped out of, but whose children are present.
-        // Without it those children render at the top level with no folder above
-        // them, which reads as "these files are in the workspace root".
-        const parts = parentPath.split("/");
-        const made: Node = {
-          entry: {
-            path: parentPath,
-            name: parts[parts.length - 1],
-            isDir: true,
-            isLink: false,
-            sizeBytes: 0,
-            preview: null,
-            isBinary: false,
-          },
-          depth: parts.length - 1,
-          children: [],
-        };
-        byPath.set(parentPath, made);
-        const grandPath = parts.slice(0, -1).join("/");
-        const grand = grandPath ? byPath.get(grandPath) : undefined;
-        if (grand) grand.children.push(made);
-        else roots.push(made);
-        parent = made;
-      }
-      parent.children.push(node);
-    }
-
-    const order = (list: Node[]) => {
-      list.sort(
-        (a, b) =>
-          Number(b.entry.isDir) - Number(a.entry.isDir) ||
-          a.entry.name.toLowerCase().localeCompare(b.entry.name.toLowerCase()),
-      );
-      for (const n of list) order(n.children);
-    };
-    order(roots);
-    return roots;
-  });
+  const treeNodes = $derived.by(() => (tree ? buildTree(tree.entries) : ([] as TreeNode[])));
+  /** Kept as the local name the template already uses. */
+  type Node = TreeNode;
 
   /** The flat view, filtered to what is currently open. */
   const visibleFlat = $derived.by(() => {

@@ -2495,6 +2495,225 @@ async fn browse_workspace(path: String, show_hidden: Option<bool>) -> Result<rav
     .map_err(|e| e.to_string())
 }
 
+/// One project: a folder set an agent or an office works inside.
+///
+/// This is what makes the codebase reachable from the app rather than only from
+/// a settings screen. Until now a workspace was a string you typed into bot
+/// settings and a browser you had to remember to open; there was no list of
+/// them anywhere, which is why "expand the codebase" was not a thing you could
+/// do.
+#[derive(serde::Serialize)]
+struct Project {
+    id: String,
+    name: String,
+    /// `office` or `agent` — decides the icon and whether the tree is offered
+    /// as one workspace or many.
+    kind: String,
+    /// The folder paths, in the order they were configured.
+    paths: Vec<String>,
+    /// How many files changed by this project's agents, if known. Populated by
+    /// the caller from `file_change_totals`, not here: this function is about
+    /// what exists on disk, and mixing in what happened would make it
+    /// uncacheable for no benefit.
+    #[serde(skip)]
+    _totals: (),
+}
+
+/// Every configured workspace, offices first.
+///
+/// Offices lead because an office's folder is a *shared* room the whole roster
+/// writes into, while an agent's folder is its own desk — and the shared room is
+/// the one a user opens to see what the team did.
+#[tauri::command]
+async fn list_projects(state: State<'_, AppState>) -> Result<Vec<Project>, String> {
+    let mut projects: Vec<Project> = Vec::new();
+
+    let rooms = ravenbot_db::queries::ChatRoomQueries::list(state.db.pool())
+        .await
+        .map_err(|e| e.to_string())?;
+    for room in rooms {
+        let paths: Vec<String> = room
+            .project_folders
+            .iter()
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect();
+        if paths.is_empty() {
+            continue;
+        }
+        projects.push(Project {
+            id: room.id.to_string(),
+            name: room.name.clone(),
+            kind: "office".to_string(),
+            paths,
+            _totals: (),
+        });
+    }
+
+    let bots = ravenbot_db::queries::BotQueries::list(state.db.pool())
+        .await
+        .map_err(|e| e.to_string())?;
+    for bot in bots {
+        let mut paths: Vec<String> = Vec::new();
+        if let Some(folder) = bot.config.working_folder.as_ref() {
+            let folder = folder.trim();
+            if !folder.is_empty() {
+                paths.push(folder.to_string());
+            }
+        }
+        if paths.is_empty() {
+            // An agent with no folder still has its default workspace — it is
+            // where a write lands when nothing was configured, so hiding it
+            // would make the most common first-run state look like a
+            // project-less app.
+            let default = default_workspace_for_impl(&bot.name);
+            if !default.is_empty() {
+                paths.push(default);
+            }
+        }
+        if paths.is_empty() {
+            continue;
+        }
+        projects.push(Project {
+            id: bot.id.to_string(),
+            name: bot.name.clone(),
+            kind: "agent".to_string(),
+            paths,
+            _totals: (),
+        });
+    }
+    Ok(projects)
+}
+
+/// Recent writes across every agent, newest first.
+///
+/// One call for the whole board rather than one per agent: the view needs the
+/// same rows for three things — the totals strip, the badges in the tree, and
+/// the list for whichever agent is selected — and fetching them per agent would
+/// be N round trips whose results have to be reconciled into one answer about
+/// one file. The all-time totals still come from `file_change_totals`, because
+/// a bounded list cannot sum to an all-time number and pretending otherwise
+/// would show a total that shrinks as the list grows.
+#[tauri::command]
+async fn list_recent_file_changes(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<ravenbot_core::FileChange>, String> {
+    let limit = limit.unwrap_or(500).clamp(1, 5000);
+    let rows = sqlx::query_as::<
+        _,
+        (String, String, Option<String>, Option<String>, String, String, i64, i64, String),
+    >(
+        "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted, created_at
+         FROM file_changes
+         ORDER BY created_at DESC, rowid DESC
+         LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|r| {
+            use std::str::FromStr;
+            Some(ravenbot_core::FileChange {
+                id: uuid::Uuid::from_str(&r.0).ok()?,
+                bot_id: uuid::Uuid::from_str(&r.1).ok()?,
+                run_id: r.2.as_deref().and_then(|s| uuid::Uuid::from_str(s).ok()),
+                thread_id: r.3.as_deref().and_then(|s| uuid::Uuid::from_str(s).ok()),
+                path: r.4,
+                skill: r.5,
+                lines_added: r.6,
+                lines_deleted: r.7,
+                created_at: r.8,
+            })
+        })
+        .collect())
+}
+
+/// Per-agent change totals for the projects view: files, writes, +lines, -lines.
+///
+/// Returned keyed by bot id so the view can attach them to whichever project
+/// list it already holds, instead of the two being fetched in an order the
+/// caller has to care about.
+#[tauri::command]
+async fn file_change_totals(
+    state: State<'_, AppState>,
+) -> Result<Vec<(String, ravenbot_core::FileChangeTotals)>, String> {
+    let rows = ravenbot_db::queries::FileChangeQueries::totals(state.db.pool())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().map(|(id, t)| (id.to_string(), t)).collect())
+}
+
+/// Recent writes for one agent, newest first.
+#[tauri::command]
+async fn list_file_changes(
+    state: State<'_, AppState>,
+    bot_id: Uuid,
+    limit: Option<i64>,
+) -> Result<Vec<ravenbot_core::FileChange>, String> {
+    ravenbot_db::queries::FileChangeQueries::recent_for_bot(state.db.pool(), bot_id, limit.unwrap_or(200).clamp(1, 1000))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Read one file from a workspace, for the viewer.
+///
+/// Separate from `browse_workspace` because of its preview cap: that call
+/// refuses to inline anything over 256KB, which is right for a *list* (a
+/// megabyte of text per row is a megabyte the user is not looking at) and wrong
+/// for a viewer, where the whole point is the file. So the tree says which files
+/// exist and this reads the one that was clicked.
+///
+/// Trust model is the same as `browse_workspace`: the caller is the local user
+/// of a single-user desktop app, and both resolve a path they are given. The
+/// confinement in this codebase is a wall around *agents*, not around the person
+/// who owns the machine.
+///
+/// Capped, because a viewer that will happily load a 400MB log is a viewer that
+/// freezes the window once.
+#[tauri::command]
+async fn read_workspace_file(path: String, max_bytes: Option<u64>) -> Result<serde_json::Value, String> {
+    let root = ravenbot_core::expand_home(path.trim());
+    // 4MB default: larger than the tree's preview cap by enough that "too big to
+    // list" and "too big to open" are not the same file, small enough that
+    // rendering it cannot stall the window.
+    let cap = max_bytes.unwrap_or(4 * 1024 * 1024).clamp(1024, 64 * 1024 * 1024);
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = std::fs::metadata(&root);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        if let Ok(m) = &meta {
+            if m.is_dir() {
+                return Err("That is a folder, not a file".to_string());
+            }
+        }
+        let bytes = std::fs::read(&root).map_err(|e| e.to_string())?;
+        let truncated = bytes.len() as u64 > cap;
+        let slice = if truncated { &bytes[..cap as usize] } else { &bytes[..] };
+        // Cut on a char boundary: slicing a UTF-8 buffer at an arbitrary byte
+        // would panic, and a panic here surfaces as a silent failed invoke.
+        let mut text = match std::str::from_utf8(slice) {
+            Ok(t) => t.to_string(),
+            Err(e) => {
+                let up_to = e.valid_up_to();
+                String::from_utf8_lossy(&slice[..up_to]).into_owned()
+            }
+        };
+        if truncated {
+            text.push_str("\n\n… truncated …");
+        }
+        Ok(serde_json::json!({
+            "text": text,
+            "sizeBytes": size,
+            "truncated": truncated,
+        }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// A one-line description of a workspace, for a header.
 #[tauri::command]
 async fn summarize_workspace(path: String) -> Result<String, String> {
@@ -2509,7 +2728,13 @@ async fn summarize_workspace(path: String) -> Result<String, String> {
 /// that is created automatically is the one workspace they can never inspect.
 #[tauri::command]
 async fn default_workspace_for(name: String) -> Result<String, String> {
-    Ok(ravenbot_core::office_workspace(&name).to_string_lossy().to_string())
+    Ok(default_workspace_for_impl(&name))
+}
+
+/// Pure path arithmetic: the folder is *derived* from the agent's name rather
+/// than created, so there is nothing here that can fail.
+fn default_workspace_for_impl(name: &str) -> String {
+    ravenbot_core::office_workspace(name).to_string_lossy().to_string()
 }
 
 /// Reveal a workspace in the system file manager.
@@ -4564,6 +4789,11 @@ pub fn run() {
             browse_workspace,
             summarize_workspace,
             default_workspace_for,
+            list_projects,
+            file_change_totals,
+            list_file_changes,
+            list_recent_file_changes,
+            read_workspace_file,
             open_workspace_in_file_manager,
             bot_desktop_status,
             start_bot_desktop,

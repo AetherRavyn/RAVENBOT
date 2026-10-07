@@ -16,6 +16,7 @@
   import WorkspaceRail from "$lib/components/workspace/WorkspaceRail.svelte";
   import WorkspaceSidebar from "$lib/components/workspace/WorkspaceSidebar.svelte";
   import HomePane from "$lib/components/workspace/HomePane.svelte";
+  import ProjectsView from "$lib/components/workspace/ProjectsView.svelte";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import { Loader2, Bot as BotIcon } from "@lucide/svelte";
@@ -270,6 +271,10 @@
             onSelectBot={(id) => (workspace.selectedBotId = id)}
             onBotsUpdated={() => workspace.refreshBots()}
           />
+        </div>
+      {:else if workspace.dest === "projects"}
+        <div class="flex-1 min-h-0 overflow-hidden">
+          <ProjectsView />
         </div>
       {:else if workspace.dest === "routines"}
         <!-- RoutinesPanel owns the pane header (title chips, bot switcher, New);
