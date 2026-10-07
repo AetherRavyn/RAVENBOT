@@ -118,6 +118,96 @@ pub struct Source {
 }
 
 /// Content of a message - can be plain text or structured
+/**
+ * One tool invocation an agent made while producing a message.
+ *
+ * The schema already had `MessageContent::ToolCall` and `::ToolResult` variants,
+ * and nothing ever constructed them — so every tool an agent ran during a turn
+ * existed only as a transient SSE marker in the front end and was gone the moment
+ * the page reloaded. What the user saw after a reload was an answer with no
+ * account of how it was reached: "fixed three files" with no files.
+ *
+ * Kept on the assistant message rather than as its own rows for two reasons.
+ * Separate rows would enter the transcript the model reads back as history, so
+ * the model would be handed its own tool calls as if the user had said them.
+ * And a tool call belongs to the turn that made it — detached rows can be
+ * reordered, orphaned by a failed run, or orphaned by a message that was
+ * deleted, none of which has a meaning.
+ *
+ * One row per turn, `serde(default)` like `reasoning`, so no migration: existing
+ * rows decode with an empty vec.
+ */
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolTrace {
+    /// The skill name as the model called it. Displayed, so it must survive.
+    pub name: String,
+    /// Arguments, as given. Useful precisely when the answer looks wrong.
+    #[serde(default)]
+    pub arguments: serde_json::Value,
+    /// Truncated result. The full result can be megabytes; the answer to "did it
+    /// work and what did it say" fits in a few hundred bytes.
+    #[serde(default)]
+    pub result: serde_json::Value,
+    #[serde(default)]
+    pub is_error: bool,
+    /// Wall-clock milliseconds. A turn that felt slow is usually one call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
+
+/// How many tool traces one message keeps.
+///
+/// A bounded answer to "an agent can loop". The cap is generous — 64 calls is a
+/// long turn by any measure — and hitting it means the trace itself was telling
+/// you something. Entries are kept oldest-first, because the first call is the
+/// one that set the turn's direction and the last ones are usually retries of it.
+pub const MAX_MESSAGE_TOOL_TRACES: usize = 64;
+
+impl ToolTrace {
+    /// Cap a stored result so one file-read cannot make a message unbounded.
+    const MAX_RESULT_CHARS: usize = 4_000;
+    /// Cap arguments for the same reason — a pasted document is not an argument.
+    const MAX_ARGS_CHARS: usize = 2_000;
+
+    pub fn new(name: impl Into<String>, arguments: serde_json::Value) -> Self {
+        Self {
+            name: name.into(),
+            arguments: Self::clip(arguments, Self::MAX_ARGS_CHARS),
+            result: serde_json::Value::Null,
+            is_error: false,
+            duration_ms: None,
+        }
+    }
+
+    pub fn with_result(mut self, result: serde_json::Value, is_error: bool) -> Self {
+        self.result = Self::clip(result, Self::MAX_RESULT_CHARS);
+        self.is_error = is_error;
+        self
+    }
+
+    pub fn with_duration_ms(mut self, ms: u64) -> Self {
+        self.duration_ms = Some(ms);
+        self
+    }
+
+    /// Clip a JSON value by rendering it to a string and truncating.
+    ///
+    /// Truncating the rendered form rather than the JSON structure keeps the
+    /// value parseable by whatever reads it next — a half-cut JSON object would
+    /// not be, and an unparsable trace is worse than a short one.
+    fn clip(value: serde_json::Value, max: usize) -> serde_json::Value {
+        let rendered = match &value {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        if rendered.chars().count() <= max {
+            return value;
+        }
+        let cut: String = rendered.chars().take(max).collect();
+        serde_json::Value::String(format!("{cut}…"))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum MessageContent {
@@ -144,6 +234,16 @@ pub enum MessageContent {
          */
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reasoning: Option<String>,
+        /**
+         * Every tool this message's turn ran, in order.
+         *
+         * On the message rather than as separate `ToolCall` rows because rows
+         * would be fed back to the model as history, and because a tool call
+         * belongs to the turn that made it — a detached row can be orphaned by a
+         * failed run or a deleted message, which has no meaning.
+         */
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        tools: Vec<ToolTrace>,
     },
     /// Structured checklist message
     Checklist {
@@ -170,7 +270,7 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::User,
-            content: MessageContent::Text { text: text.into(), sources: Vec::new(), reasoning: None },
+            content: MessageContent::Text { text: text.into(), sources: Vec::new(), reasoning: None, tools: Vec::new() },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: Some("You".to_string()),
@@ -185,7 +285,7 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::Assistant,
-            content: MessageContent::Text { text: text.into(), sources: Vec::new(), reasoning: None },
+            content: MessageContent::Text { text: text.into(), sources: Vec::new(), reasoning: None, tools: Vec::new() },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: None,
@@ -213,7 +313,7 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::Assistant,
-            content: MessageContent::Text { text: text.into(), sources, reasoning: None },
+            content: MessageContent::Text { text: text.into(), sources, reasoning: None, tools: Vec::new() },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: None,
@@ -240,7 +340,12 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::Assistant,
-            content: MessageContent::Text { text: text.into(), sources, reasoning },
+            content: MessageContent::Text {
+                text: text.into(),
+                sources,
+                reasoning,
+                tools: Vec::new(),
+            },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: None,

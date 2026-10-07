@@ -7,6 +7,8 @@
   // views can never drift apart again.
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
   import ReasoningPanel from "$lib/components/ReasoningPanel.svelte";
+  import ToolTraceList from "$lib/components/ToolTraceList.svelte";
+  import type { ToolTrace } from "$lib/types";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import type { AvatarMood } from "$lib/avatar";
   import { entrance } from "$lib/chat/entrance";
@@ -28,6 +30,15 @@
      * to say nothing.
      */
     reasoning?: string | null;
+    /**
+     * Tools this turn ran, in order.
+     *
+     * Persisted with the message, so they survive a reload. Before this, tool
+     * calls existed only as a transient line in the browser and every one of
+     * them was gone on refresh — answers arrived with no account of how they
+     * were reached.
+     */
+    tools?: ToolTrace[];
     /** Thread to read live reasoning from while this row is the streaming one. */
     reasoningThreadId?: string | null;
     /** True while the agent is still working, so the panel stays open. */
@@ -70,6 +81,7 @@
     streamTail = "",
     time = "",
     reasoning = null,
+    tools = [],
     reasoningThreadId = null,
     reasoningLive = false,
     grouped = false,
@@ -146,6 +158,13 @@
           stored={reasoning}
           live={reasoningLive}
         />
+        <!--
+          Thinking, then doing, then the conclusion. The tool list goes between
+          them because it *is* the middle of that sentence: it is what turned the
+          reasoning into the answer, and burying it after the bubble reads as a
+          footnote instead of as the work.
+        -->
+        <ToolTraceList {tools} />
         {@render aboveBubble?.()}
         <div use:smoothHeight class={ghost ? "msg-bubble msg-bubble-ghost" : "msg-bubble msg-bubble-agent selection:bg-[var(--brand-soft)]"}>
           <MarkdownRenderer content={text} streamTail={streamTail} {onOpenArtifact} />

@@ -1334,6 +1334,8 @@
             {isUser}
             {isError}
             text={rawText}
+            reasoning={typeof msg.content === "object" ? (msg.content?.reasoning ?? null) : null}
+            tools={(typeof msg.content === "object" && msg.content?.tools) || []}
             time={formatTime(msg.created_at)}
             grouped={!showAuthorHeader(messages, mi)}
             gutter={!isUser}

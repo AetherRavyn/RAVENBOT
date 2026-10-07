@@ -14,6 +14,7 @@
     FileText,
   } from "@lucide/svelte";
   import { t } from "$lib/i18n";
+  import { summarizeArgs } from "$lib/chat/toolSummary";
 
   // OpenBot ChatActionMarker: one quiet mini-row per tool call in the live run.
   // Icons are per-tool; the verb phrase is generic and translated (P7 i18n).
@@ -40,10 +41,19 @@
     calendar: Calendar,
   };
 
-  let { name, done = false }: { name: string; done?: boolean } = $props();
+  /**
+   * `args` is what the call is being asked to do.
+   *
+   * The name alone says "running `file_write`", which tells a watcher nothing;
+   * the argument says "src/lib/app.rs", which is the entire reason the line is
+   * on screen. Absent on the engine path, where only an id is reported, and then
+   * the row degrades to the name rather than showing a stray separator.
+   */
+  let { name, done = false, args = null }: { name: string; done?: boolean; args?: unknown } = $props();
 
   const Icon = $derived(ICONS[name] ?? Terminal);
   const display = $derived(name.replace(/_/g, " "));
+  const detail = $derived(summarizeArgs(args));
 </script>
 
 <div class="chat-action-marker {done ? 'opacity-60' : 'text-[var(--text-secondary)]'}">
@@ -53,4 +63,9 @@
     <Loader2 class="size-3.5 shrink-0 animate-spin" strokeWidth={2} />
   {/if}
   <span class="truncate">{t(done ? "tool.done" : "tool.running", { name: display })}</span>
+  {#if detail}
+    <!-- The point of the line, so it gets its own span rather than being
+         appended to the label — otherwise a long path pushes the verb off. -->
+    <span class="chat-action-marker__args truncate">{detail}</span>
+  {/if}
 </div>

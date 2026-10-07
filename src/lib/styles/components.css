@@ -674,6 +674,15 @@ html.sidebar-resizing .app-frame {
   color: var(--text-tertiary);
 }
 @media (prefers-reduced-motion: reduce) {
+/* The argument is the point of the line, so it is dimmer than the verb but
+   never hidden — truncation already keeps it inside the column. */
+.chat-action-marker__args {
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.625rem;
+  color: var(--text-muted);
+}
+
   .chat-action-marker svg {
     animation: none;
   }
@@ -2280,4 +2289,139 @@ html.sidebar-resizing .app-frame {
   .reason__chev {
     transition: none;
   }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Tool call traces
+
+   The work the turn actually did, between the reasoning and the answer.
+
+   Kept visually *below* the reasoning and *above* the bubble on purpose: the
+   reasoning explains the choice, the trace proves it happened, the bubble is the
+   claim. A trace styled louder than the answer turns a conversation into a log
+   file, which nobody reads.
+
+   Every entry starts collapsed. Most calls are `memory_search` repeated, and
+   the two worth reading are the failures — so failure is the only state that
+   gets colour, and duration gets the only other emphasis.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.tools {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tools__item {
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+  transition: background 120ms ease;
+}
+.tools__item:hover {
+  background: color-mix(in oklab, var(--surface-2) 90%, transparent);
+}
+/* Failure is the one state allowed to be loud, because it is the one entry
+   a reader needs to find without hunting. */
+.tools__item[data-failed="true"] {
+  background: color-mix(in oklab, var(--danger) 8%, var(--surface-2));
+  box-shadow: inset 2px 0 0 color-mix(in oklab, var(--danger) 55%, transparent);
+}
+
+.tools__head {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-tertiary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.tools__chev {
+  transition: transform 140ms ease;
+  flex: 0 0 auto;
+}
+.tools__head[aria-expanded="true"] .tools__chev {
+  transform: rotate(90deg);
+}
+
+/* Status glyph, not a coloured dot: a dot says "something", a tick/cross says
+   "this one worked". */
+.tools__state {
+  color: var(--success);
+  flex: 0 0 auto;
+}
+.tools__item[data-failed="true"] .tools__state {
+  color: var(--danger);
+}
+
+.tools__name {
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+}
+
+.tools__args {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  flex: 1 1 auto;
+}
+
+.tools__ms {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1875rem;
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 0.625rem;
+  color: var(--text-muted);
+}
+
+.tools__body {
+  padding: 0 0.5rem 0.375rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.tools__label {
+  display: block;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 0.125rem;
+}
+.tools__label[data-failed="true"] {
+  color: var(--danger);
+}
+
+.tools__pre {
+  /* Bounded: a tool result can be megabytes, and it is clamped at the source
+     too — but `pre` would happily eat the viewport if it were not stopped. */
+  max-height: 14rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  background: color-mix(in oklab, var(--surface-1) 80%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
 }

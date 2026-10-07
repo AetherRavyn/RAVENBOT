@@ -82,10 +82,34 @@ export type MessageContent =
    * marker showed private notes as answer text. Optional because rows written
    * before the field existed simply do not have one.
    */
-  | { type: "Text"; text: string; sources?: unknown[]; reasoning?: string | null }
+  | { type: "Text"; text: string; sources?: unknown[]; reasoning?: string | null; tools?: ToolTrace[] }
   | { type: "Checklist"; text: string | null; items: ChecklistItem[] }
   | { type: "ToolCall"; tool_name: string; arguments: any }
   | { type: "ToolResult"; tool_name: string; result: any; is_error: boolean };
+
+/**
+ * One tool an agent ran while producing the message it is attached to.
+ *
+ * These used to exist only as a transient SSE line in the browser: reload the
+ * page and every tool call in the conversation was gone, leaving answers with no
+ * account of how they were reached. The variants `ToolCall` / `ToolResult` had
+ * existed in the schema since the beginning and nothing ever wrote one.
+ *
+ * Attached to the assistant message rather than as its own rows, because rows
+ * would be fed back to the model as history and because a tool call belongs to
+ * the turn that made it.
+ */
+export interface ToolTrace {
+  /** The skill name as the model called it. */
+  name: string;
+  /** Arguments as given — the interesting part when an answer looks wrong. */
+  arguments?: unknown;
+  /** Truncated result. Full results are megabytes; the answer is a few lines. */
+  result?: unknown;
+  is_error?: boolean;
+  /** Wall-clock milliseconds. A slow turn is usually one slow call. */
+  duration_ms?: number | null;
+}
 
 export interface Message {
   id: string;

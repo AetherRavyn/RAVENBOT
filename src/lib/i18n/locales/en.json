@@ -1482,5 +1482,12 @@
     "rounds": "Reasoning · {count} steps",
     "afterTools": "after tool results",
     "working": "still thinking…"
+  },
+  "tools": {
+    "title": "Tool calls",
+    "input": "input",
+    "output": "output",
+    "failed": "failed",
+    "running": "running"
   }
 }

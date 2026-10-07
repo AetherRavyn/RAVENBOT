@@ -48,7 +48,17 @@ pub enum StreamEvent {
     /// Clear streamed text (a new model round begins, e.g. after tool use)
     Clear { bot_id: Uuid, thread_id: Uuid },
     /// A tool/skill execution started
-    ToolStarted { thread_id: Uuid, bot_id: Uuid, name: String },
+    ///
+    /// Carries the arguments, not just the name. "Running `file_write`" tells a
+    /// watcher nothing; "writing src/lib/app.rs" is the entire reason the line is
+    /// on screen. `Null` where the caller has no arguments to report (the engine
+    /// path reports only an id), which renders as the name alone.
+    ToolStarted {
+        thread_id: Uuid,
+        bot_id: Uuid,
+        name: String,
+        arguments: serde_json::Value,
+    },
     /// A tool/skill execution finished
     ToolFinished { thread_id: Uuid, bot_id: Uuid, name: String },
     /// Web sources arrived from a search tool (live citation chips)
@@ -312,6 +322,42 @@ pub struct Runtime {
  * `first` suppresses the leading rule. A blank separator above the first block
  * reads as a missing section.
  */
+/**
+ * Did this tool call fail?
+ *
+ * Written as one function because the naive versions each got a common case
+ * backwards, and a trace that marks a success as a failure is worse than no
+ * trace — it points the reader at the one call that worked and tells them it
+ * is the problem.
+ *
+ * The trap is `{"error": null}`. The executor always includes the key, so
+ * "has an `error` field" is true on every successful call, and an explicit
+ * `success: true` sitting next to it changes nothing. Hence the order: an
+ * explicit boolean wins, then `denied`, then `error` only when it is actually
+ * present *and* not null/false.
+ */
+fn tool_result_failed(result: &serde_json::Value) -> bool {
+    if let Some(ok) = result.get("success").and_then(|v| v.as_bool()) {
+        return !ok;
+    }
+    if result
+        .get("denied")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if result.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return true;
+    }
+    match result.get("error") {
+        None => false,
+        Some(serde_json::Value::Null) => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(_) => true,
+    }
+}
+
 fn fold_reasoning(into: &mut String, reasoning: Option<&str>, first: bool) {
     let Some(text) = reasoning.map(str::trim).filter(|t| !t.is_empty()) else {
         return;
@@ -2989,6 +3035,10 @@ impl Runtime {
         // interleaved blob of thought and prose is not readable by anyone.
 
         let mut run_reasoning = String::new();
+        // Every tool this run called, in order, attached to the answer it
+        // produced. Without it the transcript after a reload shows a conclusion
+        // with no account of how it was reached.
+        let mut run_tools: Vec<ravenbot_core::ToolTrace> = Vec::new();
 
         let (mut response, idx) = self
             .call_model(
@@ -3136,6 +3186,7 @@ impl Runtime {
                     thread_id: run.thread_id,
                     bot_id: bot.id,
                     name: tool_call.name.clone(),
+                    arguments: tool_call.arguments.clone(),
                 });
                 self.emit(StreamEvent::Status {
                     bot_id: bot.id,
@@ -3205,8 +3256,13 @@ impl Runtime {
                                 "tool": tool_call.name,
                                 "note": "The user denied this action. Do NOT retry it - explain briefly and continue with something else.",
                             }),
+                            0u64,
                         );
                     }
+                    // Timed per call rather than per pass: the pass runs them
+                    // concurrently, so a pass total is the *slowest* call wearing
+                    // the costume of all of them.
+                    let started = std::time::Instant::now();
                     tracing::info!(
                         skill = %tool_call.name,
                         arguments = %tool_call.arguments,
@@ -3222,14 +3278,40 @@ impl Runtime {
                             &tool_call.arguments,
                         )
                         .await;
-                    (tool_call.id.clone(), tool_call.name.clone(), json)
+                    (
+                        tool_call.id.clone(),
+                        tool_call.name.clone(),
+                        json,
+                        started.elapsed().as_millis() as u64,
+                    )
                 }
             });
 
             let results = futures::future::join_all(exec_futures).await;
+            // Arguments by call id, so the trace records what was asked and not
+            // merely that something was. `id` is what ties a result back to the
+            // call that produced it — results come back in completion order,
+            // which is not the order they were issued in.
+            let args_by_id: std::collections::HashMap<&str, serde_json::Value> =
+                calls.iter().map(|c| (c.id.as_str(), c.arguments.clone())).collect();
 
             // ── Feed native tool results back in call order + harvest sources ──
-            for (id, name, result_json) in results {
+            for (id, name, result_json, duration_ms) in results {
+                // A tool trace for every call, allowed or denied. A denied call is
+                // the most interesting entry in the whole turn — it is the moment
+                // the agent wanted to do something and could not — and dropping it
+                // would leave an answer that never explains why it stopped there.
+                let failed = tool_result_failed(&result_json);
+                let trace = ravenbot_core::ToolTrace::new(
+                    name.clone(),
+                    args_by_id.get(id.as_str()).cloned().unwrap_or(serde_json::Value::Null),
+                )
+                .with_result(result_json.clone(), failed)
+                .with_duration_ms(duration_ms);
+                if run_tools.len() < ravenbot_core::MAX_MESSAGE_TOOL_TRACES {
+                    run_tools.push(trace);
+                }
+
                 let mut extracted_sources = Vec::new();
                 extract_sources(&result_json, &mut extracted_sources);
                 for source in extracted_sources {
@@ -3361,6 +3443,9 @@ impl Runtime {
             );
             if has_images {
                 assistant_msg.attachments = run_images;
+            }
+            if let ravenbot_core::MessageContent::Text { tools, .. } = &mut assistant_msg.content {
+                *tools = run_tools;
             }
             ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &assistant_msg).await?;
         }
@@ -3608,7 +3693,12 @@ impl Runtime {
                     if let Ok(mut map) = tool_names.lock() {
                         map.insert(id, name.clone());
                     }
-                    emit(StreamEvent::ToolStarted { thread_id, bot_id, name });
+                    emit(StreamEvent::ToolStarted {
+                        thread_id,
+                        bot_id,
+                        name,
+                        arguments: serde_json::Value::Null,
+                    });
                 }
                 ravenbot_engines::EngineEvent::ToolFinished { id, .. } => {
                     let name = tool_names
@@ -5617,6 +5707,28 @@ mod e2e_tests {
         // why the tool was chosen at all.
         assert!(reasoning.contains("The user wants me to remember rust facts."), "{reasoning}");
         assert!(reasoning.contains("Checked the saved memory."), "{reasoning}");
+
+        // And the tool call that produced the answer is on the message.
+        //
+        // The schema has carried `MessageContent::ToolCall` since the beginning
+        // and nothing ever wrote one, so after a reload this run looked like an
+        // answer that appeared from nowhere: no file, no call, no evidence that
+        // anything was actually done. The trace is what makes the claim checkable.
+        let tools = match &last.content {
+            ravenbot_core::MessageContent::Text { tools, .. } => tools.clone(),
+            other => panic!("unexpected content: {other:?}"),
+        };
+        assert_eq!(tools.len(), 1, "every tool call in the run must be traced: {tools:?}");
+        assert_eq!(tools[0].name, "memory_save");
+        // Arguments recorded, not just the name — otherwise a trace cannot say
+        // *what* was saved, which is the only reason to look at it.
+        assert_eq!(tools[0].arguments["content"], "Rust is memory-safe");
+        // Denied and failed calls are traced too; this one succeeded.
+        assert!(!tools[0].is_error, "unexpected failure: {tools:?}");
+        // Duration recorded from the wall clock. It will not be zero in any real
+        // run, but the field must at least be *present* or the UI can never show
+        // which call made the turn slow.
+        assert!(tools[0].duration_ms.is_some(), "duration missing: {tools:?}");
 
         // 6. Run completed successfully
         assert!(matches!(run.state, ravenbot_core::RunState::Completed));

@@ -865,6 +865,7 @@ impl SearchQueries {
                     text: String::new(),
                     sources: Vec::new(),
                     reasoning: None,
+                    tools: Vec::new(),
                 });
             let role = match row.2.as_str() {
                 "user" => ravenbot_core::MessageRole::User,

@@ -268,7 +268,9 @@
   });
   let streamingTool = $state<string | null>(null);
   // OpenBot ChatActionMarker feed: one quiet mini-row per tool call in this run
-  let actionMarkers = $state<{ id: number; name: string; done: boolean }[]>([]);
+  // `args` rides along so the live line can say what the call is doing rather
+  // than only that a call with a given name happened.
+  let actionMarkers = $state<{ id: number; name: string; done: boolean; args?: unknown }[]>([]);
   let markerSeq = 0;
   let streamingSources = $state<any[]>([]);
   // Live images produced by tools during the run (e.g. screenshots)
@@ -390,7 +392,12 @@
             streamingTool = payload.name;
             actionMarkers = [
               ...actionMarkers,
-              { id: markerSeq++, name: payload.name || "tool", done: false },
+              {
+                id: markerSeq++,
+                name: payload.name || "tool",
+                done: false,
+                args: payload.arguments ?? null,
+              },
             ];
             scrollToBottom();
             break;
@@ -405,7 +412,9 @@
                 break;
               }
             }
-            if (!flipped) actionMarkers = [...actionMarkers, { id: markerSeq++, name: nm, done: true }];
+            if (!flipped) {
+              actionMarkers = [...actionMarkers, { id: markerSeq++, name: nm, done: true }];
+            }
             actionMarkers = actionMarkers.slice();
             break;
           }
@@ -1755,6 +1764,7 @@
               isError={isModelError}
               text={hasChecklist ? (message.content.text || "") : rawContent}
               reasoning={message.content.reasoning ?? null}
+              tools={message.content.tools ?? []}
               time={formatTime(message.created_at)}
               {grouped}
               showMeta={!continuesRun}
@@ -1937,7 +1947,7 @@
               <!-- OpenBot action markers: quiet per-tool status rows -->
               <div class="chat-action-markers">
                 {#each actionMarkers as m (m.id)}
-                  <ChatActionMarker name={m.name} done={m.done} />
+                  <ChatActionMarker name={m.name} done={m.done} args={m.args} />
                 {/each}
               </div>
             {/if}
