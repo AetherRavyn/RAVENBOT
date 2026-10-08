@@ -607,8 +607,20 @@
     testingIds[server.id] = true;
     try {
       const res: any = await invoke("test_mcp_server", { serverId: server.id });
-      testResult = res;
-      testOutcomes[server.id] = { ok: !!res?.success, message: String(res?.message ?? "") };
+      // `invoke` crosses an untyped boundary, and a failed connection is the
+      // case most likely to come back lean — no `tools` array at all. The
+      // panel reads `testResult.tools.length`, so an unnormalised failure
+      // would crash the very view whose job is to report the failure.
+      // Coerce once here instead of guarding every downstream read.
+      const outcome = {
+        success: !!res?.success,
+        server_id: String(res?.server_id ?? server.id),
+        message: String(res?.message ?? ""),
+        latency_ms: Number(res?.latency_ms ?? 0),
+        tools: Array.isArray(res?.tools) ? res.tools : [],
+      };
+      testResult = outcome;
+      testOutcomes[server.id] = { ok: outcome.success, message: outcome.message };
     } catch (e) {
       testResult = {
         success: false,

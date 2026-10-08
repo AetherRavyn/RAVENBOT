@@ -10,12 +10,14 @@ on:
     branches: [master]
   workflow_dispatch:
 
-# rustsec/audit-check uploads a SARIF file; without `security-events: write`
-# the job fails with "Resource not accessible by integration" regardless of
-# what the audit found.
+# Least privilege: nothing in this workflow writes. `security-events: write`
+# used to be here for rustsec/audit-check, which uploads SARIF to code
+# scanning — but this repo has never had code scanning enabled (the alerts
+# endpoint answers "no analysis found"), so every run died on "Resource not
+# accessible by integration" before auditing a single crate, and no token
+# scope can fix that. The audit reports to the log now, so the scope is dead.
 permissions:
   contents: read
-  security-events: write
   actions: read
 
 env:
@@ -99,12 +101,21 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      # Run cargo-audit directly rather than through rustsec/audit-check: that
+      # action's whole job is writing SARIF to a code-scanning service this
+      # repo has never enabled, so it failed with a permission error before it
+      # produced any findings. The findings are what we want, and the log is a
+      # perfectly good place for them.
       - name: Run cargo-audit
-        uses: rustsec/audit-check@v1
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
 
+      # `!cancelled()` so a RustSec advisory cannot silence the licence/ban
+      # report — the two checks answer different questions, and both belong to
+      # the triage this job exists to surface.
       - name: Run cargo-deny
+        if: ${{ !cancelled() }}
         uses: EmbarkStudios/cargo-deny-action@v1
         with:
           command: check all
