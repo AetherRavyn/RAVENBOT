@@ -467,6 +467,13 @@ mod tests {
         config.tier = SandboxTier::OsLevel;
         config.resource_limits.max_memory_mb = 64;
         let runner = SandboxRunner::new(config);
+        // Same guard as every other assertion here: without bubblewrap there is
+        // no sandbox, the command runs on the host where `ulimit -v` is
+        // unlimited, and the assertion would be testing nothing.
+        if !runner.is_isolated() {
+            eprintln!("bubblewrap unavailable; skipping vmem assertion");
+            return;
+        }
         // Ask the shell for the soft virtual-memory limit (in KB) it inherits.
         let (stdout, _stderr, ok) = run(&runner, "ulimit -v").await;
         assert!(ok);

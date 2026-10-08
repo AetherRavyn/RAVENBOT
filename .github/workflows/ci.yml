@@ -10,6 +10,14 @@ on:
     branches: [master]
   workflow_dispatch:
 
+# rustsec/audit-check uploads a SARIF file; without `security-events: write`
+# the job fails with "Resource not accessible by integration" regardless of
+# what the audit found.
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -33,15 +41,21 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       # src-tauri is a workspace member, so `cargo test --workspace` links the
-      # Tauri crates and needs GTK/WebKit headers present.
+      # Tauri crates and needs GTK/WebKit headers present. libdbus-1-dev is
+      # required by `keyring` -> `libdbus-sys`, whose build script runs
+      # pkg-config. bubblewrap is what the sandbox tests actually assert
+      # against — without it they all skip and CI proves nothing about
+      # isolation.
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            bubblewrap \
             libwebkit2gtk-4.1-dev \
             libgtk-3-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
+            libdbus-1-dev \
             patchelf \
             libfuse2 \
             libssl-dev
