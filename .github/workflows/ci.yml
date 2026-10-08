@@ -43,11 +43,9 @@ jobs:
       # src-tauri is a workspace member, so `cargo test --workspace` links the
       # Tauri crates and needs GTK/WebKit headers present. libdbus-1-dev is
       # required by `keyring` -> `libdbus-sys`, whose build script runs
-      # pkg-config. libpipewire/libspa are xcap 0.5+'s Linux capture backend —
-      # an unconditional target dependency, so pkg-config fails without them —
-      # and libclang backs the bindgen those -sys crates run.
-      # bubblewrap is what the sandbox tests actually assert against: without
-      # it they all skip and CI proves nothing about isolation.
+      # pkg-config — and by xcap's Linux `dbus` dependency. bubblewrap is what
+      # the sandbox tests actually assert against: without it they all skip and
+      # CI proves nothing about isolation.
       - name: Install Linux build dependencies
         run: |
           sudo apt-get update
@@ -58,9 +56,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libdbus-1-dev \
-            libpipewire-0.3-dev \
-            libspa-0.2-dev \
-            libclang-dev \
             patchelf \
             libfuse2 \
             libssl-dev

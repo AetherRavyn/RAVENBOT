@@ -71,12 +71,9 @@ jobs:
         if: matrix.platform == 'ubuntu-22.04'
         run: |
           sudo apt-get update
-          # libdbus-1-dev is not optional: `keyring` pulls in `libdbus-sys`,
-          # whose build script runs pkg-config and fails without it.
-          # libpipewire/libspa are xcap 0.5+'s Linux capture backend and are
-          # an unconditional target dependency — pkg-config fails at
-          # `libpipewire-0.3 >= 0.3` without them — with libclang behind the
-          # bindgen those -sys crates run. SQLite needs no -dev package:
+          # libdbus-1-dev is not optional: `keyring` pulls in `libdbus-sys` and
+          # xcap pulls in the Linux `dbus` crate, both of whose build scripts
+          # run pkg-config and fail without it. SQLite needs no -dev package:
           # `libsqlite3-sys` compiles its own sqlite3.c.
           sudo apt-get install -y \
             libwebkit2gtk-4.1-dev \
@@ -84,9 +81,6 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libdbus-1-dev \
-            libpipewire-0.3-dev \
-            libspa-0.2-dev \
-            libclang-dev \
             patchelf \
             libfuse2 \
             libssl-dev
