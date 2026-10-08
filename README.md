@@ -4,6 +4,8 @@
 
 Each bot has an identity, a model, a skill set, a memory, a sandboxed computer, and a thread. One orchestrates the rest — exactly like your team. And unlike other AI apps, RAVENBOT both **consumes MCP** (135+ connector catalog) and **is an MCP server** — external agents like Claude Code can drive your entire fleet.
 
+[![Release](https://img.shields.io/github/v/release/AetherRavyn/RAVENBOT?sort=semver&label=release)](https://github.com/AetherRavyn/RAVENBOT/releases/latest)
+[![CI](https://github.com/AetherRavyn/RAVENBOT/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/AetherRavyn/RAVENBOT/actions/workflows/ci.yml)
 ![License: MIT](https://img.shields.io/badge/License-MIT-indigo.svg)
 ![Rust](https://img.shields.io/badge/Rust-1.77%2B-orange.svg)
 ![Tauri](https://img.shields.io/badge/Tauri-2.x-blue.svg)
@@ -67,7 +69,34 @@ ravenbot --help
 
 ---
 
-## Quick Start
+## Install
+
+Prebuilt installers are attached to every [GitHub Release](https://github.com/AetherRavyn/RAVENBOT/releases/latest), built by CI on all three platforms:
+
+| Platform | File |
+|----------|------|
+| Linux | `RAVENBOT_*_amd64.AppImage` · `*.deb` · `*.rpm` |
+| macOS | `RAVENBOT_*.dmg` — universal (Apple Silicon + Intel) |
+| Windows | `RAVENBOT_*.exe` (NSIS) · `*.msi` (WiX) |
+
+```bash
+# verify before you run it
+sha256sum -c SHA256SUMS.txt
+
+# Linux, AppImage
+chmod +x RAVENBOT_*.AppImage && ./RAVENBOT_*.AppImage   # needs libfuse2
+# Linux, deb / rpm
+sudo apt  install ./RAVENBOT_*_amd64.deb
+sudo dnf  install ./RAVENBOT-*.x86_64.rpm
+```
+
+- **Linux** — the AppImage needs FUSE: `sudo apt install libfuse2` (`libfuse2t64` on Ubuntu 24.04+).
+- **macOS** — unsigned until a signing certificate is configured, so right-click → **Open** on first launch, or `xattr -dr com.apple.quarantine /Applications/RAVENBOT.app`.
+- **Windows** — SmartScreen warns on unsigned binaries: **More info → Run anyway**.
+
+---
+
+## Build from source
 
 ```bash
 npm install
@@ -96,8 +125,8 @@ New bots default to **local Ollama (sovereign)** — override with `RAVENBOT_DEF
 
 ## Tests & Quality
 
-- **39 tests** across the stack: runtime integration (kill switch, bad provider, ephemeral, **full E2E happy-path with a scripted MockProvider**), streaming accumulators, MCP resolution (prefix heuristic, cache, per-bot isolation), sync TOFU (roundtrip, tampering, key-swap rejection), scheduler cron, i18n (full key coverage × 6 locales), artifact detection
-- `cargo check` / `cargo clippy` — clean on all new code
+- **354 Rust tests** (33 suites) + **403 frontend tests** (29 files) across the stack: runtime integration (kill switch, bad provider, ephemeral, **full E2E happy-path with a scripted MockProvider**), streaming accumulators, MCP resolution (prefix heuristic, cache, per-bot isolation), sync TOFU (roundtrip, tampering, key-swap rejection), sandbox (bubblewrap isolation, vmem cap, network block), scheduler cron, i18n (full key coverage × 6 locales), artifact detection
+- `cargo test --workspace` / `cargo clippy` — run on every push by [CI](https://github.com/AetherRavyn/RAVENBOT/actions/workflows/ci.yml)
 - `svelte-check` — 0 errors, 0 warnings
 
 ---

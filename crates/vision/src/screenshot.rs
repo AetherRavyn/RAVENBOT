@@ -92,7 +92,9 @@ impl ScreenshotCapture {
 
         let monitor = monitors
             .iter()
-            .find(|m| m.is_primary())
+            // xcap 0.5+ made these getters fallible; a monitor we cannot read
+            // metadata for is simply not the primary one.
+            .find(|m| m.is_primary().unwrap_or(false))
             .unwrap_or(&monitors[0]);
 
         let img = monitor.capture_image().map_err(|e| {
@@ -131,12 +133,22 @@ impl ScreenshotCapture {
 
     /// List available monitors (for a future "pick monitor" UI).
     pub fn list_monitors() -> Result<Vec<(u32, u32, u32, bool)>, ScreenshotError> {
+        fn meta<T>(label: &str, r: Result<T, impl std::fmt::Display>) -> Result<T, ScreenshotError> {
+            r.map_err(|e| ScreenshotError::CaptureFailed(format!("{label}: {e}")))
+        }
         let monitors = xcap::Monitor::all()
             .map_err(|e| ScreenshotError::CaptureFailed(e.to_string()))?;
-        Ok(monitors
+        monitors
             .iter()
-            .map(|m| (m.id(), m.width(), m.height(), m.is_primary()))
-            .collect())
+            .map(|m| {
+                Ok((
+                    meta("monitor id", m.id())?,
+                    meta("monitor width", m.width())?,
+                    meta("monitor height", m.height())?,
+                    m.is_primary().unwrap_or(false),
+                ))
+            })
+            .collect()
     }
 
     /// Capture a specific window by id.
@@ -148,7 +160,9 @@ impl ScreenshotCapture {
 
         let window = windows
             .iter()
-            .find(|w| w.id() as u64 == window_id)
+            // `id()` is fallible as of xcap 0.5; a window we cannot identify
+            // just does not match the one that was asked for.
+            .find(|w| w.id().ok().map(|id| id as u64) == Some(window_id))
             .ok_or_else(|| ScreenshotError::CaptureFailed(format!("Window {} not found", window_id)))?;
 
         let img = window.capture_image().map_err(|e| {

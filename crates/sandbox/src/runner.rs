@@ -175,12 +175,27 @@ impl SandboxRunner {
 
     /// The POSIX `ulimit` shim applied to every sandboxed command. Kept as a
     /// separate `sh -c` frame so it applies to the command *and its children*.
+    ///
+    /// Every limit gets its own `ulimit` invocation. dash — `/bin/sh` on Debian
+    /// and Ubuntu, i.e. most of where this actually runs — errors with
+    /// "too many arguments" on more than one flag and applies *none* of them.
+    /// Passing all four in one call meant that on Ubuntu every cap was
+    /// silently dropped: the error was swallowed by `2>/dev/null` and
+    /// `SandboxReport` went on claiming `resource_limits: true`. One rejected
+    /// limit must never be able to disable the others, so they are set
+    /// separately.
+    ///
+    /// dash has no `-u` either, so the process cap lands only where the shell
+    /// implements it (bash); the CPU, memory and file caps apply everywhere.
     fn ulimit_shim(&self) -> String {
         let limits = &self.config.resource_limits;
         // -t CPU seconds, -v virtual KB, -f file size (512B blocks), -u procs.
-        // `2>/dev/null` keeps shells that reject a flag from failing the run.
         format!(
-            "ulimit -t {cpu} -v {vmem} -f {fsize} -u {nproc} 2>/dev/null; exec \"$0\" \"$@\"",
+            "ulimit -t {cpu} 2>/dev/null; \
+             ulimit -v {vmem} 2>/dev/null; \
+             ulimit -f {fsize} 2>/dev/null; \
+             ulimit -u {nproc} 2>/dev/null; \
+             exec \"$0\" \"$@\"",
             cpu = limits.max_task_duration_secs.max(1),
             vmem = limits.max_memory_mb.saturating_mul(1024).max(1024),
             fsize = limits
