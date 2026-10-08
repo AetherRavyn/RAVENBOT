@@ -1,94 +1,355 @@
 /**
- * RAVENBOT Design Tokens
- * Intentional dark-first theme — not templated defaults
- * Frameless window, functional native controls, system tray
+ * RAVENBOT Design Tokens — OpenBot neutral-dark, dark-first, intentional.
+ *
+ * The palette, type scale, control sizes and radii follow the OpenBot design
+ * system: a Grok-inspired neutral greyscale canvas (#1a1a1a) with #212121
+ * surfaces, near-invisible hairline borders, a pastel-blue accent (#79b8ff)
+ * for focus/selection, and a light (#f0f0f0) primary button with dark text.
+ *
+ * Two kinds of tokens live here:
+ *  1. HSL triplets (`--background`, `--border`, …) consumed as `hsl(var(--x))`
+ *     by Tailwind's `@theme` mapping and the shadcn-style primitives. These
+ *     MUST stay bare triplets (`H S% L%`) — never put a hex or a border
+ *     shorthand in one of these names.
+ *  2. Semantic hex/var tokens (`--surface-*`, `--brand-*`, `--shadow-*`, …)
+ *     used directly by app chrome.
+ *
+ * These are the static defaults (what paints before / without JS). At runtime
+ * `lib/theme.ts#applyTheme()` overwrites them from the active theme, so the
+ * values below are both the fallback and the source of truth for the default
+ * OpenBot look.
  */
 
 :root {
-  /* Surfaces */
-  --surface-0: #0a0a0b;        /* app background, header */
-  --surface-1: #111113;        /* main content */
-  --surface-2: #18181b;        /* cards, inputs, modals */
-  --surface-3: #27272a;        /* borders, hovers */
-  --surface-4: #3f3f46;        /* active, dividers */
+  color-scheme: dark;
 
-  /* Text */
-  --text-primary: #e4e4e7;
-  --text-secondary: #a1a1aa;
-  --text-tertiary: #71717a;
-  --text-muted: #52525b;
-  --text-faint: #3f3f46;
+  /* ── Theme triplets (hsl(var(--x))) ─────────────────────────────────── */
+  /* Canvas #141414 */
+  --background: 0 0% 8%;
+  --foreground: 0 0% 100%;
 
-  /* Accent — Raven indigo */
-  --accent: #6366f1;
-  --accent-hover: #5558e6;
-  --accent-muted: #6366f110;
-  --accent-ring: #6366f133;
+  /* Surface #212121 */
+  --card: 0 0% 13%;
+  --card-foreground: 0 0% 100%;
 
-  /* Status */
-  --status-idle: #52525b;
-  --status-thinking: #f59e0b;
-  --status-running: #3b82f6;
-  --status-waiting: #ef4444;
-  --status-paused: #8b5cf6;
-  --status-success: #22c55e;
-  --status-danger: #ef4444;
+  --popover: 0 0% 13%;
+  --popover-foreground: 0 0% 100%;
 
-  /* Borders */
-  --border: 1px solid var(--surface-3);
-  --border-strong: 1px solid var(--surface-4);
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 12px;
+  /* Primary BUTTON fill — OpenBot's light #f0f0f0 with dark #141414 text.
+   * This is deliberately *not* the blue accent: OpenBot draws primary actions
+   * as a light Apple-style button and keeps blue for focus/selection. */
+  --primary: 0 0% 94%;
+  --primary-foreground: 0 0% 8%;
+
+  /* Neutral control fills (#2a2a2a / #242424) */
+  --secondary: 0 0% 16%;
+  --secondary-foreground: 0 0% 93%;
+
+  --muted: 0 0% 15%;
+  --muted-foreground: 0 0% 60%;
+
+  /* Hover surface — kept neutral, not blue */
+  --accent: 0 0% 16%;
+  --accent-foreground: 0 0% 100%;
+
+  --destructive: 354 100% 79%;
+  --destructive-foreground: 0 0% 8%;
+
+  /* Hairline #2a2a2a — quiet, barely-there dividers */
+  --border: 0 0% 16%;
+  --input: 0 0% 16%;
+  /* Focus ring — pastel blue #79b8ff */
+  --ring: 213 100% 74%;
+
+  /* Semantic status (hsl triplets) — 8-bit pastel family: soft, bright,
+   * always legible on the dark canvas (never saturated-neon or muddy). */
+  --success: 137 63% 75%; /* #9ae6b4 pastel mint */
+  --warning: 37 100% 78%; /* #ffd591 pastel amber */
+  --danger: 354 100% 79%; /* #ff96a0 pastel coral */
+  --info: 208 100% 78%; /* #8fd4ff pastel sky */
+
+  /* ── Surfaces (app chrome, direct hex) ──────────────────────────────── */
+  --surface-0: #141414; /* app background / canvas (OpenBot native canvas) */
+  --surface-1: #212121; /* panels, cards, composer */
+  --surface-2: #242424; /* raised / selected row */
+  --surface-3: #2a2a2a; /* hover / inputs */
+  --surface-4: #333333; /* active / stronger divider */
+  --surface-elevated: #242424;
+  --rail-selected: #f0f0f0; /* white pill on the selected rail/sidebar row */
+
+  /* ── Text (neutral ramp — every step stays readable on #141414) ─────── */
+  --text-primary: #ffffff;
+  --text-secondary: #dcdcdc;
+  --text-tertiary: #a6a6ab;
+  --text-muted: #8b8b90;
+  --text-faint: #6e6e73;
+  --text-placeholder: #bfbfbf;
+  /* Text on light surfaces (the light primary button / user bubble) */
+  --text-on-light: #141414;
+  --text-muted-on-light: rgba(20, 20, 20, 0.52);
+
+  /* ── Brand / accent (pastel blue — focus, selection, icons, links) ──── */
+  --brand: #79b8ff;
+  --brand-hover: #97c8ff;
+  --brand-text: #a6d2ff;
+  --brand-soft: rgba(121, 184, 255, 0.16);
+  --brand-strong: rgba(121, 184, 255, 0.34);
+  --brand-2: #a6d2ff;
+  --brand-3: #9ae6b4;
+  --brand-glow: none;
+  /* The light primary-button fill (kept separate from the blue accent) */
+  --surface-light: #f0f0f0;
+
+  /* ── Status (flat solids — 8-bit pastel) ────────────────────────────── */
+
+  /* ── Type scale ───────────────────────────────────────────────────────
+   * OpenBot's scale is 12 / 13 / 14 / 16 / 18 / 24 at a 13px base. This app is
+   * denser than that, so the floor is **11px** rather than 12: legible on hidpi,
+   * still dense enough that no panel grows a scroll container it did not already
+   * have, and it leaves the palette with one small size instead of three.
+   *
+   *     11  metadata, badges, mono hints, captions
+   *     12  secondary body            (text-xs)
+   *     13  base                      (OpenBot's density)
+   *     14  body                      (text-sm)
+   *     16  emphasis / markdown body  (text-base)
+   *     18  section headings          (text-lg)
+   *     20  sub-headings              (text-xl)
+   *     24  page headings             (text-2xl)
+   *
+   * The app shipped 312 declarations of `text-[9px]` and `text-[10px]`, plus a
+   * handful of half-pixels (10.5 / 11.5 / 12.5). Individually each was
+   * reasonable; together they meant three adjacent sub-12px sizes that nothing
+   * coordinated, which reads as unsettled type no matter how correct each line
+   * is. `src/lib/styles/type-scale.test.ts` keeps it from creeping back.
+   */
+  --type-floor: 11px;
+  --status-idle: #8b8b90;
+  --status-thinking: #c4b5fd; /* pastel lavender */
+  --status-running: #79b8ff; /* pastel blue */
+  --status-waiting: #ff96a0; /* pastel coral */
+  --status-paused: #a6a6ab;
+  --status-success: #9ae6b4; /* pastel mint */
+  --status-danger: #ff96a0;
+
+  /* Status roles, not shades — each status carries a text tone, a tinted fill
+   * (soft), and for danger the full hover/soft/focus/border ladder used by
+   * destructive buttons and alert chrome. */
+  --success-text: #9ae6b4;
+  --success-soft: rgba(154, 230, 180, 0.14);
+  --success-wash: rgba(154, 230, 180, 0.05);
+  --warning-text: #ffd591;
+  --warning-soft: rgba(255, 213, 145, 0.14);
+  --danger-text: #ff96a0;
+  --danger-hover: #ffabb3;
+  --danger-soft: rgba(255, 150, 160, 0.16);
+  --danger-soft-hover: rgba(255, 150, 160, 0.28);
+  --danger-focus: rgba(255, 150, 160, 0.4);
+  --danger-border: rgba(255, 150, 160, 0.5);
+
+  /* Question / approval / new-thing badges (office Q&A surfaces) */
+  --question-option: #93dcda; /* pastel cyan */
+  --question-option-soft: rgba(147, 220, 218, 0.14);
+  --question-option-hover: rgba(147, 220, 218, 0.2);
+  --question-option-pressed: rgba(147, 220, 218, 0.26);
+  --question-badge-text: #a8e6e2;
+  --question-badge-soft: rgba(147, 220, 218, 0.16);
+  --message-badge-text: #a6d2ff;
+  --message-badge-soft: rgba(121, 184, 255, 0.16);
+  --approval-badge-soft: rgba(255, 213, 145, 0.18);
+  --badge-new: #f2a6d2; /* pastel pink */
+  --badge-new-soft: rgba(242, 166, 210, 0.16);
+
+  /* Unread count badge — pastel blue pill on ink text (sidebar + rail) */
+  --unread-surface: #9cc5ff;
+  --unread-text: #07131f;
+
+  /* Washes */
+  --hover-wash: rgba(255, 255, 255, 0.06);
+  --overlay-bg: rgba(26, 26, 26, 0.92);
+  --dialog-overlay: rgba(0, 0, 0, 0.1);
+  --dialog-ring: rgba(255, 255, 255, 0.1);
+  --glass: rgba(33, 33, 33, 0.76);
+  --image-outline: rgba(255, 255, 255, 0.1);
+  --border-on-light: rgba(20, 20, 20, 0.14);
+  --text-readable: rgba(255, 255, 255, 0.52);
+  --text-dim-on-light: rgba(20, 20, 20, 0.36);
+  --scroll-edge-overlay: rgba(0, 0, 0, 0.72);
+
+  /* File-kind accents (attachments, tree, artifacts) */
+  --file-blue: #74b9ff;
+  --file-blue-soft: rgba(116, 185, 255, 0.14);
+  --file-orange: #f0a06a;
+  --file-orange-soft: rgba(240, 160, 106, 0.14);
+  --file-pink: #d98ac9;
+  --file-pink-soft: rgba(217, 138, 201, 0.14);
+
+  /* Data table (connector catalog, memory browser, audit log) */
+  --data-table-border: #303030;
+  --data-table-header-text: #a1a1a1;
+  --data-table-text: #f5f5f5;
+
+  /* Chart series — validated for colour-vision separation on #1a1a1a.
+   * Used by usage/budget panels; applied via data-provider like OpenBot. */
+  --chart-1: #d6adf2;
+  --chart-2: #d97757;
+  --chart-3: #6bc7d9;
+  --chart-other: #979797;
+
+  /* Provider marks */
+  --provider-anthropic: #d97757;
+  --provider-openai: #ffffff;
+  --provider-ollama: #ffffff;
+  --provider-openrouter: #a1a1aa;
+
+  /* ── Hairlines ──────────────────────────────────────────────────────── */
+  --hairline: #2a2a2a;
+  --hairline-strong: #383838;
+  --hairline-faint: rgba(255, 255, 255, 0.035);
+
+  /* ── Radii (OpenBot scale: 4 / 6 / 8 / 12 / 14) ────────────────────── */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 14px;
+  --radius-2xl: 20px;
+  --radius-card: 14px;
+  --radius-bubble: 22px;
+  --radius-bubble-inset: calc(var(--radius-bubble) - var(--space-3) - 1px);
+  --radius-modal: 30px;
+  --radius-pill: 999px;
   --radius-full: 999px;
+  --radius: 0.75rem;
 
-  /* Typography */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --text-xs: 0.75rem;
-  --text-sm: 0.875rem;
-  --text-base: 1rem;
-  --text-lg: 1.125rem;
-  --text-xl: 1.25rem;
-  --text-2xl: 1.5rem;
+  /* ── Control heights (OpenBot scale) ────────────────────────────────── */
+  --control-xs: 24px;
+  --control-sm: 28px;
+  --control-md: 32px;
+  --control-lg: 36px;
+  --control-xl: 40px;
 
-  /* Spacing */
-  --space-1: 0.25rem;
-  --space-2: 0.5rem;
-  --space-3: 0.75rem;
-  --space-4: 1rem;
-  --space-5: 1.25rem;
-  --space-6: 1.5rem;
+  /* Switch geometry — compact pill, shared by desktop and dialogs */
+  --switch-width: 36px;
+  --switch-height: 20px;
+  --switch-thumb: 16px;
+  --switch-inset: 2px;
+  --switch-sm-width: 24px;
+  --switch-sm-height: 14px;
+  --switch-sm-thumb: 12px;
+  --switch-sm-inset: 1px;
 
-  /* Motion */
-  --duration-fast: 100ms;
-  --duration-normal: 150ms;
-  --duration-slow: 300ms;
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Chat marker rows (tool calls / delegations / routine runs) */
+  --chat-marker-gap: var(--space-1);
+  --chat-marker-height: var(--control-xs);
+  --chat-marker-avatar: var(--icon-md);
+  --chat-entry-gap: var(--space-3);
 
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(0,0,0,0.3);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.4);
-  --shadow-lg: 0 10px 25px rgba(0,0,0,0.5);
-  --shadow-xl: 0 25px 50px -12px rgba(0,0,0,0.6);
+  /* ── Typography ─────────────────────────────────────────────────────── */
+  --font-sans: "Inter Variable", "Inter", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+  --font-mono: "Fira Code Variable", "Fira Code", ui-monospace,
+    "SFMono-Regular", "JetBrains Mono", Menlo, Monaco, Consolas, monospace;
 
-  /* Window chrome */
-  --titlebar-height: 28px;
+  /* OpenBot's compact six-step scale (12 / 13 / 14 / 16 / 18 / 24) */
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 24px;
+  --text-3xl: 32px;
+
+  --leading-sm: 16px;
+  --leading-md: 18px;
+  --leading-lg: 20px;
+  --leading-xl: 22px;
+  --leading-2xl: 30px;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+  --tracking-tight: -0.1px;
+  --tracking-normal: 0;
+  --tracking-wide: 0.02em;
+
+  /* ── Spacing ────────────────────────────────────────────────────────── */
+  --space-0-5: 2px;
+  --space-1: 4px;
+  --space-1-5: 6px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* ── Icons ──────────────────────────────────────────────────────────── */
+  --icon-xs: 12px;
+  --icon-sm: 14px;
+  --icon-md: 16px;
+  --icon-lg: 20px;
+  --icon-stroke: 1.5;
+
+  /* ── Motion ─────────────────────────────────────────────────────────── */
+  --duration-hover: 0ms; /* OpenBot: hovers are instant */
+  --duration-dialog: 100ms;
+  --duration-fast: 120ms;
+  --duration-normal: 160ms;
+  --duration-slow: 200ms;
+  --duration-overlay: 240ms;
+  --duration-toast-enter: 340ms;
+  --duration-toast-exit: 220ms;
+  --agent-activity-exit-delay: 500ms;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-panel: cubic-bezier(0.32, 0.72, 0, 1); /* grid-column resize */
+  --stream-gap: 60ms; /* word-reveal cadence */
+  --stream-fade: 400ms;
+
+  /* ── Elevation (quiet — OpenBot leans on borders, not shadows) ─────── */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.36), 0 1px 2px rgba(0, 0, 0, 0.24);
+  --shadow-md: 0 6px 16px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 24px 60px -20px rgba(0, 0, 0, 0.7);
+  --shadow-raised: 0 12px 32px rgba(0, 0, 0, 0.4);
+  --focus-ring: 0 0 0 3px var(--brand-soft);
+
+  /* ── Layers ─────────────────────────────────────────────────────────── */
+  --layer-dropdown: 40;
+  --layer-popover: 60;
+  --layer-dialog: 100;
+  --layer-dialog-host: calc(var(--layer-dialog) + var(--layer-popover));
+  --layer-toast: 120;
+
+  /* ── Layout (app frame grid, see Workspace shell) ───────────────────── */
+  --titlebar-height: 38px;
+  --header-height: 46px;
+  --rail-width: 64px;
   --sidebar-width: 280px;
-  --header-height: 56px;
+  --sidebar-min: 128px;
+  --sidebar-max: 400px;
+  --sidebar-compact: 88px;
+  --conversation-min: 424px; /* auto-compact sidebar below this */
+  --chat-width: 760px;
+  --scrollbar-size: 8px;
 }
 
 /* High contrast overrides */
 @media (prefers-contrast: high) {
   :root {
     --surface-0: #000;
-    --surface-1: #000;
-    --surface-2: #111;
-    --surface-3: #fff;
+    --surface-1: #0a0a0a;
+    --surface-2: #141414;
+    --surface-3: #2a2a2a;
     --text-primary: #fff;
-    --text-secondary: #fff;
-    --accent: #00f;
+    --text-secondary: #eee;
+    --border: 0 0% 40%;
+    --hairline: #666666;
+    --hairline-strong: #999999;
   }
 }
 
@@ -98,5 +359,30 @@
     --duration-fast: 1ms;
     --duration-normal: 1ms;
     --duration-slow: 1ms;
+    --duration-overlay: 1ms;
+    --duration-dialog: 1ms;
+    --duration-toast-enter: 1ms;
+    --duration-toast-exit: 1ms;
+    --agent-activity-exit-delay: 1ms;
+    --stream-fade: 1ms;
   }
+}
+
+/* Provider identity: a surface writes data-provider on the element and reads
+ * --provider-current (same pattern as OpenBot). Unknown providers fall back to
+ * currentcolor, never to another provider's brand. */
+[data-provider] {
+  --provider-current: currentcolor;
+}
+[data-provider="anthropic"] {
+  --provider-current: var(--provider-anthropic);
+}
+[data-provider="openai"] {
+  --provider-current: var(--provider-openai);
+}
+[data-provider="ollama"] {
+  --provider-current: var(--provider-ollama);
+}
+[data-provider="openrouter"] {
+  --provider-current: var(--provider-openrouter);
 }

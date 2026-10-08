@@ -5,6 +5,9 @@ import tailwindcss from "@tailwindcss/vite";
 const host = process.env.TAURI_DEV_HOST;
 
 export default defineConfig({
+  // NOTE: components must not use Svelte `<style>` blocks. @tailwindcss/vite
+  // matches the `&lang.css` virtual style module and can parse raw component
+  // source as CSS; global styles live in src/lib/styles/components.css.
   plugins: [tailwindcss(), sveltekit()],
   clearScreen: false,
   server: {

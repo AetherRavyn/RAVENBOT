@@ -1,0 +1,24 @@
+-- The lines behind each entry's two numbers.
+--
+-- The ledger records `+31 −12` per file. Those are totals, and a total is a
+-- claim with no way to check it: the natural next question after "+31 lines in
+-- `auth.rs`" is *which* 31, and a counts-only table cannot answer. Users asked
+-- for the changes shown "like a git diff" — which is a request for the hunks,
+-- not for another rendering of the same two integers.
+--
+-- `diff` holds the unified diff as the tool produced it: `--- a/…`, `+++ b/…`,
+-- one or more `@@ -old +new @@` hunks, and the lines themselves. Nullable and
+-- deliberately not defaulted, because the absence of a diff is meaningful:
+--
+--  - a file too large or too binary to line up — `file_write` refuses rather
+--    than emitting a diff that disagrees with the counts beside it
+--  - a change recorded before this column existed.
+--
+-- In both cases the row still has correct counts, and the UI expands a row only
+-- when there is something to expand into.
+--
+-- Additive only: `ALTER TABLE ... ADD COLUMN` cannot be run twice, and SQLite
+-- has no `IF NOT EXISTS` for columns, so this migration is listed once and
+-- tracked like every other. The row shape on the Rust side carries
+-- `#[serde(default)]`, so old rows decode as `None`.
+ALTER TABLE file_changes ADD COLUMN diff TEXT;

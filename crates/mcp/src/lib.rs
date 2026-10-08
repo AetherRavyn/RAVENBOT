@@ -4,6 +4,7 @@ pub mod registry;
 pub mod server;
 pub mod servers;
 pub mod store;
+pub mod team;
 
 pub use client::{McpClient, McpTool};
 pub use registry::McpRegistry;

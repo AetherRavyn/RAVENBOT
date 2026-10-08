@@ -2,9 +2,15 @@
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
-  import { getDiceBearUrl, dicebearStyles } from "$lib/utils";
+  import { getDiceBearUrl, dicebearStyles, isNativeAvatarStyle } from "$lib/utils";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
+  import AvatarStudio from "$lib/components/AvatarStudio.svelte";
+  import { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
+  import type { ColourId } from "$lib/avatar";
+  import { avatarAllLabel, avatarCategoryLabel, avatarStyleDescription } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
-  import { Sparkles, RefreshCw, Image, Wand2, Check, Palette } from "@lucide/svelte";
+  import { t } from "$lib/i18n";
+  import { Sparkles, RefreshCw, Image, Wand2, Check, Palette, Dices } from "@lucide/svelte";
 
   interface Props {
     seed: string;
@@ -13,10 +19,10 @@
     onSelect: (url: string, style: string) => void;
   }
 
-  let { seed = "Agent", style = "bottts", customUrl = null, onSelect }: Props = $props();
+  let { seed = "Agent", style = DEFAULT_AVATAR_STYLE, customUrl = null, onSelect }: Props = $props();
 
   // svelte-ignore state_referenced_locally
-  let selectedStyle = $state(style || "bottts");
+  let selectedStyle = $state(style || DEFAULT_AVATAR_STYLE);
   // svelte-ignore state_referenced_locally
   let previewSeed = $state(seed || "Agent");
   // svelte-ignore state_referenced_locally
@@ -24,6 +30,44 @@
   // svelte-ignore state_referenced_locally
   let useCustom = $state(Boolean(customUrl && !customUrl.includes("dicebear.com")));
   let selectedCategory = $state("All");
+
+  /**
+   * The studio is open.
+   *
+   * Only for the locally drawn face. A DiceBear style carries its animation
+   * inside its own SVG and offers no expression to compose, so there would be
+   * nothing here to arrange — the state strip would just be the same six
+   * pictures the picker already shows.
+   */
+  let studioOpen = $state(false);
+  // What the studio last applied, so the hero preview shows the same face.
+  let previewSilhouette = $state<string | null>(null);
+  let previewExpression = $state<any>(null);
+  let previewColour = $state<ColourId | null>(null);
+
+  /**
+   * Whether to ask for the animation.
+   *
+   * Three inputs, in order: an explicit choice by the user, then the stored
+   * preference, then whatever the style does on its own. The style's own default
+   * is the right answer for someone who has never opened this dialog, which is
+   * nearly everyone.
+   *
+   * Persisted rather than held, because "stop everything moving" is a decision
+   * about how the app looks and should survive a restart — and because the
+   * alternative is a user turning motion off in the system settings and still
+   * seeing a fleet of faces that ignore it.
+   */
+   const ANIMATE_KEY = "raven-avatar-animate";
+  let animate = $state(true);
+  $effect(() => {
+    const stored = localStorage.getItem(ANIMATE_KEY);
+    if (stored !== null) animate = stored !== "off";
+  });
+  function setAnimate(next: boolean) {
+    animate = next;
+    localStorage.setItem(ANIMATE_KEY, next ? "on" : "off");
+  }
 
   $effect(() => {
     if (style && style !== selectedStyle && !useCustom) {
@@ -52,7 +96,7 @@
 
   const allStyles = dicebearStyles();
 
-  const categories = ["All", "Robots & AI", "Characters", "Modern", "Fantasy", "Doodles", "Retro", "Geometric", "Playful"];
+  const categories = ["All", ...new Set(allStyles.map((s) => s.category))];
 
   let filteredStyles = $derived(
     selectedCategory === "All"
@@ -63,15 +107,23 @@
   function pick(s: string) {
     selectedStyle = s;
     useCustom = false;
-    const url = getDiceBearUrl(previewSeed || "Agent", s);
-    onSelect(url, s);
+    // Picking the drawn face is a request to design it, so the studio opens.
+    if (isNativeAvatarStyle(s)) studioOpen = true;
+    // "" for a style drawn by this app rather than fetched. The avatar falls
+    // back to the style slug, so an empty URL is a valid thing to store — and
+    // storing a stale remote URL for a local style is not.
+    onSelect(getDiceBearUrl(previewSeed || "Agent", s), s);
+  }
+
+  function openStudio() {
+    studioOpen = true;
   }
 
   function randomizeSeed() {
     const randomSeeds = [
-      "Apollo", "Nexus", "Quantum", "Cyber", "Valkyrie", "Aegis", "Titan", "Specter",
-      "Vortex", "Atlas", "Echo", "Cipher", "Phoenix", "Helios", "Shadow", "Vector",
-      "Krypton", "Apex", "Chronos", "Sentinel"
+ "Apollo", "Nexus", "Quantum", "Cyber", "Valkyrie", "Aegis", "Titan", "Specter",
+ "Vortex", "Atlas", "Echo", "Cipher", "Phoenix", "Helios", "Shadow", "Vector",
+ "Krypton", "Apex", "Chronos", "Sentinel"
     ];
     previewSeed = randomSeeds[Math.floor(Math.random() * randomSeeds.length)] + "-" + Math.floor(Math.random() * 900 + 100);
     if (!useCustom) {
@@ -90,42 +142,41 @@
   }
 </script>
 
-<div class="flex flex-col gap-4 p-1 text-zinc-100">
+<div class="flex flex-col gap-4 p-1 min-w-0 text-[var(--text-primary)]">
   <!-- Avatar Preview Hero Area -->
-  <div class="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-2xl bg-[#0e0e18]/90 border border-purple-500/25 relative overflow-hidden shadow-inner">
-    <div class="absolute inset-0 bg-gradient-to-r from-purple-900/15 via-transparent to-indigo-900/10 pointer-events-none"></div>
+  <div class="flex flex-col sm:flex-row items-center justify-between gap-4 p-4 rounded-2xl bg-[var(--surface-1)] border border-[var(--hairline)] relative overflow-hidden shadow-inner">
 
     <!-- Live Avatar Circle -->
     <div class="flex items-center gap-4 relative z-10">
       <div class="relative group shrink-0">
-        <div class="size-20 rounded-2xl p-1 ring-2 ring-purple-500/60 shadow-[0_0_30px_rgba(147,51,234,0.35)] transition-all duration-300 group-hover:ring-purple-400 group-hover:scale-105 bg-[#12101e] overflow-hidden">
+        <div class="size-20 rounded-2xl p-1 ring-2 ring-[var(--brand)]/60 transition-all duration-300 group-hover:ring-[var(--brand)] group-hover:scale-105 bg-[var(--surface-2)] overflow-hidden">
           <img
             src={previewUrl}
-            alt="Avatar preview"
+            alt={t("avatar.previewAlt")}
             class="size-full rounded-xl object-cover"
             loading="eager"
           />
         </div>
-        <div class="absolute -bottom-1.5 -right-1.5 size-6 rounded-full bg-purple-600 text-white flex items-center justify-center shadow-lg ring-2 ring-[#0e0e18]">
+        <div class="absolute -bottom-1.5 -right-1.5 size-6 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] flex items-center justify-center shadow-lg ring-2 ring-[var(--surface-1)]">
           <Sparkles class="size-3" />
         </div>
       </div>
 
       <div class="flex flex-col">
         <div class="flex items-center gap-2">
-          <span class="font-bold text-sm text-white">Agent Identity Preview</span>
+          <span class="font-bold text-sm text-[var(--text-primary)]">{t("avatar.preview")}</span>
           {#if !useCustom}
-            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-950/80 text-purple-300 border border-purple-500/30">
+            <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30">
               {selectedStyle}
             </span>
           {:else}
-            <span class="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/30">
+            <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-success/15 text-success border border-success/30">
               custom url
             </span>
           {/if}
         </div>
-        <span class="text-xs text-zinc-400 mt-0.5">
-          Seed: <span class="font-mono text-purple-300">{previewSeed || "Agent"}</span>
+        <span class="text-xs text-[var(--text-tertiary)] mt-0.5">
+          {t("avatar.seedLabel")} <span class="font-mono text-[var(--brand-text)]">{previewSeed || t("ui.fallbackAgent")}</span>
         </span>
       </div>
     </div>
@@ -136,10 +187,10 @@
         variant="outline"
         size="sm"
         onclick={randomizeSeed}
-        class="h-8 gap-1.5 text-xs bg-[#151522] border-purple-500/30 text-purple-200 hover:bg-purple-950/50 hover:text-white hover:border-purple-400"
+        class="h-8 gap-1.5 text-xs bg-[var(--surface-2)] border-[var(--brand)]/30 text-[var(--brand-text)] hover:bg-[var(--brand-soft)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)]"
       >
-        <Wand2 class="size-3.5 text-purple-400" />
-        Randomize Look
+        <Wand2 class="size-3.5 text-[var(--brand-text)]" />
+        {t("avatar.randomize")}
       </Button>
     </div>
   </div>
@@ -147,52 +198,126 @@
   <!-- Category Filter Chips -->
   <div class="space-y-1.5">
     <div class="flex items-center justify-between">
-      <Label class="text-[11px] font-bold uppercase tracking-wider text-zinc-400">
-        DiceBear 9.x Style Library ({allStyles.length} Styles)
+      <Label class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        {t("avatar.styleLibrary", { n: allStyles.length })}
       </Label>
     </div>
 
-    <div class="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar">
+    <label class="flex items-start gap-2 text-[11px] text-[var(--text-secondary)] cursor-pointer">
+      <input
+        type="checkbox"
+        checked={animate}
+        onchange={(e) => setAnimate(e.currentTarget.checked)}
+        class="mt-0.5 accent-[var(--brand)]"
+      />
+      <span>
+        <span class="font-medium">{t("avatar.animate")}</span>
+        <span class="block text-[11px] text-[var(--text-tertiary)] leading-relaxed mt-0.5">
+          {t("avatar.animateHelp")}
+        </span>
+      </span>
+    </label>
+
+    <div class="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar min-w-0">
       {#each categories as cat}
         <button
           type="button"
-          class="px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all shrink-0 cursor-pointer {selectedCategory === cat ? 'bg-purple-600 text-white shadow-sm' : 'bg-[#12121e] border border-[#232336] text-zinc-400 hover:text-zinc-200 hover:bg-[#181827]'}"
+          class="px-2.5 py-1 rounded-lg text-[11px] font-medium transition-all shrink-0 cursor-pointer {selectedCategory === cat ? 'bg-[var(--brand)] text-[var(--text-on-light)] shadow-sm' : 'bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-on-light)] hover:bg-[var(--surface-3)]'}"
+          aria-pressed={selectedCategory === cat}
           onclick={() => (selectedCategory = cat)}
         >
-          {cat}
+          {cat === "All" ? avatarAllLabel() : avatarCategoryLabel(cat)}
         </button>
       {/each}
     </div>
   </div>
 
+  <!--
+    The studio. Opened by picking the drawn face, or by the button — which only
+    appears for that style, because there is nothing to arrange for a remote one.
+  -->
+  {#if studioOpen || isNativeAvatarStyle(selectedStyle)}
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        {t("studio.title")}
+      </span>
+      {#if !studioOpen}
+        <Button size="sm" variant="outline" class="h-7 gap-1.5 text-[11px]" onclick={openStudio}>
+          <Dices class="size-3" /> {t("studio.open")}
+        </Button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if studioOpen}
+    <AvatarStudio
+      seed={previewSeed || "Agent"}
+      expression={previewExpression}
+      silhouette={previewSilhouette ?? undefined}
+      colour={previewColour ?? undefined}
+      onApply={(sil, expr, col) => {
+        previewSilhouette = sil;
+        previewExpression = expr;
+        previewColour = col;
+        selectedStyle = "raven-native";
+        studioOpen = false;
+        onSelect("", "raven-native");
+      }}
+      onClose={() => (studioOpen = false)}
+    />
+  {/if}
+
   <!-- Style Presets Grid -->
-  <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-40 overflow-y-auto pr-1">
+  <div class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2 max-h-40 overflow-y-auto no-scrollbar pr-1 min-w-0" role="radiogroup" aria-label={t("avatar.styleLibrary", { n: allStyles.length })}>
     {#each filteredStyles as s}
       {@const isSelected = selectedStyle === s.value && !useCustom}
       <button
         type="button"
         class={cn(
-          "group relative rounded-xl border p-2 transition-all text-center flex flex-col items-center gap-1.5 focus:outline-none cursor-pointer",
+ "group relative rounded-xl border p-2 transition-all text-center flex flex-col items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 cursor-pointer",
           isSelected
-            ? "border-purple-500 bg-purple-950/40 shadow-[0_0_15px_rgba(147,51,234,0.25)] ring-1 ring-purple-500/60"
-            : "border-[#1e1e2d] bg-[#0d0d16] hover:border-purple-500/40 hover:bg-[#131320]"
+            ? "border-[var(--brand)] bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/60"
+            : "border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--brand)]/40 hover:bg-[var(--surface-2)]"
         )}
+        role="radio"
+        aria-checked={isSelected}
         onclick={() => pick(s.value)}
-        title={s.description}
+        title={avatarStyleDescription(s.value)}
       >
-        <div class="relative size-10 rounded-full overflow-hidden bg-[#161624] ring-1 ring-border/50 transition-transform group-hover:scale-105">
-          <img
-            src={getDiceBearUrl(previewSeed || "Agent", s.value)}
-            alt={s.label}
-            class="size-full object-cover"
-            loading="lazy"
+        <div class="relative size-10 rounded-full overflow-hidden bg-[var(--surface-3)] ring-1 ring-border/50 transition-transform group-hover:scale-105">
+          <!--
+            Through the component rather than a bare `img`, because one style is
+            drawn locally and has no URL, and because the component is what the
+            agent list will actually render — a preview from anything else is a
+            preview of something that is not what you get.
+          -->
+          <RavenAvatar
+            name={previewSeed || "Agent"}
+            style={s.value}
+            colour={previewColour ?? undefined}
+            animated={animate}
+            class="size-full"
+            decorative
           />
+          {#if s.animated}
+            <!--
+              A still thumbnail of a moving avatar undersells it, so the tile says
+              so, and says how fast. The cadence is the reason to pick one over
+              another, so it belongs where the choice is made.
+            -->
+            <span
+              class="absolute bottom-0 right-0 size-3.5 rounded-full bg-[var(--surface-0)]/85 ring-1 ring-[var(--hairline)] flex items-center justify-center"
+              title={t("avatar.animatesEvery", { s: s.loopSeconds ?? 0 })}
+            >
+              <span class="size-1 rounded-full bg-[var(--brand-text)] animate-pulse"></span>
+            </span>
+          {/if}
         </div>
-        <span class="text-[10px] font-medium text-zinc-300 truncate w-full group-hover:text-white">
+        <span class="text-[11px] font-medium text-[var(--text-secondary)] truncate w-full group-hover:text-[var(--text-primary)]">
           {s.label}
         </span>
         {#if isSelected}
-          <div class="absolute top-1 right-1 size-3.5 rounded-full bg-purple-600 text-white flex items-center justify-center shadow">
+          <div class="absolute top-1 right-1 size-3.5 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] flex items-center justify-center shadow">
             <Check class="size-2.5 stroke-[3]" />
           </div>
         {/if}
@@ -201,17 +326,17 @@
   </div>
 
   <!-- Custom Seed & Direct Image URL Controls -->
-  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-[#1e1e2d]">
+  <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-[var(--hairline)]">
     <!-- Seed Customizer -->
     <div class="space-y-1">
-      <Label for="avatar-seed" class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
-        Avatar Seed Name
+      <Label for="avatar-seed" class="text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider">
+        {t("avatar.seedName")}
       </Label>
       <Input
         id="avatar-seed"
         bind:value={previewSeed}
-        placeholder="e.g. Chief, Nova, Architect..."
-        class="h-8 font-mono text-xs bg-[#141420] border-[#252538] text-zinc-200"
+        placeholder={t("avatar.seedPh")}
+        class="h-8 font-mono text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
         oninput={() => {
           if (!useCustom) onSelect(getDiceBearUrl(previewSeed || "Agent", selectedStyle), selectedStyle);
         }}
@@ -221,11 +346,11 @@
     <!-- Custom URL Input -->
     <div class="space-y-1">
       <div class="flex items-center justify-between">
-        <Label for="custom-url" class="text-[11px] font-bold text-zinc-400 uppercase tracking-wider">
-          Custom Image URL
+        <Label for="custom-url" class="text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider">
+          {t("avatar.customUrl")}
         </Label>
         {#if useCustom}
-          <span class="text-[10px] text-purple-400 font-mono">Active</span>
+          <span class="text-[11px] text-[var(--brand-text)] font-mono">{t("avatar.active")}</span>
         {/if}
       </div>
       <div class="flex gap-1.5">
@@ -233,13 +358,15 @@
           id="custom-url"
           bind:value={customImageUrl}
           placeholder="https://.../photo.png"
-          class="h-8 text-xs bg-[#141420] border-[#252538] text-zinc-200 flex-1"
+          class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] flex-1"
           oninput={() => (useCustom = Boolean(customImageUrl.trim()))}
         />
         <Button
           variant={useCustom ? "default" : "outline"}
           size="sm"
-          class="h-8 px-2.5 text-xs shrink-0 {useCustom ? 'bg-purple-600 text-white' : 'bg-[#181826] border-[#2b2b3e] text-zinc-300'}"
+          class="h-8 px-2.5 text-xs shrink-0 {useCustom ? 'bg-[var(--brand)] text-[var(--text-on-light)]' : 'bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)]'}"
+          aria-label={t("avatar.customUrl")}
+          aria-pressed={useCustom}
           onclick={() => (useCustom = !useCustom)}
         >
           <Image class="size-3.5" />
@@ -250,10 +377,10 @@
 
   <!-- Confirm / Save Selection -->
   <Button
-    class="w-full h-9 gap-2 bg-purple-600 hover:bg-purple-500 text-white font-medium shadow-md shadow-purple-950/50 mt-1"
+    class="w-full h-9 gap-2 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] font-medium shadow-md  mt-1"
     onclick={confirm}
   >
     <Check class="size-4" />
-    Use Selected Avatar
+    {t("avatar.useSelected")}
   </Button>
 </div>

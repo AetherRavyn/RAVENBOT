@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
+use super::{StreamChunk, ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
 
 const BASE_URL: &str = "https://openrouter.ai/api/v1";
 
@@ -32,6 +32,12 @@ struct StreamOptions {
 struct ChatMessage {
     role: String,
     content: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<super::WireToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,24 +120,20 @@ impl OpenRouterProvider {
         on_delta: Option<&DeltaCallback>,
         _enable_reasoning: bool,
     ) -> Result<ModelResponse, ModelError> {
+        // OpenRouter passes temperature through to 300+ upstreams with
+        // different caps — clamp to the common 0..=2 range.
+        let temperature = temperature.clamp(0.0, 2.0);
         let api_key = self.api_key.as_ref()
             .ok_or_else(|| ModelError::Auth("OpenRouter API key not configured".to_string()))?;
 
         let chat_messages: Vec<ChatMessage> = messages.iter().map(|m| {
-            // Vision: text + inline image parts (data URI) when images present
-            let content = if m.images.is_empty() {
-                serde_json::json!(m.content)
-            } else {
-                let mut parts = vec![serde_json::json!({"type": "text", "text": m.content})];
-                for img in &m.images {
-                    parts.push(serde_json::json!({
-                        "type": "image_url",
-                        "image_url": { "url": format!("data:{};base64,{}", img.mime, img.data) }
-                    }));
-                }
-                serde_json::Value::Array(parts)
-            };
-            ChatMessage { role: m.role.clone(), content }
+            ChatMessage {
+                role: m.role.clone(),
+                content: m.openai_content(),
+                tool_calls: m.openai_tool_calls(),
+                tool_call_id: m.tool_call_id.clone(),
+                name: m.name.clone(),
+            }
         }).collect();
 
         let tools_param = if tools.is_empty() {
@@ -193,8 +195,16 @@ impl OpenRouterProvider {
                         if let Some(text) = delta.get("content").and_then(|v| v.as_str()) {
                             if !text.is_empty() {
                                 acc.push_text(text);
-                                on_delta(text);
+                                on_delta(StreamChunk::Text(text));
                             }
+                        }
+                        // Reasoning, on its own tagged channel. `enable_reasoning`
+                        // used to be ignored outright here, so a model that thought
+                        // out loud had its thinking discarded.
+                        let reasoning = streaming::openai_reasoning_delta(delta);
+                        if !reasoning.is_empty() {
+                            acc.push_reasoning(reasoning);
+                            on_delta(StreamChunk::Reasoning(reasoning));
                         }
                         if let Some(tc) = delta.get("tool_calls").and_then(|v| v.as_array()) {
                             for chunk in tc {

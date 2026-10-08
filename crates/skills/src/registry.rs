@@ -17,7 +17,7 @@ impl SkillRegistry {
             skills: HashMap::new(),
         };
 
-        // Register built-in skills — 9 originals
+        // ── Original 25 built-in skills ──────────────────────────────────
         registry.register(Arc::new(WebSearchSkill::new()));
         registry.register(Arc::new(FileReadSkill::new()));
         registry.register(Arc::new(FileWriteSkill::new()));
@@ -27,7 +27,6 @@ impl SkillRegistry {
         registry.register(Arc::new(AnalyzeImageSkill::new()));
         registry.register(Arc::new(VoiceInputSkill::new()));
         registry.register(Arc::new(VoiceOutputSkill::new()));
-        // Tier-1 lane closers — beat anyone
         registry.register(Arc::new(CodeSearchSkill::new()));
         registry.register(Arc::new(GitSkill::new()));
         registry.register(Arc::new(BrowserSkill::new()));
@@ -35,17 +34,57 @@ impl SkillRegistry {
         registry.register(Arc::new(TavilySearchSkill::new()));
         registry.register(Arc::new(MemorySaveSkill::new()));
         registry.register(Arc::new(MemoryRecallSkill::new()));
-        // More — perfect office
         registry.register(Arc::new(FileTreeSkill::new()));
         registry.register(Arc::new(CodeEditSkill::new()));
         registry.register(Arc::new(HttpRequestSkill::new()));
         registry.register(Arc::new(TodoSkill::new()));
+        registry.register(Arc::new(AskUserSkill::new()));
+        registry.register(Arc::new(ComputerControlSkill::new()));
         registry.register(Arc::new(YoutubeSkill::new()));
         registry.register(Arc::new(ArxivSkill::new()));
         registry.register(Arc::new(CalendarSkill::new()));
         registry.register(Arc::new(DockerSkill::new()));
-        registry.register(Arc::new(crate::builtin::image_gen::ImageGenSkill::new()));
-        // Awesome — 1497 curated (30 flagship + fetcher for all)
+        registry.register(Arc::new(ImageGenSkill::new()));
+
+        // ── mattpocock/skills: Engineering (prompt-based) ─────────────────
+        registry.register(Arc::new(prompt_skill::tdd_skill()));
+        registry.register(Arc::new(prompt_skill::code_review_skill()));
+        registry.register(Arc::new(prompt_skill::diagnosing_bugs_skill()));
+        registry.register(Arc::new(prompt_skill::research_skill()));
+        registry.register(Arc::new(prompt_skill::codebase_design_skill()));
+        registry.register(Arc::new(prompt_skill::improve_architecture_skill()));
+        registry.register(Arc::new(prompt_skill::domain_modeling_skill()));
+        registry.register(Arc::new(prompt_skill::prototype_skill()));
+        registry.register(Arc::new(prompt_skill::resolving_merge_conflicts_skill()));
+        registry.register(Arc::new(prompt_skill::ask_matt_skill()));
+        registry.register(Arc::new(prompt_skill::grill_with_docs_skill()));
+        registry.register(Arc::new(prompt_skill::triage_skill()));
+        registry.register(Arc::new(prompt_skill::setup_matt_pocock_skills_skill()));
+        registry.register(Arc::new(prompt_skill::to_spec_skill()));
+        registry.register(Arc::new(prompt_skill::to_tickets_skill()));
+        registry.register(Arc::new(prompt_skill::implement_skill()));
+        registry.register(Arc::new(prompt_skill::wayfinder_skill()));
+
+        // ── mattpocock/skills: Productivity (prompt-based) ────────────────
+        registry.register(Arc::new(prompt_skill::grilling_skill()));
+        registry.register(Arc::new(prompt_skill::handoff_skill()));
+        registry.register(Arc::new(prompt_skill::teach_skill()));
+        registry.register(Arc::new(prompt_skill::wait_what_skill()));
+        registry.register(Arc::new(prompt_skill::writing_for_agents_skill()));
+        registry.register(Arc::new(prompt_skill::to_questionnaire_skill()));
+        registry.register(Arc::new(prompt_skill::grill_me_skill()));
+        registry.register(Arc::new(prompt_skill::wizard_skill()));
+
+        // ── New tool skills ──────────────────────────────────────────────
+        registry.register(Arc::new(SystemMonitorSkill::new()));
+        registry.register(Arc::new(PackageManagerSkill::new()));
+        registry.register(Arc::new(SshRemoteSkill::new()));
+        registry.register(Arc::new(ApiTesterSkill::new()));
+        registry.register(Arc::new(EnvManagerSkill::new()));
+        registry.register(Arc::new(NoteManagerSkill::new()));
+        registry.register(Arc::new(TaskRunnerSkill::new()));
+
+        // ── Awesome: 1497 curated skills ─────────────────────────────────
         for meta in crate::awesome::catalog() {
             registry.register(Arc::new(crate::awesome::AwesomeSkill::new(meta)));
         }

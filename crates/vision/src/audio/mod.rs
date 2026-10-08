@@ -1,5 +1,6 @@
 //! Audio processing capabilities
 
+pub mod model_manager;
 pub mod transcription;
 pub mod tts;
 

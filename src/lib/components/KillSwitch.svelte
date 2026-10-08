@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { t } from "$lib/i18n";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
@@ -59,72 +60,65 @@
 
 <div class="flex items-center">
   {#if isActive}
-    <div class="flex items-center gap-3 px-3.5 py-2 rounded-xl bg-red-950/60 border border-red-500/60 text-red-400 shadow-[0_0_20px_rgba(239,68,68,0.2)] animate-pulse">
-      <ShieldAlert class="size-5 shrink-0 text-red-400" />
+    <div role="alert" class="flex items-center gap-3 px-3.5 py-2 rounded-xl bg-danger/15 border border-danger/50 text-danger animate-pulse">
+      <ShieldAlert class="size-5 shrink-0" />
       <div class="flex flex-col">
-        <span class="text-xs font-bold tracking-wider text-red-300">KILL SWITCH ACTIVE</span>
+        <span class="text-xs font-bold tracking-wider">{t("killSwitch.active")}</span>
         {#if reason}
-          <span class="text-[11px] text-red-400/80 truncate max-w-xs">{reason}</span>
+          <span class="text-[11px] text-danger/80 truncate max-w-xs">{reason}</span>
         {/if}
       </div>
       <Button
         size="xs"
         variant="default"
-        class="bg-emerald-600 hover:bg-emerald-500 text-white gap-1 ml-2 font-medium h-7"
+        class="bg-success/15 border border-success/40 text-success hover:bg-success/25 gap-1 ml-2 font-bold h-7"
         onclick={releaseKillSwitch}
         disabled={isSubmitting}
       >
         <Play class="size-3 fill-current" />
-        Resume All
+        {t("killSwitch.resume")}
       </Button>
     </div>
   {:else}
     <button
       type="button"
-      class="border border-red-900/60 bg-red-950/25 hover:bg-red-950/45 hover:border-red-700/80 rounded-xl px-4 py-2 flex items-center gap-3 transition-all cursor-pointer text-left focus:outline-none focus:ring-1 focus:ring-red-500/50 shadow-sm"
+      class="group flex items-center gap-2 rounded-xl border border-danger/25 bg-danger/5 hover:bg-danger/10 hover:border-danger/50 px-3 py-1.5 transition-all duration-200 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-danger/40"
       onclick={() => (showConfirm = true)}
+      title={t("killSwitch.tip")}
     >
-      <!-- Circular Red Power / Target Icon -->
-      <div class="size-8 rounded-lg bg-red-950/80 border border-red-700/50 flex items-center justify-center text-red-400 shadow-[0_0_10px_rgba(239,68,68,0.25)] shrink-0">
-        <svg viewBox="0 0 24 24" class="size-4 text-red-400" fill="none" stroke="currentColor" stroke-width="2.5">
-          <circle cx="12" cy="12" r="8" stroke-opacity="0.5" stroke-dasharray="3 3" />
-          <circle cx="12" cy="12" r="4" fill="currentColor" fill-opacity="0.3" />
-          <path d="M12 2v6M12 16v6M2 12h6M16 12h6" stroke-linecap="round" />
-        </svg>
-      </div>
-
-      <div class="flex flex-col">
-        <span class="text-red-400 font-bold text-sm leading-tight">Emergency Stop</span>
-        <span class="text-zinc-400 text-xs mt-0.5">Halt all agents immediately</span>
-      </div>
+      <span class="relative flex size-2">
+        <span class="absolute inline-flex h-full w-full rounded-full bg-danger/60 opacity-0 group-hover:opacity-75 group-hover:animate-ping"></span>
+        <span class="relative inline-flex size-2 rounded-full bg-danger"></span>
+      </span>
+      <span class="text-[11px] font-semibold tracking-wide text-danger transition-colors">{t("killSwitch.trigger")}</span>
     </button>
   {/if}
 </div>
 
 <!-- Confirm Kill Switch Dialog -->
 <Dialog.Root open={showConfirm} onOpenChange={(o) => (!o && (showConfirm = false))}>
-  <Dialog.Content class="sm:max-w-md bg-[#0e0e16] border-[#252538]">
+  <Dialog.Content class="sm:max-w-md bg-[var(--surface-1)] border-[var(--hairline)]">
     <Dialog.Header class="gap-2">
-      <div class="size-14 rounded-2xl bg-red-950/60 text-red-400 flex items-center justify-center mx-auto ring-8 ring-red-900/20 mb-1 border border-red-800/40">
+      <div class="size-14 rounded-2xl bg-danger/15 text-danger flex items-center justify-center mx-auto mb-1 border border-danger/40">
         <AlertOctagon class="size-7" />
       </div>
-      <Dialog.Title class="text-center text-lg font-bold text-white">
-        Activate Sovereign Kill Switch?
+      <Dialog.Title class="text-center text-lg font-bold text-[var(--text-primary)]">
+        {t("killSwitch.confirmTitle")}
       </Dialog.Title>
-      <Dialog.Description class="text-center text-xs text-zinc-400">
-        This will immediately suspend all running agents, terminate active tool processes, and revoke outbound network access across your entire bot fleet.
+      <Dialog.Description class="text-center text-xs text-[var(--text-tertiary)]">
+        {t("killSwitch.confirmMessage")}
       </Dialog.Description>
     </Dialog.Header>
 
     <div class="space-y-2 py-2">
-      <Label for="kill-reason" class="text-xs font-semibold text-zinc-400 uppercase tracking-wider">
-        Reason (optional)
+      <Label for="kill-reason" class="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider">
+        {t("killSwitch.reasonLabel")}
       </Label>
       <Input
         id="kill-reason"
         bind:value={triggerReason}
-        placeholder="e.g. Suspicious command loop, manual audit..."
-        class="h-9 text-xs bg-[#141420] border-[#252538]"
+        placeholder={t("killSwitch.reasonPlaceholder")}
+        class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)]"
         onkeydown={(e) => {
           if (e.key === "Enter") {
             e.preventDefault();
@@ -134,19 +128,19 @@
       />
     </div>
 
-    <Dialog.Footer class="gap-2 sm:gap-0 pt-2 border-t border-[#202030]">
+    <Dialog.Footer class="gap-2 sm:gap-0 pt-2 border-t border-[var(--hairline)]">
       <Button variant="outline" size="sm" onclick={() => (showConfirm = false)} disabled={isSubmitting}>
-        Cancel
+        {t("ui.cancel")}
       </Button>
       <Button
         variant="destructive"
         size="sm"
-        class="gap-1.5 bg-red-600 hover:bg-red-500 font-medium"
+        class="gap-1.5 font-medium"
         onclick={triggerKillSwitch}
         disabled={isSubmitting}
       >
         <ShieldAlert class="size-3.5" />
-        {isSubmitting ? "Stopping Fleet..." : "Confirm Emergency Stop"}
+        {isSubmitting ? t("killSwitch.stopping") : t("killSwitch.confirmStop")}
       </Button>
     </Dialog.Footer>
   </Dialog.Content>

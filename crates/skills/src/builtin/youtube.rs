@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct YoutubeSkill { client: reqwest::Client }
 impl YoutubeSkill { pub fn new() -> Self { Self { client: reqwest::Client::new() } } }
@@ -15,6 +15,8 @@ impl Skill for YoutubeSkill {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"url":{"type":"string","description":"YouTube URL or video ID"}},"required":["url"]})
     }
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+
     async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let url = args.get("url").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing url".into()))?;
         let vid = extract_id(url).unwrap_or(url.to_string());

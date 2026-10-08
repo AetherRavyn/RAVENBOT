@@ -149,10 +149,12 @@ fn headless_run(args: Vec<String>) {
             .await
             .map_err(|e| e.to_string())?;
 
-        runtime
-            .execute_run(&mut run)
-            .await
-            .map_err(|e| e.to_string())?;
+        // Headless CLI: nobody can answer approval cards, so auto-allow
+        // (each gate is still audited in the approvals table).
+        runtime.set_auto_allow_approvals(true);
+        let exec_result = runtime.execute_run(&mut run).await;
+        runtime.set_auto_allow_approvals(false);
+        exec_result.map_err(|e| e.to_string())?;
 
         let messages = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)
             .await

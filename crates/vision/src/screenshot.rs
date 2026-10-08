@@ -1,6 +1,12 @@
-//! Screenshot capture capabilities
+// Screenshot capture — real screen capture via `xcap`.
+//
+// Honesty contract: on success this returns a real frame with real
+// dimensions. On failure (no display, headless, Wayland without the
+// PipeWire portal, permission denied) it returns a descriptive error —
+// NEVER a placeholder image. Callers can trust a `Ok(Screenshot)` is real.
 
 use base64::{Engine as _, engine::general_purpose};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -8,32 +14,38 @@ use thiserror::Error;
 pub enum ScreenshotError {
     #[error("Capture failed: {0}")]
     CaptureFailed(String),
+    #[error("No display available — are you running in a graphical environment?")]
+    NoDisplay,
+    #[error("Permission denied — grant Screen Recording / Desktop access in system settings.")]
+    PermissionDenied,
+    #[error("No monitors detected.")]
+    NoMonitors,
     #[error("Format error: {0}")]
     FormatError(String),
 }
 
-/// A captured screenshot
+/// A captured screenshot.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Screenshot {
-    /// Base64-encoded image data
+    /// Base64-encoded PNG data.
     pub data: String,
-    /// Image format (png, jpeg)
+    /// Image format (always "png" for now).
     pub format: String,
-    /// Width in pixels
+    /// Width in pixels.
     pub width: u32,
-    /// Height in pixels
+    /// Height in pixels.
     pub height: u32,
-    /// Timestamp
-    pub timestamp: chrono::DateTime<chrono::Utc>,
+    /// Timestamp.
+    pub timestamp: chrono::DateTime<Utc>,
 }
 
 impl Screenshot {
-    /// Get the image as a data URL
+    /// Get the image as a data URL.
     pub fn to_data_url(&self) -> String {
-        format!("data:image/{};base64,{}", self.format, self.data)
+        format!("data:image/png;base64,{}", self.data)
     }
 
-    /// Get raw bytes
+    /// Get raw PNG bytes.
     pub fn to_bytes(&self) -> Result<Vec<u8>, ScreenshotError> {
         general_purpose::STANDARD
             .decode(&self.data)
@@ -41,12 +53,7 @@ impl Screenshot {
     }
 }
 
-/// Screenshot capture device
-pub struct ScreenshotCapture {
-    /// Current capture region (None = full screen)
-    region: Option<Region>,
-}
-
+/// Capture region (unused for full-monitor capture, kept for API compat).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Region {
     pub x: i32,
@@ -55,43 +62,125 @@ pub struct Region {
     pub height: u32,
 }
 
+pub struct ScreenshotCapture {
+    region: Option<Region>,
+}
+
 impl ScreenshotCapture {
     pub fn new() -> Self {
         Self { region: None }
     }
 
-    /// Set capture region
     pub fn with_region(mut self, region: Region) -> Self {
         self.region = Some(region);
         self
     }
 
-    /// Capture a screenshot
-    /// In production, this would use platform-specific APIs
+    /// Capture the primary monitor. Returns a REAL frame or a descriptive
+    /// error — never a placeholder.
     pub async fn capture(&self) -> Result<Screenshot, ScreenshotError> {
-        // For now, create a placeholder screenshot
-        // In production:
-        // - macOS: use screencapturekit
-        // - Windows: use BitBlt
-        // - Linux: use X11/Wayland APIs
-        
-        tracing::info!("Capturing screenshot");
-        
-        // Create a simple 1x1 pixel PNG placeholder
-        let placeholder_png = create_placeholder_image();
-        
+        use xcap::{Monitor, image::ImageFormat};
+
+        let monitors = Monitor::all().map_err(|e| match e.to_string().as_str() {
+            s if s.contains("permission") => ScreenshotError::PermissionDenied,
+            _ => ScreenshotError::CaptureFailed(format!("Failed to enumerate monitors: {}", e)),
+        })?;
+
+        if monitors.is_empty() {
+            return Err(ScreenshotError::NoMonitors);
+        }
+
+        let monitor = monitors
+            .iter()
+            .find(|m| m.is_primary())
+            .unwrap_or(&monitors[0]);
+
+        let img = monitor.capture_image().map_err(|e| {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("permission") || msg.contains("denied") {
+                ScreenshotError::PermissionDenied
+            } else {
+                ScreenshotError::CaptureFailed(format!("Capture failed: {}", e))
+            }
+        })?;
+
+        let width = img.width();
+        let height = img.height();
+
+        let mut png_bytes: Vec<u8> = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut png_bytes);
+        img.write_to(&mut cursor, ImageFormat::Png)
+            .map_err(|e| ScreenshotError::FormatError(e.to_string()))?;
+
+        if width < 2 || height < 2 {
+            return Err(ScreenshotError::CaptureFailed(
+                "Captured frame is implausibly small — capture likely failed silently".to_string(),
+            ));
+        }
+
+        tracing::info!(width = width, height = height, "Screenshot captured");
+
         Ok(Screenshot {
-            data: general_purpose::STANDARD.encode(&placeholder_png),
+            data: general_purpose::STANDARD.encode(&png_bytes),
             format: "png".to_string(),
-            width: 1920,
-            height: 1080,
-            timestamp: chrono::Utc::now(),
+            width,
+            height,
+            timestamp: Utc::now(),
         })
     }
 
-    /// Capture a specific window
-    pub async fn capture_window(&self, _window_id: u64) -> Result<Screenshot, ScreenshotError> {
-        self.capture().await
+    /// List available monitors (for a future "pick monitor" UI).
+    pub fn list_monitors() -> Result<Vec<(u32, u32, u32, bool)>, ScreenshotError> {
+        let monitors = xcap::Monitor::all()
+            .map_err(|e| ScreenshotError::CaptureFailed(e.to_string()))?;
+        Ok(monitors
+            .iter()
+            .map(|m| (m.id(), m.width(), m.height(), m.is_primary()))
+            .collect())
+    }
+
+    /// Capture a specific window by id.
+    pub async fn capture_window(&self, window_id: u64) -> Result<Screenshot, ScreenshotError> {
+        use xcap::{Window, image::ImageFormat};
+
+        let windows = Window::all()
+            .map_err(|e| ScreenshotError::CaptureFailed(format!("Failed to enumerate windows: {}", e)))?;
+
+        let window = windows
+            .iter()
+            .find(|w| w.id() as u64 == window_id)
+            .ok_or_else(|| ScreenshotError::CaptureFailed(format!("Window {} not found", window_id)))?;
+
+        let img = window.capture_image().map_err(|e| {
+            let msg = e.to_string().to_lowercase();
+            if msg.contains("permission") || msg.contains("denied") {
+                ScreenshotError::PermissionDenied
+            } else {
+                ScreenshotError::CaptureFailed(format!("Window capture failed: {}", e))
+            }
+        })?;
+
+        let width = img.width();
+        let height = img.height();
+
+        let mut png_bytes: Vec<u8> = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut png_bytes);
+        img.write_to(&mut cursor, ImageFormat::Png)
+            .map_err(|e| ScreenshotError::FormatError(e.to_string()))?;
+
+        if width < 2 || height < 2 {
+            return Err(ScreenshotError::CaptureFailed(
+                "Captured window frame is implausibly small".to_string(),
+            ));
+        }
+
+        Ok(Screenshot {
+            data: general_purpose::STANDARD.encode(&png_bytes),
+            format: "png".to_string(),
+            width,
+            height,
+            timestamp: Utc::now(),
+        })
     }
 }
 
@@ -99,27 +188,4 @@ impl Default for ScreenshotCapture {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Create a minimal valid PNG image (1x1 white pixel)
-fn create_placeholder_image() -> Vec<u8> {
-    // Minimal 1x1 white PNG
-    vec![
-        0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, // PNG signature
-        0x00, 0x00, 0x00, 0x0D, // IHDR length
-        0x49, 0x48, 0x44, 0x52, // IHDR
-        0x00, 0x00, 0x00, 0x01, // Width: 1
-        0x00, 0x00, 0x00, 0x01, // Height: 1
-        0x08, 0x02,             // Bit depth: 8, Color type: 2 (RGB)
-        0x00, 0x00, 0x00,       // Compression, filter, interlace
-        0x90, 0x77, 0x53, 0xDE, // CRC
-        0x00, 0x00, 0x00, 0x0C, // IDAT length
-        0x49, 0x44, 0x41, 0x54, // IDAT
-        0x08, 0xD7,             // Zlib header
-        0x63, 0xF8, 0xCF, 0xC0, 0x00, 0x00, 0x00, 0x02, 0x00, 0x01, // Compressed data
-        0xE2, 0x21, 0xBC, 0x33, // CRC
-        0x00, 0x00, 0x00, 0x00, // IEND length
-        0x49, 0x45, 0x4E, 0x44, // IEND
-        0xAE, 0x42, 0x60, 0x82, // CRC
-    ]
 }

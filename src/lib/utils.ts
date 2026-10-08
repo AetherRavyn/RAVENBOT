@@ -1,5 +1,12 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import {
+  diceStyle,
+  dicebearStyles as allDiceStyles,
+  avatarBackground,
+  DEFAULT_AVATAR_STYLE,
+  type DiceStyle,
+} from "$lib/diceStyles";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -11,22 +18,119 @@ export type WithoutChildrenOrChild<T> = WithoutChildren<WithoutChild<T>>;
 export type WithElementRef<T, U extends HTMLElement = HTMLElement> = T & { ref?: U | null };
 export type WithoutChildOrChildren<T> = WithoutChildrenOrChild<T>;
 
-// DiceBear & Native Raven Asset helpers
-export function getDiceBearUrl(seed: string, style: string = "avataaars", extra: string = ""): string {
-  if (style === "raven-native" || style === "ravenicon" || style === "raven-avatar" || style === "raven-brandmark" || style === "raven-logo-hex") {
-    return "/ravenicon.png";
+// Backend parity uses lowercase roles, but earlier Tauri payloads and
+// locally constructed messages can use capitalized variants.
+export type ChatRole = "user" | "assistant" | "system" | "tool";
+
+export function normalizeMessageRole(role: unknown): ChatRole | null {
+  if (typeof role !== "string") return null;
+  const normalized = role.trim().toLowerCase();
+  if (
+    normalized === "user" ||
+    normalized === "assistant" ||
+    normalized === "system" ||
+    normalized === "tool"
+  ) {
+    return normalized;
   }
+  return null;
+}
+
+export function isUserMessage(message: { role?: unknown } | null | undefined): boolean {
+  return normalizeMessageRole(message?.role) === "user";
+}
+
+export function isAssistantMessage(
+  message: { role?: unknown } | null | undefined,
+): boolean {
+  return normalizeMessageRole(message?.role) === "assistant";
+}
+
+// DiceBear & Native Raven Asset helpers
+
+/**
+ * The DiceBear API major version to request.
+ *
+ * 10.x, because that is where the animated styles live. 9.x has no
+ * `animationVariant` option, so a 9.x URL for `voxel-bot` returns a still robot
+ * and there is no way to ask for the blink — the feature is simply absent from
+ * the older major. Every style the app already offered still resolves on 10.x.
+ */
+import { DICEBEAR_VERSION } from "$lib/diceVersions";
+
+/** Style slugs that are drawn by this app rather than fetched. */
+const NATIVE_STYLES = new Set([
+  "raven-native",
+  "ravenicon",
+  "raven-avatar",
+  "raven-brandmark",
+  "raven-logo-hex",
+]);
+
+/** Whether a style is drawn locally instead of requested from DiceBear. */
+export function isNativeAvatarStyle(style: string): boolean {
+  return NATIVE_STYLES.has(style);
+}
+
+/**
+ * Build a DiceBear avatar URL.
+ *
+ * `animated` defaults to the style's own setting, so a caller that knows nothing
+ * about animation still gets a live face for `clay` and a still one for
+ * `notionists-neutral`. Pass `false` to force a still avatar, which is what a
+ * user who has turned motion off gets.
+ *
+ * The animation is not a separate file: 10.x puts the CSS keyframes inside the
+ * SVG and gates them on `prefers-reduced-motion`, so a plain `<img>` plays them
+ * and a visitor who asks for less motion sees a still avatar without anything
+ * here noticing.
+ */
+export function getDiceBearUrl(
+  seed: string,
+  // No style means no choice, and no choice means the app's default — the same
+  // default `RavenAvatar` falls back to. Two different fallbacks here is how
+  // one agent ends up wearing a clay face in the sidebar and a still robot in
+  // the dock, and no test would notice.
+  style: string = DEFAULT_AVATAR_STYLE,
+  extra: string = "",
+  animated?: boolean,
+): string {
+  if (isNativeAvatarStyle(style)) return "";
 
   const cleanSeed = seed.trim() || "Agent";
-  const base = `https://api.dicebear.com/9.x/${style}/svg`;
+  const meta = diceStyle(style);
   const params = new URLSearchParams({
     seed: cleanSeed,
-    backgroundColor: "8B1E1E,C8B89B,2D3F31,5C3B2E,6366f1,8b5cf6,06b6d4,ec4899",
+    // One colour, chosen from the name. See `AVATAR_BACKGROUNDS` for why a list
+    // cannot be sent: 10.x validates the raw query string against a single-colour
+    // pattern, and an encoded comma list is a 400 that renders as a blank frame.
+    backgroundColor: avatarBackground(cleanSeed),
     radius: "50",
     ...Object.fromEntries(new URLSearchParams(extra)),
   });
-  return `${base}?${params.toString()}`;
+
+  // A style we do not know is assumed static rather than sent a speed: an
+  // unrecognised `animationVariant` is not an error, it silently yields a still
+  // avatar, so asking costs nothing and gains nothing.
+  const wantsMotion = animated ?? meta?.animated ?? false;
+  if (wantsMotion && meta?.speed) params.set("animationVariant", meta.speed);
+
+  return `https://api.dicebear.com/${DICEBEAR_VERSION}/${style}/svg?${params.toString()}`;
 }
+
+/**
+ * The avatar style picker list.
+ *
+ * Re-exported from `$lib/diceStyles`, which is where the list and the animation
+ * facts now live. Two call sites still import it from here, and there is no
+ * reason to make them care which file a list of styles is written down in.
+ */
+export function dicebearStyles(): DiceStyle[] {
+  return allDiceStyles();
+}
+
+export type { DiceStyle, DiceSpeed } from "$lib/diceStyles";
+export { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
 
 // Office templates for chatrooms with rank-based distribution
 export const OFFICE_TEMPLATES = {
@@ -98,25 +202,3 @@ export const OFFICE_TEMPLATES = {
 
 export type OfficeTemplateKey = keyof typeof OFFICE_TEMPLATES;
 
-export function dicebearStyles(): { value: string; label: string; category: string; description: string }[] {
-  return [
-    { value: "bottts", label: "Bottts (Robots)", category: "Robots & AI", description: "Androids & AI bots" },
-    { value: "avataaars", label: "Avataaars", category: "Characters", description: "Modern illustrated avatars" },
-    { value: "personas", label: "Personas", category: "Characters", description: "Clean corporate personas" },
-    { value: "lorelei", label: "Lorelei", category: "Characters", description: "Anime & illustrated faces" },
-    { value: "adventurer", label: "Adventurer", category: "Fantasy", description: "RPG heroes & adventurers" },
-    { value: "micah", label: "Micah", category: "Modern", description: "Minimalist vector avatars" },
-    { value: "notionists", label: "Notionists", category: "Modern", description: "Notion-style line avatars" },
-    { value: "open-peeps", label: "Open Peeps", category: "Doodles", description: "Hand-drawn diverse doodles" },
-    { value: "pixel-art", label: "Pixel Art", category: "Retro", description: "Retro 8-bit characters" },
-    { value: "big-smile", label: "Big Smile", category: "Expressive", description: "Joyful smiling characters" },
-    { value: "croodles", label: "Croodles", category: "Doodles", description: "Playful artistic sketches" },
-    { value: "dylan", label: "Dylan", category: "Modern", description: "Stylized expressive avatars" },
-    { value: "identicon", label: "Identicon", category: "Geometric", description: "Cryptographic geometric patterns" },
-    { value: "shapes", label: "Shapes", category: "Geometric", description: "Abstract Bauhaus shapes" },
-    { value: "rings", label: "Rings", category: "Geometric", description: "Concentric radiant rings" },
-    { value: "thumbs", label: "Thumbs", category: "Playful", description: "Fun character thumbs" },
-    { value: "fun-emoji", label: "Fun Emoji", category: "Playful", description: "Cheerful 3D emoji faces" },
-    { value: "ravenicon", label: "Raven Cyber", category: "Sovereign", description: "Native Raven OS Emblem" },
-  ];
-}

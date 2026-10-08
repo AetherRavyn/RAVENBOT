@@ -83,6 +83,7 @@ New bots default to **local Ollama (sovereign)** — override with `RAVENBOT_DEF
 | OpenRouter | `sk-or-…` | no |
 | Anthropic | `sk-ant-…` | no |
 | OpenAI | `sk-…` | no |
+| TokenRouter | `sk-…` | no |
 | Local (candle/llama.cpp) | none | **yes — fully offline** |
 
 ---

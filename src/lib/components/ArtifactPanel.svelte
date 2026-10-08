@@ -1,5 +1,6 @@
 <script lang="ts">
   import MarkdownRenderer from "./MarkdownRenderer.svelte";
+  import { t } from "$lib/i18n";
   import type { Artifact } from "$lib/artifact";
   import {
     X,
@@ -57,42 +58,44 @@
   const panelWidthClass = $derived(expanded ? "w-full" : "");
 </script>
 
-<div class="flex flex-col h-full overflow-hidden bg-[#07070a] {panelWidthClass}">
+<div class="flex flex-col h-full overflow-hidden bg-[var(--surface-0)] {panelWidthClass}">
   <!-- Header -->
-  <header class="h-12 px-3 border-b border-[#1c1c24] bg-[#09090d]/95 backdrop-blur-md flex items-center gap-2 shrink-0">
+  <header class="h-12 px-3 border-b border-[var(--hairline)] bg-[var(--surface-0)]/95  flex items-center gap-2 shrink-0">
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2 min-w-0">
-        <span class="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-sky-500/15 border border-sky-500/30 text-sky-300 shrink-0">
-          Artifact
+        <span class="text-[11px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] shrink-0">
+          {t("artifact.title")}
         </span>
-        <span class="text-xs font-bold text-white truncate">{artifact.title}</span>
-        <span class="text-[9px] font-mono text-zinc-500 truncate hidden sm:inline">{artifact.language}</span>
+        <span class="text-xs font-bold text-[var(--text-primary)] truncate">{artifact.title}</span>
+        <span class="text-[11px] font-mono text-[var(--text-muted)] truncate hidden sm:inline">{artifact.language}</span>
       </div>
     </div>
 
     <!-- View tabs (code/preview) -->
-    <div class="flex items-center rounded-lg border border-white/10 bg-white/5 p-0.5 shrink-0">
+    <div class="flex items-center rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] p-0.5 shrink-0">
       <button
         type="button"
-        class="h-6 px-2 rounded-md text-[10px] font-mono flex items-center gap-1 cursor-pointer transition-colors {view === 'code'
-          ? 'bg-white/10 text-white'
-          : 'text-zinc-400 hover:text-white'}"
+        aria-pressed={view === 'code'}
+        class="h-6 px-2 rounded-md text-[11px] font-mono flex items-center gap-1 cursor-pointer transition-colors {view === 'code'
+          ? 'bg-[var(--surface-3)] text-[var(--text-primary)]'
+          : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
         onclick={() => (view = "code")}
-        title="View source"
+        title={t("artifact.viewSource")}
       >
         <Code class="size-3" />
-        <span class="hidden sm:inline">Code</span>
+        <span class="hidden sm:inline">{t("artifact.code")}</span>
       </button>
       <button
         type="button"
-        class="h-6 px-2 rounded-md text-[10px] font-mono flex items-center gap-1 cursor-pointer transition-colors {view === 'preview'
-          ? 'bg-white/10 text-white'
-          : 'text-zinc-400 hover:text-white'}"
+        aria-pressed={view === 'preview'}
+        class="h-6 px-2 rounded-md text-[11px] font-mono flex items-center gap-1 cursor-pointer transition-colors {view === 'preview'
+          ? 'bg-[var(--surface-3)] text-[var(--text-primary)]'
+          : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
         onclick={() => (view = "preview")}
-        title="View rendered preview"
+        title={t("artifact.viewPreview")}
       >
         <Eye class="size-3" />
-        <span class="hidden sm:inline">Preview</span>
+        <span class="hidden sm:inline">{t("artifact.preview")}</span>
       </button>
     </div>
 
@@ -100,9 +103,11 @@
     <div class="flex items-center gap-1 shrink-0">
       <button
         type="button"
-        class="size-7 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        aria-label={expanded ? "Dock panel" : "Expand panel"}
+        aria-pressed={expanded}
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={() => (expanded = !expanded)}
-        title={expanded ? "Dock panel" : "Expand panel"}
+        title={expanded ? t("artifact.dock") : t("artifact.expand")}
       >
         {#if expanded}
           <Minimize2 class="size-3.5" />
@@ -113,21 +118,23 @@
 
       <button
         type="button"
-        class="size-7 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        aria-label="Download"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={downloadArtifact}
-        title="Download artifact"
+        title={t("artifact.download")}
       >
         <Download class="size-3.5" />
       </button>
 
       <button
         type="button"
-        class="size-7 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        aria-label="Copy"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={copyArtifact}
-        title="Copy artifact"
+        title={t("artifact.copy")}
       >
         {#if copied}
-          <Check class="size-3.5 text-emerald-400" />
+          <Check class="size-3.5 text-success" />
         {:else}
           <Copy class="size-3.5" />
         {/if}
@@ -135,9 +142,10 @@
 
       <button
         type="button"
-        class="size-7 rounded-lg border border-white/10 bg-white/5 flex items-center justify-center text-zinc-400 hover:text-white hover:border-zinc-500 transition-colors cursor-pointer"
+        aria-label="Close"
+        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={onClose}
-        title="Close artifact"
+        title={t("artifact.close")}
       >
         <X class="size-3.5" />
       </button>
@@ -148,14 +156,14 @@
   <div class="flex-1 overflow-hidden">
     {#if view === "code"}
       <div class="h-full overflow-y-auto">
-        <pre class="p-4 text-[11.5px] font-mono leading-relaxed text-zinc-200 whitespace-pre select-text">{artifact.content}</pre>
+        <pre class="p-4 text-[12px] font-mono leading-relaxed text-[var(--text-secondary)] whitespace-pre select-text">{artifact.content}</pre>
       </div>
     {:else if artifact.kind === "html"}
       <!-- Fully sandboxed static preview (no scripts, no forms) -->
       <div class="h-full overflow-hidden p-3">
         <iframe
-          class="w-full h-full rounded-xl border border-white/10 bg-white"
-          title="Artifact preview"
+          class="w-full h-full rounded-xl border border-[var(--hairline)] bg-white"
+          title={t("artifact.previewTitle")}
           srcdoc={artifact.content}
           sandbox=""
         ></iframe>

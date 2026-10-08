@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use crate::approval::ApprovalMode;
 
 use uuid::Uuid;
 
@@ -71,6 +72,33 @@ pub struct BotConfig {
     pub temperature: Option<f32>,
     /// Custom system prompt (if any, overrides default)
     pub custom_prompt: Option<String>,
+    /// Maximum model↔tool rounds per run (None = runtime default of 12)
+    #[serde(default)]
+    pub max_tool_rounds: Option<u32>,
+    /// Execution engine: `"native"` (built-in loop) or an external agent CLI
+    /// id such as `"claude"` / `"codex"` (see `ravenbot-engines`).
+    #[serde(default = "default_engine")]
+    pub engine: String,
+    /// Preferred text-to-speech voice id for this bot (None = engine default).
+    #[serde(default)]
+    pub voice_id: Option<String>,
+    /// Read this bot's replies aloud automatically as they land.
+    #[serde(default)]
+    pub auto_read: bool,
+    /// Allow this agent to control the host computer (mouse/keyboard).
+    /// Off by default; blocked entirely on Wayland unless explicitly allowed.
+    #[serde(default)]
+    pub host_control: bool,
+    /// Model id passed to an external engine CLI (None = engine default).
+    #[serde(default)]
+    pub engine_model: Option<String>,
+    /// Project folder this agent works in (None = inherit the office/channel).
+    #[serde(default)]
+    pub working_folder: Option<String>,
+}
+
+fn default_engine() -> String {
+    "native".to_string()
 }
 
 impl Default for BotConfig {
@@ -84,6 +112,13 @@ impl Default for BotConfig {
             max_tokens: Some(4096),
             temperature: Some(0.7),
             custom_prompt: None,
+            max_tool_rounds: None,
+            engine: default_engine(),
+            voice_id: None,
+            auto_read: false,
+            host_control: false,
+            engine_model: None,
+            working_folder: None,
         }
     }
 }
@@ -120,6 +155,9 @@ pub struct Bot {
     /// Enabled skill IDs (empty = all built-ins enabled)
     #[serde(default)]
     pub skills: Vec<String>,
+    /// Approval mode: ask (default) / auto / full
+    #[serde(default)]
+    pub approval_mode: ApprovalMode,
     /// Created timestamp
     pub created_at: DateTime<Utc>,
     /// Last updated timestamp
@@ -150,6 +188,7 @@ impl Bot {
             is_orchestrator: false,
             delegate_to: Vec::new(),
             skills: Vec::new(),
+            approval_mode: ApprovalMode::default(),
             created_at: now,
             updated_at: now,
             last_active_at: None,
@@ -190,5 +229,30 @@ mod urlencoding {
             else { out.push_str(&format!("%{:02X}", b)); }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bot_config_voice_fields_round_trip_with_defaults() {
+        // Defaults: no voice override, auto-read off.
+        let default: BotConfig =
+            serde_json::from_value(serde_json::to_value(BotConfig::default()).unwrap()).unwrap();
+        assert!(default.voice_id.is_none());
+        assert!(!default.auto_read);
+
+        // Explicit values survive persistence.
+        let cfg = BotConfig {
+            voice_id: Some("nova".to_string()),
+            auto_read: true,
+            ..BotConfig::default()
+        };
+        let back: BotConfig =
+            serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
+        assert_eq!(back.voice_id.as_deref(), Some("nova"));
+        assert!(back.auto_read);
     }
 }

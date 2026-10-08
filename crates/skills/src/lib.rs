@@ -4,9 +4,11 @@
 //! for web search, file operations, shell execution, and more.
 
 pub mod traits;
+pub mod exec;
 pub mod builtin;
 pub mod registry;
 pub mod awesome;
+pub mod diff;
 
-pub use traits::{Skill, SkillContext, SkillError, SkillResult};
+pub use traits::{Skill, SkillContext, SkillError, SkillResult, SkillKind, SkillRisk};
 pub use registry::SkillRegistry;

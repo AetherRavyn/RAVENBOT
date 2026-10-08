@@ -1,39 +1,269 @@
-//! DB Query — local SQLite (offline) + Postgres via Composio fallback
+//! DB Query — read-only SQL over the local RAVENBOT SQLite database.
+//!
+//! Opens the database **read-only** and returns structured JSON rows. The
+//! previous implementation shelled out to the `sqlite3` CLI with hand-rolled,
+//! broken quoting that both mangled legitimate queries and let a query such as
+//! `SELECT 1; DROP TABLE bots` execute the second statement. A read-only
+//! connection plus single-statement execution closes that hole.
 
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use sqlx::sqlite::{SqliteConnectOptions, SqliteRow};
+use sqlx::{Column, Row, SqlitePool};
+
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct DbQuerySkill;
 
-impl DbQuerySkill { pub fn new() -> Self { Self } }
+impl DbQuerySkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+/// Only read-oriented statements are accepted.
+fn is_read_only_statement(sql: &str) -> bool {
+    let lower = sql.trim_start().to_lowercase();
+    lower.starts_with("select")
+        || lower.starts_with("pragma")
+        || lower.starts_with("explain")
+        || lower.starts_with("with")
+}
+
+/// Best-effort conversion of a SQLite cell to JSON by trying the common types.
+fn cell_to_json(row: &SqliteRow, idx: usize) -> serde_json::Value {
+    if let Ok(Some(v)) = row.try_get::<Option<i64>, _>(idx) {
+        return serde_json::Value::from(v);
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<f64>, _>(idx) {
+        return serde_json::Value::from(v);
+    }
+    if let Ok(Some(v)) = row.try_get::<Option<String>, _>(idx) {
+        return serde_json::Value::from(v);
+    }
+    serde_json::Value::Null
+}
 
 #[async_trait]
 impl Skill for DbQuerySkill {
-    fn id(&self) -> &str { "db_query" }
-    fn name(&self) -> &str { "Database Query" }
-    fn description(&self) -> &str { "Query local SQLite (ravenbot.db) — offline, no OAuth" }
-    fn version(&self) -> &str { "1.0.0" }
-    fn required_permissions(&self) -> Vec<Permission> { vec![Permission::FileSystem { paths: vec![".".into()] }] }
+    fn id(&self) -> &str {
+        "db_query"
+    }
+    fn name(&self) -> &str {
+        "Database Query"
+    }
+    fn description(&self) -> &str {
+        "Run a read-only SQL query against a SQLite file in this office's \
+         workspace. Returns structured rows as JSON. Cannot read RAVENBOT's \
+         own database."
+    }
+    fn version(&self) -> &str {
+        "1.2.0"
+    }
+    fn required_permissions(&self) -> Vec<Permission> {
+        vec![Permission::FileSystem { paths: vec![".".into()] }]
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type":"object","properties":{
-                "sql":{"type":"string","description":"SELECT only (e.g. SELECT * FROM bots LIMIT 5)"},
-                "path":{"type":"string","description":"DB path, default ravenbot.db"}
+                "sql":{"type":"string","description":"A single read-only statement (SELECT/PRAGMA/EXPLAIN/WITH)"},
+                "path":{"type":"string","description":"SQLite file inside this office's workspace"},
+                "limit":{"type":"integer","minimum":1,"maximum":1000,"description":"Max rows returned (default 100)"}
             },"required":["sql"]
         })
     }
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let sql = args.get("sql").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing sql".into()))?;
-        let lower = sql.trim().to_lowercase();
-        if !lower.starts_with("select") && !lower.starts_with("pragma") && !lower.starts_with("explain") {
-            return Ok(SkillResult::failure("Only SELECT/PRAGMA allowed for safety — use Composio supabase_query for writes"));
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::ReadOnly
+    }
+
+    async fn execute(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let sql = args
+            .get("sql")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| SkillError::InvalidArguments("Missing sql".into()))?
+            .trim();
+        if sql.is_empty() {
+            return Err(SkillError::InvalidArguments("Empty sql".into()));
         }
-        // For personal perfect, we query via sqlite CLI (offline) — no new deps
-        let out = tokio::process::Command::new("sh").args(["-c", &format!("sqlite3 ~/.local/share/com.ravenbot.desktop/ravenbot.db \"{}\" 2>&1 | head -n 100", sql.replace('"', "'").replace('\'', "'\\''"))]).output().await.map_err(|e| SkillError::Io(e.to_string()))?;
-        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        Ok(SkillResult::success(serde_json::json!({"sql":sql,"rows": stdout.lines().collect::<Vec<_>>(), "stderr": stderr, "success": out.status.success()})))
+        if !is_read_only_statement(sql) {
+            return Ok(SkillResult::failure(
+                "Only read-only statements are allowed (SELECT/PRAGMA/EXPLAIN/WITH).",
+            ));
+        }
+
+        let limit = args
+            .get("limit")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(100)
+            .clamp(1, 1000);
+
+        // The database must be inside the run's workspace.
+        //
+        // Without this, omitting `path` opened the live RAVENBOT application
+        // database, and `SELECT * FROM bundle_signing_key` returned the
+        // Ed25519 private key that signs fleet-sync bundles — at
+        // `SkillRisk::ReadOnly`, so never gated behind an approval. The path
+        // goes through the same confinement as every other tool, so a
+        // workspace that contains a `.db` is the only thing reachable.
+        let requested = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .filter(|p| !p.trim().is_empty())
+            .ok_or_else(|| {
+                SkillError::InvalidArguments(
+                    "Pass `path` to a SQLite file inside this office's workspace, for example \
+                     `notes/inventory.db`. This tool does not read RAVENBOT's own database."
+                        .into(),
+                )
+            })?;
+        let path = ctx.resolve_path(requested)?;
+
+        if !path.is_file() {
+            return Ok(SkillResult::failure(format!(
+                "No database file at {}",
+                path.display()
+            )));
+        }
+
+        // Read-only connection: a write attempted through any means is refused
+        // by SQLite itself, independent of the prefix check above.
+        let options = SqliteConnectOptions::new()
+            .filename(&path)
+            .read_only(true)
+            .create_if_missing(false);
+
+        let pool = SqlitePool::connect_with(options)
+            .await
+            .map_err(|e| SkillError::Execution(format!("Failed to open database: {}", e)))?;
+
+        // `.query` executes a single statement; sqlx rejects multiple statements
+        // in one call, so `SELECT 1; DROP TABLE x` cannot run the drop.
+        let rows_result = sqlx::query(sql).fetch_all(&pool).await;
+        pool.close().await;
+
+        let rows = match rows_result {
+            Ok(rows) => rows,
+            Err(e) => {
+                return Ok(SkillResult::failure(format!("Query failed: {}", e)));
+            }
+        };
+
+        let truncated = rows.len() > limit as usize;
+        let json_rows: Vec<serde_json::Value> = rows
+            .iter()
+            .take(limit as usize)
+            .map(|row| {
+                let mut obj = serde_json::Map::new();
+                for (idx, col) in row.columns().iter().enumerate() {
+                    obj.insert(col.name().to_string(), cell_to_json(row, idx));
+                }
+                serde_json::Value::Object(obj)
+            })
+            .collect();
+
+        Ok(SkillResult::success(serde_json::json!({
+            "sql": sql,
+            "path": path.to_string_lossy(),
+            "count": json_rows.len(),
+            "truncated": truncated,
+            "rows": json_rows,
+        })))
     }
 }
-impl Default for DbQuerySkill { fn default() -> Self { Self::new() } }
+
+impl Default for DbQuerySkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use uuid::Uuid;
+
+    fn ctx() -> SkillContext {
+        SkillContext::with_default_tier(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
+    }
+
+    async fn temp_db_with_data() -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!("ravenbot-dbq-{}.db", Uuid::new_v4()));
+        let db = ravenbot_db::Database::new(&path).await.expect("temp db");
+        let bot = ravenbot_core::Bot::new("QueryBot", "db test");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        path
+    }
+
+    #[tokio::test]
+    async fn selects_structured_rows() {
+        let path = temp_db_with_data().await;
+        let skill = DbQuerySkill::new();
+        let result = skill
+            .execute(
+                &ctx(),
+                serde_json::json!({ "sql": "SELECT name FROM bots LIMIT 5", "path": path.to_string_lossy() }),
+            )
+            .await
+            .expect("execute");
+        assert!(result.success);
+        let rows = result.output.get("rows").and_then(|v| v.as_array()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].get("name").and_then(|v| v.as_str()), Some("QueryBot"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn rejects_write_statements() {
+        let skill = DbQuerySkill::new();
+        for sql in ["DROP TABLE bots", "DELETE FROM bots", "UPDATE bots SET name='x'"] {
+            let result = skill
+                .execute(&ctx(), serde_json::json!({ "sql": sql }))
+                .await
+                .expect("execute");
+            assert!(!result.success, "must reject: {sql}");
+        }
+    }
+
+    #[tokio::test]
+    async fn cannot_chain_a_write_after_a_select() {
+        let path = temp_db_with_data().await;
+        let skill = DbQuerySkill::new();
+        // The classic bypass: passes the prefix check but would run the drop.
+        let result = skill
+            .execute(
+                &ctx(),
+                serde_json::json!({
+                    "sql": "SELECT 1; DROP TABLE bots",
+                    "path": path.to_string_lossy()
+                }),
+            )
+            .await
+            .expect("execute");
+        // Either it is refused or it errors — the important thing is the table
+        // still exists afterwards.
+        assert!(result.success == false || result.output.get("rows").is_some());
+        let check = skill
+            .execute(
+                &ctx(),
+                serde_json::json!({ "sql": "SELECT COUNT(*) AS n FROM bots", "path": path.to_string_lossy() }),
+            )
+            .await
+            .expect("execute");
+        let n = check.output.pointer("/rows/0/n").and_then(|v| v.as_i64());
+        assert_eq!(n, Some(1), "bots table must still exist: {:?}", check.output);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn prefix_classifier_is_conservative() {
+        assert!(is_read_only_statement("SELECT 1"));
+        assert!(is_read_only_statement("  with x as (select 1) select * from x"));
+        assert!(is_read_only_statement("PRAGMA table_info(bots)"));
+        assert!(!is_read_only_statement("INSERT INTO bots VALUES (1)"));
+        assert!(!is_read_only_statement("drop table bots"));
+    }
+}

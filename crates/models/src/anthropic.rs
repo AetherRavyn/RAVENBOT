@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
+use super::{StreamChunk, ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
 
 const BASE_URL: &str = "https://api.anthropic.com/v1";
 
@@ -72,6 +72,8 @@ pub struct AnthropicProvider {
     api_key: Option<String>,
     model_id: String,
     client: reqwest::Client,
+    /// User-configured base URL override (None = official api.anthropic.com)
+    base_url: Option<String>,
 }
 
 impl AnthropicProvider {
@@ -80,12 +82,27 @@ impl AnthropicProvider {
             api_key,
             model_id: "claude-3-5-sonnet-20241022".to_string(),
             client: reqwest::Client::new(),
+            base_url: None,
         }
     }
 
     pub fn with_model(mut self, model_id: impl Into<String>) -> Self {
         self.model_id = model_id.into();
         self
+    }
+
+    /// Point this provider at a compatible gateway/proxy instead of the
+    /// official Anthropic API.
+    pub fn with_base_url(mut self, base_url: impl Into<String>) -> Self {
+        let url = base_url.into().trim_end_matches('/').to_string();
+        if !url.is_empty() {
+            self.base_url = Some(url);
+        }
+        self
+    }
+
+    fn base_url(&self) -> &str {
+        self.base_url.as_deref().unwrap_or(BASE_URL)
     }
 
     /// Shared send path for both non-streaming and streaming requests
@@ -111,6 +128,40 @@ impl AnthropicProvider {
         let chat_messages: Vec<ChatMessage> = messages.iter()
             .filter(|m| m.role != "system")
             .map(|m| {
+                // Tool result: Anthropic expects role "user" with a
+                // tool_result block keyed by the originating tool_use id.
+                if m.role == "tool" {
+                    let block = serde_json::json!({
+                        "type": "tool_result",
+                        "tool_use_id": m.tool_call_id.clone().unwrap_or_default(),
+                        "content": m.content,
+                    });
+                    return ChatMessage {
+                        role: "user".to_string(),
+                        content: serde_json::Value::Array(vec![block]),
+                    };
+                }
+
+                // Assistant tool calls: tool_use blocks alongside any text.
+                if m.has_tool_calls() {
+                    let mut blocks = Vec::new();
+                    if !m.content.trim().is_empty() {
+                        blocks.push(serde_json::json!({"type": "text", "text": m.content}));
+                    }
+                    for tc in &m.tool_calls {
+                        blocks.push(serde_json::json!({
+                            "type": "tool_use",
+                            "id": tc.id,
+                            "name": tc.name,
+                            "input": tc.arguments,
+                        }));
+                    }
+                    return ChatMessage {
+                        role: "assistant".to_string(),
+                        content: serde_json::Value::Array(blocks),
+                    };
+                }
+
                 // Vision: image blocks precede the text block (Anthropic format)
                 let content = if m.images.is_empty() {
                     serde_json::json!(m.content)
@@ -166,7 +217,7 @@ impl AnthropicProvider {
         };
 
         let response = self.client
-            .post(format!("{}/messages", BASE_URL))
+            .post(format!("{}/messages", self.base_url()))
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
@@ -184,10 +235,10 @@ impl AnthropicProvider {
         if let Some(on_delta) = on_delta {
             // Streaming path: Anthropic event-based SSE
             let mut acc = StreamAccumulator::new();
-            // Extended thinking: reasoning deltas stream inside  swell tags so
-            // the UI's Reasoning panel renders them live; they are kept out of
-            // the final content (returned separately as `reasoning`).
-            let mut thinking_stream_open = false;
+            // Extended thinking: reasoning deltas stream on their own tagged
+            // channel so the UI can show them live and keep them out of the
+            // answer; they are also kept out of the final content (returned
+            // separately as `reasoning`).
             streaming::consume_sse(response, |json| {
                 match json.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                     "message_start" => {
@@ -213,24 +264,25 @@ impl AnthropicProvider {
                                 "text_delta" => {
                                     if let Some(text) = delta.get("text").and_then(|v| v.as_str()) {
                                         if !text.is_empty() {
-                                            if thinking_stream_open {
-                                                on_delta("\n\n");
-                                                thinking_stream_open = false;
-                                            }
                                             acc.push_text(text);
-                                            on_delta(text);
+                                            on_delta(StreamChunk::Text(text));
                                         }
                                     }
                                 }
+                                // Reasoning goes out on its own channel, tagged.
+                                //
+                                // It used to be pushed through `on_delta` with
+                                // literal `<think>` / `</think>` markers wrapped
+                                // around it, which meant the private trace was
+                                // indistinguishable from the answer: it landed in
+                                // the same buffer, so `Clear` at the next tool
+                                // round erased it, and a stream cut mid-thought
+                                // left the markers open in the user's paragraph.
                                 "thinking_delta" => {
                                     if let Some(thinking) = delta.get("thinking").and_then(|v| v.as_str()) {
                                         if !thinking.is_empty() {
-                                            if !thinking_stream_open {
-                                                on_delta("feel");
-                                                thinking_stream_open = true;
-                                            }
                                             acc.push_reasoning(thinking);
-                                            on_delta(thinking);
+                                            on_delta(StreamChunk::Reasoning(thinking));
                                         }
                                     }
                                 }
@@ -255,11 +307,6 @@ impl AnthropicProvider {
                 }
                 Ok(())
             }).await?;
-            if thinking_stream_open {
-                // Close an unterminated reasoning block (thinking-only responses)
-                on_delta("\n\n");
-            }
-
             Ok(acc.finish())
         } else {
             // Non-streaming path
@@ -339,7 +386,7 @@ impl ModelProviderTrait for AnthropicProvider {
         };
 
         let response = self.client
-            .get(format!("{}/models", BASE_URL))
+            .get(format!("{}/models", self.base_url()))
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .send()

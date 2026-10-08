@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>RAVENBOT uses your microphone to let you talk to your agents with your voice.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>RAVENBOT uses the camera only when a bot is asked to look at something.</string>
+</dict>
+</plist>

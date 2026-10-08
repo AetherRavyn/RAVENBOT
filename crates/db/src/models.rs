@@ -20,9 +20,15 @@ pub struct BotRow {
     pub permissions: String, // JSON array
     pub is_orchestrator: bool,
     pub delegate_to: String, // JSON array
+    /// Per-bot enabled skill ids as JSON (migration 009; may be absent on old DBs)
+    pub skills: Option<String>,
+    /// Approval mode string (migration 010; may be absent on old DBs)
+    pub approval_mode: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     pub last_active_at: Option<String>,
+    /// Manual sidebar order (migration 020; 0 = never dragged)
+    pub sort_order: Option<i64>,
 }
 
 impl BotRow {
@@ -31,14 +37,7 @@ impl BotRow {
         let config: ravenbot_core::BotConfig = serde_json::from_str(&self.config)?;
         let permissions: Vec<ravenbot_core::Permission> = serde_json::from_str(&self.permissions)?;
         let delegate_to: Vec<Uuid> = serde_json::from_str(&self.delegate_to)?;
-        let status = match self.status.as_str() {
-            "idle" => ravenbot_core::BotStatus::Idle,
-            "thinking" => ravenbot_core::BotStatus::Thinking,
-            "running_tool" => ravenbot_core::BotStatus::RunningTool,
-            "waiting_on_user" => ravenbot_core::BotStatus::WaitingOnUser,
-            "paused" => ravenbot_core::BotStatus::Paused,
-            _ => ravenbot_core::BotStatus::Idle,
-        };
+        let status = bot_status_from_db(Some(self.status.as_str()));
 
         Ok(ravenbot_core::Bot {
             id: Uuid::parse_str(&self.id).unwrap_or_default(),
@@ -54,7 +53,16 @@ impl BotRow {
             permissions,
             is_orchestrator: self.is_orchestrator,
             delegate_to,
-            skills: Vec::new(),
+            skills: self
+                .skills
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default(),
+            approval_mode: self
+                .approval_mode
+                .as_deref()
+                .map(ravenbot_core::ApprovalMode::parse)
+                .unwrap_or_default(),
             created_at: DateTime::parse_from_rfc3339(&self.created_at)
                 .map(|dt| dt.with_timezone(&Utc))
                 .unwrap_or_else(|_| Utc::now()),
@@ -80,20 +88,18 @@ impl BotRow {
             avatar_style: bot.avatar_style.clone(),
             rank: bot.rank.clone(),
             specialty: bot.specialty.clone(),
-            status: match bot.status {
-                ravenbot_core::BotStatus::Idle => "idle",
-                ravenbot_core::BotStatus::Thinking => "thinking",
-                ravenbot_core::BotStatus::RunningTool => "running_tool",
-                ravenbot_core::BotStatus::WaitingOnUser => "waiting_on_user",
-                ravenbot_core::BotStatus::Paused => "paused",
-            }.to_string(),
+            status: bot_status_to_db(bot.status.clone()).to_string(),
             config: serde_json::to_string(&bot.config)?,
             permissions: serde_json::to_string(&bot.permissions)?,
             is_orchestrator: bot.is_orchestrator,
             delegate_to: serde_json::to_string(&bot.delegate_to)?,
+            skills: Some(serde_json::to_string(&bot.skills)?),
+            approval_mode: Some(bot.approval_mode.as_str().to_string()),
             created_at: bot.created_at.to_rfc3339(),
             updated_at: bot.updated_at.to_rfc3339(),
             last_active_at: bot.last_active_at.map(|dt| dt.to_rfc3339()),
+            // Manual order is owned by BotQueries::reorder; create/update never touch it.
+            sort_order: None,
         })
     }
 }
@@ -106,6 +112,9 @@ pub struct ThreadRow {
     pub title: String,
     pub is_active: bool,
     pub ephemeral: bool,
+    /// Added in migration 014 (nullable).
+    #[sqlx(default)]
+    pub channel_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -118,6 +127,12 @@ pub struct MessageRow {
     pub role: String,
     pub content: String, // JSON
     pub attachments: String, // JSON
+    /// Which bot spoke (migration 011; None on old DBs / human messages)
+    pub sender_bot_id: Option<String>,
+    /// Denormalized sender label
+    pub sender_name: Option<String>,
+    /// Message this replies to (office discussion)
+    pub reply_to_id: Option<String>,
     pub created_at: String,
 }
 
@@ -163,6 +178,8 @@ pub struct ChatRoomRow {
     pub terms: Option<String>,
     pub budget: Option<f64>,
     pub budget_distribution: Option<String>,
+    /// JSON array of project folder paths (migration 016; None on old DBs)
+    pub project_folders: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -175,4 +192,73 @@ pub struct ChatRoomMemberRow {
     pub rank: String,
     pub specialty: String,
     pub joined_at: String,
+}
+
+/// The stored text for a bot status.
+///
+/// One place, because the mapping was inlined in `to_domain` and again in
+/// `from_domain`, and a new variant would have been added to one of them.
+pub fn bot_status_to_db(status: ravenbot_core::BotStatus) -> &'static str {
+    match status {
+        ravenbot_core::BotStatus::Idle => "idle",
+        ravenbot_core::BotStatus::Thinking => "thinking",
+        ravenbot_core::BotStatus::RunningTool => "running_tool",
+        ravenbot_core::BotStatus::WaitingOnUser => "waiting_on_user",
+        ravenbot_core::BotStatus::Paused => "paused",
+    }
+}
+
+/// The bot status for a stored string.
+///
+/// An unrecognised value reads as `Idle` rather than failing: a status column
+/// is a display hint, and a bot that cannot be identified should look
+/// available rather than be unusable.
+pub fn bot_status_from_db(raw: Option<&str>) -> ravenbot_core::BotStatus {
+    use ravenbot_core::BotStatus;
+    match raw.unwrap_or_default() {
+        "thinking" => BotStatus::Thinking,
+        "running_tool" => BotStatus::RunningTool,
+        "waiting_on_user" => BotStatus::WaitingOnUser,
+        "paused" => BotStatus::Paused,
+        _ => BotStatus::Idle,
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use ravenbot_core::BotStatus;
+
+    #[test]
+    fn every_status_survives_a_round_trip() {
+        for s in [
+            BotStatus::Idle,
+            BotStatus::Thinking,
+            BotStatus::RunningTool,
+            BotStatus::WaitingOnUser,
+            BotStatus::Paused,
+        ] {
+            assert_eq!(
+                bot_status_from_db(Some(bot_status_to_db(s.clone()))),
+                s
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_or_missing_value_reads_as_idle() {
+        // A status column is a display hint. A bot that cannot be identified
+        // should look available rather than be unusable.
+        assert_eq!(bot_status_from_db(None), BotStatus::Idle);
+        assert_eq!(bot_status_from_db(Some("")), BotStatus::Idle);
+        assert_eq!(bot_status_from_db(Some("EmulatingTools")), BotStatus::Idle);
+    }
+
+    #[test]
+    fn the_stored_form_is_the_snake_case_the_frontend_expects() {
+        // The frontend switches on these exact strings, and `BotStatus` itself
+        // serialises as PascalCase because it has no serde rename.
+        assert_eq!(bot_status_to_db(BotStatus::RunningTool), "running_tool");
+        assert_eq!(bot_status_to_db(BotStatus::WaitingOnUser), "waiting_on_user");
+    }
 }

@@ -155,20 +155,36 @@ export class KeyboardShortcutManager {
 
   private matchesCombo(e: KeyboardEvent, combo: string): boolean {
     const parts = combo.toLowerCase().split('+');
-    const key = parts.pop();
-    
-    const ctrl = parts.includes('ctrl') || parts.includes('mod');
-    const shift = parts.includes('shift');
-    const alt = parts.includes('alt');
-    const meta = parts.includes('meta') || parts.includes('cmd');
-    
-    return (
-      e.key.toLowerCase() === key &&
-      e.ctrlKey === ctrl &&
-      e.shiftKey === shift &&
-      e.altKey === alt &&
-      e.metaKey === meta
-    );
+    const targetKey = parts.pop()?.toLowerCase();
+    if (!targetKey) return false;
+
+    const hasMod = parts.includes('mod');
+    const hasCtrl = parts.includes('ctrl');
+    const hasMeta = parts.includes('meta') || parts.includes('cmd');
+    const hasShift = parts.includes('shift');
+    const hasAlt = parts.includes('alt');
+
+    const keyMatches =
+      e.key.toLowerCase() === targetKey ||
+      (targetKey === ',' && (e.code === 'Comma' || e.key === ',')) ||
+      (targetKey === 'k' && (e.code === 'KeyK' || e.key.toLowerCase() === 'k')) ||
+      (targetKey === 'b' && (e.code === 'KeyB' || e.key.toLowerCase() === 'b')) ||
+      (targetKey === 'n' && (e.code === 'KeyN' || e.key.toLowerCase() === 'n')) ||
+      (targetKey === 'escape' && (e.code === 'Escape' || e.key === 'Escape'));
+
+    if (!keyMatches) return false;
+
+    if (hasMod) {
+      if (!e.ctrlKey && !e.metaKey) return false;
+    } else {
+      if (hasCtrl !== e.ctrlKey) return false;
+      if (hasMeta !== e.metaKey) return false;
+    }
+
+    if (hasShift !== e.shiftKey) return false;
+    if (hasAlt !== e.altKey) return false;
+
+    return true;
   }
 }
 

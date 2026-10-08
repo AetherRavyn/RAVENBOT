@@ -1,5 +1,10 @@
-// Comprehensive Theme Engine for RAVENBOT
-// Complete dynamic metamorphosis: Logos, Backgrounds, Buttons, Badges, Typography, and Lore
+// RAVENBOT Theme Engine — flat, palette-accurate themes.
+//
+// Every theme is a solid 8-bit palette: one background, one card, one border,
+// one primary, one accent, one text colour. No gradients, no neon blends.
+// Applying a theme also rewrites the semantic design tokens (surfaces, text,
+// shadcn triplets) so the entire UI — buttons, borders, focus rings — follows
+// the active palette.
 
 export interface ThemeBrandIdentity {
   logoType: "svg-grok" | "image" | "svg-rot" | "svg-cyber" | "svg-matrix" | "svg-crimson" | "svg-amber" | "svg-onyx";
@@ -28,304 +33,408 @@ export interface ThemeDefinition {
   id: string;
   name: string;
   category: string;
+  /** Solid accent used for focus, selection, icons and links (`--brand`). */
   primaryColor: string;
+  /** Secondary solid accent. */
   accentColor: string;
   secondaryAccent?: string;
+  /**
+   * Fill for the primary action button and the light user-message bubble.
+   * OpenBot draws these as a *light* Apple-style button (#f0f0f0) and keeps the
+   * theme's `primaryColor` for focus/selection instead — so this is separate
+   * from `primaryColor`. Falls back to `primaryColor` when omitted (legacy
+   * themes behave exactly as before).
+   */
+  buttonHex?: string;
+  /** Text colour on `buttonHex`. Derived from luminance when omitted. */
+  buttonForegroundHex?: string;
   bgHex: string;
   cardHex: string;
   borderHex: string;
-  boneColor?: string;
-  parchmentColor?: string;
-  rustColor?: string;
-  mossColor?: string;
+  /** Explicit text colour (defaults to a readable tone for the background). */
+  textColor?: string;
+  mutedTextColor?: string;
   description: string;
   brand: ThemeBrandIdentity;
 }
 
+/* ── Colour helpers (flat, no gradients) ──────────────────────────────── */
+
+function hexToRgb(hex: string): [number, number, number] {
+  let h = hex.replace("#", "").trim();
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+      case g: h = (b - r) / d + 2; break;
+      default: h = (r - g) / d + 4;
+    }
+    h /= 6;
+  }
+  return [h * 360, s * 100, l * 100];
+}
+
+/** Convert a hex colour to a bare `H S% L%` triplet for `hsl(var(--x))`. */
+export function hexToHslTriplet(hex: string): string {
+  const [h, s, l] = rgbToHsl(...hexToRgb(hex));
+  return `${Math.round(h)} ${Math.round(s)}% ${Math.round(l)}%`;
+}
+
+function luminance(hex: string): number {
+  const [r, g, b] = hexToRgb(hex).map((v) => {
+    const c = v / 255;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }) as [number, number, number];
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+/** Readable solid text colour on a given background. */
+function readableOn(hex: string): string {
+  return luminance(hex) > 0.45 ? "#0b0b0f" : "#ffffff";
+}
+
+/** WCAG 2.1 relative contrast between two hex colours. 1 … 21. */
+export function contrastRatio(a: string, b: string): number {
+  const la = luminance(a);
+  const lb = luminance(b);
+  return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
+}
+
+/**
+ * Push `hex` away from `bg` until it clears `ratio`, or until it runs out of
+ * room.
+ *
+ * ## Why this exists
+ *
+ * The text ramp used to be built by mixing fixed proportions towards the
+ * background — `--text-muted` was `mixHex(muted, bg, 0.28)`. That is a
+ * *relative* recipe, so its contrast is whatever the theme's own muted colour
+ * happens to produce, and for every dark theme in the catalogue it produced
+ * 2.6–4.0:1. Just under the 4.5:1 that WCAG AA asks of body text, which means
+ * every piece of secondary text in the app failed and nothing said so.
+ *
+ * A themeable token cannot be specified as a mix ratio and also be guaranteed
+ * to pass. So the ramp is specified as a *ratio*, and this is what turns the
+ * ratio back into a colour: step the candidate away from its background until
+ * it clears the floor. It costs a few dozen arithmetic operations once per
+ * theme change and it makes the guarantee hold for every theme, including ones
+ * added later, which is the part a hand-tuned hex cannot do.
+ *
+ * Direction is chosen from the background, not from the candidate, so a theme
+ * with an unusual primary colour still moves the right way.
+ */
+export function ensureContrast(hex: string, bg: string, ratio: number): string {
+  if (contrastRatio(hex, bg) >= ratio) return hex;
+  const dark = luminance(bg) < 0.5;
+  // Fully clear and fully dark are the two stops available.
+  const target = dark ? "#ffffff" : "#000000";
+  // 2% steps: fine enough that the result is indistinguishable from a
+  // continuous solve, coarse enough to be obviously correct and terminate.
+  for (let step = 0.02; step <= 1.0001; step += 0.02) {
+    const candidate = mixHex(hex, target, step);
+    if (contrastRatio(candidate, bg) >= ratio) return candidate;
+  }
+  return target;
+}
+
+/** Flat colour blend — a solid hex, never a gradient. */
+function mixHex(a: string, b: string, amount: number): string {
+  const [r1, g1, b1] = hexToRgb(a);
+  const [r2, g2, b2] = hexToRgb(b);
+  const m = (x: number, y: number) => Math.round(x + (y - x) * amount);
+  const to = (n: number) => n.toString(16).padStart(2, "0");
+  return `#${to(m(r1, r2))}${to(m(g1, g2))}${to(m(b1, b2))}`;
+}
+
+/** Shared flat brand identity so palette themes stay short and consistent. */
+function flatBrand(
+  brandTitle: string,
+  brandAccent: string,
+  badgeLabel: string,
+  subtitle: string,
+  tagline: string,
+  logoType: ThemeBrandIdentity["logoType"] = "image",
+): ThemeBrandIdentity {
+  return {
+    logoType,
+    logoImage: "/ravenicon.png",
+    brandTitle,
+    brandAccent,
+    badgeLabel,
+    subtitle,
+    tagline,
+    action1Title: "Command Palette",
+    action1Desc: "Search the fleet, dispatch actions, launch tools",
+    action1Icon: "sparkles",
+    action2Title: "Settings & Keys",
+    action2Desc: "Configure providers, models, connectors and themes",
+    protocolTitle: "Local-First Protocol",
+    protocolDesc: "Everything runs on your machine — zero telemetry, zero cloud",
+    protocolTags: ["Local-First", "Sandboxed", "Private"],
+    statusLabel: "SYSTEM READY",
+    statusDesc: "All systems operational",
+    buttonBorderRadius: "rounded-xl",
+    buttonClass: "border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-[var(--text-primary)]",
+    cardClass: "bg-[var(--theme-card)] border-[var(--theme-border)]",
+  };
+}
+
 export const THEMES: ThemeDefinition[] = [
+  {
+    // The OpenBot-look default: neutral greyscale canvas, #212121 surfaces,
+    // a single blue accent for focus/selection, and a LIGHT primary button.
+    // This is the look the UI is designed against; every other theme below
+    // simply re-tints the same layout.
+    // The `id` is what a user's saved preference stores, so it stays `openbot`
+    // even though nothing is called that on screen any more — renaming it would
+    // silently drop everyone back to the default.
+    id: "openbot",
+    // Named for the look, like every other theme here (Onyx, Dracula, Nord).
+    // It was called "OpenBot", which put another product's name in the middle
+    // of RAVENBOT's own title bar.
+    name: "Neutral Dark",
+    category: "Neutral",
+    primaryColor: "#79b8ff",
+    accentColor: "#a6d2ff",
+    secondaryAccent: "#9ae6b4",
+    buttonHex: "#f0f0f0",
+    buttonForegroundHex: "#141414",
+    bgHex: "#141414",
+    cardHex: "#212121",
+    borderHex: "#2a2a2a",
+    textColor: "#ffffff",
+    mutedTextColor: "#9a9aa0",
+    description: "Neutral dark system — greyscale canvas, blue accent, light primary button",
+    brand: flatBrand("RAVEN", "BOT", "LOCAL OS", "Sovereign Local-First Agent OS", "A persistent fleet of agents that live on your machine"),
+  },
   {
     id: "grok-sovereign",
     name: "Grok Sovereign",
-    category: "Superluminal Minimal",
-    primaryColor: "#ffffff",
+    category: "Neutral",
+    primaryColor: "#e4e4e7",
     accentColor: "#38bdf8",
     secondaryAccent: "#a1a1aa",
     bgHex: "#000000",
-    cardHex: "#09090b",
-    borderHex: "#27272a",
-    description: "Ultra-sleek Grok dark interface with pure OLED black and electric cyan accents",
-    brand: {
-      logoType: "svg-grok",
-      brandTitle: "RAVEN",
-      brandAccent: "BOT",
-      badgeLabel: "SOVEREIGN OS",
-      subtitle: "Autonomous Local-First Agent OS",
-      tagline: "Persistent Fleet of Sovereign Agents Living On Your Machine",
-      action1Title: "Command Palette",
-      action1Desc: "Search fleet, dispatch actions, trigger autonomous tools",
-      action1Icon: "sparkles",
-      action2Title: "Settings & Model Keys",
-      action2Desc: "Configure Claude 3.5, GPT-4o, Ollama Local & MCP Connectors",
-      protocolTitle: "Sovereign Enclave Protocol",
-      protocolDesc: "Hardware-sandboxed execution with zero external telemetry",
-      protocolTags: ["Local-First", "Sandboxed", "Encrypted"],
-      statusLabel: "SYSTEM OPTIMAL",
-      statusDesc: "All systems verified & operational",
-      buttonBorderRadius: "rounded-xl",
-      buttonClass: "border-zinc-800 bg-[#121216] hover:border-zinc-500 hover:bg-[#181820] text-zinc-100 shadow-sm",
-      cardClass: "bg-[#09090b]/95 border-[#27272a] shadow-2xl",
-    },
+    cardHex: "#0a0a0c",
+    borderHex: "#242427",
+    textColor: "#f4f4f5",
+    mutedTextColor: "#8a8a93",
+    description: "OLED black with a titanium silver primary and a single cyan accent",
+    brand: flatBrand("RAVEN", "BOT", "SOVEREIGN OS", "Autonomous Local-First Agent OS", "Persistent Fleet of Sovereign Agents Living On Your Machine", "svg-grok"),
   },
   {
-    id: "the-rot-archive",
-    name: "The Rot Archive",
-    category: "Forbidden Grimoire",
-    primaryColor: "#8B1E1E", // Blood Red
-    accentColor: "#C8B89B",  // Aged Parchment
-    secondaryAccent: "#2D3F31", // Necrotic Moss
-    bgHex: "#080706",        // Decayed Reliquary Charcoal
-    cardHex: "#12100d",      // Ancient Dark Leather & Wood
-    borderHex: "#3e2c22",    // Rust Iron & Dried Blood
-    boneColor: "#E5E0D8",    // Bone White
-    parchmentColor: "#C8B89B", // Aged Parchment
-    rustColor: "#5C3B2E",    // Rust Brown
-    mossColor: "#2D3F31",    // Moss Green
-    description: "Forbidden alchemical codex: Blood Red, Aged Parchment, Bone White, and Necrotic Moss",
-    brand: {
-      logoType: "svg-rot",
-      brandTitle: "ROT",
-      brandAccent: "ARCHIVE",
-      badgeLabel: "SEALED CODEX",
-      subtitle: "Forbidden Codex & Living Knowledge",
-      tagline: "Alchemical Mutating Multi-Agent Realm",
-      action1Title: "Grimoire & Incantations",
-      action1Desc: "Summon scholars, cast alchemical transmutation tools",
-      action1Icon: "book-open",
-      action2Title: "Alchemical Reliquary & Keys",
-      action2Desc: "Configure cipher seals, local distillers, and secret runes",
-      protocolTitle: "Necrotic Quarantine Protocol",
-      protocolDesc: "All forbidden texts quarantined within alchemical boundaries",
-      protocolTags: ["Quarantined", "Encrypted", "Purified"],
-      statusLabel: "SEAL INTACT",
-      statusDesc: "All forbidden codices contained",
-      buttonBorderRadius: "rounded-xl",
-      buttonClass: "border-stone-700/60 bg-[#161310] hover:bg-[#201c17] text-[#C8B89B] shadow-inner",
-      cardClass: "bg-[#12100d]/95 border-[#3e2c22] shadow-[0_4px_25px_rgba(0,0,0,0.8)]",
-    },
+    id: "onyx",
+    name: "Onyx",
+    category: "Neutral",
+    primaryColor: "#fafafa",
+    accentColor: "#a1a1aa",
+    secondaryAccent: "#71717a",
+    bgHex: "#000000",
+    cardHex: "#0b0b0d",
+    borderHex: "#26262b",
+    textColor: "#fafafa",
+    mutedTextColor: "#8b8b93",
+    description: "Pure true-black monochrome — maximum contrast, zero colour noise",
+    brand: flatBrand("ONYX", "OS", "MONOCHROME", "Pure black monochrome workspace", "High-contrast local agent fleet"),
   },
   {
-    id: "obsidian-violet",
-    name: "Obsidian Violet",
-    category: "Sovereign Default",
-    primaryColor: "#8b5cf6", // Electric Violet
-    accentColor: "#a855f7",
-    secondaryAccent: "#06b6d4",
-    bgHex: "#07070a",
-    cardHex: "#0c0c14",
-    borderHex: "#222234",
-    description: "Deep obsidian dark with electric violet neon crest",
-    brand: {
-      logoType: "image",
-      logoImage: "/ravenicon.png",
-      brandTitle: "RAVEN",
-      brandAccent: "BOT",
-      badgeLabel: "SOVEREIGN",
-      subtitle: "Sovereign, Local-First, Hardware-Encrypted",
-      tagline: "Multi-Agent Fleet Operating System",
-      action1Title: "Command Palette",
-      action1Desc: "Search fleet, launch actions, configure tools",
-      action1Icon: "terminal",
-      action2Title: "Settings & Keys",
-      action2Desc: "Configure OpenRouter, Claude, GPT, Ollama and themes",
-      protocolTitle: "Fleet Safety Protocol",
-      protocolDesc: "All agents operate within secure boundaries",
-      protocolTags: ["Sandboxed", "Encrypted", "Verified"],
-      statusLabel: "SYSTEM SECURE",
-      statusDesc: "All systems operational",
-      buttonBorderRadius: "rounded-2xl",
-      buttonClass: "border-[#1f1f2e] bg-[#0c0c14]/90 hover:border-purple-500/50 hover:bg-[#10101b] text-white",
-      cardClass: "bg-[#0c0c14]/90 border-[#1f1f2e]",
-    },
+    id: "dracula",
+    name: "Dracula",
+    category: "Classic",
+    primaryColor: "#bd93f9",
+    accentColor: "#ff79c6",
+    secondaryAccent: "#8be9fd",
+    bgHex: "#282a36",
+    cardHex: "#21222c",
+    borderHex: "#44475a",
+    textColor: "#f8f8f2",
+    mutedTextColor: "#6272a4",
+    description: "The canonical Dracula palette — purple, pink and cyan on #282a36",
+    brand: flatBrand("DRACULA", "BOT", "NIGHT THEME", "Dracula official palette", "Purple, pink and cyan on charcoal"),
+  },
+  {
+    id: "rose-pine",
+    name: "Rosé Pine",
+    category: "Classic",
+    primaryColor: "#c4a7e7",
+    accentColor: "#eb6f92",
+    secondaryAccent: "#9ccfd8",
+    bgHex: "#191724",
+    cardHex: "#1f1d2e",
+    borderHex: "#26233a",
+    textColor: "#e0def4",
+    mutedTextColor: "#6e6a86",
+    description: "Rosé Pine — all natural pine, faux fur and a bit of soho vibes",
+    brand: flatBrand("ROSÉ", "PINE", "MAIN", "Rosé Pine official palette", "Soothing pastel theme for the high-spirited"),
+  },
+  {
+    id: "rose-pine-moon",
+    name: "Rosé Pine Moon",
+    category: "Classic",
+    primaryColor: "#c4a7e7",
+    accentColor: "#ea9a97",
+    secondaryAccent: "#9ccfd8",
+    bgHex: "#232136",
+    cardHex: "#2a273f",
+    borderHex: "#393552",
+    textColor: "#e0def4",
+    mutedTextColor: "#6e6a86",
+    description: "Rosé Pine Moon — the darker, softer sibling of Rosé Pine",
+    brand: flatBrand("ROSÉ", "MOON", "MOON", "Rosé Pine Moon palette", "Darker Rosé Pine for late sessions"),
+  },
+  {
+    id: "nord",
+    name: "Nord",
+    category: "Classic",
+    primaryColor: "#88c0d0",
+    accentColor: "#81a1c1",
+    secondaryAccent: "#a3be8c",
+    bgHex: "#2e3440",
+    cardHex: "#3b4252",
+    borderHex: "#4c566a",
+    textColor: "#eceff4",
+    mutedTextColor: "#d8dee9",
+    description: "Nord — an arctic, north-bluish colour palette",
+    brand: flatBrand("NORD", "OS", "ARCTIC", "Arctic north-bluish palette", "Cool, calm and collected agents"),
+  },
+  {
+    id: "gruvbox",
+    name: "Gruvbox Dark",
+    category: "Classic",
+    primaryColor: "#d79921",
+    accentColor: "#b8bb26",
+    secondaryAccent: "#83a598",
+    bgHex: "#282828",
+    cardHex: "#32302f",
+    borderHex: "#504945",
+    textColor: "#ebdbb2",
+    mutedTextColor: "#a89984",
+    description: "Gruvbox Dark — retro groove warm earth tones",
+    brand: flatBrand("GRUVBOX", "DARK", "RETRO", "Retro groove warm palette", "Warm earth tones for focused work"),
+  },
+  {
+    id: "tokyo-night",
+    name: "Tokyo Night",
+    category: "Classic",
+    primaryColor: "#7aa2f7",
+    accentColor: "#bb9af7",
+    secondaryAccent: "#7dcfff",
+    bgHex: "#1a1b26",
+    cardHex: "#1f2335",
+    borderHex: "#292e42",
+    textColor: "#c0caf5",
+    mutedTextColor: "#565f89",
+    description: "Tokyo Night — a clean, dark theme celebrating the lights of downtown Tokyo",
+    brand: flatBrand("TOKYO", "NIGHT", "CITY LIGHTS", "Neon city nights palette", "Blue and violet city glow"),
+  },
+  {
+    id: "catppuccin-mocha",
+    name: "Catppuccin Mocha",
+    category: "Classic",
+    primaryColor: "#cba6f7",
+    accentColor: "#f5c2e7",
+    secondaryAccent: "#94e2d5",
+    bgHex: "#1e1e2e",
+    cardHex: "#181825",
+    borderHex: "#313244",
+    textColor: "#cdd6f4",
+    mutedTextColor: "#a6adc8",
+    description: "Catppuccin Mocha — soothed pastels for the late-night coder",
+    brand: flatBrand("CATPPUCCIN", "MOCHA", "PASTEL", "Soothing pastel theme", "Soft pastels on deep espresso"),
+  },
+  {
+    id: "one-dark",
+    name: "One Dark",
+    category: "Classic",
+    primaryColor: "#61afef",
+    accentColor: "#c678dd",
+    secondaryAccent: "#98c379",
+    bgHex: "#282c34",
+    cardHex: "#21252b",
+    borderHex: "#3e4451",
+    textColor: "#abb2bf",
+    mutedTextColor: "#5c6370",
+    description: "Atom One Dark — the classic balanced dark theme",
+    brand: flatBrand("ONE", "DARK", "ATOM", "Balanced dark theme", "The classic Atom editor palette"),
+  },
+  {
+    id: "solarized-dark",
+    name: "Solarized Dark",
+    category: "Classic",
+    primaryColor: "#268bd2",
+    accentColor: "#2aa198",
+    secondaryAccent: "#b58900",
+    bgHex: "#002b36",
+    cardHex: "#073642",
+    borderHex: "#586e75",
+    textColor: "#93a1a1",
+    mutedTextColor: "#657b83",
+    description: "Solarized Dark — precision colours with balanced contrast",
+    brand: flatBrand("SOLARIZED", "DARK", "PRECISION", "Precision-balanced palette", "Designed for long reading sessions"),
   },
   {
     id: "cyber-cyan",
     name: "Cyber Cyan",
-    category: "Futuristic",
-    primaryColor: "#06b6d4", // Neon Cyan
-    accentColor: "#38bdf8",  // Sky Blue
+    category: "Accent",
+    primaryColor: "#06b6d4",
+    accentColor: "#38bdf8",
     secondaryAccent: "#3b82f6",
     bgHex: "#030712",
-    cardHex: "#061024",
-    borderHex: "#112648",
-    description: "Sub-zero neon cyan with deep ocean trench obsidian",
-    brand: {
-      logoType: "svg-cyber",
-      brandTitle: "CYBER",
-      brandAccent: "CORE",
-      badgeLabel: "QUANTUM 9",
-      subtitle: "Holographic Neural Grid & Agent Mainframe",
-      tagline: "High-Bandwidth Distributed Intelligence",
-      action1Title: "Quantum Dispatcher",
-      action1Desc: "Route neural vectors, execute parallel sub-routines",
-      action1Icon: "cpu",
-      action2Title: "Neural Telemetry & Keys",
-      action2Desc: "Manage quantum endpoints, API channels and latency",
-      protocolTitle: "Quantum Shielding Matrix",
-      protocolDesc: "Hardware-isolated neural sandboxes with cryptographic proof",
-      protocolTags: ["Isolated", "Encrypted", "Supercharged"],
-      statusLabel: "GRID ONLINE",
-      statusDesc: "Sub-zero neural channels 100% synchronized",
-      buttonBorderRadius: "rounded-lg",
-      buttonClass: "border-cyan-800/60 bg-[#071328] hover:border-cyan-400 hover:bg-[#0c1f40] text-cyan-200 shadow-[0_0_15px_rgba(6,182,212,0.15)]",
-      cardClass: "bg-[#061024]/95 border-[#112648]",
-    },
+    cardHex: "#081221",
+    borderHex: "#123a5c",
+    textColor: "#d7f9ff",
+    mutedTextColor: "#5e9dbb",
+    description: "Flat cyan on a deep ocean navy",
+    brand: flatBrand("CYBER", "CORE", "QUANTUM", "Cyan agent mainframe", "Flat neon cyan, no gradients", "svg-cyber"),
   },
   {
-    id: "emerald-matrix",
+    id: "emerald",
     name: "Emerald Matrix",
-    category: "Terminal",
-    primaryColor: "#10b981", // Matrix Green
+    category: "Accent",
+    primaryColor: "#10b981",
     accentColor: "#34d399",
     secondaryAccent: "#059669",
-    bgHex: "#020904",
-    cardHex: "#051509",
-    borderHex: "#0f3317",
-    description: "Cyberpunk mainframe green with stealth CRT scanlines",
-    brand: {
-      logoType: "svg-matrix",
-      brandTitle: "MATRIX",
-      brandAccent: "MAINFRAME",
-      badgeLabel: "ROOT PRIVILEGED",
-      subtitle: "Phosphor CRT Daemon & Shell Environment",
-      tagline: "Zero-Latency Local Daemon Swarm",
-      action1Title: ">_ Terminal Shell Exec",
-      action1Desc: "Spawn daemon threads, pipe standard streams, dispatch IPC",
-      action1Icon: "terminal",
-      action2Title: "SysConfig & Root Keys",
-      action2Desc: "Configure kernel parameters, local LLMs and shell hooks",
-      protocolTitle: "Kernel Sandbox Boundary",
-      protocolDesc: "Enforced cgroups and eBPF syscall filtering active",
-      protocolTags: ["Air-Gapped", "eBPF Locked", "Zero-Leak"],
-      statusLabel: "MAINFRAME LOCKED",
-      statusDesc: "Root kernel integrity verified",
-      buttonBorderRadius: "rounded-md",
-      buttonClass: "border-emerald-800/80 bg-[#06180b] hover:border-emerald-400 hover:bg-[#0c2914] text-emerald-300 font-mono shadow-[0_0_12px_rgba(16,185,129,0.2)]",
-      cardClass: "bg-[#051509]/95 border-[#0f3317]",
-    },
-  },
-  {
-    id: "crimson-sovereign",
-    name: "Crimson Sovereign",
-    category: "Combat",
-    primaryColor: "#f43f5e", // Crimson
-    accentColor: "#fb7185",
-    secondaryAccent: "#e11d48",
-    bgHex: "#0c0306",
-    cardHex: "#18060d",
-    borderHex: "#3d1020",
-    description: "Aggressive blood-ruby crimson with dark obsidian vanguard",
-    brand: {
-      logoType: "svg-crimson",
-      brandTitle: "VANGUARD",
-      brandAccent: "RED",
-      badgeLabel: "TACTICAL DEFCON 1",
-      subtitle: "Mission-Critical Sovereign Fleet Vanguard",
-      tagline: "High-Priority Autonomous Strike Teams",
-      action1Title: "Tactical Strike Palette",
-      action1Desc: "Engage task graphs, coordinate agent squads, execute targets",
-      action1Icon: "zap",
-      action2Title: "Armory & Encryption Keys",
-      action2Desc: "Manage hardware security modules and credential armory",
-      protocolTitle: "Vanguard Combat Protocol",
-      protocolDesc: "Total isolation with immediate automatic failover",
-      protocolTags: ["Hardened", "Armored", "Impervious"],
-      statusLabel: "VANGUARD ARMED",
-      statusDesc: "All tactical units in ready state",
-      buttonBorderRadius: "rounded-xl",
-      buttonClass: "border-rose-900/80 bg-[#1e0710] hover:border-rose-500 hover:bg-[#2b0a17] text-rose-200 shadow-[0_0_15px_rgba(244,63,94,0.2)]",
-      cardClass: "bg-[#18060d]/95 border-[#3d1020]",
-    },
-  },
-  {
-    id: "amber-sunset",
-    name: "Amber Sunset",
-    category: "Warm",
-    primaryColor: "#f59e0b", // Solar Gold
-    accentColor: "#fbbf24",
-    secondaryAccent: "#d97706",
-    bgHex: "#0a0703",
-    cardHex: "#170f06",
-    borderHex: "#38230e",
-    description: "High-voltage amber gold with warm solar carbon backdrop",
-    brand: {
-      logoType: "svg-amber",
-      brandTitle: "SOLAR",
-      brandAccent: "FORGE",
-      badgeLabel: "FUSION REACTOR",
-      subtitle: "Solar Powered High-Yield Agent Forge",
-      tagline: "Unrestricted Local Compute & Creative Synthesizer",
-      action1Title: "Solar Command Conduit",
-      action1Desc: "Ignite creative engines, synthesize ideas, forge workflows",
-      action1Icon: "flame",
-      action2Title: "Forge Foundry & Keys",
-      action2Desc: "Tune token temperatures, configure models, manage keys",
-      protocolTitle: "Solar Containment Shield",
-      protocolDesc: "High-temperature safety buffers and rate-limiting safeguards",
-      protocolTags: ["Thermal Safe", "Fusion Locked", "Optimal"],
-      statusLabel: "REACTOR STABLE",
-      statusDesc: "Optimal core temperature and throughput",
-      buttonBorderRadius: "rounded-2xl",
-      buttonClass: "border-amber-800/70 bg-[#1a1106] hover:border-amber-400 hover:bg-[#261909] text-amber-200 shadow-[0_0_15px_rgba(245,158,11,0.18)]",
-      cardClass: "bg-[#170f06]/95 border-[#38230e]",
-    },
-  },
-  {
-    id: "onyx-monochrome",
-    name: "Onyx AMOLED",
-    category: "Stealth",
-    primaryColor: "#e4e4e7", // Titanium Silver
-    accentColor: "#ffffff",  // Pure White
-    secondaryAccent: "#71717a",
-    bgHex: "#000000",        // Pure 100% AMOLED Black
-    cardHex: "#0a0a0a",
-    borderHex: "#222222",
-    description: "Pure true-black AMOLED with high-contrast titanium silver",
-    brand: {
-      logoType: "svg-onyx",
-      brandTitle: "ONYX",
-      brandAccent: "ZERO",
-      badgeLabel: "STEALTH AIR-GAP",
-      subtitle: "Zero-Light Pure AMOLED Minimalist Core",
-      tagline: "Pure Local Sovereign Computation",
-      action1Title: "Stealth Dispatcher",
-      action1Desc: "Execute silent background tasks with minimal footprint",
-      action1Icon: "sparkles",
-      action2Title: "Onyx Key Vault",
-      action2Desc: "Manage hardware enclave and biometric authentications",
-      protocolTitle: "Air-Gapped Stealth Protocol",
-      protocolDesc: "Total zero-telemetry hardware enclave isolation",
-      protocolTags: ["Air-Gapped", "Encrypted", "Zero-Trace"],
-      statusLabel: "STEALTH ACTIVE",
-      statusDesc: "0 dB acoustic / 0 byte network telemetry",
-      buttonBorderRadius: "rounded-none",
-      buttonClass: "border-zinc-800 bg-[#0e0e0e] hover:border-zinc-400 hover:bg-[#181818] text-zinc-100 font-mono",
-      cardClass: "bg-[#080808] border-[#222222]",
-    },
+    bgHex: "#03110a",
+    cardHex: "#071a10",
+    borderHex: "#124a2c",
+    textColor: "#c7f9e5",
+    mutedTextColor: "#4ea87e",
+    description: "Flat phosphor green on near-black",
+    brand: flatBrand("EMERALD", "MATRIX", "TERMINAL", "Phosphor terminal green", "Flat green terminal aesthetic", "svg-matrix"),
   },
 ];
 
-let activeThemeId = "grok-sovereign";
+let activeThemeId = "openbot";
 const listeners = new Set<(theme: ThemeDefinition) => void>();
+
+/**
+ * The contrast floor every body-text token in the ramp is held to.
+ *
+ * WCAG 2.1 AA asks 4.5:1 for text under 18.66px. The text ramp is specified
+ * against that number rather than against whatever each theme happened to
+ * produce, so the guarantee is a property of the theme engine rather than a
+ * coincidence of the current palette.
+ */
+export const AA_TEXT = 4.5;
 
 export function getStoredTheme(): ThemeDefinition {
   if (typeof window === "undefined") return THEMES[0];
   const saved = localStorage.getItem("raven-theme");
-  // Default to grok-sovereign and migrate the-rot-archive
-  if (!saved || saved === "the-rot-archive") {
-    return THEMES[0];
-  }
-  const found = THEMES.find((t) => t.id === saved);
-  return found || THEMES[0];
+  if (!saved) return THEMES[0];
+  return THEMES.find((t) => t.id === saved) || THEMES[0];
 }
 
 export function applyTheme(themeId: string) {
@@ -336,18 +445,91 @@ export function applyTheme(themeId: string) {
     document.documentElement.setAttribute("data-theme", theme.id);
     localStorage.setItem("raven-theme", theme.id);
 
-    // Apply CSS variables dynamically to root
     const root = document.documentElement;
-    root.style.setProperty("--theme-primary", theme.primaryColor);
-    root.style.setProperty("--theme-accent", theme.accentColor);
-    root.style.setProperty("--theme-bg", theme.bgHex);
-    root.style.setProperty("--theme-card", theme.cardHex);
-    root.style.setProperty("--theme-border", theme.borderHex);
+    const bg = theme.bgHex;
+    const card = theme.cardHex;
+    const border = theme.borderHex;
+    const accent = theme.primaryColor; // focus / selection / icons (`--brand`)
+    const accentText = theme.accentColor;
+    // The LIGHT primary-button fill. Falls back to primaryColor for themes
+    // that predate buttonHex, so they render exactly as they always did.
+    const button = theme.buttonHex ?? theme.primaryColor;
+    const buttonFg = theme.buttonForegroundHex ?? readableOn(button);
+    const text = theme.textColor || readableOn(bg);
+    const muted = theme.mutedTextColor || mixHex(text, bg, 0.5);
+    // Named because the contrast floor below is measured against it, and a
+    // reader of `ensureContrast(…, surface2, …)` should not have to go and
+    // find where surface2 came from.
+    const surface2 = mixHex(card, text, 0.05);
 
-    if (theme.boneColor) root.style.setProperty("--theme-bone", theme.boneColor);
-    if (theme.parchmentColor) root.style.setProperty("--theme-parchment", theme.parchmentColor);
-    if (theme.rustColor) root.style.setProperty("--theme-rust", theme.rustColor);
-    if (theme.mossColor) root.style.setProperty("--theme-moss", theme.mossColor);
+    // Raw theme colours (consumed by layout chrome + components)
+    root.style.setProperty("--theme-primary", accent);
+    root.style.setProperty("--theme-accent", accentText);
+    root.style.setProperty("--theme-bg", bg);
+    root.style.setProperty("--theme-card", card);
+    root.style.setProperty("--theme-border", border);
+
+    // Flat brand tokens — the BLUE accent used for focus, selection, links.
+    root.style.setProperty("--brand", accent);
+    root.style.setProperty("--brand-hover", mixHex(accent, "#ffffff", 0.15));
+    root.style.setProperty("--brand-text", accentText);
+    root.style.setProperty("--brand-2", accentText);
+    root.style.setProperty("--brand-3", theme.secondaryAccent || accentText);
+    root.style.setProperty("--brand-soft", mixHex(bg, accent, 0.16));
+    root.style.setProperty("--brand-strong", mixHex(bg, accent, 0.34));
+    root.style.setProperty("--brand-glow", "none");
+    // Light primary-button / user-bubble surface (OpenBot's #f0f0f0).
+    root.style.setProperty("--surface-light", button);
+    root.style.setProperty("--text-on-light", buttonFg);
+
+    // Semantic surfaces (solid)
+    root.style.setProperty("--surface-0", bg);
+    root.style.setProperty("--surface-1", card);
+    root.style.setProperty("--surface-2", surface2);
+    root.style.setProperty("--surface-3", mixHex(card, text, 0.1));
+    root.style.setProperty("--surface-4", mixHex(card, text, 0.16));
+    root.style.setProperty("--text-primary", text);
+    root.style.setProperty("--text-secondary", mixHex(text, muted, 0.18));
+    root.style.setProperty("--text-tertiary", muted);
+    // The three steps below the primary are *specified as contrast ratios*,
+    // not as mix proportions — see `ensureContrast` for why, and for what it
+    // cost to get this wrong first.
+    //
+    // The reference surface is `surface-2`, not the canvas. Secondary text
+    // overwhelmingly sits on a panel or a raised row rather than on the bare
+    // background, and measuring against the canvas is how a ramp ends up
+    // passing everywhere it was checked and failing everywhere it was used.
+    root.style.setProperty("--text-muted", ensureContrast(mixHex(muted, bg, 0.28), surface2, AA_TEXT));
+    // `faint` is decoration and placeholder text, which WCAG treats as
+    // non-text: the 3:1 large-text floor, not the 4.5:1 body floor.
+    root.style.setProperty("--text-faint", ensureContrast(mixHex(muted, bg, 0.45), surface2, 3));
+    root.style.setProperty("--hairline", border);
+    root.style.setProperty("--hairline-strong", mixHex(border, text, 0.14));
+
+    // shadcn/theme triplets so buttons, rings, borders, cards all follow suit
+    root.style.setProperty("--background", hexToHslTriplet(bg));
+    root.style.setProperty("--foreground", hexToHslTriplet(text));
+    root.style.setProperty("--card", hexToHslTriplet(card));
+    root.style.setProperty("--card-foreground", hexToHslTriplet(text));
+    root.style.setProperty("--popover", hexToHslTriplet(card));
+    root.style.setProperty("--popover-foreground", hexToHslTriplet(text));
+    // --primary is the BUTTON fill (light), not the accent.
+    root.style.setProperty("--primary", hexToHslTriplet(button));
+    root.style.setProperty("--primary-foreground", hexToHslTriplet(buttonFg));
+    root.style.setProperty("--secondary", hexToHslTriplet(mixHex(card, text, 0.08)));
+    root.style.setProperty("--secondary-foreground", hexToHslTriplet(text));
+    root.style.setProperty("--muted", hexToHslTriplet(mixHex(card, text, 0.06)));
+    root.style.setProperty("--muted-foreground", hexToHslTriplet(muted));
+    // --accent stays a neutral hover surface (OpenBot never uses a saturated
+    // hover); focus/selection come from --ring below.
+    root.style.setProperty("--accent", hexToHslTriplet(mixHex(card, text, 0.08)));
+    root.style.setProperty("--accent-foreground", hexToHslTriplet(text));
+    root.style.setProperty("--destructive", hexToHslTriplet("#ff96a0"));
+    root.style.setProperty("--destructive-foreground", hexToHslTriplet("#141414"));
+    root.style.setProperty("--border", hexToHslTriplet(border));
+    root.style.setProperty("--input", hexToHslTriplet(border));
+    // Focus ring = the BLUE accent (or the theme's accent colour).
+    root.style.setProperty("--ring", hexToHslTriplet(accent));
   }
 
   listeners.forEach((fn) => fn(theme));

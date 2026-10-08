@@ -3,7 +3,7 @@
 use async_trait::async_trait;
 use ravenbot_core::Permission;
 
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct WebSearchSkill {
     client: reqwest::Client,
@@ -78,6 +78,8 @@ impl Skill for WebSearchSkill {
             "required": ["query"]
         })
     }
+
+    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
 
     async fn execute(
         &self,

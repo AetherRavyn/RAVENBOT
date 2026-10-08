@@ -14,7 +14,12 @@ pub enum MigrationError {
 }
 
 /// Migration version
-pub const CURRENT_VERSION: i32 = 6;
+///
+/// Kept in step with the last entry in [`MIGRATIONS`] rather than with anything
+/// else, because that is the only thing it can honestly describe: a database
+/// whose `_migrations` table tops out at 23 is at 23, whatever an earlier
+/// constant still says.
+pub const CURRENT_VERSION: i32 = 23;
 
 /// SQL for each migration version
 const MIGRATIONS: &[(i32, &str)] = &[
@@ -26,6 +31,21 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (6, include_str!("migrations/006_mcp.sql")),
     (7, include_str!("migrations/007_ephemeral.sql")),
     (8, include_str!("migrations/008_budget_usage.sql")),
+    (9, include_str!("migrations/009_bot_skills_and_settings.sql")),
+    (10, include_str!("migrations/010_approvals.sql")),
+    (11, include_str!("migrations/011_message_senders.sql")),
+    (12, include_str!("migrations/012_todos_skills_openapi_threads.sql")),
+    (13, include_str!("migrations/013_questions.sql")),
+    (14, include_str!("migrations/014_webhooks_channels.sql")),
+    (15, include_str!("migrations/015_contacts_and_channel_rules.sql")),
+    (16, include_str!("migrations/016_office_project_folders.sql")),
+    (17, include_str!("migrations/017_thread_project_folders.sql")),
+    (18, include_str!("migrations/018_custom_providers.sql")),
+    (19, include_str!("migrations/019_mcp_remote_plugins.sql")),
+    (20, include_str!("migrations/020_bot_sort_order.sql")),
+    (21, include_str!("migrations/021_chatroom_office_threads.sql")),
+    (22, include_str!("migrations/022_file_changes.sql")),
+    (23, include_str!("migrations/023_file_changes_diff.sql")),
 ];
 
 /// Run all pending migrations

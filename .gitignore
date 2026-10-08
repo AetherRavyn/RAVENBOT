@@ -41,3 +41,19 @@ Thumbs.db
 # Tauri generated
 src-tauri/gen/
 .svelte-kit/
+
+# Agent tool local settings
+.qoder/
+.commandcode/
+
+# ─── RAVENBOT data root ───
+# This repository is checked out at ~/RAVENBOT, which is also the app's data
+# root, so the runtime's own directories land inside the working tree. Nothing
+# under these is source: they are agent workspaces, and a suite that runs an
+# agent creates a folder per bot. Committing them would put generated work into
+# history and leave a nested `projects/git/.git` to trip `git add -A`.
+projects/
+config/
+logs/
+cache/
+keys/

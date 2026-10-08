@@ -1,0 +1,3018 @@
+/*
+ * Component styles that used to live in Svelte `<style>` blocks.
+ *
+ * They are global CSS on purpose: `@tailwindcss/vite` (v4, `enforce: "pre"`)
+ * matches Svelte's `*.svelte?svelte&type=style&lang.css` virtual module and
+ * tries to parse it as CSS. When that module is requested before the component
+ * has been compiled, Vite falls back to reading the raw `.svelte` file, so
+ * Tailwind parses the component source as CSS and the dev server dies with
+ * `Invalid declaration: <first js token>`. Keeping these styles out of
+ * `<style>` blocks avoids that virtual module entirely.
+ *
+ * Do NOT add a `<style>` block to a component in this project — add the rules
+ * here instead. `src/lib/styles/no-component-styles.test.ts` enforces this.
+ *
+ * Visual language (OpenBot): flat neutral surfaces (#141414 canvas / #212121
+ * panels), near-invisible hairline borders, a pastel-blue accent reserved for
+ * focus/selection/links, 8-bit pastel status colors, and a LIGHT primary
+ * button. No glass blur, no gradients, no purple.
+ */
+
+/* ── ThreadView: loading shimmer ─────────────────────────────────────── */
+.shimmer {
+  background: var(--surface-3);
+  animation: rb-fade-in 0.9s var(--ease-in-out) infinite alternate;
+}
+@keyframes shimmer-slide {
+  0% { opacity: 0.5; }
+  100% { opacity: 1; }
+}
+
+/* ── ChatRoomView: hide scrollbars ───────────────────────────────────── */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ── MarkdownRenderer: rendered markdown (OpenBot .message-markdown spec) ─
+ * Body 14px/20px, blocks separated by a uniform 12px rhythm, headings 600
+ * with -0.1px tracking, links inherit color with a muted underline. */
+.markdown-content {
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 20px;
+  white-space: normal;
+}
+.markdown-content > * {
+  margin: 0;
+}
+.markdown-content > :not(:first-child) {
+  margin-top: 12px;
+}
+.markdown-content h1 {
+  font-size: 18px;
+  line-height: 24px;
+}
+.markdown-content h2 {
+  font-size: 16px;
+  line-height: 22px;
+}
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  font-size: 14px;
+  line-height: 20px;
+}
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.1px;
+}
+.markdown-content strong {
+  font-weight: 600;
+}
+.markdown-content del {
+  color: var(--text-secondary);
+}
+.markdown-content ul {
+  list-style-type: disc;
+  padding-left: 24px;
+}
+.markdown-content ul ul {
+  list-style-type: circle;
+}
+.markdown-content ol {
+  list-style-type: decimal;
+  padding-left: 24px;
+}
+.markdown-content li + li,
+.markdown-content li > ul,
+.markdown-content li > ol {
+  margin-top: 4px;
+}
+.markdown-content li::marker {
+  color: var(--text-muted);
+}
+.markdown-content blockquote {
+  border-left: 2px solid var(--hairline-strong);
+  padding-left: 12px;
+  color: var(--text-secondary);
+}
+.markdown-content code:not(pre code) {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+  background-color: var(--surface-1);
+  color: var(--text-primary);
+  border: 1px solid var(--hairline);
+  white-space: break-spaces;
+}
+.markdown-content hr {
+  border: 0;
+  height: 1px;
+  background: var(--hairline-strong);
+}
+.markdown-content a {
+  font-weight: 560;
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-decoration-color: var(--text-muted);
+  text-underline-offset: 2px;
+}
+.markdown-content a:hover {
+  color: var(--text-primary);
+}
+.markdown-content img {
+  max-width: 100%;
+  max-height: 360px;
+  border-radius: var(--radius-md);
+  object-fit: contain;
+  display: block;
+}
+/* Tables — ringed rounded panel, inner grid lines, raised header. */
+.markdown-content table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 14px;
+  line-height: 20px;
+  background: var(--surface-0);
+  border-radius: var(--radius-md);
+  box-shadow: 0 0 0 1px var(--dialog-ring);
+  overflow: hidden;
+}
+.markdown-content th,
+.markdown-content td {
+  border-right: 1px solid var(--data-table-border);
+  border-bottom: 1px solid var(--data-table-border);
+  padding: 8px 12px;
+  text-align: left;
+  white-space: nowrap;
+}
+.markdown-content th:last-child,
+.markdown-content td:last-child {
+  border-right: 0;
+}
+.markdown-content tr:last-child td {
+  border-bottom: 0;
+}
+.markdown-content th {
+  background: var(--surface-2);
+  color: var(--data-table-header-text);
+  font-weight: 500;
+}
+.markdown-content td {
+  color: var(--data-table-text);
+}
+
+/* Code blocks — OpenBot .message-code spec: hairline card, 34px header,
+ * canvas-dark body at 12px/19px mono, quiet 26px copy button. */
+.md-code-wrapper {
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-md);
+  background: var(--surface-1);
+  overflow: hidden;
+}
+.md-code-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--hairline);
+}
+.md-code-lang {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--hairline);
+  border-radius: var(--radius-pill);
+  padding: 1px 6px;
+}
+.md-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.md-code-pre {
+  margin: 0;
+  background: var(--surface-0);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 19px;
+  padding: 8px 0 10px;
+  max-height: 420px;
+  overflow: auto;
+  color: var(--text-secondary);
+  white-space: pre;
+}
+.md-code-pre code {
+  display: block;
+  padding-inline: 12px;
+  font: inherit;
+  background: transparent;
+  border: 0;
+}
+
+/* Reasoning panel (rendered from <think> blocks) — brand-tinted, quiet. */
+.think-details {
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--brand-strong);
+  background: var(--brand-soft);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+.think-summary {
+  cursor: pointer;
+  padding: 6px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--brand-text);
+  user-select: none;
+  list-style: none;
+}
+.think-summary::-webkit-details-marker {
+  display: none;
+}
+.think-body {
+  padding: 8px 10px;
+  margin: 0;
+  border-top: 1px solid var(--brand-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--text-tertiary);
+  background: var(--surface-0);
+}
+
+/* ── ScreenReader / FocusTrap: visually hidden ───────────────────────── */
+.sr-only,
+.focus-trap-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Shared surface utilities — OpenBot flat chrome
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Header / palette / floating-bar surface.
+ * OpenBot has no frosted glass — keep the class for existing markup but make
+ * it a solid panel colour so nothing blurs or desaturates behind it. */
+.glass {
+  background: var(--surface-1);
+}
+
+/* Icon button base for consistent hit targets + hover. */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  color: var(--text-tertiary);
+  transition: color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+.icon-btn:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+}
+.icon-btn:active {
+  transform: scale(0.96);
+}
+
+/* Typing indicator — see OpenBot TypingDots spec at the bottom of this file. */
+
+/* Skeleton block */
+.skeleton {
+  border-radius: var(--radius-md);
+  background: var(--surface-3);
+  animation: shimmer-slide 1s var(--ease-in-out) infinite alternate;
+}
+
+/* Primary button — OpenBot's LIGHT Apple-style button.
+ * Blue is never the button fill; it stays reserved for focus/selection. */
+.btn-brand {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  color: var(--text-on-light);
+  background-color: var(--surface-light);
+  transition: background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+.btn-brand:hover { background-color: #ffffff; }
+.btn-brand:active { transform: scale(0.98); }
+.btn-brand:disabled {
+  background-color: var(--surface-3);
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+/* Modal shell — one consistent panel for every dialog/drawer. */
+.modal-panel {
+  background: var(--surface-1);
+  border: 1px solid var(--hairline-strong);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+  animation: rb-modal-in var(--duration-dialog) cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes rb-modal-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.modal-header {
+  padding: 1.25rem 1.5rem 0.75rem;
+  border-bottom: 1px solid var(--hairline);
+}
+
+/* ── Workspace app frame (OpenBot grid shell) ────────────────────────────
+   Rail (64px) · sidebar (--frame-sidebar, animates to 0 when hidden) · pane.
+   grid-template-columns animation + container queries like OpenBot's shell. */
+.app-frame {
+  display: grid;
+  grid-template-columns: var(--rail-width) var(--frame-sidebar, 0px) minmax(0, 1fr);
+  container-type: inline-size;
+  transition: grid-template-columns var(--duration-overlay) var(--ease-panel);
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-frame {
+    transition: none !important;
+  }
+}
+
+/* Sidebar drag resizer (OpenBot left-panel resize). Keyboard: arrows ±8px
+   (±32 with Shift), Home = 280px. Frame animation is disabled mid-drag so the
+   width tracks the pointer 1:1.
+
+   The handle is a child of `.app-frame`, not of the sidebar, and it straddles
+   the border: `--sidebar-handle-inset` px into the sidebar's dead space and the
+   rest into the conversation's empty left gutter. That is the only arrangement
+   that reaches the WCAG 2.2 24px target without covering something.
+
+   Laid inward from the sidebar's edge instead — the obvious fix, 24px wide and
+   simply wider than it used to be — it silently eats clicks on the sidebar's
+   own controls, which come within 9px of that edge: "New Chat", the fleet
+   filter and "Pause Fleet". Both numbers were measured with `elementFromPoint`
+   rather than assumed, and the 9px inset is the measurement.
+
+   The 5px that reads as a seam is painted by ::before, so a 24px target does
+   not look like a 24px bar. */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--rail-width) + var(--frame-sidebar, 0px) - var(--sidebar-handle-inset, 9px));
+  width: var(--sidebar-handle-width, 24px);
+  cursor: col-resize;
+  z-index: 30;
+  background: transparent;
+  /* A drag gesture must not be interpreted as a scroll on a touchpad. */
+  touch-action: none;
+}
+.sidebar-resizer::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  /* Centre the 5px seam on the border it represents. */
+  left: calc(var(--sidebar-handle-inset, 9px) - 2px);
+  width: 5px;
+  background: transparent;
+  transition: background var(--duration-hover) ease;
+}
+.sidebar-resizer:hover::before,
+.sidebar-resizer:focus-visible::before {
+  background: color-mix(in srgb, var(--brand) 35%, transparent);
+}
+html.sidebar-resizing .app-frame {
+  transition: none !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+ * Message entries — OpenBot ChatMessageRow spec
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+/* Row shell: 12px between authors, 4px inside a consecutive-author run.
+   The live-append entrance (OpenBot message-in) is a WAAPI action in
+   $lib/chat/entrance.ts — it skips rows mounting inside a container flagged
+   `.entries-static` (set by the views while (re)loading history) and
+   reduced-motion. CSS must NOT animate .message-entry: a class-based CSS
+   entrance would re-fire on every history load the moment the suppressor is
+   removed. */
+.message-entry {
+  padding-top: 12px;
+}
+.message-entry[data-grouped] {
+  padding-top: 4px;
+}
+
+/* Bubbles: uniform 22px radius (OpenBot never varies corners per group),
+ * 8px/12px padding, -0.15px tracking. User = raised surface, right-aligned,
+ * capped at 420px. Assistant = surface panel, capped at 720px. */
+.msg-bubble {
+  border-radius: var(--radius-bubble);
+  padding: 8px 12px;
+  letter-spacing: -0.15px;
+  border: 1px solid transparent;
+  overflow-wrap: anywhere;
+}
+.msg-bubble-user {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 20px;
+  white-space: pre-line;
+  max-width: min(420px, calc(100% - 81px));
+}
+.msg-bubble-agent {
+  background: var(--surface-1);
+  color: var(--text-primary);
+  max-width: min(720px, calc(100% - 81px));
+}
+/* Ghost variant: code/table/image-only replies render edge-to-edge, no bubble. */
+.msg-bubble-ghost {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  border-radius: 0;
+  max-width: min(720px, calc(100% - 81px));
+}
+
+/* Hover-revealed metadata: timestamp + action toolbar. */
+.message-meta {
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.message-entry:hover .message-meta,
+.message-entry:focus-within .message-meta {
+  opacity: 1;
+}
+.message-time {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-muted);
+  padding-inline: 12px;
+}
+.message-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+.message-action-button:hover {
+  background: var(--hairline);
+  color: var(--text-secondary);
+}
+
+/* Streaming tail: only the newest word animates in (opacity + defocus). */
+.stream-tail {
+  display: inline;
+  animation: rb-tail-in var(--stream-fade) cubic-bezier(0.22, 1, 0.36, 1);
+}
+/* Container being height-tweened by smoothHeight(): clip the overshoot. */
+[data-resizing="true"] {
+  overflow: hidden;
+  will-change: height;
+}
+@keyframes rb-tail-in {
+  from {
+    opacity: 0;
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .stream-tail {
+    animation: none;
+  }
+}
+
+/* Agent activity line (pre-first-token + tool running): avatar + shimmer label. */
+.agent-activity-label {
+  font-size: 12px;
+  line-height: 20px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  background-image: linear-gradient(
+    90deg,
+    var(--text-primary) 0%,
+    var(--text-primary) 30%,
+    var(--text-muted) 45%,
+    var(--text-muted) 55%,
+    var(--text-primary) 70%,
+    var(--text-primary) 100%
+  );
+  background-size: 300% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: rb-shine 2.25s cubic-bezier(0.25, 0.1, 0.25, 1) infinite;
+}
+@keyframes rb-shine {
+  0%, 18% { background-position: 100% 0; }
+  82%, 100% { background-position: 0% 0; }
+}
+.agent-activity-row {
+  animation: rb-activity-in var(--duration-overlay) var(--ease-out);
+}
+/* ChatActionMarker mini-rows: quiet tool-feed inside the streaming column. */
+.chat-action-markers {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 10px;
+}
+.chat-action-marker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 18px;
+  color: var(--text-tertiary);
+}
+@media (prefers-reduced-motion: reduce) {
+/* The argument is the point of the line, so it is dimmer than the verb but
+   never hidden — truncation already keeps it inside the column. */
+.chat-action-marker__args {
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.625rem;
+  color: var(--text-muted);
+}
+
+/* Tabular figures, or every tick reflows the row and the line twitches once a
+   second for the whole length of the call. `data-done` is the settled state:
+   still shown, but no longer competing with the spinner for attention. */
+.chat-action-marker__time {
+  margin-left: auto;
+  flex: 0 0 auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.625rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+}
+.chat-action-marker__time[data-done="true"] {
+  color: var(--text-muted);
+}
+
+  .chat-action-marker svg {
+    animation: none;
+  }
+}
+@keyframes rb-activity-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agent-activity-label,
+  .agent-activity-row {
+    animation: none;
+    color: var(--text-secondary);
+    -webkit-text-fill-color: currentColor;
+  }
+}
+
+/* OpenBot TypingDots: 3px dots, 900ms pulse, 120ms stagger, -1px travel. */
+.typing-dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: currentColor;
+  display: inline-block;
+  animation: rb-typing 900ms ease-in-out infinite;
+}
+.typing-dot + .typing-dot {
+  margin-left: 2px;
+}
+.typing-dot:nth-child(2) { animation-delay: 120ms; }
+.typing-dot:nth-child(3) { animation-delay: 240ms; }
+@keyframes rb-typing {
+  0%, 60%, 100% { opacity: 0.34; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-1px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .typing-dot {
+    animation: none;
+    opacity: 0.7;
+  }
+  .modal-panel {
+    animation: none;
+  }
+}
+
+/* Jump-to-latest pill: shown while the reader is scrolled up during a run. */
+.jump-latest {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline-strong);
+  background: var(--surface-2);
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: var(--shadow-lg);
+  cursor: pointer;
+  animation: rb-scale-in var(--duration-normal) cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+.jump-latest:hover {
+  color: var(--text-primary);
+  border-color: var(--brand);
+}
+@media (prefers-reduced-motion: reduce) {
+  .jump-latest {
+    animation: none;
+  }
+}
+
+/* ── Markdown: the token renderer ───────────────────────────────────────────
+ * The body renders from `marked` tokens into real elements, so these rules
+ * style elements the component tree owns rather than output from a string.
+ *
+ * `white-space: normal` on the root is the load-bearing one: the copy handler
+ * used to set `pre-line` inline, and a block that inherits it collapses the
+ * newlines a code block depends on. */
+.markdown-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.markdown-content :is(p, ul, ol, blockquote, pre, table) {
+  margin: 0;
+}
+
+.markdown-content > :not(:first-child) {
+  margin-top: 12px;
+}
+
+/* Nested containers add their own rhythm rather than inheriting the root's
+ * `> :not(:first-child)` rule, which does not reach them. */
+.markdown-content :is(ul, ol) :is(p, ul, ol, blockquote),
+.markdown-content blockquote :is(p, ul, ol, blockquote) {
+  margin-top: 4px;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  color: inherit;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.markdown-content h1 {
+  font-size: 20px;
+}
+.markdown-content h2 {
+  font-size: 17px;
+}
+.markdown-content h3,
+.markdown-content h4,
+.markdown-content h5,
+.markdown-content h6 {
+  font-size: 14px;
+}
+
+/* A task list item is a flex row so the checkbox sits beside the text rather
+ * than being part of it, and the marker is dropped. */
+.markdown-content li.md-task {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  list-style: none;
+}
+
+.markdown-content li.md-task input[type="checkbox"] {
+  margin-top: 4px;
+  flex: 0 0 auto;
+  accent-color: var(--brand);
+}
+
+.markdown-content li.md-task > * {
+  min-width: 0;
+}
+
+.markdown-content a {
+  color: var(--brand-text);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--brand-text) 40%, transparent);
+  text-underline-offset: 2px;
+}
+
+.markdown-content a:hover {
+  text-decoration-color: currentColor;
+}
+
+/* A link the URL check refused. Shown as text so the reader can still see and
+ * copy the address, rather than silently disappearing. */
+.markdown-content .md-link-refused {
+  color: var(--text-tertiary);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+  cursor: help;
+}
+
+/* Raw HTML from a model's answer: visible, escaped, and clearly not the page's
+ * own markup. This is what replaces executing it. */
+.markdown-content .md-raw-html {
+  display: block;
+  border-left: 2px solid var(--hairline-strong);
+  padding-left: 8px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.markdown-content .md-image {
+  display: block;
+  max-width: 100%;
+  max-height: 340px;
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+/* Tables get a focusable scroll region. A wide table must not widen the message
+ * column, and it must be reachable by keyboard — an `overflow-x: auto` box that
+ * Tab cannot land on is a scroll region only a mouse can use. */
+.markdown-content .md-table-scroll {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+
+.markdown-content .md-table-scroll:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.markdown-content .md-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.markdown-content .md-table th,
+.markdown-content .md-table td {
+  border-bottom: 1px solid var(--hairline);
+  border-right: 1px solid var(--hairline);
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.markdown-content .md-table th:last-child,
+.markdown-content .md-table td:last-child {
+  border-right: 0;
+}
+
+.markdown-content .md-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown-content .md-table th {
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+/* ── Code blocks ──────────────────────────────────────────────────────────── */
+.markdown-content .md-code {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.markdown-content .md-code-header {
+  display: flex;
+  min-height: 32px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--hairline);
+  padding: 0 8px 0 10px;
+  background: var(--surface-1);
+}
+
+.markdown-content .md-code-lang {
+  color: var(--text-tertiary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+
+.markdown-content .md-code-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.markdown-content .md-code-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 6px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.markdown-content .md-code-btn:hover {
+  background: var(--surface-3);
+  color: var(--text-primary);
+}
+
+.markdown-content .md-code-btn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.markdown-content .md-code-pre {
+  margin: 0;
+  max-height: 460px;
+  overflow: auto;
+  padding: 10px 12px;
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  line-height: 1.55;
+  tab-size: 2;
+}
+
+.markdown-content .md-code-pre code {
+  background: none;
+  padding: 0;
+  border: 0;
+  font-size: inherit;
+  white-space: pre;
+}
+
+/* Token colours. Deliberately low-contrast-on-purpose-free: they are tints of
+ * the existing semantic tokens so every theme gets them without a new entry. */
+.markdown-content .tok-string {
+  color: var(--success-text);
+}
+.markdown-content .tok-comment {
+  color: var(--text-muted);
+  font-style: italic;
+}
+.markdown-content .tok-number {
+  color: var(--warning-text);
+}
+.markdown-content .tok-keyword {
+  color: var(--brand-text);
+}
+.markdown-content .tok-function {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+/* ── The streaming tail ──────────────────────────────────────────────────────
+ * Opacity only. A blur or transform on text repaints every fading word on each
+ * frame, which is what made long answers stutter while they streamed. */
+.md-fade {
+  animation: md-fade-in 220ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+@keyframes md-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .md-fade {
+    animation: none;
+  }
+}
+
+/* ── Raven avatar ────────────────────────────────────────────────────────────
+ * A generated SVG face, built to Grok Bot's avatar spec: 8 shapes, 16
+ * expressions, 12 colours, 15 animation states.
+ *
+ * The outline and the colour are fixed per agent — the outline is how a user
+ * knows which agent they are looking at, so a *roster* animation never edits
+ * it. The three states that do settle into a different body (`egg`, `hexagon`,
+ * `play`) are reachable only by name, which only the studio does. */
+.raven-avatar {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+  background: var(--av-deep, var(--surface-3));
+  border: 1px solid var(--hairline);
+}
+
+/* The generated face supplies its own edge — the body outline stroke — so a
+ * frame border on top of it would double every line and, on a triangle or a
+ * droplet, cut across the shape at the corners. */
+.raven-avatar[data-source="generated"] {
+  background: transparent;
+  border-color: transparent;
+}
+
+.raven-avatar > img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.raven-avatar-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.raven-avatar-initials {
+  font-size: 0.75em;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: 0.02em;
+}
+
+/* Breathing moves the whole rendered avatar, so it can never reshape the
+ * silhouette. Zero amplitude on a resting mood disables it entirely. */
+.raven-avatar[data-mood="working"],
+.raven-avatar[data-mood="sleeping"] {
+  animation: raven-breathe 3.2s ease-in-out infinite;
+}
+
+@keyframes raven-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(calc(1 + var(--av-breathe, 0.03)));
+  }
+}
+
+/* Orbit rings turn in opposite directions, so the avatar reads as busy without
+ * the whole thing spinning. */
+.raven-avatar-rings {
+  transform-origin: 50px 50px;
+  animation: raven-orbit 9s linear infinite;
+}
+
+@keyframes raven-orbit {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* A face change should be noticeable but not jarring. */
+.raven-avatar-face {
+  animation: raven-face-in 260ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+@keyframes raven-face-in {
+  from {
+    opacity: 0.4;
+  }
+}
+
+/* Attention wins visually over everything else, whatever the face is saying.
+ * The ring is the thing a user scanning the sidebar is looking for. */
+.raven-avatar[data-mood="waiting"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--warning));
+}
+
+.raven-avatar[data-mood="failed"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--danger));
+}
+
+.raven-avatar[data-mood="responded"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--success));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raven-avatar[data-mood="working"],
+  .raven-avatar[data-mood="sleeping"],
+  .raven-avatar-rings,
+  .raven-avatar-face {
+    animation: none;
+  }
+  /* The rings are the only cue that work is happening, so they stay — static
+   * rather than removed, or a working agent looks idle. */
+  .raven-avatar[data-mood="working"] {
+    box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 3px var(--brand);
+  }
+}
+
+/* ── DiceBear avatars ───────────────────────────────────────────────────────
+ * A DiceBear style that animates does so inside its own SVG: the keyframes ship
+ * in the file and sit behind `prefers-reduced-motion`, so a plain `img` plays
+ * them and a visitor who asks for less motion gets a still face for free.
+ *
+ * What this side owns is *mood*. The face cannot be told what the agent is
+ * doing — a DiceBear avatar is a function of its seed and nothing else — so a
+ * working agent and an idle one would otherwise be the same picture at two
+ * moments. The frame carries that instead.
+ *
+ * And when the face is already moving, the frame must not move too. Breathing
+ * and a blink on different axes at unrelated periods read as a fault rather than
+ * as life, so an animating avatar gets a lean — a different axis, slow enough to
+ * sit under the face's own cadence — while a still one keeps the breathe, which
+ * is then the only thing telling you the agent is awake.
+ */
+.raven-avatar[data-source="dice"][data-animates][data-mood="working"],
+.raven-avatar[data-source="dice"][data-animates][data-mood="sleeping"] {
+  animation: raven-lean 4.2s ease-in-out infinite;
+}
+
+@keyframes raven-lean {
+  0%,
+  100% {
+    transform: rotate(0deg);
+  }
+  50% {
+    transform: rotate(calc(var(--av-breathe, 0.03) * 4deg));
+  }
+}
+
+/* A still style has no cadence of its own, so the frame supplies one. Slower
+ * than the generated face's, because a remote face that never changes is easier
+ * to read as broken than one that visibly ticks. */
+.raven-avatar[data-source="dice"]:not([data-animates])[data-mood="working"] {
+  animation: raven-breathe 4s ease-in-out infinite;
+}
+
+/* An avatar that cannot animate — a still style, or a custom image — still has
+ * to say "needs you" at a glance. The ring does that, and it is not motion, so
+ * it survives a reduced-motion preference. */
+.raven-avatar[data-source="dice"][data-mood="waiting"] {
+  animation: raven-attention 1.6s ease-in-out infinite;
+}
+
+@keyframes raven-attention {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(calc(1 + var(--av-breathe, 0.03) * 2));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raven-avatar[data-source="dice"][data-animates][data-mood="working"],
+  .raven-avatar[data-source="dice"][data-animates][data-mood="sleeping"],
+  .raven-avatar[data-source="dice"]:not([data-animates])[data-mood="working"],
+  .raven-avatar[data-source="dice"][data-mood="waiting"] {
+    animation: none;
+  }
+}
+
+/* ── Motion states ─────────────────────────────────────────────────────────
+ * Grok's roster vocabulary, keyed off `data-state` rather than `data-mood`.
+ *
+ * The reason there are two attributes is the same reason there are two axes: the
+ * mood is what the runtime knows, and the state is what the face should *do*.
+ * Keying the motion off the state means a roster that reads "thinking" and one
+ * that reads "orbit" can look different without either touching the face, and a
+ * new mood does not silently inherit working's motion.
+ *
+ * Only three states carry motion. A 24-pixel avatar has about one gesture in it,
+ * and a state that moves when four others do not reads as a bug rather than a
+ * signal — the eye learns that movement means *something*, and spends that
+ * attention on the states that should be looked at.
+ */
+.raven-avatar[data-state="thinking"] {
+  animation: raven-breathe 3.2s ease-in-out infinite;
+}
+
+.raven-avatar[data-state="orbit"] .raven-avatar-rings {
+  animation: raven-orbit 4s linear infinite;
+}
+
+.raven-avatar[data-state="sleep"] {
+  animation: raven-breathe 5.6s ease-in-out infinite;
+}
+
+/* `notification` and `exclamation` are the two that need a person, so they are
+ * the two that take colour. The ring is not motion, so it survives a
+ * reduced-motion preference — which is the right way round, because the whole
+ * job of this state is to be noticed by someone who is not looking for it. */
+.raven-avatar[data-state="notification"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--warning));
+}
+
+.raven-avatar[data-state="exclamation"] {
+  box-shadow: 0 0 0 2px var(--surface-1), 0 0 0 4px hsl(var(--danger));
+}
+
+/* Just finished: a single short flash, which is legible and then gone. */
+.raven-avatar[data-state="burst"] {
+  animation: raven-burst 520ms cubic-bezier(0.23, 1, 0.32, 1) 1;
+}
+
+@keyframes raven-burst {
+  0% {
+    transform: scale(1);
+  }
+  38% {
+    transform: scale(calc(1 + var(--av-burst, 0.09)));
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raven-avatar[data-state="thinking"],
+  .raven-avatar[data-state="orbit"] .raven-avatar-rings,
+  .raven-avatar[data-state="sleep"],
+  .raven-avatar[data-state="burst"] {
+    animation: none;
+  }
+}
+
+/* ── Avatar parts and animation states ─────────────────────────────────────
+ * Grok's fifteen states, keyed off `data-state` rather than `data-mood`.
+ *
+ * The reason there are two attributes is the reason there are two axes: the mood
+ * is what the runtime knows, and the state is what the face should *do*. Keying
+ * motion off the state means a roster that reads "thinking" and one that reads
+ * "orbit" can look different without either touching the face, and a new mood
+ * never silently inherits working's motion.
+ *
+ * The rules below are ordered so that everything whose base state is *visible*
+ * animates only by transform or opacity from a visible starting point. That
+ * matters for `prefers-reduced-motion`: the rule at the bottom of this block
+ * cancels the animations, and anything that started at `opacity: 0` would then
+ * be gone rather than still. The one exception, `.raven-av-altbody`, is
+ * explicitly restored.
+ */
+
+/* Parts. The eyes are their own groups so `wink` can close exactly one, and
+ * every transform below is anchored to the viewBox centre rather than to a
+ * bounding box, because an element that rotates about its own middle is not
+ * what an orbit or a swirl should do.
+ *
+ * `transform-box: view-box` is the initial value, so this list is belt and
+ * braces — but the *other* list below sets `transform-origin` in viewBox user
+ * units, and an element in one list but not the other is an element whose
+ * origin silently depends on a default. `.raven-av-badge` used to be spelled
+ * `.raven-av-badges`, which matched no class the component ever emits, so the
+ * badge was the one part anchored by luck. */
+.raven-av-part,
+.raven-av-eye,
+.raven-avatar-rings,
+.raven-av-behind,
+.raven-av-front,
+.raven-av-dots,
+.raven-av-badge {
+  transform-box: view-box;
+}
+
+.raven-av-eyes,
+.raven-av-eye,
+.raven-avatar-rings,
+.raven-av-behind,
+.raven-av-swirl,
+.raven-av-rays,
+.raven-av-pulse,
+.raven-av-tail,
+.raven-av-dots,
+.raven-av-badge,
+.raven-av-alert,
+.raven-av-zzz,
+.raven-av-altbody {
+  transform-origin: 50px 50px;
+}
+
+/* Thinking — Grok's three dots, offset so they read as a separate gesture from
+ * the face rather than as part of the mouth. */
+.raven-av-dots circle {
+  animation: raven-dot 1.25s ease-in-out infinite;
+}
+.raven-av-dots circle:nth-child(2) {
+  animation-delay: 0.16s;
+}
+.raven-av-dots circle:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes raven-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.82);
+  }
+  35% {
+    opacity: 1;
+    transform: scale(1.12);
+  }
+}
+
+/* Wink — one eye, once. The repeat is long enough that the two avatars sitting
+ * side by side in a roster are never mid-wink together. */
+.raven-avatar[data-state="wink"] .raven-av-eye--r {
+  animation: raven-wink 3.4s ease-in-out infinite;
+}
+
+@keyframes raven-wink {
+  0%,
+  82%,
+  100% {
+    transform: scaleY(1);
+  }
+  88% {
+    transform: scaleY(0.08);
+  }
+}
+
+/* Wide eyes — both, opening and holding. Scale on the group so the two eyes
+ * stay the same distance apart, which scaling them individually would not. */
+.raven-avatar[data-state="wideEyes"] .raven-av-eyes {
+  animation: raven-wide 2.6s ease-in-out infinite;
+  transform-origin: 50px 46px;
+}
+
+@keyframes raven-wide {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.22);
+  }
+}
+
+/* Alert — one ring, expanding off the outline and fading. */
+.raven-av-pulse {
+  animation: raven-pulse 1.8s ease-out infinite;
+  opacity: 0.45;
+}
+
+@keyframes raven-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(1.32);
+    opacity: 0;
+  }
+}
+
+/* Notification — the badge holds and pulses rather than arriving, because the
+ * state means "still waiting" and not "just happened". */
+.raven-av-badge {
+  animation: raven-badge 2s ease-in-out infinite;
+}
+
+@keyframes raven-badge {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.16);
+  }
+}
+
+/* Exclamation — a short shake, then hold. It is the one state that means
+ * something went wrong, so it is allowed to be the most insistent thing on
+ * screen. */
+.raven-av-alert {
+  animation: raven-alert 1.4s ease-in-out infinite;
+}
+
+@keyframes raven-alert {
+  0%,
+  70%,
+  100% {
+    transform: scale(1);
+  }
+  75% {
+    transform: scale(1.22);
+  }
+  80% {
+    transform: scale(0.94);
+  }
+  85% {
+    transform: scale(1.14);
+  }
+}
+
+/* Sleep — the two z's rise and fade on a long offset from each other. */
+.raven-av-zzz path {
+  animation: raven-zzz 3.6s ease-in-out infinite;
+}
+.raven-av-zzz path:nth-child(2) {
+  animation-delay: 1.2s;
+}
+
+@keyframes raven-zzz {
+  0% {
+    opacity: 0;
+    transform: translateY(6px) scale(0.7);
+  }
+  30% {
+    opacity: 0.9;
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: translateY(-10px) scale(1.1);
+  }
+}
+
+/* Orbit — rings faster than the old mood-driven default, and the body drifts
+ * very slightly against them so the two read as separate systems. */
+.raven-avatar[data-state="orbit"] .raven-avatar-rings {
+  animation: raven-orbit 3s linear infinite;
+}
+
+.raven-avatar[data-state="orbit"] .raven-avatar-body {
+  animation: raven-drift 3s ease-in-out infinite;
+  transform-box: view-box;
+  transform-origin: 50px 50px;
+}
+
+@keyframes raven-drift {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  50% {
+    transform: translate(0, -1.6px);
+  }
+}
+
+/* Swirl — two arcs chasing each other round the body. */
+.raven-av-swirl {
+  animation: raven-swirl 2.4s linear infinite;
+  transform-origin: 50px 50px;
+}
+.raven-av-swirl:nth-of-type(2) {
+  animation-direction: reverse;
+}
+
+@keyframes raven-swirl {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Burst — rays out, body flashes. The only state that fires and repeats, and
+ * deliberately slow: on a roster this state lasts until the reply is read. */
+.raven-av-rays {
+  animation: raven-rays 2.4s cubic-bezier(0.23, 1, 0.32, 1) infinite;
+  transform-origin: 50px 50px;
+  opacity: 0.7;
+}
+
+@keyframes raven-rays {
+  0% {
+    transform: scale(0.88);
+    opacity: 0.15;
+  }
+  30% {
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.12);
+    opacity: 0.15;
+  }
+}
+
+/* Comet — the tail stretches behind and the body slides. */
+.raven-av-tail {
+  animation: raven-comet 1.5s ease-in-out infinite;
+  transform-origin: 50px 50px;
+}
+
+@keyframes raven-comet {
+  0%,
+  100% {
+    transform: translateX(0) scaleX(0.9);
+    opacity: 0.2;
+  }
+  50% {
+    transform: translateX(-3px) scaleX(1.12);
+    opacity: 0.42;
+  }
+}
+
+/* Egg / hexagon / play — the body settles into a different outline. Only ever
+ * reached from the studio; see `rosterSafeMotion`. */
+.raven-av-altbody {
+  animation: raven-altbody 620ms cubic-bezier(0.23, 1, 0.32, 1) forwards;
+  transform-origin: 50px 50px;
+}
+
+@keyframes raven-altbody {
+  from {
+    opacity: 0;
+    transform: scale(0.86);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .raven-av-dots circle,
+  .raven-avatar[data-state="wink"] .raven-av-eye--r,
+  .raven-avatar[data-state="wideEyes"] .raven-av-eyes,
+  .raven-av-pulse,
+  .raven-av-badge,
+  .raven-av-alert,
+  .raven-av-zzz path,
+  .raven-avatar[data-state="orbit"] .raven-avatar-rings,
+  .raven-avatar[data-state="orbit"] .raven-avatar-body,
+  .raven-av-swirl,
+  .raven-av-rays,
+  .raven-av-tail,
+  .raven-av-altbody {
+    animation: none !important;
+  }
+
+  /* Restore the two whose resting appearance is a keyframe rather than the
+   * element's own style. Without this, reduced motion would leave a waiting
+   * agent with no badge at all — which is the one cue that state exists for. */
+  .raven-av-altbody {
+    opacity: 1;
+    transform: none;
+  }
+  .raven-av-pulse {
+    opacity: 0.45;
+  }
+  .raven-av-dots circle {
+    opacity: 1;
+  }
+  .raven-av-rays {
+    opacity: 0.7;
+  }
+}
+
+/* ── The RAVENBOT mark ───────────────────────────────────────────────────────
+ * The eyes are polylines so the whole shape can be translated as one piece by
+ * two custom properties, which the compositor animates without a repaint.
+ * `--logo-eye-x/y` are written by the component on pointer move. */
+.raven-logo {
+  --logo-eye-x: 0%;
+  --logo-eye-y: 0%;
+  display: block;
+  flex-shrink: 0;
+}
+
+.raven-logo .app-logo-background {
+  fill: var(--surface-2);
+  stroke: var(--hairline-strong);
+  stroke-width: 2;
+}
+
+.raven-logo .app-logo-eye {
+  fill: var(--text-primary);
+  transform: translate(var(--logo-eye-x), var(--logo-eye-y));
+  transition: transform 220ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.raven-logo[data-interactive] {
+  cursor: pointer;
+}
+
+.raven-logo[data-interactive]:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 24px;
+}
+
+/* ── Reactive on work ───────────────────────────────────────────────────────
+ * The mark is the only element that is always on screen, so it is where "the
+ * app is doing something" belongs: no badge, no toast, no second look at the
+ * sidebar required.
+ *
+ * Two states, both expressed as properties that are safe to animate on an SVG
+ * — `fill`/`stroke` on the frame, `translateX` on the eyes. `translateX`
+ * rather than `scale` because a percentage or an origin on an SVG `<g>` depends
+ * on `transform-box`, and this block has to render the same on every engine;
+ * an absolute translate is resolved in user units and needs no origin at all.
+ *
+ * Both rules sit *before* the click reactions on purpose: `data-reacted` and
+ * `data-celebrating` come later in the sheet at the same specificity, so a
+ * click still wins while a run is going instead of being swallowed by a loop
+ * that never ends. */
+.raven-logo[data-activity="working"] .app-logo-background {
+  animation: logo-working 2.6s ease-in-out infinite;
+}
+
+.raven-logo[data-activity="working"] .app-logo-eye-motion {
+  animation: logo-glance 4.6s ease-in-out infinite;
+}
+
+/* A slow breath toward the brand colour: unmistakable at a glance, quiet
+ * enough to sit in the title bar for a twenty-minute run. */
+@keyframes logo-working {
+  0%,
+  100% {
+    fill: color-mix(in srgb, var(--brand) 0%, var(--surface-2));
+    stroke: color-mix(in srgb, var(--brand) 0%, var(--hairline-strong));
+  }
+  50% {
+    fill: color-mix(in srgb, var(--brand) 16%, var(--surface-2));
+    stroke: color-mix(in srgb, var(--brand) 85%, var(--hairline-strong));
+  }
+}
+
+/* One glance — right, then left, then back to centre. */
+@keyframes logo-glance {
+  0%,
+  30% {
+    transform: translateX(0);
+  }
+  40%,
+  46% {
+    transform: translateX(16px);
+  }
+  56%,
+  62% {
+    transform: translateX(-16px);
+  }
+  72%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
+.raven-logo[data-activity="attention"] .app-logo-background {
+  animation: logo-attention 1.5s ease-in-out infinite;
+}
+
+.raven-logo[data-activity="attention"] .app-logo-eye-motion {
+  animation: logo-dart 0.9s ease-in-out infinite;
+}
+
+/* Amber, and quicker. `attention` outranks `working` in `busiest`, and the
+ * motion says so: this run is stuck, not busy. */
+@keyframes logo-attention {
+  0%,
+  100% {
+    fill: color-mix(in srgb, hsl(var(--warning)) 0%, var(--surface-2));
+    stroke: color-mix(in srgb, hsl(var(--warning)) 0%, var(--hairline-strong));
+  }
+  50% {
+    fill: color-mix(in srgb, hsl(var(--warning)) 26%, var(--surface-2));
+    stroke: hsl(var(--warning));
+  }
+}
+
+@keyframes logo-dart {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  35% {
+    transform: translateX(11px);
+  }
+  70% {
+    transform: translateX(-11px);
+  }
+}
+
+/* A click blinks the eyes shut. */
+.raven-logo[data-reacted] .app-logo-eye-motion {
+  animation: logo-blink 360ms ease-in-out;
+}
+
+@keyframes logo-blink {
+  0%,
+  100% {
+    transform: scaleY(1);
+  }
+  50% {
+    transform: scaleY(0.08);
+  }
+}
+
+.raven-logo[data-reacted] .app-logo-eye {
+  transition: none;
+}
+
+/* Five rapid clicks and the mark throws a party. It is in the app's most
+ * persistent element, so it has to be earned rather than ambient. */
+.raven-logo[data-celebrating] .app-logo-background {
+  animation: logo-pop 1.2s cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.raven-logo[data-celebrating] .app-logo-eye-motion {
+  animation: logo-celebrate 1.2s ease-in-out;
+}
+
+@keyframes logo-pop {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(1.12);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes logo-celebrate {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-8px) rotate(-6deg);
+  }
+  60% {
+    transform: translateY(3px) rotate(5deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The mark still reacts to hover, because hover is not motion the user did
+   * not ask for — it is a direct response to their pointer. What is removed is
+   * everything that plays on its own. */
+  .raven-logo .app-logo-eye {
+    transition: none;
+  }
+  .raven-logo[data-reacted] .app-logo-eye-motion,
+  .raven-logo[data-celebrating] .app-logo-background,
+  .raven-logo[data-celebrating] .app-logo-eye-motion,
+  .raven-logo[data-activity="working"] .app-logo-background,
+  .raven-logo[data-activity="working"] .app-logo-eye-motion,
+  .raven-logo[data-activity="attention"] .app-logo-background,
+  .raven-logo[data-activity="attention"] .app-logo-eye-motion {
+    animation: none;
+  }
+
+  /* The frame still has to *say* it is running — a still frame in the brand
+   * colour instead of a breathing one. State survives; motion does not. */
+  .raven-logo[data-activity="working"] .app-logo-background {
+    stroke: var(--brand);
+  }
+  .raven-logo[data-activity="attention"] .app-logo-background {
+    stroke: hsl(var(--warning));
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Workspace browser
+
+   The point of this panel is that the isolation is no longer invisible. The
+   colours follow the rule the rest of the app uses: brand for a folder the
+   agents own, muted for anything they merely hold, and a link is never given a
+   file's colour because it is not a file in the room — it is a way out of it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.raven-wsb {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.raven-wsb__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.625rem;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+.raven-wsb__tab {
+  padding: 0.1875rem 0.5rem;
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+  max-width: 10rem;
+}
+.raven-wsb__tab:hover { color: var(--text-secondary); background: var(--surface-3); }
+.raven-wsb__tab--on {
+  color: var(--brand-text);
+  background: var(--brand-soft);
+  border-color: color-mix(in oklab, var(--brand) 30%, transparent);
+}
+
+.raven-wsb__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 8px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.raven-wsb__icon:hover { color: var(--text-primary); background: var(--surface-3); }
+.raven-wsb__icon[aria-pressed="true"] {
+  color: var(--brand-text);
+  background: var(--brand-soft);
+  border-color: color-mix(in oklab, var(--brand) 25%, transparent);
+}
+
+.raven-wsb__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
+  min-height: 0;
+  flex: 1;
+}
+@media (max-width: 720px) {
+  .raven-wsb__body { grid-template-columns: minmax(0, 1fr); }
+}
+
+.raven-wsb__list {
+  overflow: auto;
+  min-height: 0;
+  padding: 0.25rem 0.25rem 0.5rem;
+  border-right: 1px solid var(--hairline);
+  max-height: 26rem;
+}
+@media (max-width: 720px) {
+  .raven-wsb__list { border-right: none; border-bottom: 1px solid var(--hairline); }
+}
+
+.raven-wsb__row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  border-radius: 7px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
+}
+.raven-wsb__row:hover { background: var(--surface-2); color: var(--text-primary); }
+.raven-wsb__row--on {
+  background: var(--brand-soft);
+  color: var(--brand-text);
+}
+
+.raven-wsb__size {
+  font-family: var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.raven-wsb__preview {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 26rem;
+}
+
+.raven-wsb__preview-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+.raven-wsb__text {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 0.75rem;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  tab-size: 2;
+}
+
+.raven-wsb__md {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.75rem 0.875rem;
+}
+
+.raven-wsb__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.25rem;
+  padding: 2.5rem 1rem;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.raven-wsb__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.375rem 0.625rem;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Agent-to-agent handoff
+
+   A delegation is the moment an office behaves like an office, so it is drawn
+   as an edge between two names rather than as another bubble in the transcript.
+   The three states are the three things a user needs to tell apart at a glance:
+   in flight, landed, and refused — and a refusal is the one that gets the warm
+   colour, because it is the only one that is a problem.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.raven-handoff {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  border-radius: 10px;
+  font-size: 11px;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+}
+
+.raven-handoff--done {
+  border-color: color-mix(in oklab, var(--ok) 22%, transparent);
+}
+
+.raven-handoff--refused {
+  border-color: color-mix(in oklab, hsl(var(--warning)) 30%, transparent);
+  background: color-mix(in oklab, hsl(var(--warning)) 5%, var(--surface-1));
+}
+
+.raven-handoff__reply {
+  margin: -0.25rem 0 0.25rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 2px solid color-mix(in oklab, var(--brand) 35%, transparent);
+  border-radius: 0 10px 10px 0;
+  background: var(--surface-2);
+  font-size: 12px;
+  max-height: 18rem;
+  overflow: auto;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Avatar studio
+
+   Grok's studio exists to answer one question — "will I be able to tell that one
+   is waiting on me?" — and the answer has to be given before the agent exists
+   rather than during an incident. So all six roster states are on screen at once
+   and moving, and the controls sit under them: the thing being judged stays in
+   view while the thing being changed moves underneath it.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.raven-studio {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--hairline);
+  border-radius: 14px;
+  background: var(--surface-1);
+  overflow: hidden;
+}
+
+.raven-studio__bar {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.5rem 0.625rem;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+.raven-studio__body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  gap: 0.875rem;
+  padding: 0.875rem;
+}
+@media (max-width: 640px) {
+  .raven-studio__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The two columns. The left is preview-at-a-size, the right is everything you
+ * can actually change — so the split is "look at it" / "set it", and neither
+ * column has to be scrolled to find the other. */
+.raven-studio__left,
+.raven-studio__right {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  min-width: 0;
+}
+
+/* The hero. Everything below it is 28–56px tall and cannot answer "does this
+ * read as attentive"; this can. */
+.raven-studio__hero {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.875rem;
+  border-radius: 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline-faint);
+}
+
+.raven-studio__hero-avatar {
+  width: 76px;
+  height: 76px;
+  flex-shrink: 0;
+}
+
+.raven-studio__hero-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1875rem;
+  min-width: 0;
+}
+
+.raven-studio__hero-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.raven-studio__hero-state {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--brand-text);
+  letter-spacing: 0.02em;
+}
+
+/* Fifteen state previews. Four across fits the column without the chips
+ * dropping below their labels, and every tile is the same size so the row can
+ * be read left to right as a scale. */
+.raven-studio__anims {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.375rem;
+}
+
+.raven-studio__anim {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1875rem;
+  padding: 0.375rem 0.25rem;
+  border-radius: 10px;
+  border: 1px solid transparent;
+  background: var(--surface-2);
+  color: var(--text-tertiary);
+  font-size: 9px;
+  line-height: 1.2;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0ms, border-color 0ms, color 0ms;
+}
+
+.raven-studio__anim:hover {
+  background: var(--surface-3);
+  color: var(--text-secondary);
+}
+
+.raven-studio__anim--on {
+  border-color: var(--brand);
+  color: var(--text-primary);
+  background: var(--brand-soft);
+}
+
+/* Colour needs no label under it — the swatch is the label — so the row is
+ * tighter than the shape and expression rows and reads as one strip. */
+.raven-studio__swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14);
+  cursor: pointer;
+  padding: 0;
+  transition: transform 120ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.raven-studio__swatch:hover {
+  transform: scale(1.12);
+}
+
+.raven-studio__swatch--on {
+  border-color: var(--text-primary);
+  transform: scale(1.06);
+}
+
+.raven-studio__hint {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.45;
+  color: var(--text-tertiary);
+}
+
+.raven-studio__controls--anim {
+  border-top: 1px solid var(--hairline-faint);
+  padding-top: 0.75rem;
+}
+
+.raven-studio__states {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  align-content: start;
+}
+
+.raven-studio__state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.5rem 0.375rem;
+  border-radius: 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+}
+
+/* Room for the notification and exclamation rings, which sit outside the frame
+ * and would otherwise be clipped by the cell. */
+.raven-studio__state-frame {
+  display: inline-flex;
+  padding: 3px;
+}
+
+.raven-studio__controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.875rem;
+  min-width: 0;
+}
+
+.raven-studio__chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1875rem;
+  padding: 0.3125rem 0.375rem;
+  border-radius: 9px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+.raven-studio__chip:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+}
+.raven-studio__chip--on {
+  color: var(--brand-text);
+  background: var(--brand-soft);
+  border-color: color-mix(in oklab, var(--brand) 35%, transparent);
+}
+
+.raven-studio__foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.5rem 0.625rem;
+  border-top: 1px solid var(--hairline);
+  background: var(--surface-2);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Reasoning panel
+
+   Deliberately quieter than the answer it sits beside. The reasoning is the
+   evidence for the answer, not the answer itself, and a panel that competes with
+   the text it is explaining gets closed and never reopened.
+
+   The indentation is the point: it sits in the agent's column, inset from the
+   bubble, so reading order is obvious — this is what the agent was thinking,
+   here is what it said.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.reason {
+  border-left: 2px solid color-mix(in oklab, var(--brand) 30%, transparent);
+  background: color-mix(in oklab, var(--surface-2) 70%, transparent);
+  border-radius: 0 10px 10px 0;
+  overflow: hidden;
+}
+
+.reason__head {
+  display: flex;
+  align-items: center;
+  gap: 0.4375rem;
+  width: 100%;
+  padding: 0.375rem 0.625rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  transition: color 120ms ease;
+}
+.reason__head:hover {
+  color: var(--text-secondary);
+}
+
+.reason__title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reason__who {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--brand-text);
+  opacity: 0.8;
+}
+
+/* The chevron rotates rather than swapping icons: one glyph, no layout shift. */
+.reason__chev {
+  margin-left: auto;
+  transition: transform 140ms ease;
+}
+.reason[data-open="true"] .reason__chev {
+  transform: rotate(90deg);
+}
+
+/* The reveal. A grid track rather than a `max-height` tween, because a
+   `max-height` animation has to guess the final value and a trace that ends up
+   30px or 3000px both feel wrong at the number you picked. `0fr → 1fr` is the
+   real height, both directions, in one tween. */
+.reason__reveal {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 240ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.reason__reveal[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.reason__revealInner {
+  /* Both are required or the track will not collapse to zero: a grid item
+     defaults to `min-height: auto`, which is its content's height. */
+  min-height: 0;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reason__reveal {
+    transition: none;
+  }
+}
+
+.reason__body {
+  /* Bounded so a long trace cannot push the answer off screen. The panel
+     scrolls itself; the conversation keeps its own scroll position. */
+  max-height: 22rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0.125rem 0.75rem 0.625rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.reason__text {
+  /* Proportional, small, and quiet. Monospace would make reasoning look like
+     code, which it is not, and would make it harder to read than the answer. */
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+/* Reasoning gets the answer's typographic scale one step down, but not its
+   colour: it is supporting evidence, and evidence that reads as loudly as the
+   conclusion it supports reverses the order the panel is built for. */
+.reason__text > p {
+  margin: 0;
+}
+.reason__text > p + p,
+.reason__text > p + .md-code,
+.reason__text > .md-code + p {
+  margin-top: 0.375rem;
+}
+/* A trace capped where the answer's is not: here the code *is* the reasoning,
+   and a fence that stops mid-thought is the thing worth showing. */
+.reason__text pre {
+  max-height: 16rem;
+}
+
+.reason__sep {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.reason__sep::before,
+.reason__sep::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--hairline);
+}
+.reason__sep span {
+  flex: 0 0 auto;
+}
+
+.reason__more {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.reason__pulse {
+  width: 5px;
+  height: 5px;
+  border-radius: 9999px;
+  background: var(--brand);
+  flex: 0 0 auto;
+  animation: reason-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes reason-pulse {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reason__pulse {
+    animation: none;
+    opacity: 0.7;
+  }
+  .reason__chev {
+    transition: none;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Tool call traces
+
+   The work the turn actually did, between the reasoning and the answer.
+
+   Kept visually *below* the reasoning and *above* the bubble on purpose: the
+   reasoning explains the choice, the trace proves it happened, the bubble is the
+   claim. A trace styled louder than the answer turns a conversation into a log
+   file, which nobody reads.
+
+   Every entry starts collapsed. Most calls are `memory_search` repeated, and
+   the two worth reading are the failures — so failure is the only state that
+   gets colour, and duration gets the only other emphasis.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.tools {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.tools__item {
+  border-radius: 8px;
+  overflow: hidden;
+  background: color-mix(in oklab, var(--surface-2) 60%, transparent);
+  transition: background 120ms ease;
+}
+.tools__item:hover {
+  background: color-mix(in oklab, var(--surface-2) 90%, transparent);
+}
+/* Failure is the one state allowed to be loud, because it is the one entry
+   a reader needs to find without hunting. */
+.tools__item[data-failed="true"] {
+  background: color-mix(in oklab, hsl(var(--danger)) 8%, var(--surface-2));
+  box-shadow: inset 2px 0 0 color-mix(in oklab, hsl(var(--danger)) 55%, transparent);
+}
+
+.tools__head {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.6875rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-tertiary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.tools__chev {
+  transition: transform 140ms ease;
+  flex: 0 0 auto;
+}
+.tools__head[aria-expanded="true"] .tools__chev {
+  transform: rotate(90deg);
+}
+
+/* Status glyph, not a coloured dot: a dot says "something", a tick/cross says
+   "this one worked". */
+.tools__state {
+  color: hsl(var(--success));
+  flex: 0 0 auto;
+}
+.tools__item[data-failed="true"] .tools__state {
+  color: hsl(var(--danger));
+}
+
+.tools__name {
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+}
+
+.tools__args {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted);
+  flex: 1 1 auto;
+}
+
+.tools__ms {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.1875rem;
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 0.625rem;
+  color: var(--text-muted);
+}
+
+.tools__body {
+  padding: 0 0.5rem 0.375rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.tools__label {
+  display: block;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-bottom: 0.125rem;
+}
+.tools__label[data-failed="true"] {
+  color: hsl(var(--danger));
+}
+
+.tools__pre {
+  /* Bounded: a tool result can be megabytes, and it is clamped at the source
+     too — but `pre` would happily eat the viewport if it were not stopped. */
+  max-height: 14rem;
+  overflow: auto;
+  overscroll-behavior: contain;
+  margin: 0;
+  padding: 0.375rem 0.5rem;
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  background: color-mix(in oklab, var(--surface-1) 80%, transparent);
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Projects — the codebase, the file, and who changed it
+
+   Three panes that answer one question, so they are laid out as one surface
+   rather than as three panels with borders between them. The tree indents with
+   a real depth variable instead of a fixed padding, because a codebase three
+   levels deep with a constant indent reads as a flat list of folders.
+
+   The change strip sits above both columns: it is the answer, and answers go
+   first.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.proj {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.proj__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--hairline);
+  flex: 0 0 auto;
+}
+
+.proj__title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.proj__title h1 {
+  font-size: 0.9375rem;
+  font-weight: 700;
+}
+.proj__count {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+}
+
+.proj__refresh {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  color: var(--text-tertiary);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+.proj__refresh:hover {
+  color: var(--text-primary);
+  background: var(--surface-3);
+}
+
+/* ── Who changed what ──────────────────────────────────────────────────── */
+
+.proj__agents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.625rem 1rem;
+  border-bottom: 1px solid var(--hairline);
+  background: color-mix(in oklab, var(--surface-1) 55%, transparent);
+  flex: 0 0 auto;
+}
+
+.proj__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 9999px;
+  border: 1px solid var(--hairline);
+  background: var(--surface-2);
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+.proj__chip:hover {
+  border-color: color-mix(in oklab, var(--brand) 45%, var(--hairline));
+}
+.proj__chip--on {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--text-primary);
+}
+.proj__chipname {
+  font-weight: 600;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The git convention, kept exactly: green up, red down. Anyone who has used a
+   version control tool reads these without a legend, and that is worth more
+   than a label would be. */
+.proj__add {
+  color: hsl(var(--success));
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.proj__del {
+  color: hsl(var(--danger));
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.proj__diff {
+  display: inline-flex;
+  gap: 0.3125rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.625rem;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* ── Body ──────────────────────────────────────────────────────────────── */
+
+.proj__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(16rem, 22rem) 1fr;
+  overflow: hidden;
+}
+
+@media (max-width: 900px) {
+  .proj__body {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(10rem, 40%) 1fr;
+  }
+}
+
+.proj__side {
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--hairline);
+  padding: 0.375rem 0.5rem 1rem;
+}
+
+.proj__view {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Rows ──────────────────────────────────────────────────────────────── */
+
+.proj__row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  width: 100%;
+  padding: 0.25rem 0.5rem;
+  /* Real depth, so a nested file lines up under its folder rather than at a
+     constant offset that makes three levels look like one. */
+  padding-left: calc(0.5rem + var(--depth, 0) * 0.875rem);
+  border-radius: 6px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+  transition: background 100ms ease, color 100ms ease;
+}
+.proj__row:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+.proj__row--project {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.8125rem;
+  padding-left: 0.375rem;
+}
+.proj__row--sel {
+  background: var(--brand-soft);
+  color: var(--text-primary);
+}
+.proj__row[data-dir="true"] .proj__name {
+  font-weight: 600;
+}
+
+.proj__chev {
+  color: var(--text-muted);
+  transition: transform 140ms ease;
+  flex: 0 0 auto;
+}
+.proj__chev--open {
+  transform: rotate(90deg);
+}
+.proj__chev--leaf {
+  width: 0.875rem;
+  flex: 0 0 0.875rem;
+}
+.proj__icon {
+  color: var(--text-tertiary);
+  flex: 0 0 auto;
+}
+.proj__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proj__size {
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+.proj__kind {
+  margin-left: auto;
+  font-size: 0.5625rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  flex: 0 0 auto;
+}
+
+.proj__list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+.proj__tree {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.proj__folder {
+  margin-left: 0.75rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid var(--hairline);
+  margin-top: 0.125rem;
+  margin-bottom: 0.375rem;
+}
+.proj__folderhead {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.1875rem 0.5rem;
+}
+.proj__path {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+/* ── Viewer ────────────────────────────────────────────────────────────── */
+
+.proj__filehead {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--hairline);
+  background: var(--surface-1);
+  flex: 0 0 auto;
+}
+.proj__filetitle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  flex: 1;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+.proj__filepath {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.proj__filebody {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.75rem 1rem 1.5rem;
+}
+
+.proj__pre {
+  /* Proportional line height and wrapping: a code viewer that scrolls
+     horizontally on every line is a viewer nobody reads. */
+  margin: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  tab-size: 2;
+}
+
+/* ── Ledger ────────────────────────────────────────────────────────────── */
+
+.proj__ledger {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem;
+}
+.proj__ledger h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  font-weight: 700;
+  margin-bottom: 0.25rem;
+}
+
+.proj__changes {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 0.75rem;
+}
+.proj__change {
+  /* The row and whatever it expands into are one object: the diff takes the
+     row's corners so an open write reads as one card rather than a panel
+     bolted onto a bar. `overflow: hidden` is what does that, and it costs
+     nothing because the diff scrolls itself. */
+  border-radius: 6px;
+  background: var(--surface-1);
+  min-width: 0;
+  overflow: hidden;
+}
+.proj__changehead {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.3125rem 0.5rem;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-size: 0.6875rem;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+  transition: background 100ms ease;
+}
+.proj__changehead:hover {
+  background: var(--surface-2);
+}
+.proj__changebot {
+  font-weight: 600;
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+  max-width: 8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proj__changepath {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  color: var(--text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+}
+.proj__changediff {
+  border-top: 1px solid hsl(var(--border));
+  background: var(--surface-0, var(--bg));
+}
+
+/* ── Diff ───────────────────────────────────────────────────────────────────
+
+   A unified diff, the way git prints one. Deliberately dense: this is a
+   comparison surface, and the point of it is to spot the one line in thirty
+   that changed — a comfortable line height would halve how many of those fit
+   on screen and turn "show me what this write did" into a scroll. */
+.dif {
+  min-width: 0;
+}
+.dif__strip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid hsl(var(--border));
+  background: var(--surface-1);
+}
+.dif__count {
+  display: inline-flex;
+  gap: 0.3125rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.6875rem;
+}
+.dif__lines {
+  margin-left: auto;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.dif__body {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  max-height: 24rem;
+  overflow-y: auto;
+  padding: 0.25rem 0;
+}
+.dif__row {
+  display: flex;
+  align-items: baseline;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.75rem;
+  line-height: 1.5;
+  min-width: max-content;
+}
+.dif__no {
+  flex: 0 0 auto;
+  width: 2.75rem;
+  padding-right: 0.5rem;
+  text-align: right;
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  opacity: 0.75;
+}
+.dif__mark {
+  flex: 0 0 auto;
+  width: 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  user-select: none;
+}
+.dif__text {
+  /* `pre`, not `pre-wrap`: a diff whose indentation has been collapsed is a
+     diff that no longer matches the file it describes. The row is
+     `min-width: max-content` and the body scrolls sideways instead, which is
+     how every diff viewer behaves — wrapping would make a 120-column file
+     unreadable twice over. */
+  white-space: pre;
+  padding-right: 0.75rem;
+  color: var(--text-primary);
+}
+.dif__row[data-k="add"] {
+  background: color-mix(in srgb, hsl(var(--success)) 12%, transparent);
+}
+.dif__row[data-k="add"] .dif__text {
+  color: var(--text-primary);
+}
+.dif__row[data-k="add"] .dif__mark {
+  color: hsl(var(--success));
+}
+.dif__row[data-k="del"] {
+  background: color-mix(in srgb, hsl(var(--danger)) 12%, transparent);
+}
+.dif__row[data-k="del"] .dif__mark {
+  color: hsl(var(--danger));
+}
+.dif__row[data-k="ctx"] .dif__text {
+  color: var(--text-secondary);
+}
+.dif__row[data-k="hunk"] {
+  background: var(--surface-2);
+  padding: 0.125rem 0;
+}
+.dif__row[data-k="hunk"] .dif__text {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+.dif__row[data-k="head"] .dif__text {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+}
+.dif__row[data-k="head"] + .dif__row[data-k="head"] .dif__text {
+  color: var(--text-secondary);
+}
+.dif__row[data-k="meta"] .dif__text {
+  color: var(--text-muted);
+  font-size: 0.6875rem;
+  font-style: italic;
+}
+
+.proj__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 2rem 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+.proj__hint {
+  font-size: 0.6875rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  max-width: 32rem;
+}
+.proj__hint--pad {
+  padding: 0.5rem 0.625rem;
+}
