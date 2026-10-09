@@ -15,6 +15,15 @@ Each bot has an identity, a model, a skill set, a memory, a sandboxed computer, 
 
 ---
 
+## Screenshots
+
+Captured at 1920×1080 from a running build.
+
+<img src="docs/media/chat.png" alt="The RAVENBOT chat surface: composer with DeepSearch and Think toggles, per-conversation model switcher, fleet rail listing the agent, and the reactive logo" width="49%"> <img src="docs/media/connectors.png" alt="Connectors and Tools: 133 catalogued MCP connectors with status and category filters, and per-card scope, verified-launcher state and missing-key hints" width="49%">
+
+**Left** — the chat surface: composer with `[DeepSearch]` and `[Think]` toggles, the per-conversation model switcher, the fleet rail, and the reactive logo.
+**Right** — the connector centre: 133 catalogued MCP servers, each card naming the exact environment key it needs and whether its launcher is verified.
+
 ## The Chat Experience (GROK-quality, local)
 
 | Feature | What you get |
