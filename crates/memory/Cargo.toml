@@ -3,6 +3,7 @@ name = "ravenbot-memory"
 description = "RAVENBOT memory system with vector embeddings and retrieval"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ravenbot-core = { path = "../core" }

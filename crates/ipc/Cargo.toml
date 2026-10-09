@@ -3,6 +3,7 @@ name = "ravenbot-ipc"
 description = "RAVENBOT typed IPC contract between Rust and UI"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ravenbot-core = { path = "../core" }

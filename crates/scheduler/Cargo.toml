@@ -3,6 +3,7 @@ name = "ravenbot-scheduler"
 description = "RAVENBOT scheduler for routines and cron-based tasks"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ravenbot-core = { path = "../core" }

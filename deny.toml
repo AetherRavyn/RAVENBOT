@@ -1,36 +1,56 @@
 # cargo-deny configuration
 # https://embarkstudios.github.io/cargo-deny/
+#
+# Written against cargo-deny 0.20's schema. The file this replaces carried
+# version-1 fields that no longer exist — `advisories.vulnerability`,
+# `unmaintained`, `yanked` and `notice`, `licenses.unlicensed` and `copyleft`,
+# and `bans.workspace-default-dependencies` — plus a line that was not valid
+# TOML at all (`[licenses.allow-wildcard] = false`, a value assigned to a table
+# header). The job therefore failed to parse its own config and never reached
+# an audit, which is why it was red for reasons unrelated to any dependency.
+#
+# The upstream changes behind that: advisory severity categories were dropped
+# from the RustSec database, so advisories are no longer split into
+# vulnerability/notice/unmaintained buckets, and the licence check now denies
+# everything not listed in `allow` instead of consulting `unlicensed` and
+# `copyleft` policy fields.
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
+# Advisories are reported, not ignored. The workflow job carries its own
+# `continue-on-error` for human triage; anything silenced here would never be
+# seen at all.
+ignore = []
 
 [licenses]
-unlicensed = "deny"
+# Everything not listed is denied — that is the default now, which is why
+# there is no `unlicensed`/`copyleft`/`default` key to set.
 allow = [
     "MIT",
     "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
+    "Unicode-3.0",
     "Unicode-DFS-2016",
     "Zlib",
+    # Weak, file-scoped copyleft: obligations attach to modified MPL files,
+    # which we do not modify. Pulled in by the CSS/selector stack.
+    "MPL-2.0",
+    # BSD-style permissive licences reached through the TLS and cert stacks.
+    "NCSA",
+    "CDLA-Permissive-2.0",
 ]
-copyleft = "deny"
 confidence-threshold = 0.8
+exceptions = []
 
 [bans]
 multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
-workspace-default-dependencies = []
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 allow-git = []
-
-[licenses.allow-wildcard] = false

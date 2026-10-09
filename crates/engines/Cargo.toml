@@ -3,6 +3,7 @@ name = "ravenbot-engines"
 description = "RAVENBOT agent engines — drive external agent CLIs (Claude Code, Codex, ACP) with one normalized event stream"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 tokio.workspace = true

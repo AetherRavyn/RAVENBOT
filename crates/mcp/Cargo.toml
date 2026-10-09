@@ -3,6 +3,7 @@ name = "ravenbot-mcp"
 description = "RAVENBOT MCP — 60+ servers as native tools"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ravenbot-core = { path = "../core" }

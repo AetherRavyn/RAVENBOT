@@ -38,5 +38,9 @@ export default defineConfig({
     environmentMatchGlobs: [["**/*.dom.test.ts", "jsdom"]],
     include: ["src/**/*.test.ts"],
     exclude: ["**/node_modules/**", "src-tauri/**", "target/**"],
+    // Lets a file's pending 24 ms bits-ui scroll-lock restore run while
+    // `document` still exists, instead of into a disposed jsdom environment.
+    // See vitest.setup.ts for the unhandled error this prevents.
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

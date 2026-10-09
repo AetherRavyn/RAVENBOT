@@ -3,6 +3,7 @@ name = "ravenbot-vision"
 description = "RAVENBOT vision and multimodal capabilities"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ravenbot-core = { path = "../core" }

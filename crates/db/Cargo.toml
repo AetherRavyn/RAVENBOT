@@ -3,6 +3,7 @@ name = "ravenbot-db"
 description = "RAVENBOT database layer with SQLite and migrations"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 ravenbot-core = { path = "../core" }

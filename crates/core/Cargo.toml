@@ -3,6 +3,7 @@ name = "ravenbot-core"
 description = "RAVENBOT core domain types"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 
 [dependencies]
 serde.workspace = true
