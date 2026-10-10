@@ -2,6 +2,43 @@
 
 All notable changes to RAVENBOT are documented here.
 
+## Unreleased
+
+### One brain, from the provider
+
+- **CLI agent engines removed** — the `ravenbot-engines` crate drove a locally-installed
+  agent CLI (Claude Code, Codex, generic ACP) and normalized its protocol into one event
+  stream. It is gone, along with `BotConfig.engine` / `engine_model`, the `list_engines` /
+  `set_bot_engine` IPC commands, the BotSettings execution-engine picker, the engine
+  strings in all six locales, and the engine branch of `Runtime::execute_run`. The drivers
+  broke on version-sensitive CLI flags — an office run went 0/7 because the installed
+  `codex` no longer accepts `--ask-for-approval` — and they carried per-CLI auth state and
+  protocol drift in exchange for models the provider layer already calls directly, minus
+  the tool loop, sandbox tier, permission model and streaming the app owns.
+  **API providers are now the single source of a bot's brain.**
+
+### Honest failures
+
+- **Fixed a deadlock that surfaced as `database is locked`** — `Runtime::new` re-created
+  the plugin and MCP tables from a spawned task "just in case", racing the caller's first
+  write for the SQLite lock. On a current-thread runtime (which is what every
+  `#[tokio::test]` gives you) the caller's busy-wait blocks the only thread, so the task
+  holding the lock can never be polled to completion and the 5 s `busy_timeout` expires
+  instead of waiting. Migrations 003 and 006 already own those tables; the redundant DDL
+  is gone, and a test asserts the ownership so it cannot move back.
+
+### The office board, flattened
+
+- **Header** — the roster was drawn twice (avatars in the bar, then name chips in a strip
+  below); the avatars are now the roster, and they open the same manage sheet the chips
+  did. Four equally-weighted bordered buttons became ghost controls, the duplicate
+  settings affordance is down to one, the lane no longer wears success-green while idle,
+  and the cost pill is neutral and hidden until it has a number.
+- **Board** — columns are headings over a stack rather than boxes inside boxes, a card is
+  a single tonal surface with state on the icon (tinted only for running and failed), a
+  progress hairline replaces reading "0/7", and the column scroller is visible so clipped
+  cards are not silently hidden.
+
 ## 0.2.0 — GROK-Parity + Production Honesty Pass
 
 The release where RAVENBOT matched GROK's chat experience feature-for-feature, then
