@@ -142,4 +142,46 @@ mod tests {
         let _ = std::fs::remove_file(wal);
         let _ = std::fs::remove_file(shm);
     }
+
+    /// The plugin and MCP tables are owned by migrations, not by the runtime.
+    ///
+    /// `Runtime::new` used to re-create them from a spawned task "just in case",
+    /// which raced the caller's first query for the SQLite write lock. On a
+    /// current-thread runtime — what every `#[tokio::test]` gives you — that
+    /// race is a deadlock rather than a delay: the caller's sqlite busy-wait
+    /// blocks the only thread, so the task holding the lock is never polled to
+    /// completion and `busy_timeout` expires as "database is locked". It
+    /// surfaced as an unrelated-looking flake in a runtime test.
+    ///
+    /// Asserting the ownership is what stops it coming back: if these tables
+    /// ever stop being created here, the runtime would have to start doing DDL
+    /// again in order to keep working.
+    #[tokio::test]
+    async fn migrations_create_the_plugin_and_mcp_tables() {
+        let path = std::env::temp_dir().join(format!(
+            "ravenbot-db-schema-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let db = Database::new(&path).await.expect("temp db");
+
+        for table in ["plugins", "bot_plugins", "mcp_servers", "mcp_bot_servers"] {
+            let found: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+            )
+            .bind(table)
+            .fetch_one(db.pool())
+            .await
+            .expect("query sqlite_master");
+            assert_eq!(
+                found, 1,
+                "{table} must be created by a migration — the runtime doing DDL races the first query"
+            );
+        }
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
 }

@@ -14,7 +14,7 @@ use ravenbot_core::{Run, RunState};
 use ravenbot_db::Database;
 use ravenbot_models::{ProviderManager, Message, ToolDefinition, DeltaCallback, ModelProviderTrait, StreamChunk};
 use ravenbot_skills::{SkillRegistry, SkillContext, SkillKind};
-use ravenbot_plugins::{PluginRegistry, store::PluginStore};
+use ravenbot_plugins::PluginRegistry;
 use ravenbot_mcp::McpRegistry;
 use ravenbot_sandbox::KillSwitch;
 use ravenbot_memory::{MemoryStore, MemoryRetriever, SelfReviewer, OfficeMemoryStore, LearningEngine, embedding::LocalEmbedding};
@@ -453,17 +453,18 @@ impl Runtime {
 
         let plugin_registry = Arc::new(PluginRegistry::new(db.pool().clone()));
         let mcp_registry = Arc::new(McpRegistry::new(db.pool().clone()));
-        // Ensure plugin + mcp tables exist (clean, only user-added)
-        let pool_clone = db.pool().clone();
-        let pool_clone2 = db.pool().clone();
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            handle.spawn(async move {
-                let store = PluginStore::new(pool_clone);
-                let _ = store.ensure_tables().await;
-            });
-            let mcp = McpRegistry::new(pool_clone2);
-            handle.spawn(async move { let _ = mcp.ensure_tables().await; });
-        }
+        // The plugin and MCP tables are created by migrations 003 and 006, and
+        // `Database::new` has already run every migration by the time we get
+        // here — so re-creating them from a spawned task was redundant work
+        // that also raced the caller's first query for the SQLite write lock.
+        //
+        // On a current-thread runtime — which is what every `#[tokio::test]`
+        // gives you — that race is a deadlock, not a delay: the caller's
+        // sqlite busy-wait blocks the only thread, so the task holding the
+        // lock can never be polled to completion, and the 5 s `busy_timeout`
+        // expires as `SQLITE_BUSY: database is locked` instead of waiting.
+        // That is the flake it produced. Schema setup belongs to the migration
+        // that owns it; none of it needs to happen asynchronously.
         let office_memory = Arc::new(OfficeMemoryStore::new(db.pool().clone(), Box::new(LocalEmbedding::new(128))));
         let learning = Arc::new(LearningEngine::new(db.pool().clone()));
         Self {
