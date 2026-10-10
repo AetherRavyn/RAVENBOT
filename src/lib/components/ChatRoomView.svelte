@@ -50,10 +50,8 @@
     AlertTriangle,
     Play,
     Pause,
-    Radio,
     Shield,
     Workflow,
-    Pencil,
     Layers,
     Cpu,
     Wrench,
@@ -1077,16 +1075,6 @@
     }
   }
 
-  function statusDot(status: string): string {
-    switch (status) {
-      case "thinking": return "bg-warning";
-      case "running_tool": return "bg-info";
-      case "waiting_on_user": return "bg-danger";
-      case "paused": return "bg-[var(--brand)]";
-      default: return "bg-success";
-    }
-  }
-
   // Header roster: live per-member activity from the global fleet state machine
   function rosterRing(act: "working" | "attention" | "responded" | "idle"): string {
     switch (act) {
@@ -1193,128 +1181,94 @@
 </script>
 
 <div class="flex flex-col h-full overflow-hidden select-none bg-[var(--surface-0)] text-[var(--text-primary)] font-sans">
-  <!-- Top Office Header Bar -->
-  <header class="h-15 px-4 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between z-10 shrink-0">
-    <div class="flex items-center gap-3">
-      <!-- Office Avatar -->
-      <div class="size-10 rounded-2xl overflow-hidden bg-[var(--surface-3)] border border-[var(--brand)]/40 p-0.5 shrink-0 shadow-md">
-        <RavenAvatar name={room.name} imageUrl={room.avatar_url}
-                 style={room.avatar_style} />
-      </div>
+  <!-- Office header. Three things, three places: who this office is (left),
+       what it is doing (under the name), and who is in it plus the office
+       actions (right).
 
-      <div class="flex flex-col">
-        <div class="flex items-center gap-2">
-          <span class="font-bold text-sm text-[var(--text-primary)]">{room.name}</span>
-          <span class="font-mono text-[11px] py-[2px] px-2 rounded-md bg-[var(--surface-3)] border border-[var(--hairline)] text-[var(--brand-text)] capitalize">
-            {room.office_template.replace("-", " ")}
-          </span>
-          <button
-            type="button"
-            class="icon-btn size-6"
-            onclick={() => (showOfficeSettings = true)}
-            title={t("room.editOffice")}
-            aria-label={t("room.editOffice")}
-          >
-            <Pencil class="size-3.5" />
-          </button>
-        </div>
-        <div class="flex items-center gap-2 text-[11px] text-[var(--text-tertiary)] mt-0.5">
-          <span class="text-success font-mono flex items-center gap-1">
-            <Radio class="size-2.5" />
-            {t("room.parallelLane")}
-          </span>
-          <span class="text-[var(--text-muted)]">·</span>
-          <span>{members.length === 1 ? t("room.specialistAssigned", { n: members.length }) : t("room.specialistsAssigned", { n: members.length })}</span>
-          <span class="text-[var(--text-muted)]">·</span>
-          <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-success/10 border border-success/30 text-success" title={t("room.telemetry")}>
+       The roster used to be drawn twice — once as avatars here, again as name
+       chips in a strip below — which spent a whole row saying the same thing.
+       The avatars are now the roster, and they open the same manage sheet the
+       chips did. The four action buttons lost their resting borders for the
+       same reason: four equally weighted boxes were the loudest thing on the
+       bar. -->
+  <header class="px-4 py-2.5 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center gap-3 z-10 shrink-0">
+    <div class="size-9 rounded-xl overflow-hidden bg-[var(--surface-3)] shrink-0">
+      <RavenAvatar name={room.name} imageUrl={room.avatar_url} style={room.avatar_style} />
+    </div>
+
+    <div class="min-w-0">
+      <div class="flex items-center gap-2 min-w-0">
+        <span class="font-semibold text-sm text-[var(--text-primary)] truncate">{room.name}</span>
+        <span class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-tertiary)] capitalize shrink-0">
+          {room.office_template.replace("-", " ")}
+        </span>
+      </div>
+      <!-- One meta line. The lane is a fact about the office, not a status
+           claim — the dot carries the status, so an idle office no longer
+           wears a green "running" badge. Cost appears only once there is
+           some; "$0.0000 · 0 tok" is not information. -->
+      <div class="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] mt-0.5 min-w-0">
+        <span class={cn("size-1.5 rounded-full shrink-0", teamActive ? "bg-success" : "bg-[var(--text-faint)]")} aria-hidden="true"></span>
+        <span class="shrink-0">{t("room.parallelLane")}</span>
+        <span class="text-[var(--text-faint)]">·</span>
+        <span class="truncate">{members.length === 1 ? t("room.specialistAssigned", { n: members.length }) : t("room.specialistsAssigned", { n: members.length })}</span>
+        {#if officeTokens > 0}
+          <span class="text-[var(--text-faint)]">·</span>
+          <span class="font-mono tabular-nums shrink-0" title={t("room.telemetry")}>
             ${officeCost.toFixed(4)} · {officeTokens.toLocaleString()} tok
           </span>
-        </div>
+        {/if}
       </div>
     </div>
 
-    <!-- Assigned Bot Roster Avatars -->
-    <div class="flex items-center gap-3">
-      <div class="flex -space-x-2">
-        {#each members.slice(0, 5) as m}
+    <div class="flex items-center gap-1 ml-auto shrink-0">
+      <!-- The roster. The face follows the work, so a glance shows which agent
+           is thinking, which needs an answer, and which failed — without
+           reading a label. Clicking one opens its manage sheet. -->
+      <div class="flex -space-x-1.5 mr-1">
+        {#each members.slice(0, 6) as m}
           {@const botId = m.bot?.id ?? ""}
           {@const act = fleetActivity.get(botId)}
-          <div class="relative size-8 shrink-0 transition-transform hover:scale-110 hover:z-10" title={`${m.bot?.name || m.rank} (${m.specialty})`}>
-            <!-- The face follows the work, so a glance at the roster shows
-                 which agent is thinking, which needs an answer, and which
-                 failed — without reading a single label. -->
+          <button
+            type="button"
+            class="relative size-7 shrink-0 rounded-full transition-transform hover:scale-110 hover:z-10 cursor-pointer"
+            onclick={() => openManageAgent(m)}
+            title={`${m.bot?.name || m.rank} — ${m.specialty} (click to manage)`}
+          >
             <RavenAvatar
               name={m.bot?.name || m.rank}
               mood={fleetActivity.mood(botId)}
               imageUrl={m.bot?.avatar_url}
-                 style={m.bot?.avatar_style}
+              style={m.bot?.avatar_style}
               decorative
               class={cn("size-full rounded-full", rosterRing(act))}
             />
             {#if act !== "idle"}
-              <span class={cn("absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-0)]", rosterDot(act))}></span>
-            {/if}
-          </div>
-        {/each}
-        {#if members.length > 5}
-          <div class="size-8 rounded-full bg-[var(--surface-3)] border border-[var(--hairline)] ring-1 ring-[var(--brand)]/40 flex items-center justify-center text-[11px] font-bold text-[var(--brand-text)]">
-            +{members.length - 5}
-          </div>
-        {/if}
-      </div>
-      <button type="button" onclick={() => openHireModal()} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-success/50 flex items-center justify-center shrink-0 ml-1" title={t("room.hire")} aria-label={t("room.hire")}>
-        <Users class="size-4" />
-      </button>
-      <button type="button" onclick={() => (showOfficeSettings = true)} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] flex items-center justify-center shrink-0 ml-1" title={t("room.settings")} aria-label={t("room.settings")}>
-        <Settings class="size-4" />
-      </button>
-      <button type="button" onclick={() => (showOfficeMemory = true)} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] flex items-center justify-center shrink-0 ml-1" title={t("memory.title")} aria-label={t("memory.title")}>
-        <Brain class="size-4" />
-      </button>
-      <button type="button" onclick={() => openPlanModal()} class="size-8 rounded-xl bg-[var(--hairline)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] flex items-center justify-center shrink-0 ml-1" title={t("room.plan")} aria-label={t("room.plan")}>
-        <Workflow class="size-4" />
-      </button>
-    </div>
-  </header>
-
-  <!-- Team strip: stable chips (no layout shift, status as a dot) -->
-  {#if members.length > 0}
-    <div class="px-4 py-2.5 bg-[var(--surface-1)] border-b border-[var(--hairline)] flex items-center gap-3 shrink-0">
-      <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)] shrink-0 flex items-center gap-1.5">
-        <Workflow class="size-3 text-[var(--brand)]" />
-        Team
-        <span class="font-mono text-[var(--text-muted)]">{members.length}</span>
-      </span>
-      <div class="flex items-center gap-1.5 min-w-0 overflow-x-auto no-scrollbar">
-        {#each members as m}
-          {@const st = agentStatus[m.bot?.id] || "idle"}
-          <button
-            type="button"
-            onclick={() => openManageAgent(m)}
-            class="inline-flex items-center gap-2 h-8 pl-1 pr-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:border-[var(--brand)] hover:bg-[var(--surface-3)] shrink-0 transition-colors cursor-pointer"
-            title={`${m.bot?.name || m.rank} — ${m.specialty}${st !== "idle" ? ` · ${st.replace("_", " ")}` : ""} (click to manage)`}
-          >
-            <span class="relative shrink-0">
-              <RavenAvatar
-                name={m.bot?.name || m.rank}
-                mood={fleetActivity.mood(m.bot?.id ?? "")}
-                imageUrl={m.bot?.avatar_url}
-                 style={m.bot?.avatar_style}
-                decorative
-                class="size-6 rounded-md"
-              />
-              <span class="absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-[var(--surface-2)] {statusDot(st)}"></span>
-            </span>
-            <span class="text-[11px] font-semibold text-[var(--text-primary)] whitespace-nowrap">{m.rank}</span>
-            <span class="hidden xl:inline text-[11px] text-[var(--text-muted)] truncate max-w-[8rem]">{m.specialty}</span>
-            {#if st !== "idle"}
-              <Loader2 class="size-3 text-warning animate-spin shrink-0" />
+              <span class={cn("absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-[var(--surface-0)]", rosterDot(act))}></span>
             {/if}
           </button>
         {/each}
+        {#if members.length > 6}
+          <div class="size-7 rounded-full bg-[var(--surface-3)] text-[11px] font-bold text-[var(--text-tertiary)] flex items-center justify-center">
+            +{members.length - 6}
+          </div>
+        {/if}
       </div>
+
+      <button type="button" onclick={() => openHireModal()} class="icon-btn size-8" title={t("room.hire")} aria-label={t("room.hire")}>
+        <Users class="size-4" />
+      </button>
+      <button type="button" onclick={() => (showOfficeMemory = true)} class="icon-btn size-8" title={t("memory.title")} aria-label={t("memory.title")}>
+        <Brain class="size-4" />
+      </button>
+      <button type="button" onclick={() => openPlanModal()} class="icon-btn size-8" title={t("room.plan")} aria-label={t("room.plan")}>
+        <Workflow class="size-4" />
+      </button>
+      <button type="button" onclick={() => (showOfficeSettings = true)} class="icon-btn size-8" title={t("room.settings")} aria-label={t("room.settings")}>
+        <Settings class="size-4" />
+      </button>
     </div>
-  {/if}
+  </header>
 
   <!-- Office board: planner → kanban → live dependency graph -->
   {#if boardNodes.length > 0}

@@ -246,14 +246,22 @@
 - [x] Ollama tool calls fixed — the default sovereign provider previously dropped them entirely
 - [x] Tests: native round-trip asserted in the E2E test, plus parallel-tools, cancellation, and `ask_user` park/resume
 
-### 25.3 Agent engines — run on the CLIs users already have ⬜
-- [x] New `ravenbot-engines` crate: an `AgentEngine` SPI that spawns a locally-installed agent CLI and normalizes its native protocol into one event stream (`EngineEvent`), with `CancelToken`, `kill_on_drop`, stderr capture, and honest auth/timeout errors
-- [x] **Claude Code driver**: real `stream-json` parsing (init/stream_event/assistant/user/result), session-id capture + `--resume`, effort levels, fail-closed `--permission-prompts none` for Ask/Auto, tokenization/cost; verified against a fake CLI in tests and detected live (2.1.263)
-- [x] **Codex driver**: tolerant `item.*`/`turn.completed` parser, approval-mode sandbox flags, detection
-- [x] **Generic ACP driver**: covers any Agent Client Protocol CLI (JSON-RPC stdio: initialize / session/new / session/prompt, permission requests); configure via `RAVENBOT_ACP_ENGINES`
-- [x] Runtime engine path: per-bot `config.engine`, engine turns stream over the same `StreamEvent` channel, persist the assistant message, record budget usage, honour kill switch/cancel; `<think>` reasoning blocks render in the existing Reasoning panel
-- [x] IPC `list_engines` / `set_bot_engine`; BotSettings execution-engine picker (Native / Claude Code / Codex / ACP, dimmed when not installed); chat header shows the active engine
-- [x] 17 engine tests incl. a deterministic fake-CLI stream test, plus a full runtime↔engine integration test
+### 25.3 Agent engines — CLI drivers removed ↩️
+- [x] ~~`ravenbot-engines`: an `AgentEngine` SPI spawning a locally-installed agent CLI
+  (Claude Code / Codex / generic ACP) and normalizing its protocol into `EngineEvent`~~
+  — **removed.**
+- The drivers were the most fragile layer in the app: version-sensitive CLI flags
+  (`codex exec --ask-for-approval` broke against the installed build and took every
+  office node down with it), per-CLI auth and sign-in state that RAVENBOT could only
+  observe after the fact, protocol drift, and a second execution path that had to be
+  kept in step with the real one.
+- They also ended at the same models the provider layer already calls directly — while
+  giving up the tool loop, sandbox tier, permission model, cancellation and streaming
+  that RAVENBOT owns and can reason about. **API providers are now the single source of
+  a bot's brain.**
+- Removed with it: `BotConfig.engine` / `engine_model`, the `list_engines` /
+  `set_bot_engine` IPC commands, the BotSettings execution-engine picker, the engine
+  branch in `Runtime::execute_run`, and the engine strings in all six locales.
 
 ## Phase 26 - Resilience: Fallback, Compaction, Resumable Runs ✅
 

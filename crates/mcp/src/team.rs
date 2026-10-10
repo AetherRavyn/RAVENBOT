@@ -219,7 +219,6 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
                         "specialty": b.specialty,
                         "provider": b.config.model_provider,
                         "model": b.config.model_id,
-                        "engine": b.config.engine,
                         "is_orchestrator": b.is_orchestrator,
                         "skills": b.skills,
                         "status": b.status,

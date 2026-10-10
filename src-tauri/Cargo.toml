@@ -24,7 +24,6 @@ ravenbot-sync = { path = "../crates/sync" }
 ravenbot-governance = { path = "../crates/governance" }
 ravenbot-plugins = { path = "../crates/plugins" }
 ravenbot-mcp = { path = "../crates/mcp" }
-ravenbot-engines = { path = "../crates/engines" }
 ravenbot-sandbox = { path = "../crates/sandbox" }
 ravenbot-vision = { path = "../crates/vision" }
 ravenbot-ipc = { path = "../crates/ipc" }

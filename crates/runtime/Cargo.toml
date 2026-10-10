@@ -9,7 +9,6 @@ license.workspace = true
 ravenbot-core = { path = "../core" }
 ravenbot-db = { path = "../db" }
 ravenbot-models = { path = "../models" }
-ravenbot-engines = { path = "../engines" }
 ravenbot-skills = { path = "../skills" }
 ravenbot-plugins = { path = "../plugins" }
 ravenbot-mcp = { path = "../mcp" }

@@ -3,6 +3,19 @@
   // Fed by ChatRoomView from the office run's live events
   // (plan_ready / node_open / node_finished / graph_status) and rehydrated
   // from the returned checklist when a run finished while the room was away.
+  //
+  // ## Why this is shaped the way it is
+  //
+  // The first version nested a card inside a column box inside a section box
+  // inside the chat column — four surfaces and four borders to say "here are
+  // four lists". It read as a widget bolted onto the conversation, and the
+  // borders did the work that spacing should do.
+  //
+  // So the boxes are gone: columns are headings over a stack, and a card is a
+  // single tonal surface with no border. State is carried by the icon, the way
+  // it already is everywhere else in the app, with a soft tint for the two
+  // states that need attention from across the room (running, failed) rather
+  // than a badge on every card.
   import { t } from "$lib/i18n";
   import { entrance } from "$lib/chat/entrance";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
@@ -78,6 +91,9 @@
     nodes.filter((n) => n.state === "done" || n.state === "skipped").length
   );
 
+  /** Percent complete, for the hairline under the header. */
+  const pct = $derived(nodes.length ? Math.round((doneCount / nodes.length) * 100) : 0);
+
   // PlanDag works on index-based deps; the board's order is stable per run,
   // so translate node-id deps to indices here.
   const dagTasks = $derived.by<DagTask[]>(() => {
@@ -97,11 +113,22 @@
     const m = memberFor(botId);
     return m?.bot?.name || m?.rank || "?";
   }
+  /**
+   * The two states that should be legible without reading: work in progress
+   * and work that broke. Everything else stays on the same neutral surface.
+   */
+  function cardTone(state: BoardNode["state"]): string {
+    switch (state) {
+      case "running": return "bg-[var(--brand-soft)]";
+      case "failed": return "bg-danger/10";
+      default: return "bg-[var(--surface-2)]";
+    }
+  }
 </script>
 
 {#if nodes.length > 0}
   <section
-    class="office-board min-w-0 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] overflow-hidden"
+    class="office-board min-w-0 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] overflow-hidden"
     aria-label={t("room.board.title")}
   >
     <button
@@ -112,7 +139,7 @@
       onclick={() => (collapsed = !collapsed)}
     >
       <Workflow class="size-4 text-[var(--brand-text)] shrink-0" />
-      <span class="text-[13px] font-bold text-[var(--text-primary)] shrink-0">{t("room.board.title")}</span>
+      <span class="text-xs font-semibold text-[var(--text-primary)] shrink-0">{t("room.board.title")}</span>
       <span class="text-[11px] text-[var(--text-muted)] shrink-0 tabular-nums">
         {t("room.board.progress", { done: String(doneCount), total: String(nodes.length) })}
       </span>
@@ -124,18 +151,26 @@
       />
     </button>
 
+    <!-- Progress as a hairline rather than a number you have to read: at 0% it
+         is invisible, which is the honest reading of "nothing has happened". -->
+    <div class="h-px w-full bg-[var(--hairline)]" role="progressbar" aria-valuenow={doneCount} aria-valuemin={0} aria-valuemax={nodes.length}>
+      <div class="h-px bg-[var(--brand)] transition-[width] duration-500 ease-out" style="width: {pct}%"></div>
+    </div>
+
     {#if !collapsed}
-      <div class="px-3 pb-3 space-y-3">
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 min-w-0">
+      <div class="px-3 pb-3 pt-2.5 space-y-3">
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-x-3 gap-y-4 min-w-0">
           {#each columns as col (col.key)}
-            <div class="min-w-0 rounded-xl border border-[var(--hairline)] bg-[var(--surface-0)] p-2">
-              <div class="flex items-center gap-1.5 px-1 pb-1.5 text-[11px] font-bold text-[var(--text-secondary)]">
+            <div class="min-w-0">
+              <div class="flex items-baseline gap-1.5 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
                 <span class="truncate">{col.label}</span>
-                <span class="ml-auto text-[11px] font-normal text-[var(--text-muted)] tabular-nums">{col.items.length}</span>
+                <span class="ml-auto tabular-nums font-normal">{col.items.length}</span>
               </div>
-              <div class="space-y-1.5 min-w-0 max-h-44 overflow-y-auto no-scrollbar">
+              <!-- No `no-scrollbar` here: a column that has silently clipped its
+                   cards is worse than one that admits it scrolls. -->
+              <div class="space-y-1 min-w-0 max-h-56 overflow-y-auto">
                 {#each col.items as n (n.nodeId)}
-                  <div use:entrance class="min-w-0 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] p-2">
+                  <div use:entrance class="min-w-0 rounded-lg px-2 py-1.5 {cardTone(n.state)}">
                     <div class="flex items-center gap-1.5 min-w-0">
                       <!-- A board card is the densest place the app shows who
                            is doing what, so the face reacts here too: a running
@@ -149,7 +184,7 @@
                         decorative
                         class="size-4 rounded-full"
                       />
-                      <span class="text-[11px] font-bold text-[var(--text-primary)] truncate">{nameFor(n.botId)}</span>
+                      <span class="text-[11px] font-semibold text-[var(--text-primary)] truncate">{nameFor(n.botId)}</span>
                       {#if n.state === "running"}
                         <Loader2 class="size-3 animate-spin text-[var(--brand-text)] shrink-0 ml-auto" aria-hidden="true" />
                       {:else if n.state === "done"}
@@ -162,7 +197,7 @@
                         <Circle class="size-3 text-[var(--text-faint)] shrink-0 ml-auto" aria-hidden="true" />
                       {/if}
                     </div>
-                    <div class="mt-1 text-[11px] text-[var(--text-secondary)] leading-snug line-clamp-2">{n.label}</div>
+                    <div class="mt-0.5 text-[11px] text-[var(--text-secondary)] leading-snug line-clamp-2">{n.label}</div>
                     {#if (todos?.[n.botId] ?? []).length > 0}
                       {@const botTodos = todos?.[n.botId] ?? []}
                       {@const todosDone = botTodos.filter((td) => td.done).length}
@@ -177,11 +212,11 @@
                       </div>
                     {/if}
                     {#if n.preview}
-                      <div class="mt-1 text-[11px] text-[var(--text-muted)] leading-snug line-clamp-2">{n.preview}</div>
+                      <div class="mt-0.5 text-[11px] text-[var(--text-muted)] leading-snug line-clamp-2">{n.preview}</div>
                     {/if}
                   </div>
                 {:else}
-                  <div class="text-[11px] text-[var(--text-faint)] px-1 py-2">{t("room.noTasks")}</div>
+                  <div class="text-[11px] text-[var(--text-faint)] px-1 py-1">{t("room.noTasks")}</div>
                 {/each}
               </div>
             </div>
@@ -189,10 +224,10 @@
         </div>
 
         {#if hasDeps}
-          <div class="min-w-0 rounded-xl border border-[var(--hairline)] bg-[var(--surface-0)] p-2">
-            <div class="px-1 pb-1.5 text-[11px] font-bold text-[var(--text-secondary)] flex items-center gap-1.5">
+          <div class="min-w-0 border-t border-[var(--hairline)] pt-2">
+            <div class="pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)] flex items-baseline gap-1.5">
               <span>{t("room.board.dagLive")}</span>
-              <span class="text-[11px] font-normal text-[var(--text-muted)]">{t("room.dagTitle")}</span>
+              <span class="font-normal normal-case tracking-normal">{t("room.dagTitle")}</span>
             </div>
             <PlanDag tasks={dagTasks} {members} stateFor={(i) => nodes[i]?.state} />
           </div>

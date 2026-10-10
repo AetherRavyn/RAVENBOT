@@ -28,9 +28,7 @@
     Trash2,
     Save,
     Crown,
-    Server,
     AlertTriangle,
-    Check,
     Palette,
     ShieldCheck,
     Volume2,
@@ -68,14 +66,6 @@
   // Approval mode: ask (default) / auto / full — "bots ask before they act".
   type ApprovalModeId = "ask" | "auto" | "full";
   let approvalMode = $state<ApprovalModeId>("ask");
-  // Execution engine: "native" (built-in loop) or an external agent CLI.
-  interface EngineInfo {
-    id: string; display_name: string; command: string;
-    available: boolean; version?: string | null; install_hint?: string | null;
-    sign_in_hint?: string | null; models?: string[];
-  }
-  let engine = $state("native");
-  let engineOptions = $state<EngineInfo[]>([]);
   let fallbackProvider = $state("");
   let maxToolRounds = $state(12);
   // Voice & auto-read (per-bot TTS voice)
@@ -214,8 +204,6 @@
 
   const browsePath = $derived(workingFolder.trim() || defaultWorkspace);
   let showWorkspace = $state(false);;
-  // Model override for external engine CLIs.
-  let engineModel = $state("");
   // Command isolation tier + the effective backend report.
   interface SandboxReport {
     backend: string; filesystem_isolated: boolean; network_isolated: boolean;
@@ -408,7 +396,6 @@
         temperature,
         max_tokens: maxTokens,
         custom_prompt: customPrompt || null,
-        engine,
         fallback_provider: fallbackProvider || null,
         fallback_model: null,
         max_tool_rounds: maxToolRounds || null,
@@ -416,7 +403,6 @@
         voice_id: voiceId === "default" ? null : voiceId,
         auto_read: autoRead,
         host_control: hostControl,
-        engine_model: engineModel.trim() || null,
         working_folder: workingFolder.trim() || null,
       },
       // An empty list means "not narrowed", which is the default for an agent
@@ -483,9 +469,6 @@
   let skillsRequested = $state(false);
 
   $effect(() => {
-    invoke<EngineInfo[]>("list_engines")
-      .then((list) => { engineOptions = list; })
-      .catch(() => { engineOptions = []; });
     if (open && !skillsRequested) {
       skillsRequested = true;
       void loadSkills();
@@ -512,7 +495,7 @@
     JSON.stringify({
       name, description, avatarUrl, avatarStyle,
       modelProvider, modelId, temperature, maxTokens,
-      customPrompt, isOrchestrator, approvalMode, engine, engineModel,
+      customPrompt, isOrchestrator, approvalMode,
       fallbackProvider, maxToolRounds, sandboxTier,
       voiceId, autoRead, hostControl, workingFolder,
       narrowing, capabilityToggles, fsPaths, netDomains,
@@ -538,7 +521,6 @@
       customPrompt = bot.config?.custom_prompt || "";
       isOrchestrator = Boolean(bot.is_orchestrator);
       approvalMode = (bot.approval_mode === "auto" || bot.approval_mode === "full") ? bot.approval_mode : "ask";
-      engine = bot.config?.engine || "native";
       fallbackProvider = bot.config?.fallback_provider || "";
       maxToolRounds = bot.config?.max_tool_rounds || 12;
       sandboxTier = bot.config?.sandbox_tier || "OsLevel";
@@ -546,7 +528,6 @@
       autoRead = Boolean(bot.config?.auto_read);
       hostControl = Boolean(bot.config?.host_control);
       workingFolder = bot.config?.working_folder || "";
-      engineModel = bot.config?.engine_model || "";
       // Hydrate the capability narrowing from the stored list. An empty list is
       // the "not narrowed" case, and must round-trip as one.
       const stored: any[] = bot.permissions ?? [];
@@ -665,71 +646,7 @@
       <div class="flex-1 overflow-y-auto no-scrollbar px-6 py-4 pb-10">
         {#if activeTab === "model"}
           <div class="space-y-4">
-            <!-- Execution engine: native loop vs an installed agent CLI -->
             <div class="space-y-2">
-              <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-                {t("bot.execEngine")}
-              </Label>
-              <div class="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  aria-pressed={engine === 'native'}
-                  class="flex flex-col text-left p-3 rounded-xl border transition-all text-xs {engine === 'native' ? 'border-[var(--brand)] bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/50' : 'border-[var(--hairline)] bg-[var(--surface-1)]/80 hover:border-[var(--brand)]/40'} cursor-pointer"
-                  onclick={() => (engine = "native")}
-                >
-                  <span class="font-bold text-[var(--text-primary)] flex items-center gap-1.5"><Server class="size-3.5" /> {t("bot.native")}</span>
-                  <span class="text-[11px] text-[var(--text-tertiary)] mt-1">{t("bot.builtInLoop")}</span>
-                  <span class="text-[11px] font-mono mt-1 text-success">{t("bot.alwaysAvailable")}</span>
-                </button>
-                {#each engineOptions as e (e.id)}
-                  <button
-                    type="button"
-                    aria-pressed={engine === e.id}
-                    disabled={!e.available}
-                    title={e.available ? `${e.command} ${e.version ?? ''}` : (e.install_hint ?? t("bot.notInstalled"))}
-                    class="flex flex-col text-left p-3 rounded-xl border transition-all text-xs {engine === e.id ? 'border-[var(--brand)] bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/50' : 'border-[var(--hairline)] bg-[var(--surface-1)]/80 hover:border-[var(--brand)]/40'} cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                    onclick={() => (engine = e.id)}
-                  >
-                    <span class="flex items-center justify-between w-full gap-2">
-                      <span class="font-bold text-[var(--text-primary)] flex items-center gap-1.5 min-w-0">
-                        <Cpu class="size-3.5 shrink-0" />
-                        <span class="truncate">{e.display_name}</span>
-                      </span>
-                      {#if engine === e.id}<Check class="size-3.5 text-[var(--brand-text)] shrink-0" />{/if}
-                    </span>
-                    <span class="text-[11px] text-[var(--text-tertiary)] mt-1 line-clamp-2">{e.available ? (e.version || e.command) : (e.install_hint || t("bot.notInstalled"))}</span>
-                    <span class="text-[11px] font-mono mt-1 {e.available ? 'text-success' : 'text-warning'}">
-                      {e.available ? t("bot.detected") : t("bot.notInstalled")}
-                    </span>
-                  </button>
-                {/each}
-              </div>
-              {#if engine !== "native"}
-                {@const activeEngine = engineOptions.find((e) => e.id === engine)}
-                <div class="space-y-2.5 rounded-xl border border-[var(--brand)]/25 bg-[var(--brand-soft)] p-3">
-                  <p class="text-[11px] text-[var(--brand-text)] leading-relaxed">
-                    {t("bot.runsOnCli1")}<span class="font-mono">{activeEngine?.display_name ?? engine}</span>{t("bot.runsOnCli2")}
-                    {#if activeEngine?.sign_in_hint}
-                      <span class="block text-[var(--text-tertiary)] mt-1">{activeEngine.sign_in_hint}</span>
-                    {/if}
-                  </p>
-                  <div class="space-y-1">
-                    <Label for="engine-model" class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
-                      {t("bot.engineModel")}
-                    </Label>
-                    <Input
-                      id="engine-model"
-                      bind:value={engineModel}
-                      placeholder={activeEngine?.models?.length ? activeEngine.models[0] : t("bot.engineDefault")}
-                      class="h-8 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
-                    />
-                    <p class="text-[11px] text-[var(--text-muted)]">{t("bot.cliDefaultHint")}</p>
-                  </div>
-                </div>
-              {/if}
-            </div>
-
-            <div class="space-y-2 {engine !== 'native' ? 'opacity-50 pointer-events-none' : ''}">
               <div class="flex items-center justify-between">
                 <Label class="text-xs font-bold uppercase tracking-wider text-[var(--text-tertiary)]">{t("bot.provider")}</Label>
                 <span class="text-[11px] font-mono text-[var(--text-muted)]">{t("bot.providersN", { n: visibleProviders.length })}</span>

@@ -2780,38 +2780,14 @@ async fn open_workspace_in_file_manager(
         .map_err(|e| format!("Could not open the file manager: {e}"))
 }
 
-/// Detect installed agent engines (Claude Code, Codex, configured ACP agents).
-#[tauri::command]
-async fn list_engines() -> Result<Vec<ravenbot_engines::EngineInfo>, String> {
-    Ok(ravenbot_engines::list_engines().await)
-}
-
-/// Set which engine a bot runs on (`"native"`, `"claude"`, `"codex"`, …).
-#[tauri::command]
-async fn set_bot_engine(
-    state: State<'_, AppState>,
-    bot_id: Uuid,
-    engine: String,
-) -> Result<String, String> {
-    let mut bot = ravenbot_db::queries::BotQueries::get(state.db.pool(), bot_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Bot not found".to_string())?;
-    bot.config.engine = engine.trim().to_string();
-    ravenbot_db::queries::BotQueries::update(state.db.pool(), &bot)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(bot.config.engine)
-}
-
 /// Auth → configure key; rate limit → wait; network → check connectivity;
 /// everything else → how to fix the config.
 fn error_hint(err: &str) -> &'static str {
     let e = err.to_lowercase();
     if e.contains("free tier") && e.contains("opencode") {
-        "Fix: OpenCode's free tier only works inside the OpenCode CLI. Set this agent's Execution Engine to **OpenCode** (uses your installed CLI), or pick a paid model/provider."
+        "Fix: that free tier only works inside the provider's own client. Pick a model from a provider you have a key for in **Settings (⌘,) → API Keys**."
     } else if e.contains("missing session") || e.contains("missingsessionid") {
-        "Fix: this provider only allows this model inside its own client. Switch the agent's Execution Engine to that CLI, or pick another model."
+        "Fix: this model is only served inside its own client, not over the API. Pick a different model or provider."
     } else if e.contains("api key") || e.contains("unauthorized") || e.contains("401") || e.contains("403") {
         "Fix: configure the API key for this provider in **Settings (⌘,) → API Keys**."
     } else if e.contains("rate limited") || e.contains("429") {
@@ -4827,8 +4803,6 @@ pub fn run() {
             transcribe_audio,
             synthesize_speech,
             list_tts_voices,
-            list_engines,
-            set_bot_engine,
             create_bot,
             list_bots,
             get_bot,

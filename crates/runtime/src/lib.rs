@@ -303,8 +303,6 @@ pub struct Runtime {
     /// Cooperative cancellation flags by run id. `cancel_run` marks the run;
     /// the execution loop observes it between steps and stops cleanly.
     cancel_flags: std::sync::Mutex<HashSet<Uuid>>,
-    /// Live cancellation tokens for runs executing on an external engine.
-    engine_cancels: std::sync::Mutex<HashMap<Uuid, ravenbot_engines::CancelToken>>,
     /// Runs requested to pause at the next tool-round boundary (resumable).
     pause_flags: std::sync::Mutex<HashSet<Uuid>>,
 }
@@ -492,7 +490,6 @@ impl Runtime {
             auto_allow_approvals: std::sync::atomic::AtomicBool::new(false),
             auto_allow_runs: std::sync::Mutex::new(HashSet::new()),
             cancel_flags: std::sync::Mutex::new(HashSet::new()),
-            engine_cancels: std::sync::Mutex::new(HashMap::new()),
             pause_flags: std::sync::Mutex::new(HashSet::new()),
         }
     }
@@ -502,12 +499,6 @@ impl Runtime {
     pub fn request_cancel(&self, run_id: Uuid) {
         if let Ok(mut flags) = self.cancel_flags.lock() {
             flags.insert(run_id);
-        }
-        // Interrupt a live external-engine process immediately.
-        if let Ok(tokens) = self.engine_cancels.lock() {
-            if let Some(token) = tokens.get(&run_id) {
-                token.cancel();
-            }
         }
     }
 
@@ -2060,14 +2051,9 @@ impl Runtime {
         }
     }
 
-    /// Trigger the kill switch (also interrupts any live engine processes)
+    /// Trigger the kill switch
     pub async fn trigger_kill_switch(&self, reason: impl Into<String>) {
         self.kill_switch.trigger(reason).await;
-        if let Ok(tokens) = self.engine_cancels.lock() {
-            for token in tokens.values() {
-                token.cancel();
-            }
-        }
     }
 
     /// Runtime-native memory_save: real vector-store persistence
@@ -2507,8 +2493,7 @@ impl Runtime {
 
         // Small-talk responses should not pay for tool assembly, memory lookup,
         // plugin/MCP warming, or agent orchestration before the first token.
-        if ravenbot_engines::is_native(&bot.config.engine)
-            && is_simple_conversational_turn(&bot.name, last_user_message, &messages)
+        if is_simple_conversational_turn(&bot.name, last_user_message, &messages)
             && self
                 .execute_simple_conversational_turn(run, &bot, &messages, last_user_message)
                 .await?
@@ -2525,25 +2510,6 @@ impl Runtime {
                 5,
             ).await.unwrap_or_default()
         };
-
-        // External agent engine (Claude Code / Codex / ACP): the CLI owns the
-        // tool loop, so bypass the native model↔tool loop entirely and just
-        // stream + persist its turn.
-        if !ravenbot_engines::is_native(&bot.config.engine) {
-            let is_think = last_user_message.contains("[Think]");
-            let engine_cwd = working_dirs.first().cloned();
-            return self
-                .execute_engine_run(
-                    run,
-                    &bot,
-                    &bot.config.engine,
-                    &messages,
-                    &memory_context,
-                    is_think,
-                    engine_cwd,
-                )
-                .await;
-        }
 
         // Build the provider chain (honoring the bot's configured model id and
         // optional fallback provider), or the injected override (tests/dev).
@@ -3553,328 +3519,6 @@ impl Runtime {
             }
         }
 
-        Ok(())
-    }
-
-    /// Build the engine prompt from the thread transcript plus the current turn.
-    fn build_engine_prompt(
-        messages: &[ravenbot_core::Message],
-        bot_name: &str,
-        last_user_message: &str,
-    ) -> String {
-        let mut prior: Vec<String> = Vec::new();
-        // All but the final user turn (which becomes the explicit request).
-        let mut seen_last = false;
-        for msg in messages.iter().rev() {
-            if !seen_last
-                && matches!(msg.role, ravenbot_core::MessageRole::User)
-                && matches!(&msg.content, ravenbot_core::MessageContent::Text { text, .. } if text == last_user_message)
-            {
-                seen_last = true;
-                continue;
-            }
-            let text = match &msg.content {
-                ravenbot_core::MessageContent::Text { text, .. } => text.clone(),
-                ravenbot_core::MessageContent::Checklist { text, items } => {
-                    let list: Vec<String> = items.iter().map(|i| format!("- {}", i.label)).collect();
-                    text.clone().map_or_else(|| list.join("\n"), |t| format!("{}\n{}", t, list.join("\n")))
-                }
-                _ => continue,
-            };
-            if text.trim().is_empty() {
-                continue;
-            }
-            let speaker = match msg.role {
-                ravenbot_core::MessageRole::User => "User".to_string(),
-                ravenbot_core::MessageRole::Assistant => bot_name.to_string(),
-                ravenbot_core::MessageRole::System => "System".to_string(),
-                ravenbot_core::MessageRole::Tool => "Tool".to_string(),
-            };
-            prior.push(format!("{}: {}", speaker, text));
-        }
-        prior.reverse();
-        // Keep the replay bounded so long threads don't blow the prompt.
-        if prior.len() > 24 {
-            prior = prior.split_off(prior.len() - 24);
-        }
-
-        if prior.is_empty() {
-            last_user_message.to_string()
-        } else {
-            format!(
-                "Conversation so far:\n{}\n\nCurrent request:\n{}",
-                prior.join("\n"),
-                last_user_message
-            )
-        }
-    }
-
-    /// Execute one turn on an external agent engine.
-    /// The bot's effective MCP servers in engine-neutral form, capped at 16
-    /// so CLI startup stays cheap. Never fatal: an engine run proceeds without
-    /// connectors if resolution fails.
-    async fn engine_mcp_servers(&self, bot_id: uuid::Uuid) -> Vec<ravenbot_engines::EngineMcpServer> {
-        let ids = match self.mcp_registry.enabled_server_ids(bot_id).await {
-            Ok(ids) => ids,
-            Err(e) => {
-                tracing::warn!(%e, "engine run: MCP server listing failed; continuing without servers");
-                return Vec::new();
-            }
-        };
-        let mut out = Vec::new();
-        for id in ids.into_iter().take(16) {
-            let Ok(Some((cfg, env))) = self.mcp_registry.server_config_with_env(&id).await else {
-                continue;
-            };
-            let is_http = matches!(cfg.transport, ravenbot_mcp::servers::McpTransport::Http)
-                || cfg.url.as_deref().map(|u| !u.trim().is_empty()).unwrap_or(false);
-            // Resolve `${VAR}` header references the same way McpClient does
-            // before handing configs to an external process.
-            let headers = cfg
-                .headers
-                .iter()
-                .map(|(k, v)| {
-                    let mut value = v.clone();
-                    for (ek, ev) in &env {
-                        value = value.replace(&format!("${{{}}}", ek), ev);
-                    }
-                    (k.clone(), value)
-                })
-                .collect();
-            out.push(ravenbot_engines::EngineMcpServer {
-                name: cfg.id.clone(),
-                transport: if is_http { "http".to_string() } else { "stdio".to_string() },
-                command: cfg.command.clone(),
-                args: cfg.args.clone(),
-                env,
-                url: cfg.url.clone().filter(|u| !u.trim().is_empty()),
-                headers,
-            });
-        }
-        out
-    }
-
-    async fn execute_engine_run(
-        &self,
-        run: &mut Run,
-        bot: &ravenbot_core::Bot,
-        engine_id: &str,
-        messages: &[ravenbot_core::Message],
-        memory_context: &str,
-        is_think: bool,
-        working_dir: Option<std::path::PathBuf>,
-    ) -> Result<(), RuntimeError> {
-        let engine = ravenbot_engines::engine_by_id(engine_id).ok_or_else(|| {
-            RuntimeError::Model(format!("Unknown engine '{}'", engine_id))
-        })?;
-
-        // System prompt: persona + memory + mode notes.
-        let base_prompt = bot.config.custom_prompt.clone().unwrap_or_else(|| {
-            format!(
-                "You are {}, an autonomous agent running on this machine. Use your tools to complete the user's request end to end.",
-                bot.name
-            )
-        });
-        let mut system = base_prompt;
-        if is_think {
-            system.push_str("\n\n[Think Mode]: reason carefully, inspect constraints, and trace edge cases before answering.");
-        }
-        if !memory_context.is_empty() {
-            system.push_str("\n\nRelevant memory:\n");
-            system.push_str(memory_context);
-        }
-
-        let last_user_message = messages
-            .iter()
-            .rev()
-            .find(|m| matches!(m.role, ravenbot_core::MessageRole::User))
-            .and_then(|m| match &m.content {
-                ravenbot_core::MessageContent::Text { text, .. } => Some(text.clone()),
-                _ => None,
-            })
-            .unwrap_or_default();
-        let prompt = Self::build_engine_prompt(messages, &bot.name, &last_user_message);
-
-        // Model selection for external engines: an explicit `engine_model`
-        // always wins; otherwise use the bot's model id when the engine accepts
-        // it (provider-qualified ids only for engines that support them).
-        let model = {
-            let explicit = bot
-                .config
-                .engine_model
-                .clone()
-                .filter(|m| !m.trim().is_empty());
-            match explicit {
-                Some(m) => Some(m),
-                None => {
-                    let m = bot.config.model_id.trim();
-                    let accepts_full = engine.capabilities().accepts_full_model_id;
-                    if m.is_empty() || (m.contains('/') && !accepts_full) {
-                        None
-                    } else {
-                        Some(m.to_string())
-                    }
-                }
-            }
-        };
-
-        let approval = match bot.approval_mode {
-            ravenbot_core::ApprovalMode::Full => ravenbot_engines::EngineApproval::Full,
-            ravenbot_core::ApprovalMode::Auto => ravenbot_engines::EngineApproval::Auto,
-            ravenbot_core::ApprovalMode::Ask => ravenbot_engines::EngineApproval::Ask,
-        };
-
-        // External engines lose every connector unless the bot's effective
-        // MCP servers travel with the request.
-        let mcp_servers = self.engine_mcp_servers(bot.id).await;
-
-        let request = ravenbot_engines::EngineRequest {
-            prompt,
-            system: Some(system),
-            model,
-            approval,
-            mcp_servers,
-            cwd: working_dir
-                .clone()
-                .or_else(|| std::env::current_dir().ok())
-                .map(|p| p.to_string_lossy().to_string()),
-            timeout_secs: 900,
-            ..Default::default()
-        };
-
-        // Map engine events onto the same StreamEvent channel the UI consumes.
-        let bot_id = bot.id;
-        let thread_id = run.thread_id;
-        let emitter = self.emitter_for(thread_id);
-        // Tool ids → names, so ToolFinished can carry the model-facing name.
-        let tool_names: Arc<std::sync::Mutex<HashMap<String, String>>> =
-            Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let engine_label = engine_id.to_string();
-        let on_event: ravenbot_engines::EngineCallback = Arc::new(move |event| {
-            let Some(emit) = emitter.as_ref() else { return };
-            match event {
-                ravenbot_engines::EngineEvent::TextDelta(text) => emit(StreamEvent::Delta {
-                    bot_id,
-                    thread_id,
-                    content: text,
-                }),
-                // Reasoning is persisted as a reasoning block; not streamed
-                // into the answer bubble.
-                ravenbot_engines::EngineEvent::ReasoningDelta(_) => {}
-                ravenbot_engines::EngineEvent::SessionStarted { .. } => {}
-                ravenbot_engines::EngineEvent::AssistantText(_) => {}
-                ravenbot_engines::EngineEvent::ToolStarted { id, name, .. } => {
-                    if let Ok(mut map) = tool_names.lock() {
-                        map.insert(id, name.clone());
-                    }
-                    emit(StreamEvent::ToolStarted {
-                        thread_id,
-                        bot_id,
-                        name,
-                        arguments: serde_json::Value::Null,
-                    });
-                }
-                ravenbot_engines::EngineEvent::ToolFinished { id, .. } => {
-                    let name = tool_names
-                        .lock()
-                        .ok()
-                        .and_then(|mut map| map.remove(&id))
-                        .unwrap_or_else(|| "tool".to_string());
-                    emit(StreamEvent::ToolFinished { thread_id, bot_id, name });
-                }
-                ravenbot_engines::EngineEvent::Status(state) => {
-                    let state = if state == "done" { "thinking".to_string() } else { state };
-                    emit(StreamEvent::Status { bot_id, thread_id, state });
-                }
-                ravenbot_engines::EngineEvent::Usage { input, output, cost } => {
-                    emit(StreamEvent::Usage {
-                        thread_id,
-                        tokens: input + output,
-                        cost: cost.unwrap_or(0.0),
-                    });
-                }
-                ravenbot_engines::EngineEvent::Warning(message) => {
-                    tracing::warn!(engine = %engine_label, %message, "engine warning");
-                }
-            }
-        });
-
-        let cancel = ravenbot_engines::CancelToken::new();
-        if let Ok(mut tokens) = self.engine_cancels.lock() {
-            tokens.insert(run.id, cancel.clone());
-        }
-
-        let timeout_secs = request.timeout_secs;
-        let started = std::time::Instant::now();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout_secs),
-            engine.run(request, on_event, cancel.clone()),
-        )
-        .await;
-
-        if let Ok(mut tokens) = self.engine_cancels.lock() {
-            tokens.remove(&run.id);
-        }
-
-        let outcome = match result {
-            Ok(Ok(outcome)) => outcome,
-            Ok(Err(e)) if e.code == ravenbot_engines::EngineErrorCode::Cancelled => {
-                run.complete(ravenbot_core::RunOutcome::Cancelled {
-                    reason: Some("User cancelled".to_string()),
-                });
-                ravenbot_db::queries::RunQueries::update(self.db.pool(), run).await?;
-                self.emit(StreamEvent::Status { bot_id, thread_id, state: "done".to_string() });
-                return Ok(());
-            }
-            Ok(Err(e)) => {
-                self.emit(StreamEvent::Status { bot_id, thread_id, state: "done".to_string() });
-                return Err(RuntimeError::Model(e.message));
-            }
-            Err(_) => {
-                // Timed out: cancel to kill the child, then report.
-                cancel.cancel();
-                self.emit(StreamEvent::Status { bot_id, thread_id, state: "done".to_string() });
-                return Err(RuntimeError::Model(format!(
-                    "Engine '{}' timed out after {}s",
-                    engine_id, timeout_secs
-                )));
-            }
-        };
-
-        // Assemble the persisted message: `<think>` reasoning block + answer.
-        let final_text = outcome.final_text.trim().to_string();
-        let reasoning = outcome.reasoning.trim().to_string();
-        let content = if !reasoning.is_empty() {
-            format!("<think>{}</think>\n\n{}", reasoning, final_text)
-        } else {
-            final_text.clone()
-        };
-
-        if !content.trim().is_empty() {
-            let assistant_msg = ravenbot_core::Message::assistant(run.thread_id, content);
-            ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &assistant_msg).await?;
-        }
-
-        // Record real usage/cost against the budget.
-        let tokens = outcome.usage.map(|u| u.input + u.output).unwrap_or(0);
-        run.add_usage(tokens, outcome.cost.unwrap_or(0.0));
-        let _ = self
-            .budget_manager
-            .record_usage(bot.id, tokens, outcome.cost.unwrap_or(0.0))
-            .await;
-
-        self.emit(StreamEvent::Usage {
-            thread_id,
-            tokens: run.tokens_consumed,
-            cost: run.cost_estimate,
-        });
-        self.emit(StreamEvent::Status { bot_id, thread_id, state: "done".to_string() });
-
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        run.complete(ravenbot_core::RunOutcome::Success {
-            result: format!("Engine '{}' completed in {}ms", engine_id, elapsed_ms),
-        });
-        ravenbot_db::queries::RunQueries::update(self.db.pool(), run).await?;
         Ok(())
     }
 
@@ -6481,69 +6125,6 @@ mod parity_tests {
         assert_eq!(tool_msgs.len(), 2, "both tool results must be fed back");
         assert!(tool_msgs.iter().any(|(_, c)| c.contains("fact one")));
         assert!(tool_msgs.iter().any(|(_, c)| c.contains("fact two")));
-    }
-
-    /// Full runtime path on an external engine: a fake `claude` CLI emits
-    /// stream-json, and the runtime must stream + persist the turn.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn engine_run_streams_and_persists_assistant_message() {
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-
-        let script_path = std::env::temp_dir().join(format!(
-            "ravenbot-fake-claude-rt-{}.sh",
-            Uuid::new_v4()
-        ));
-        let frames = [
-            r#"{"type":"system","subtype":"init","session_id":"s1","model":"m"}"#,
-            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"engine says hi"}}}"#,
-            r#"{"type":"result","is_error":false,"total_cost_usd":0.0,"usage":{"input_tokens":3,"output_tokens":2}}"#,
-        ]
-        .join("\n");
-        let mut file = std::fs::File::create(&script_path).unwrap();
-        writeln!(file, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{}'", frames.replace('\'', "'\\''")).unwrap();
-        drop(file);
-        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        std::env::set_var("RAVENBOT_CLAUDE_CMD", script_path.to_string_lossy().to_string());
-
-        let db = temp_db().await;
-        let runtime = Runtime::new(db.clone());
-
-        let mut bot = Bot::new("EngineBot", "runs on claude cli");
-        bot.config.engine = "claude".to_string();
-        bot.config.model_id = String::new();
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
-        let (thread, mut run) = seed_run(&db, &bot).await;
-
-        let stream_events: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let ev = stream_events.clone();
-        runtime.set_stream_emitter(Some(Arc::new(move |e: StreamEvent| {
-            if let StreamEvent::Delta { content, .. } = e {
-                ev.lock().unwrap().push(content);
-            }
-        })));
-
-        runtime.execute_run(&mut run).await.expect("engine run succeeds");
-        std::env::remove_var("RAVENBOT_CLAUDE_CMD");
-        let _ = std::fs::remove_file(&script_path);
-
-        // The answer streamed…
-        assert!(
-            stream_events.lock().unwrap().join("").contains("engine says hi"),
-            "engine text must stream to the UI"
-        );
-
-        // …and was persisted as the assistant message.
-        let messages = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)
-            .await
-            .unwrap();
-        let last = messages.last().unwrap();
-        let text = match &last.content {
-            ravenbot_core::MessageContent::Text { text, .. } => text.clone(),
-            other => panic!("unexpected content: {other:?}"),
-        };
-        assert!(text.contains("engine says hi"), "persisted: {text}");
     }
 
     /// Provider fallback: when the primary errors, `call_model` moves to the

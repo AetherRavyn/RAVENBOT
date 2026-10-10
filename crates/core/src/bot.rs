@@ -75,10 +75,6 @@ pub struct BotConfig {
     /// Maximum model↔tool rounds per run (None = runtime default of 12)
     #[serde(default)]
     pub max_tool_rounds: Option<u32>,
-    /// Execution engine: `"native"` (built-in loop) or an external agent CLI
-    /// id such as `"claude"` / `"codex"` (see `ravenbot-engines`).
-    #[serde(default = "default_engine")]
-    pub engine: String,
     /// Preferred text-to-speech voice id for this bot (None = engine default).
     #[serde(default)]
     pub voice_id: Option<String>,
@@ -89,16 +85,9 @@ pub struct BotConfig {
     /// Off by default; blocked entirely on Wayland unless explicitly allowed.
     #[serde(default)]
     pub host_control: bool,
-    /// Model id passed to an external engine CLI (None = engine default).
-    #[serde(default)]
-    pub engine_model: Option<String>,
     /// Project folder this agent works in (None = inherit the office/channel).
     #[serde(default)]
     pub working_folder: Option<String>,
-}
-
-fn default_engine() -> String {
-    "native".to_string()
 }
 
 impl Default for BotConfig {
@@ -113,11 +102,9 @@ impl Default for BotConfig {
             temperature: Some(0.7),
             custom_prompt: None,
             max_tool_rounds: None,
-            engine: default_engine(),
             voice_id: None,
             auto_read: false,
             host_control: false,
-            engine_model: None,
             working_folder: None,
         }
     }

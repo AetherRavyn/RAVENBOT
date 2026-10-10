@@ -9,6 +9,13 @@
 > Sections 2–3 describe the code as it was *before* the rebuild — treat the component sizes
 > and the "must be decomposed" notes as history, not as a to-do list.
 >
+> **⚠️ The CLI agent-engine layer no longer exists.** Anywhere below that mentions
+> `ravenbot-engines`, `list_engines` / `set_bot_engine`, `BotConfig.engine` /
+> `engine_model`, `EngineRequest`, ACP engines, or a BotSettings "Execution Engine"
+> picker is describing removed code. Those drivers shelled out to locally-installed
+> agent CLIs and were deleted so that **API providers are the single source of a bot's
+> brain** — see ROADMAP §25.3. Grep will not find any of those symbols in the tree.
+>
 > For the current state and the remaining gaps against Grok Bot and OpenBot, read
 > **[`docs/COMPARISON.md`](docs/COMPARISON.md)** instead. It is the shorter, current document.
 
