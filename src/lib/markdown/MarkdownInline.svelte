@@ -16,6 +16,7 @@
   import { tailInside, splitTrail, trailReach, type RevealChunk } from "$lib/chat/reveal";
   import { safeHref, safeImageSrc, isExternal } from "$lib/markdown/safeUrl";
   import { openExternal } from "$lib/external";
+  import MathBlock from "./MathBlock.svelte";
 
   interface Props {
     /** Inline tokens, or a raw string to lex. */
@@ -107,6 +108,8 @@
     {(token as Tokens.Escape).text}
   {:else if token.type === "html"}
     <span class="md-raw-html">{(token as Tokens.HTML).raw}</span>
+  {:else if token.type === "mathInline"}
+    <MathBlock latex={(token as any).text} displayMode={false} />
   {:else}
     {token.raw}
   {/if}

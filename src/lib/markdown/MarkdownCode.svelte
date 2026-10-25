@@ -83,5 +83,5 @@
       </button>
     </div>
   </div>
-  <pre class="md-code-pre"><code class="language-{display}">{#each tokens as tok, i (i)}{#if tok.type === "text"}{tok.text}{:else if tok.type === "newline"}{"\n"}{:else}<span class="tok-{tok.type}">{tok.text}</span>{/if}{/each}</code></pre>
+  <pre class="md-code-pre"><code class="language-{display}">{#each tokens as tok, i (i)}{#if tok.type === "text"}{tok.text}{:else if tok.type === "newline"}{"\n"}{:else}<span class="tok-{tok.type}">{tok.text}</span>{/if}{/each}{#if streaming}<span class="md-code-cursor" aria-hidden="true"></span>{/if}</code></pre>
 </div>

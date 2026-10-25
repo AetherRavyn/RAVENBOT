@@ -19,7 +19,7 @@
  * built from them, raw HTML can be shown as escaped text, and the same input
  * always produces the same output.
  */
-import { Lexer, type Token, type TokensList } from "marked";
+import { marked, Lexer, type Token, type TokensList } from "marked";
 
 /** A block token with the `raw` source we need for tail arithmetic. */
 export interface Block {
@@ -38,6 +38,49 @@ export interface Block {
  */
 const CACHE_LIMIT = 200;
 
+
+// Math extensions: inline $...$ and block $$...$$, rendered by KaTeX.
+// Registered once at module load so every lexBlocks/lexInline call sees them.
+// The inline rule rejects pure-prose dollar amounts ("$5", "$10 and $20") by
+// requiring at least one non-alphanumeric, non-space character in the content.
+marked.use({
+  extensions: [
+    {
+      name: "mathBlock",
+      level: "block",
+      start(src: string) {
+        const i = src.indexOf("$$");
+        return i >= 0 ? i : undefined;
+      },
+      tokenizer(src: string) {
+        const m = src.match(/^\$\$([\s\S]+?)\$\$/);
+        if (m) {
+          const text = m[1].trim();
+          if (text) return { type: "mathBlock", raw: m[0], text, displayMode: true };
+        }
+      },
+    },
+    {
+      name: "mathInline",
+      level: "inline",
+      start(src: string) {
+        const i = src.indexOf("$");
+        return i >= 0 ? i : undefined;
+      },
+      tokenizer(src: string) {
+        const m = src.match(/^\$([^\$\n]+?)\$/);
+        if (m) {
+          const text = m[1].trim();
+          // Reject pure-prose dollar amounts: "$5", "$10 and $20" etc.
+          if (text && /[^a-zA-Z0-9 ,.]/.test(text)) {
+            return { type: "mathInline", raw: m[0], text, displayMode: false };
+          }
+        }
+      },
+    },
+  ],
+});
+
 const blockCache = new Map<string, TokensList>();
 const inlineCache = new Map<string, Token[]>();
 
@@ -53,7 +96,7 @@ export function lexBlocks(body: string, streaming: boolean): TokensList {
     const hit = blockCache.get(body);
     if (hit) return hit;
   }
-  const tokens = Lexer.lex(body, { breaks: true, gfm: true });
+  const tokens = marked.lexer(body, { breaks: true, gfm: true, extensions: marked.defaults.extensions });
   if (!streaming) remember(blockCache, body, tokens);
   return tokens;
 }
@@ -62,7 +105,16 @@ export function lexBlocks(body: string, streaming: boolean): TokensList {
 export function lexInline(body: string): Token[] {
   const hit = inlineCache.get(body);
   if (hit) return hit;
-  const tokens = Lexer.lexInline(body, { breaks: true, gfm: true });
+  const blocks = marked.lexer(body, { breaks: true, gfm: true, extensions: marked.defaults.extensions });
+  // marked.lexer always returns block tokens; pull the inline tokens out of
+  // the first (and usually only) paragraph so callers get the same shape
+  // Lexer.lexInline used to return.
+  let tokens: Token[] = [];
+  if (blocks.length > 0 && blocks[0].type === "paragraph" && Array.isArray(blocks[0].tokens)) {
+    tokens = blocks[0].tokens as Token[];
+  } else if (blocks.length > 0 && blocks[0].type === "text") {
+    tokens = [blocks[0] as Token];
+  }
   remember(inlineCache, body, tokens);
   return tokens;
 }

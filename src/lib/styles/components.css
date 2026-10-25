@@ -918,6 +918,23 @@ html.sidebar-resizing .app-frame {
   white-space: pre;
 }
 
+/* Blinking caret shown at the end of a code block while it streams in. */
+.md-code-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  background: var(--brand);
+  margin-left: 1px;
+  vertical-align: text-bottom;
+  animation: rb-blink 1s step-end infinite;
+}
+@keyframes rb-blink {
+  50% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .md-code-cursor { animation: none; opacity: 0.6; }
+}
+
 /* Token colours. Deliberately low-contrast-on-purpose-free: they are tints of
  * the existing semantic tokens so every theme gets them without a new entry. */
 .markdown-content .tok-string {

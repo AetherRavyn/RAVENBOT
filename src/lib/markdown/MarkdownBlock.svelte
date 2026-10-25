@@ -13,6 +13,7 @@
   import MarkdownInline from "./MarkdownInline.svelte";
   import MarkdownCode from "./MarkdownCode.svelte";
   import MarkdownTable from "./MarkdownTable.svelte";
+  import MathBlock from "./MathBlock.svelte";
   import { lexInline, closesFinalTable } from "$lib/markdown/lex";
   import { tailInside } from "$lib/chat/reveal";
   import { safeHref } from "$lib/markdown/safeUrl";
@@ -164,6 +165,8 @@
     {streaming}
     {onOpenArtifact}
   />
+{:else if token.type === "mathBlock"}
+  <MathBlock latex={(token as any).text} displayMode={true} />
 {:else if token.type === "table"}
   <MarkdownTable table={token as Tokens.Table} {streaming} {onOpenArtifact} />
 {:else if token.type === "hr"}
