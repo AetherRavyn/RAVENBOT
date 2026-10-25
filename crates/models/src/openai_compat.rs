@@ -15,6 +15,7 @@ pub struct OpenAiCompatibleProvider {
     base_url: String,
     provider: ModelProvider,
     referer: Option<String>,
+    headers: std::collections::HashMap<String, String>,
 }
 
 impl OpenAiCompatibleProvider {
@@ -30,11 +31,17 @@ impl OpenAiCompatibleProvider {
             base_url: base_url.into(),
             provider,
             referer: None,
+            headers: std::collections::HashMap::new(),
         }
     }
 
     pub fn with_referer(mut self, referer: impl Into<String>) -> Self {
         self.referer = Some(referer.into());
+        self
+    }
+
+    pub fn with_headers(mut self, headers: std::collections::HashMap<String, String>) -> Self {
+        self.headers = headers;
         self
     }
 
@@ -103,6 +110,11 @@ impl OpenAiCompatibleProvider {
 
         if let Some(ref r) = self.referer {
             req_builder = req_builder.header("HTTP-Referer", r);
+        }
+
+        // Apply custom headers (e.g. x-opencode-session for OpenCode Go)
+        for (k, v) in &self.headers {
+            req_builder = req_builder.header(k, v);
         }
 
         let response = req_builder.send().await.map_err(ModelError::Http)?;
@@ -214,11 +226,13 @@ impl ModelProviderTrait for OpenAiCompatibleProvider {
             Some(key) => key,
             None => return Ok(false),
         };
-        let response = self.client()
+        let mut req = self.client()
             .get(format!("{}/models", self.base_url))
-            .header("Authorization", format!("Bearer {}", api_key))
-            .send()
-            .await;
+            .header("Authorization", format!("Bearer {}", api_key));
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        let response = req.send().await;
         Ok(response.is_ok())
     }
 }

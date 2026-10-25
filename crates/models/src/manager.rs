@@ -20,6 +20,8 @@ pub struct CustomProviderSpec {
     pub base_url: String,
     pub default_model: String,
     pub supports_tools: bool,
+    /// Extra HTTP headers (e.g. x-opencode-session for OpenCode Go).
+    pub headers: std::collections::HashMap<String, String>,
 }
 
 pub struct ProviderManager {
@@ -255,11 +257,15 @@ impl ProviderManager {
                 AnthropicProvider::new(api_key).with_base_url(spec.base_url.trim_end_matches('/')),
             ),
             "ollama" => Box::new(OllamaProvider::new(Some(spec.base_url.clone()))),
-            _ => Box::new(openai_compat::custom_provider(
-                api_key,
-                spec.base_url.trim_end_matches('/'),
-                "",
-            )),
+            _ => {
+                let mut p = openai_compat::custom_provider(
+                    api_key,
+                    spec.base_url.trim_end_matches('/'),
+                    "",
+                );
+                p = p.with_headers(spec.headers.clone());
+                Box::new(p)
+            }
         };
         let effective_model = model_id
             .map(|m| m.trim().to_string())
@@ -374,6 +380,7 @@ mod tests {
             base_url: "http://192.168.1.10:1234/v1".to_string(),
             default_model: "qwen/qwen3-8b".to_string(),
             supports_tools: true,
+            headers: std::collections::HashMap::new(),
         }
     }
 

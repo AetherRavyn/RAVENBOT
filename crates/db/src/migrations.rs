@@ -46,6 +46,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (21, include_str!("migrations/021_chatroom_office_threads.sql")),
     (22, include_str!("migrations/022_file_changes.sql")),
     (23, include_str!("migrations/023_file_changes_diff.sql")),
+    (24, include_str!("migrations/024_custom_provider_headers.sql")),
 ];
 
 /// Run all pending migrations
@@ -75,9 +76,15 @@ pub async fn run(pool: &SqlitePool) -> Result<(), super::DbError> {
             for statement in sql.split(';') {
                 let statement = statement.trim();
                 if !statement.is_empty() {
-                    sqlx::query(statement)
-                        .execute(pool)
-                        .await?;
+                    // `ALTER TABLE ... ADD COLUMN` is not idempotent in SQLite,
+                    // so a migration that adds a column fails on databases that
+                    // already have it (e.g. a dev DB where it was added by hand).
+                    // Treat "duplicate column name" as success in that case.
+                    match sqlx::query(statement).execute(pool).await {
+                        Ok(_) => {}
+                        Err(e) if e.to_string().contains("duplicate column name") => {}
+                        Err(e) => return Err(e.into()),
+                    }
                 }
             }
 

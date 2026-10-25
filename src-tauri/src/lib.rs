@@ -1680,6 +1680,9 @@ pub struct CustomProviderInput {
     pub supports_tools: bool,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Optional JSON object of extra HTTP headers (e.g. {"x-opencode-session":"..."}).
+    #[serde(default)]
+    pub headers_json: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -1696,6 +1699,8 @@ pub struct CustomProviderInfo {
     pub supports_tools: bool,
     pub enabled: bool,
     pub has_key: bool,
+    #[serde(default)]
+    pub headers_json: Option<String>,
 }
 
 /// Custom ids must be lowercase slugs and must never shadow a built-in.
@@ -1737,7 +1742,7 @@ async fn list_custom_providers(
     let manager = state.runtime.provider_manager().lock().await;
     Ok(rows
         .into_iter()
-        .map(|(id, display_name, kind, base_url, default_model, supports_tools, enabled)| {
+        .map(|(id, display_name, kind, base_url, default_model, supports_tools, enabled, headers_json)| {
             CustomProviderInfo {
                 has_key: manager.has_key(&id),
                 id,
@@ -1747,6 +1752,7 @@ async fn list_custom_providers(
                 default_model,
                 supports_tools,
                 enabled,
+                headers_json,
             }
         })
         .collect())
@@ -1780,6 +1786,7 @@ async fn upsert_custom_provider(
         &default_model,
         provider.supports_tools,
         provider.enabled,
+        provider.headers_json.as_deref(),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -1800,6 +1807,11 @@ async fn upsert_custom_provider(
     {
         let mut manager = state.runtime.provider_manager().lock().await;
         if provider.enabled {
+            let headers = provider
+                .headers_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
             manager.register_custom(ravenbot_models::manager::CustomProviderSpec {
                 id: id.clone(),
                 display_name,
@@ -1807,6 +1819,7 @@ async fn upsert_custom_provider(
                 base_url,
                 default_model,
                 supports_tools: provider.supports_tools,
+                headers,
             });
         } else {
             manager.remove_custom(&id);
@@ -4661,10 +4674,14 @@ pub fn run() {
                 // Pre-populate user-defined providers and base URL overrides (P8)
                 if let Ok(rows) = ravenbot_db::queries::CustomProviderQueries::list(db.pool()).await {
                     let mut manager = runtime.provider_manager().lock().await;
-                    for (id, display_name, kind, base_url, default_model, supports_tools, enabled) in rows {
+                    for (id, display_name, kind, base_url, default_model, supports_tools, enabled, headers_json) in rows {
                         if !enabled {
                             continue;
                         }
+                        let headers = headers_json
+                            .as_deref()
+                            .and_then(|s| serde_json::from_str(s).ok())
+                            .unwrap_or_default();
                         manager.register_custom(ravenbot_models::manager::CustomProviderSpec {
                             id,
                             display_name,
@@ -4672,6 +4689,7 @@ pub fn run() {
                             base_url,
                             default_model,
                             supports_tools,
+                            headers,
                         });
                     }
                 }

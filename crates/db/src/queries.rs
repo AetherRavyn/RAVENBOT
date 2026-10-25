@@ -1296,23 +1296,23 @@ impl ProviderKeyQueries {
 pub struct CustomProviderQueries;
 
 impl CustomProviderQueries {
-    pub async fn list(pool: &SqlitePool) -> Result<Vec<(String, String, String, String, String, bool, bool)>, sqlx::Error> {
-        let rows = sqlx::query_as::<_, (String, String, String, String, String, i64, i64)>(
-            "SELECT id, display_name, kind, base_url, default_model, supports_tools, enabled FROM custom_providers ORDER BY display_name"
+    pub async fn list(pool: &SqlitePool) -> Result<Vec<(String, String, String, String, String, bool, bool, Option<String>)>, sqlx::Error> {
+        let rows = sqlx::query_as::<_, (String, String, String, String, String, i64, i64, Option<String>)>(
+            "SELECT id, display_name, kind, base_url, default_model, supports_tools, enabled, headers_json FROM custom_providers ORDER BY display_name"
         )
         .fetch_all(pool)
         .await?;
-        Ok(rows.into_iter().map(|(id, dn, kind, base, dm, tools, en)| (id, dn, kind, base, dm, tools != 0, en != 0)).collect())
+        Ok(rows.into_iter().map(|(id, dn, kind, base, dm, tools, en, hdrs)| (id, dn, kind, base, dm, tools != 0, en != 0, hdrs)).collect())
     }
 
-    pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<(String, String, String, String, String, bool, bool)>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String, String, String, String, String, i64, i64)>(
-            "SELECT id, display_name, kind, base_url, default_model, supports_tools, enabled FROM custom_providers WHERE id = ?"
+    pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<(String, String, String, String, String, bool, bool, Option<String>)>, sqlx::Error> {
+        let row = sqlx::query_as::<_, (String, String, String, String, String, i64, i64, Option<String>)>(
+            "SELECT id, display_name, kind, base_url, default_model, supports_tools, enabled, headers_json FROM custom_providers WHERE id = ?"
         )
         .bind(id)
         .fetch_optional(pool)
         .await?;
-        Ok(row.map(|(id, dn, kind, base, dm, tools, en)| (id, dn, kind, base, dm, tools != 0, en != 0)))
+        Ok(row.map(|(id, dn, kind, base, dm, tools, en, hdrs)| (id, dn, kind, base, dm, tools != 0, en != 0, hdrs)))
     }
 
     pub async fn upsert(
@@ -1324,13 +1324,15 @@ impl CustomProviderQueries {
         default_model: &str,
         supports_tools: bool,
         enabled: bool,
+        headers_json: Option<&str>,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO custom_providers (id, display_name, kind, base_url, default_model, supports_tools, enabled, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+            "INSERT INTO custom_providers (id, display_name, kind, base_url, default_model, supports_tools, enabled, headers_json, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
              ON CONFLICT(id) DO UPDATE SET display_name = excluded.display_name, kind = excluded.kind,
                base_url = excluded.base_url, default_model = excluded.default_model,
-               supports_tools = excluded.supports_tools, enabled = excluded.enabled, updated_at = excluded.updated_at"
+               supports_tools = excluded.supports_tools, enabled = excluded.enabled,
+               headers_json = excluded.headers_json, updated_at = excluded.updated_at"
         )
         .bind(id)
         .bind(display_name)
@@ -1339,6 +1341,7 @@ impl CustomProviderQueries {
         .bind(default_model)
         .bind(if supports_tools { 1i64 } else { 0i64 })
         .bind(if enabled { 1i64 } else { 0i64 })
+        .bind(headers_json)
         .execute(pool)
         .await?;
         Ok(())
