@@ -1,11 +1,13 @@
 <script lang="ts">
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { onMount } from "svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import ScreenReader from "$lib/components/ScreenReader.svelte";
   import Toaster from "$lib/components/Toaster.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import Settings from "$lib/components/Settings.svelte";
+  import Onboarding from "$lib/components/Onboarding.svelte";
   import KillSwitch from "$lib/components/KillSwitch.svelte";
   import ThreadView from "$lib/components/ThreadView.svelte";
   import ChatRoomView from "$lib/components/ChatRoomView.svelte";
@@ -31,6 +33,7 @@
   let routinesBotId = $state<string | null>(null);
   let skillsModalBotId = $state<string | null>(null);
   let marketplaceModalBotId = $state<string | null>(null);
+  let showOnboarding = $state(false);
 
   let skillsModalBot = $derived(workspace.bots.find((b: any) => b.id === skillsModalBotId));
   let marketplaceModalBot = $derived(workspace.bots.find((b: any) => b.id === marketplaceModalBotId));
@@ -124,6 +127,15 @@
 
     workspace.init();
     fleetActivity.start();
+
+    // First-run check: if no provider key is configured, show onboarding.
+    invoke<string[]>("get_configured_providers")
+      .then((keys) => {
+        if (!keys || keys.length === 0) {
+          showOnboarding = true;
+        }
+      })
+      .catch(() => {});
 
     const unsubK = keyboardShortcuts.register("mod+k", () => workspace.togglePalette());
     const unsubComma = keyboardShortcuts.register("mod+,", () => {
@@ -355,7 +367,14 @@
 
 <Settings
   open={workspace.showSettings}
-  onClose={() => (workspace.showSettings = false)}
+  onClose={() => {
+    workspace.showSettings = false;
+    invoke<string[]>("get_configured_providers")
+      .then((keys) => {
+        if (keys && keys.length > 0) showOnboarding = false;
+      })
+      .catch(() => {});
+  }}
   bots={workspace.bots}
   initialSection={workspace.settingsTab}
 />
@@ -375,3 +394,12 @@
 
 <ScreenReader message={workspace.srMessage} />
 <Toaster />
+
+<Onboarding
+  open={showOnboarding}
+  onOpenSettings={() => {
+    showOnboarding = false;
+    workspace.openSettings("keys");
+  }}
+  onSkip={() => { showOnboarding = false; }}
+/>
