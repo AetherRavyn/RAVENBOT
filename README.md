@@ -31,6 +31,7 @@ Captured at 1920×1080 from a running build.
 | **Token streaming** | Live SSE streaming from OpenRouter, Anthropic, OpenAI, and Ollama — tokens render as they arrive with a blinking cursor, typing dots, and shimmer skeletons while tools run |
 | **Live citations** | DeepSearch harvests sources from search/browser tools into numbered, clickable source chips — live while streaming, persisted on the answer |
 | **Artifacts & canvas** | Qualifying code blocks (≥8 lines) open in a split canvas panel: code view, sandboxed HTML preview, rendered Markdown, copy + download |
+| **Math (KaTeX)** | Inline `$...$` and block `$$...$$` LaTeX rendered as real typeset math — formulas, derivations and matrices display properly instead of as raw source |
 | **Extended thinking** | `[Think]` mode streams Anthropic's real chain-of-thought token-by-token into a collapsible 🧠 Reasoning panel (persisted across reloads) |
 | **Vision** | Paste or drop images into the composer — inline base64 flows to OpenAI / Anthropic / Ollama vision formats; `analyze_image` auto-equips |
 | **Image generation** | `image_gen` skill: OpenAI DALL-E 3 when keyed, keyless Pollinations fallback |
