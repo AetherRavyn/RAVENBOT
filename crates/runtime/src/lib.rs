@@ -4044,6 +4044,23 @@ fn is_retryable_model_error(err: &str) -> bool {
         || e.contains("temporarily unavailable")
 }
 
+/// Heuristic: is this failure a configuration problem rather than a transient
+/// one? A config error means the whole office is going to fail the same way,
+/// so the run should stop instead of burning the remaining nodes.
+fn is_config_error(err: &str) -> bool {
+    let e = err.to_lowercase();
+    e.contains("api key")
+        || e.contains("unauthorized")
+        || e.contains("401")
+        || e.contains("403")
+        || e.contains("402")
+        || e.contains("insufficient credits")
+        || e.contains("insufficient funds")
+        || e.contains("unknown provider")
+        || e.contains("no model provider available")
+        || e.contains("not configured")
+}
+
 #[cfg(test)]
 mod source_tests {
     use super::*;

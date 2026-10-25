@@ -150,6 +150,35 @@ impl GraphExecutor {
                     tracing::error!("Task execution error: {}", e);
                 }
             }
+
+            // Fail fast on configuration-class errors: if a node died because its
+            // provider key, model or provider is wrong, running the rest of the
+            // office only repeats the same failure N times. Stop here and skip
+            // everything still pending so the user sees one clear problem
+            // instead of seven.
+            let fatal = {
+                let g = graph.lock().await;
+                g.nodes.values().any(|n| {
+                    if let NodeState::Failed(err) = &n.state {
+                        crate::is_config_error(err)
+                    } else {
+                        false
+                    }
+                })
+            };
+            if fatal {
+                let mut g = graph.lock().await;
+                let pending: Vec<Uuid> = g.nodes
+                    .values()
+                    .filter(|n| matches!(n.state, NodeState::Pending))
+                    .map(|n| n.id)
+                    .collect();
+                for id in pending {
+                    let _ = g.mark_skipped(id);
+                }
+                tracing::warn!("Stopping the office run: a node failed on a configuration error");
+                break;
+            }
         }
 
         // Return the final blackboard state
