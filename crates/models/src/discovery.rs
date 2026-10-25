@@ -235,6 +235,7 @@ impl ModelDiscovery {
             cache: Arc::new(Mutex::new(HashMap::new())),
             ttl,
             client: reqwest::Client::builder()
+                .user_agent("ravenbot/0.2.0")
                 .timeout(Duration::from_secs(15))
                 .build()
                 .unwrap_or_default(),

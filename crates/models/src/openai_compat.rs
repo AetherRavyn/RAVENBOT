@@ -200,7 +200,10 @@ impl OpenAiCompatibleProvider {
     }
 
     fn client(&self) -> reqwest::Client {
-        reqwest::Client::new()
+        reqwest::Client::builder()
+            .user_agent("ravenbot/0.2.0 (https://github.com/AetherRavyn/RAVENBOT)")
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new())
     }
 }
 
