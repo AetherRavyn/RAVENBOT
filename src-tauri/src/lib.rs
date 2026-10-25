@@ -2796,6 +2796,8 @@ fn error_hint(err: &str) -> &'static str {
         "Fix: the provider returned a server error (their side). Try again, or pick a different model/provider for this agent."
     } else if e.contains("timed out") || e.contains("connection") || e.contains("sending request") {
         "Fix: check your network connection, or switch the bot to a local Ollama model in its settings."
+    } else if e.contains("insufficient credits") || e.contains("insufficient funds") || e.contains("credits to make this request") || e.contains("payment required") || e.contains("402") {
+        "Fix: this provider account has no credit left. Top it up at the provider's dashboard, switch the agent to a provider with remaining credit in **Settings (⌘,) → API Keys**, or run it on a local Ollama model."
     } else if e.contains("unknown provider") {
         "Fix: pick a valid model provider in the bot settings (openrouter, anthropic, openai, ollama)."
     } else if e.contains("no local model") || e.contains("local inference") {
