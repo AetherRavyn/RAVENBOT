@@ -116,6 +116,46 @@ fn headless_run(args: Vec<String>) {
         let db = open_db().await?;
         let runtime = Arc::new(ravenbot_runtime::Runtime::new(db.clone()));
 
+        // Pre-populate saved provider API keys from SQLite into Runtime's ProviderManager
+        if let Ok(saved_keys) = ravenbot_db::queries::ProviderKeyQueries::list(db.pool()).await {
+            let mut manager = runtime.provider_manager().lock().await;
+            for (provider, key) in saved_keys {
+                if !key.trim().is_empty() {
+                    manager.set_api_key(&provider, key);
+                }
+            }
+        }
+
+        // Pre-populate user-defined providers (e.g. OpenCode Go, LM Studio) and
+        // base URL overrides, the same way the desktop app does at startup.
+        if let Ok(rows) = ravenbot_db::queries::CustomProviderQueries::list(db.pool()).await {
+            let mut manager = runtime.provider_manager().lock().await;
+            for (id, display_name, kind, base_url, default_model, supports_tools, enabled, headers_json) in rows {
+                if !enabled {
+                    continue;
+                }
+                let headers = headers_json
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default();
+                manager.register_custom(ravenbot_models::manager::CustomProviderSpec {
+                    id,
+                    display_name,
+                    kind,
+                    base_url,
+                    default_model,
+                    supports_tools,
+                    headers,
+                });
+            }
+        }
+        if let Ok(rows) = ravenbot_db::queries::ProviderBaseUrlQueries::list(db.pool()).await {
+            let mut manager = runtime.provider_manager().lock().await;
+            for (provider, url) in rows {
+                manager.set_base_url(&provider, url);
+            }
+        }
+
         let bots = ravenbot_db::queries::BotQueries::list(db.pool())
             .await
             .map_err(|e| e.to_string())?;
