@@ -135,6 +135,37 @@ async fn get_bot(state: State<'_, AppState>, bot_id: Uuid) -> Result<Option<Bot>
         .map_err(|e| e.to_string())
 }
 
+/// List recent runs for diagnostics, newest first.
+#[tauri::command]
+async fn list_runs(state: State<'_, AppState>, limit: Option<u32>) -> Result<serde_json::Value, String> {
+    let limit = limit.unwrap_or(50).min(200) as i64;
+    let rows: Vec<(String, String, String, String, i64, f64, String, String, Option<String>, Option<String>)> =
+        sqlx::query_as(
+            "SELECT id, bot_id, thread_id, state, tokens_consumed, cost_estimate, created_at, updated_at, completed_at, outcome FROM runs ORDER BY created_at DESC LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(state.db.pool())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, bot_id, thread_id, state, tokens, cost, created, updated, completed, outcome) in rows {
+        out.push(serde_json::json!({
+            "id": id,
+            "bot_id": bot_id,
+            "thread_id": thread_id,
+            "state": state,
+            "tokens_consumed": tokens,
+            "cost_estimate": cost,
+            "created_at": created,
+            "updated_at": updated,
+            "completed_at": completed,
+            "outcome": outcome,
+        }));
+    }
+    Ok(serde_json::Value::Array(out))
+}
+
 #[tauri::command]
 async fn update_bot(state: State<'_, AppState>, bot: Bot) -> Result<(), String> {
     ravenbot_db::queries::BotQueries::update(state.db.pool(), &bot)
@@ -4826,6 +4857,7 @@ pub fn run() {
             create_bot,
             list_bots,
             get_bot,
+            list_runs,
             update_bot,
             delete_bot,
             list_bot_contacts,

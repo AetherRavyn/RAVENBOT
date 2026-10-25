@@ -3,6 +3,7 @@
   import { onMount } from "svelte";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import RunsPanel from "$lib/components/RunsPanel.svelte";
   import * as Dialog from "$lib/components/ui/dialog";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -26,6 +27,7 @@
     Loader2, Wifi, WifiOff, RefreshCw, AlertCircle, Zap, Layers,
     DollarSign, Shield, BookOpen, Settings, ChevronRight, Sparkles,
     Cpu, Globe, Lock, Unlock, Trash2, ExternalLink, X, Plug, Plus,
+    Activity,
   } from "@lucide/svelte";
 
   interface Props {
@@ -90,6 +92,7 @@
     { id: "connectors", label: t("ui.connectors"), icon: Layers, badge: "135+", color: "text-[var(--brand-text)]" },
     { id: "models", label: t("settings.navModels"), icon: Cpu, badge: t("settings.live"), color: "text-warning" },
     { id: "budgets", label: t("settings.navBudgets"), icon: DollarSign, color: "text-success" },
+    { id: "diagnostics", label: "Diagnostics", icon: Activity, color: "text-[var(--text-tertiary)]" },
     { id: "profile", label: t("settings.navProfile"), icon: User, color: "text-[var(--brand-text)]" },
     { id: "themes", label: t("settings.navThemes"), icon: Palette, color: "text-info" },
     { id: "local", label: t("settings.navLocal"), icon: Server, color: "text-success" },
@@ -1191,6 +1194,22 @@
       {/if}
 
       <!-- Section: Profile -->
+      {#if activeSection === "diagnostics"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="max-w-3xl mx-auto space-y-6">
+            <div>
+              <h3 class="text-lg font-bold text-[var(--text-primary)] flex items-center gap-2">
+                <Activity class="size-5 text-[var(--text-tertiary)]" /> Diagnostics
+              </h3>
+              <p class="text-sm text-[var(--text-tertiary)] mt-1">Recent runs, their state, cost, and any error that stopped them.</p>
+            </div>
+            <div class="p-5 rounded-2xl border bg-card/60" style="border-color: {currentTheme.borderHex};">
+              <RunsPanel />
+            </div>
+          </div>
+        </div>
+      {/if}
+
       {#if activeSection === "profile"}
         <div class="flex-1 overflow-y-auto no-scrollbar p-6">
           <div class="max-w-2xl mx-auto space-y-6">
