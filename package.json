@@ -22,6 +22,7 @@
     "clsx": "^2.1.1",
     "katex": "^0.19.1",
     "marked": "^18.0.11",
+    "mermaid": "^12.2.0",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

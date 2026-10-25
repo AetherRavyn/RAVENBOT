@@ -1,7 +1,6 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "@fontsource-variable/fira-code";
-@import "katex/dist/katex.min.css";
 @import "./lib/styles/tokens.css";
 @import "./lib/styles/components.css";
 

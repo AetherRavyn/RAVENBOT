@@ -918,6 +918,32 @@ html.sidebar-resizing .app-frame {
   white-space: pre;
 }
 
+/* Mermaid diagram container. */
+.md-mermaid {
+  margin: 0.75rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--surface-2);
+  overflow: auto;
+}
+.md-mermaid-loading {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+.md-mermaid-error {
+  color: var(--text-tertiary);
+  font-size: 12px;
+  font-family: var(--font-mono, monospace);
+  white-space: pre-wrap;
+}
+.md-mermaid-errtext {
+  color: var(--danger);
+  font-size: 11px;
+  margin-top: 0.5rem;
+}
+
 /* Blinking caret shown at the end of a code block while it streams in. */
 .md-code-cursor {
   display: inline-block;

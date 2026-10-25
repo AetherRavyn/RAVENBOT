@@ -14,6 +14,7 @@
   import MarkdownCode from "./MarkdownCode.svelte";
   import MarkdownTable from "./MarkdownTable.svelte";
   import MathBlock from "./MathBlock.svelte";
+  import MermaidBlock from "./MermaidBlock.svelte";
   import { lexInline, closesFinalTable } from "$lib/markdown/lex";
   import { tailInside } from "$lib/chat/reveal";
   import { safeHref } from "$lib/markdown/safeUrl";
@@ -159,12 +160,17 @@
   {/if}
 {:else if token.type === "code"}
   {@const code = token as Tokens.Code}
-  <MarkdownCode
-    code={code.text}
-    language={(code.lang ?? "").trim().split(/\s+/)[0] ?? ""}
-    {streaming}
-    {onOpenArtifact}
-  />
+  {@const lang = (code.lang ?? "").trim().split(/\s+/)[0] ?? ""}
+  {#if lang === "mermaid"}
+    <MermaidBlock code={code.text} />
+  {:else}
+    <MarkdownCode
+      code={code.text}
+      language={lang}
+      {streaming}
+      {onOpenArtifact}
+    />
+  {/if}
 {:else if token.type === "mathBlock"}
   <MathBlock latex={(token as any).text} displayMode={true} />
 {:else if token.type === "table"}
