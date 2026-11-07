@@ -12,6 +12,7 @@
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import ThemeLogo from "$lib/components/ThemeLogo.svelte";
   import KillSwitch from "$lib/components/KillSwitch.svelte";
+  import { onMount, onDestroy, tick } from "svelte";
   import { workspace } from "$lib/workspace.svelte";
   import { t } from "$lib/i18n";
   import type { ThemeDefinition } from "$lib/theme";
@@ -19,6 +20,17 @@
   let { theme }: { theme: ThemeDefinition } = $props();
 
   let prompt = $state("");
+  let promptEl = $state<HTMLTextAreaElement | null>(null);
+
+  function handleTryLocalSkill(event: Event) {
+    const text = (event as CustomEvent<{ prompt?: string }>).detail?.prompt;
+    if (!text) return;
+    prompt = text;
+    void tick().then(() => promptEl?.focus());
+  }
+
+  onMount(() => window.addEventListener("local-skill-try", handleTryLocalSkill));
+  onDestroy(() => window.removeEventListener("local-skill-try", handleTryLocalSkill));
   let deepSearch = $state(false);
   let think = $state(false);
   let targetBotId = $state<string | null>(null);
@@ -129,6 +141,7 @@
 
     <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-3.5 focus-within:border-[var(--brand)] transition-colors" style="transition-duration: var(--duration-normal)">
       <textarea
+        bind:this={promptEl}
         bind:value={prompt}
         aria-label="Message"
         placeholder={t("home.placeholder")}
@@ -210,7 +223,7 @@
           onclick={() => send()}
           disabled={!prompt.trim() || sending}
           class="size-8 rounded-md flex items-center justify-center cursor-pointer {prompt.trim() && !sending
-            ? 'bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white'
+            ? 'bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-[var(--surface-light-hover)]'
             : 'bg-[var(--surface-3)] text-[var(--text-muted)] cursor-not-allowed opacity-60'}"
           style="transition-duration: var(--duration-hover)"
           title={t("home.send")}

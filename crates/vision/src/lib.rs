@@ -4,6 +4,7 @@
 //! and computer control through vision models.
 
 pub mod screenshot;
+pub mod window_control;
 pub mod image_analysis;
 pub mod computer_control;
 pub mod input;
@@ -13,6 +14,7 @@ pub use screenshot::ScreenshotCapture;
 pub use image_analysis::ImageAnalyzer;
 pub use computer_control::{ComputerController, ComputerAction, MouseButton, ActionResult};
 pub use input::InputInjector;
+pub use window_control::{focus_window, list_windows, DesktopWindow};
 pub use audio::{AudioTranscriber, TextToSpeech};
 
 /// Resize image bytes so the longest edge ≤ max_edge. Returns PNG bytes.

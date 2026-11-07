@@ -11,6 +11,13 @@
 
   let cleanId = $derived(id.toLowerCase().replace(/[^a-z0-9]/g, ""));
   let cleanName = $derived(name.toLowerCase());
+  let imageFailed = $state(false);
+
+  $effect(() => {
+    // A new logo URL (or a remount with a different entry) deserves a retry.
+    void logoUrl;
+    imageFailed = false;
+  });
 
   let sizeClasses = $derived(
     size === "sm" ? "size-6 text-[11px]" : size === "lg" ? "size-12 text-sm" : "size-10 text-xs"
@@ -18,7 +25,19 @@
 </script>
 
 <div class="relative flex items-center justify-center rounded-xl overflow-hidden shrink-0 shadow-sm transition-all {sizeClasses} {customClass}">
-  {#if cleanId.includes("gmail") || cleanName.includes("gmail")}
+  {#if logoUrl && !imageFailed}
+    <!-- Imported specs can carry their own logo (`info.x-logo`). -->
+    <div class="size-full rounded-xl overflow-hidden border border-[var(--hairline)] bg-white p-1.5">
+      <img
+        src={logoUrl}
+        alt=""
+        class="size-full object-contain"
+        loading="lazy"
+        decoding="async"
+        onerror={() => (imageFailed = true)}
+      />
+    </div>
+  {:else if cleanId.includes("gmail") || cleanName.includes("gmail")}
     <!-- Official Gmail Vector Logo -->
     <div class="size-full bg-white p-1.5 flex items-center justify-center rounded-xl shadow">
       <svg viewBox="0 0 24 24" class="size-full">

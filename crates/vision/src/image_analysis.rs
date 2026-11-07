@@ -108,6 +108,8 @@ impl ImageAnalyzer {
             format: format.to_string(),
             width: 0,
             height: 0,
+            origin_x: 0,
+            origin_y: 0,
             timestamp: chrono::Utc::now(),
         };
 

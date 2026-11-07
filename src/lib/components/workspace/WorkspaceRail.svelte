@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { Building2, GitBranch, Sparkles, Store, Plug, Clock, Settings, Plus, Home } from "@lucide/svelte";
+  import { Building2, GitBranch, Sparkles, Store, Plug, Clock, Settings, Plus, Home, Globe, Hash } from "@lucide/svelte";
   import { workspace } from "$lib/workspace.svelte";
+  import { browserDock } from "$lib/browserDock.svelte";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { t, type TranslationKey } from "$lib/i18n";
 
@@ -20,6 +21,7 @@
     // *product* of an office, not a utility like the connector list, and
     // utilities are where you look when something is wrong.
     { dest: "projects", icon: GitBranch, label: "rail.projects" },
+    { dest: "channels", icon: Hash, label: "rail.channels" },
   ] as const;
 
   const bottomItems = [
@@ -108,6 +110,26 @@
     aria-label={t("rail.marketplace")}
   >
     <Store class="size-5" strokeWidth={1.5} />
+  </button>
+
+  <button
+    type="button"
+    class="relative size-11 rounded-xl flex items-center justify-center cursor-pointer shrink-0 {browserDock.open
+      ? 'bg-[var(--surface-2)] text-[var(--text-primary)]'
+      : 'text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-1)]'}"
+    style="transition-duration: var(--duration-hover)"
+    onclick={() => browserDock.toggle()}
+    title={t("rail.browser")}
+    aria-label={t("rail.browser")}
+    aria-pressed={browserDock.open}
+  >
+    {#if browserDock.open}
+      <span class="absolute -left-2 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-full bg-[var(--rail-selected)]"></span>
+    {/if}
+    <Globe class="size-5" strokeWidth={1.5} />
+    {#if browserDock.loading}
+      <span class="absolute top-1 right-1 size-2 rounded-full bg-[var(--brand)] animate-pulse" aria-hidden="true"></span>
+    {/if}
   </button>
 
   <button

@@ -1,22 +1,36 @@
 //! Note manager — create, search, organize, and manage notes and documentation
 
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 use std::path::Path;
 
 pub struct NoteManagerSkill;
 
-impl NoteManagerSkill { pub fn new() -> Self { Self } }
+impl NoteManagerSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for NoteManagerSkill {
-    fn id(&self) -> &str { "note_manager" }
-    fn name(&self) -> &str { "Note Manager" }
-    fn description(&self) -> &str { "Create, search, organize, and manage notes, bookmarks, and documentation files" }
-    fn version(&self) -> &str { "1.0.0" }
+    fn id(&self) -> &str {
+        "note_manager"
+    }
+    fn name(&self) -> &str {
+        "Note Manager"
+    }
+    fn description(&self) -> &str {
+        "Create, search, organize, and manage notes, bookmarks, and documentation files"
+    }
+    fn version(&self) -> &str {
+        "1.0.0"
+    }
     fn required_permissions(&self) -> Vec<Permission> {
-        vec![Permission::FileSystem { paths: vec![".".to_string()] }]
+        vec![Permission::FileSystem {
+            paths: vec![".".to_string()],
+        }]
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -41,9 +55,15 @@ impl Skill for NoteManagerSkill {
         })
     }
 
-    fn risk(&self) -> SkillRisk { SkillRisk::Low }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::Low
+    }
 
-    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
@@ -59,7 +79,11 @@ impl Skill for NoteManagerSkill {
         let mut args = args;
         confine_path(ctx, &mut args, "directory", "notes")?;
         confine_path(ctx, &mut args, "path", "notes")?;
-        let dir = args.get("directory").and_then(|v| v.as_str()).unwrap_or("notes").to_string();
+        let dir = args
+            .get("directory")
+            .and_then(|v| v.as_str())
+            .unwrap_or("notes")
+            .to_string();
 
         match action.as_str() {
             "create" => self.create_note(&dir, args).await,
@@ -88,33 +112,56 @@ fn confine_path(
     let raw = args.get(key).and_then(|v| v.as_str()).unwrap_or(default);
     let resolved = ctx.resolve_path(raw)?;
     if let Some(obj) = args.as_object_mut() {
-        obj.insert(key.to_string(), serde_json::Value::String(resolved.to_string_lossy().to_string()));
+        obj.insert(
+            key.to_string(),
+            serde_json::Value::String(resolved.to_string_lossy().to_string()),
+        );
     }
     Ok(())
 }
 
 impl NoteManagerSkill {
-    async fn create_note(&self, dir: &str, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let title = args.get("title").and_then(|v| v.as_str())
+    async fn create_note(
+        &self,
+        dir: &str,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let title = args
+            .get("title")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'title'".into()))?;
         let content = args.get("content").and_then(|v| v.as_str()).unwrap_or("");
 
         tokio::fs::create_dir_all(dir).await.ok();
 
-        let filename = title.to_lowercase().replace(' ', "-").replace(|c: char| !c.is_alphanumeric() && c != '-', "");
+        let filename = title
+            .to_lowercase()
+            .replace(' ', "-")
+            .replace(|c: char| !c.is_alphanumeric() && c != '-', "");
         let path = format!("{}/{}.md", dir, filename);
 
-        let tags_str = args.get("tags").and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", "))
+        let tags_str = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
             .unwrap_or_default();
 
         let full_content = if tags_str.is_empty() {
             format!("# {}\n\n{}\n", title, content)
         } else {
-            format!("---\ntags: [{}]\n---\n# {}\n\n{}\n", tags_str, title, content)
+            format!(
+                "---\ntags: [{}]\n---\n# {}\n\n{}\n",
+                tags_str, title, content
+            )
         };
 
-        tokio::fs::write(&path, &full_content).await
+        tokio::fs::write(&path, &full_content)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({
@@ -125,10 +172,13 @@ impl NoteManagerSkill {
     }
 
     async fn read_note(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let path = args.get("path").and_then(|v| v.as_str())
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'path'".into()))?;
 
-        let content = tokio::fs::read_to_string(path).await
+        let content = tokio::fs::read_to_string(path)
+            .await
             .map_err(|e| SkillError::Io(format!("Cannot read note: {}", e)))?;
 
         Ok(SkillResult::success(serde_json::json!({
@@ -138,16 +188,21 @@ impl NoteManagerSkill {
     }
 
     async fn update_note(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let path = args.get("path").and_then(|v| v.as_str())
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'path'".into()))?;
-        let content = args.get("content").and_then(|v| v.as_str())
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'content'".into()))?;
 
         if !Path::new(path).exists() {
             return Ok(SkillResult::failure(format!("Note not found: {}", path)));
         }
 
-        tokio::fs::write(path, content).await
+        tokio::fs::write(path, content)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({
@@ -157,10 +212,13 @@ impl NoteManagerSkill {
     }
 
     async fn delete_note(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let path = args.get("path").and_then(|v| v.as_str())
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'path'".into()))?;
 
-        tokio::fs::remove_file(path).await
+        tokio::fs::remove_file(path)
+            .await
             .map_err(|e| SkillError::Io(format!("Cannot delete: {}", e)))?;
 
         Ok(SkillResult::success(serde_json::json!({
@@ -169,10 +227,19 @@ impl NoteManagerSkill {
         })))
     }
 
-    async fn search_notes(&self, dir: &str, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+    async fn search_notes(
+        &self,
+        dir: &str,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let query = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
 
-        let mut entries = tokio::fs::read_dir(dir).await
+        let mut entries = tokio::fs::read_dir(dir)
+            .await
             .map_err(|_| SkillError::Io("Notes directory not found".into()))?;
 
         let mut results = Vec::new();
@@ -197,8 +264,13 @@ impl NoteManagerSkill {
         })))
     }
 
-    async fn list_notes(&self, dir: &str, _args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let mut entries = tokio::fs::read_dir(dir).await
+    async fn list_notes(
+        &self,
+        dir: &str,
+        _args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let mut entries = tokio::fs::read_dir(dir)
+            .await
             .map_err(|_| SkillError::Io("Notes directory not found".into()))?;
 
         let mut notes = Vec::new();
@@ -224,13 +296,22 @@ impl NoteManagerSkill {
     }
 
     async fn tag_note(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let path = args.get("path").and_then(|v| v.as_str())
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'path'".into()))?;
-        let tags: Vec<String> = args.get("tags").and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        let tags: Vec<String> = args
+            .get("tags")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'tags'".into()))?;
 
-        let content = tokio::fs::read_to_string(path).await
+        let content = tokio::fs::read_to_string(path)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         let new_tags = tags.join(", ");
@@ -257,7 +338,8 @@ impl NoteManagerSkill {
             format!("---\ntags: [{}]\n---\n{}", new_tags, content)
         };
 
-        tokio::fs::write(path, &updated).await
+        tokio::fs::write(path, &updated)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({
@@ -267,10 +349,18 @@ impl NoteManagerSkill {
         })))
     }
 
-    async fn export_notes(&self, dir: &str, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let format = args.get("query").and_then(|v| v.as_str()).unwrap_or("markdown");
+    async fn export_notes(
+        &self,
+        dir: &str,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let format = args
+            .get("query")
+            .and_then(|v| v.as_str())
+            .unwrap_or("markdown");
 
-        let mut entries = tokio::fs::read_dir(dir).await
+        let mut entries = tokio::fs::read_dir(dir)
+            .await
             .map_err(|_| SkillError::Io("Notes directory not found".into()))?;
 
         let mut all_content = String::new();
@@ -296,10 +386,19 @@ impl NoteManagerSkill {
         })))
     }
 
-    async fn create_bookmark(&self, dir: &str, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let url = args.get("url").and_then(|v| v.as_str())
+    async fn create_bookmark(
+        &self,
+        dir: &str,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'url'".into()))?;
-        let desc = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let desc = args
+            .get("description")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let title = args.get("title").and_then(|v| v.as_str()).unwrap_or(url);
 
         tokio::fs::create_dir_all(dir).await.ok();
@@ -315,7 +414,8 @@ impl NoteManagerSkill {
 
         content.push_str(&entry);
 
-        tokio::fs::write(&path, &content).await
+        tokio::fs::write(&path, &content)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({
@@ -328,5 +428,7 @@ impl NoteManagerSkill {
 }
 
 impl Default for NoteManagerSkill {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

@@ -57,7 +57,9 @@ impl Skill for AnalyzeImageSkill {
         })
     }
 
-    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::ReadOnly
+    }
 
     async fn execute(
         &self,

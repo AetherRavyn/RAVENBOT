@@ -1,12 +1,18 @@
 // Client-side word-by-word reveal decoupled from token arrival (OpenBot
 // streaming pattern): SSE deltas append to the RAW buffer; the visible string
-// advances one word every --stream-gap (60ms), so the reveal stays smooth
-// whether tokens burst or trickle. The newest word keeps its blur-in tail
-// until the stream FINISHES (not merely until the pump catches up), so the
-// tail never snaps sharp mid-run. Reduced motion shows everything instantly.
+// advances in whole words. The newest word keeps its blur-in tail until the
+// stream FINISHES (not merely until the pump catches up), so the tail never
+// snaps sharp mid-run. Reduced motion shows everything instantly.
+//
+// The reveal is **backlog-aware**. A fixed one-word-per-tick pump looks lovely
+// when tokens trickle and is unusable when they burst: a fast model emits a
+// 1,000-word answer in twenty seconds, the pump needs a minute, and the run
+// reports "done" while the answer is still typing itself out. Each tick now
+// closes a fraction of the gap (in whole words), so the visible text stays
+// roughly half a second behind the model regardless of burst size.
 import { prefersReducedMotion } from "$lib/a11y";
 
-const WORD = /\S+\s*/g;
+const WORD_START = /\S/;
 
 function gapMs(): number {
   if (typeof document === "undefined") return 60;
@@ -49,6 +55,11 @@ export class StreamReveal {
     this.ensurePump();
   }
 
+  /** How many characters the reader has not seen yet. */
+  get backlog(): number {
+    return Math.max(0, this.raw.length - this.shown.length);
+  }
+
   private ensurePump() {
     if (prefersReducedMotion()) {
       this.stop();
@@ -57,30 +68,76 @@ export class StreamReveal {
     }
     if (this.timer) return;
     this.active = true;
-    this.timer = setInterval(() => {
-      if (this.shown.length >= this.raw.length) {
-        // Caught up, but the run is still live: stop ticking while KEEPING
-        // `active` so the tail stays on the newest word until finish().
-        this.stop();
-        return;
+    this.timer = setInterval(() => this.tick(), gapMs());
+  }
+
+  private tick() {
+    const backlog = this.backlog;
+    if (backlog <= 0) {
+      // Caught up, but the run is still live: stop ticking while KEEPING
+      // `active` so the tail stays on the newest word until finish().
+      this.stop();
+      return;
+    }
+
+    // Close ~1/10th of the gap per tick, at least one character. Because the
+    // step is in characters but the cut is moved to a word boundary, the
+    // reader never sees half a word.
+    const start = this.shown.length;
+    let end = Math.min(this.raw.length, start + Math.max(1, Math.ceil(backlog / 10)));
+
+    // Move forward to the end of the word we landed in, so the next reveal
+    // does not begin mid-word.
+    while (end < this.raw.length && WORD_START.test(this.raw[end])) end++;
+    if (end < this.raw.length) end++; // include the trailing space
+
+    // Never cut an inline code span in half. A partially revealed
+    // `Strict-Transport-Security` renders as a stray backtick and, worse, the
+    // fragment after it is parsed as prose. If the cut is inside an odd number
+    // of backticks, extend to the closing backtick when it has arrived, or hold
+    // at the opening one until it does.
+    const ticks = (this.raw.slice(0, end).match(/`/g) || []).length;
+    if (ticks % 2 === 1) {
+      const next = this.raw.indexOf("`", end);
+      if (next !== -1) {
+        end = next + 1;
+      } else {
+        end = this.raw.slice(0, end).lastIndexOf("`");
       }
-      WORD.lastIndex = this.shown.length;
-      const m = WORD.exec(this.raw.slice(this.shown.length));
-      this.shown = this.raw.slice(0, this.shown.length + (m ? m[0].length : 1));
-    }, gapMs());
+    }
+
+    this.shown = this.raw.slice(0, end);
   }
 
   /** Everything revealed except the newest word. */
   get body(): string {
-    if (!this.active) return this.shown;
-    const m = this.shown.match(/\S+\s*$/);
-    return m ? this.shown.slice(0, this.shown.length - m[0].length) : this.shown;
+    return this.splitTail().body;
   }
 
   /** The newest revealed word — rendered with OpenBot's blur-in tail. */
   get tail(): string {
-    if (!this.active) return "";
-    return this.shown.match(/\S+(?=\s*$)/)?.[0] ?? "";
+    return this.splitTail().tail;
+  }
+
+  /**
+   * Split the newest word off the revealed text, unless doing so would cut an
+   * inline code span.
+   *
+   * The renderer parses `body` and `tail` as separate markdown fragments (the
+   * tail gets the blur-in treatment). If the opening backtick lands in `body`
+   * and the closing one in `tail`, each fragment sees an unmatched backtick and
+   * the code span renders as literal backticks with a blank line between them.
+   * In that case the whole string stays in `body`; the tail effect is not worth
+   * corrupting the answer for.
+   */
+  private splitTail(): { body: string; tail: string } {
+    if (!this.active) return { body: this.shown, tail: "" };
+    const m = this.shown.match(/\S+\s*$/);
+    if (!m) return { body: this.shown, tail: "" };
+    const body = this.shown.slice(0, this.shown.length - m[0].length);
+    const ticks = (body.match(/`/g) || []).length;
+    if (ticks % 2 === 1) return { body: this.shown, tail: "" };
+    return { body, tail: m[0].trimEnd() };
   }
 
   /** `done` event: show the full text sharply; hold it until the caller clears. */

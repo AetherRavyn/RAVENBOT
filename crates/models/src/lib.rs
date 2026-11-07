@@ -5,24 +5,25 @@
 
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use std::sync::Arc;
+use thiserror::Error;
 
-pub mod openrouter;
 pub mod anthropic;
-pub mod openai;
-pub mod ollama;
-pub mod local;
 pub mod commandcode;
-pub mod openai_compat;
-pub mod mimo;
-pub mod manager;
-pub mod streaming;
 pub mod discovery;
+pub mod local;
+pub mod manager;
+pub mod mimo;
+pub mod ollama;
+pub mod openai;
+pub mod openai_compat;
+pub mod opencode_go;
+pub mod openrouter;
+pub mod streaming;
 
+pub use discovery::{DiscoveredModel, ModelDiscovery};
 pub use manager::ProviderManager;
 pub use streaming::StreamAccumulator;
-pub use discovery::{ModelDiscovery, DiscoveredModel};
 
 /// One piece of a streamed model response.
 ///
@@ -314,7 +315,9 @@ pub trait ModelProviderTrait: Send + Sync {
         enable_reasoning: bool,
     ) -> Result<ModelResponse, ModelError> {
         let _ = enable_reasoning;
-        let response = self.complete(messages, tools, temperature, max_tokens).await?;
+        let response = self
+            .complete(messages, tools, temperature, max_tokens)
+            .await?;
         if let Some(content) = &response.content {
             if !content.is_empty() {
                 on_delta(StreamChunk::Text(content));
@@ -352,6 +355,7 @@ pub fn create_provider(
         ModelProvider::Cohere => Box::new(openai_compat::cohere_provider(api_key)),
         ModelProvider::MiMo => Box::new(mimo::MiMoProvider::new(api_key)),
         ModelProvider::OpenCode => Box::new(openai_compat::opencode_provider(api_key)),
+        ModelProvider::OpenCodeGo => Box::new(opencode_go::OpenCodeGoProvider::new(api_key)),
         ModelProvider::Cline => Box::new(openai_compat::cline_provider(api_key)),
         ModelProvider::XAI => Box::new(openai_compat::xai_provider(api_key)),
         ModelProvider::TokenRouter => Box::new(openai_compat::tokenrouter_provider(api_key)),

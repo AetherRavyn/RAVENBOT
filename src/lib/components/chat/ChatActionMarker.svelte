@@ -12,6 +12,7 @@
     Sparkles,
     Terminal,
     FileText,
+    Presentation,
   } from "@lucide/svelte";
   import { t } from "$lib/i18n";
   import { summarizeArgs, fmtElapsed } from "$lib/chat/toolSummary";
@@ -38,6 +39,7 @@
     memory_recall: History,
     memory_save: Sparkles,
     image_gen: Sparkles,
+    make_slides: Presentation,
     calendar: Calendar,
   };
 
@@ -93,13 +95,15 @@
   const elapsedText = $derived(fmtElapsed(elapsed));
 </script>
 
-<div class="chat-action-marker {done ? 'opacity-60' : 'text-[var(--text-secondary)]'}">
-  {#if done}
-    <Icon class="size-3.5 shrink-0" strokeWidth={1.75} />
-  {:else}
-    <Loader2 class="size-3.5 shrink-0 animate-spin" strokeWidth={2} />
-  {/if}
-  <span class="truncate">{t(done ? "tool.done" : "tool.running", { name: display })}</span>
+<div class="chat-action-marker" data-done={done ? "true" : undefined}>
+  <span class="chat-action-marker__glyph" data-done={done ? "true" : undefined} aria-hidden="true">
+    {#if done}
+      <Icon class="size-3" strokeWidth={1.9} />
+    {:else}
+      <Loader2 class="size-3 animate-spin" strokeWidth={2} />
+    {/if}
+  </span>
+  <span class="chat-action-marker__label">{t(done ? "tool.done" : "tool.running", { name: display })}</span>
   {#if detail}
     <!-- The point of the line, so it gets its own span rather than being
          appended to the label — otherwise a long path pushes the verb off. -->

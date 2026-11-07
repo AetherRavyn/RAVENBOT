@@ -106,6 +106,18 @@ function readableOn(hex: string): string {
   return luminance(hex) > 0.45 ? "#0b0b0f" : "#ffffff";
 }
 
+/**
+ * Whether a canvas colour is light.
+ *
+ * This is measured rather than declared so every theme added later — including
+ * ones from a user-supplied palette — gets the right `color-scheme`, native
+ * scrollbars, and focus/overlay treatment without a second registry to keep in
+ * sync.
+ */
+export function isLightColor(hex: string): boolean {
+  return luminance(hex) > 0.5;
+}
+
 /** WCAG 2.1 relative contrast between two hex colours. 1 … 21. */
 export function contrastRatio(a: string, b: string): number {
   const la = luminance(a);
@@ -219,6 +231,23 @@ export const THEMES: ThemeDefinition[] = [
     mutedTextColor: "#9a9aa0",
     description: "Neutral dark system — greyscale canvas, blue accent, light primary button",
     brand: flatBrand("RAVEN", "BOT", "LOCAL OS", "Sovereign Local-First Agent OS", "A persistent fleet of agents that live on your machine"),
+  },
+  {
+    id: "paper-light",
+    name: "Paper Light",
+    category: "Neutral",
+    primaryColor: "#2563eb",
+    accentColor: "#1d4ed8",
+    secondaryAccent: "#047857",
+    buttonHex: "#18181b",
+    buttonForegroundHex: "#ffffff",
+    bgHex: "#f4f4f5",
+    cardHex: "#ffffff",
+    borderHex: "#e4e4e7",
+    textColor: "#18181b",
+    mutedTextColor: "#71717a",
+    description: "Paper-light canvas — zinc ink, a blue accent, and a dark primary button",
+    brand: flatBrand("RAVEN", "BOT", "DAYLIGHT", "Local-first agent OS in daylight", "A quiet light workspace for focused agent work"),
   },
   {
     id: "grok-sovereign",
@@ -461,6 +490,13 @@ export function applyTheme(themeId: string) {
     // reader of `ensureContrast(…, surface2, …)` should not have to go and
     // find where surface2 came from.
     const surface2 = mixHex(card, text, 0.05);
+    const light = isLightColor(bg);
+
+    // Native controls follow the canvas. Without this, a light theme inherits
+    // dark scrollbars, dark form controls and dark `::selection`, which is the
+    // difference between a light theme and a dark theme with white panels.
+    root.style.colorScheme = light ? "light" : "dark";
+    root.setAttribute("data-color-scheme", light ? "light" : "dark");
 
     // Raw theme colours (consumed by layout chrome + components)
     root.style.setProperty("--theme-primary", accent);
@@ -471,7 +507,7 @@ export function applyTheme(themeId: string) {
 
     // Flat brand tokens — the BLUE accent used for focus, selection, links.
     root.style.setProperty("--brand", accent);
-    root.style.setProperty("--brand-hover", mixHex(accent, "#ffffff", 0.15));
+    root.style.setProperty("--brand-hover", mixHex(accent, light ? "#000000" : "#ffffff", 0.15));
     root.style.setProperty("--brand-text", accentText);
     root.style.setProperty("--brand-2", accentText);
     root.style.setProperty("--brand-3", theme.secondaryAccent || accentText);
@@ -480,6 +516,7 @@ export function applyTheme(themeId: string) {
     root.style.setProperty("--brand-glow", "none");
     // Light primary-button / user-bubble surface (OpenBot's #f0f0f0).
     root.style.setProperty("--surface-light", button);
+    root.style.setProperty("--surface-light-hover", light ? mixHex(button, "#ffffff", 0.12) : "#ffffff");
     root.style.setProperty("--text-on-light", buttonFg);
 
     // Semantic surfaces (solid)
@@ -489,8 +526,13 @@ export function applyTheme(themeId: string) {
     root.style.setProperty("--surface-3", mixHex(card, text, 0.1));
     root.style.setProperty("--surface-4", mixHex(card, text, 0.16));
     root.style.setProperty("--text-primary", text);
-    root.style.setProperty("--text-secondary", mixHex(text, muted, 0.18));
-    root.style.setProperty("--text-tertiary", muted);
+    // Secondary and tertiary are held to the same floor as muted. Mixing
+    // toward the muted colour is a recipe, not a guarantee: on Paper Light it
+    // landed at 4.36:1 on the raised surface.
+    const secondary = ensureContrast(mixHex(text, muted, 0.18), surface2, AA_TEXT);
+    const tertiary = ensureContrast(muted, surface2, AA_TEXT);
+    root.style.setProperty("--text-secondary", secondary);
+    root.style.setProperty("--text-tertiary", tertiary);
     // The three steps below the primary are *specified as contrast ratios*,
     // not as mix proportions — see `ensureContrast` for why, and for what it
     // cost to get this wrong first.
@@ -506,6 +548,12 @@ export function applyTheme(themeId: string) {
     root.style.setProperty("--hairline", border);
     root.style.setProperty("--hairline-strong", mixHex(border, text, 0.14));
 
+    if (light) {
+      applyLightRoleTokens(root);
+    } else {
+      clearLightRoleTokens(root);
+    }
+
     // shadcn/theme triplets so buttons, rings, borders, cards all follow suit
     root.style.setProperty("--background", hexToHslTriplet(bg));
     root.style.setProperty("--foreground", hexToHslTriplet(text));
@@ -519,13 +567,13 @@ export function applyTheme(themeId: string) {
     root.style.setProperty("--secondary", hexToHslTriplet(mixHex(card, text, 0.08)));
     root.style.setProperty("--secondary-foreground", hexToHslTriplet(text));
     root.style.setProperty("--muted", hexToHslTriplet(mixHex(card, text, 0.06)));
-    root.style.setProperty("--muted-foreground", hexToHslTriplet(muted));
+    root.style.setProperty("--muted-foreground", hexToHslTriplet(tertiary));
     // --accent stays a neutral hover surface (OpenBot never uses a saturated
     // hover); focus/selection come from --ring below.
     root.style.setProperty("--accent", hexToHslTriplet(mixHex(card, text, 0.08)));
     root.style.setProperty("--accent-foreground", hexToHslTriplet(text));
-    root.style.setProperty("--destructive", hexToHslTriplet("#ff96a0"));
-    root.style.setProperty("--destructive-foreground", hexToHslTriplet("#141414"));
+    root.style.setProperty("--destructive", hexToHslTriplet(light ? "#c02b3f" : "#ff96a0"));
+    root.style.setProperty("--destructive-foreground", hexToHslTriplet(light ? "#ffffff" : "#141414"));
     root.style.setProperty("--border", hexToHslTriplet(border));
     root.style.setProperty("--input", hexToHslTriplet(border));
     // Focus ring = the BLUE accent (or the theme's accent colour).
@@ -533,6 +581,98 @@ export function applyTheme(themeId: string) {
   }
 
   listeners.forEach((fn) => fn(theme));
+}
+
+/**
+ * Role tokens that cannot be derived by mixing the palette.
+ *
+ * Status colours, washes, overlays and a few data surfaces were tuned against
+ * a dark canvas. A light theme needs its own values: the same pastel mint that
+ * reads on #141414 is nearly invisible on #ffffff. Keeping the list in one
+ * place is what makes a light theme a first-class member of the catalogue
+ * rather than a dark theme with an inverted background.
+ */
+const LIGHT_ROLE_TOKENS: Record<string, string> = {
+  "--hover-wash": "rgba(24, 24, 27, 0.055)",
+  "--overlay-bg": "rgba(244, 244, 245, 0.94)",
+  "--dialog-overlay": "rgba(15, 23, 42, 0.35)",
+  "--dialog-ring": "rgba(24, 24, 27, 0.08)",
+  "--glass": "rgba(255, 255, 255, 0.8)",
+  "--image-outline": "rgba(24, 24, 27, 0.12)",
+  "--scroll-edge-overlay": "rgba(255, 255, 255, 0.86)",
+  "--hairline-faint": "rgba(24, 24, 27, 0.045)",
+  "--surface-elevated": "#ffffff",
+  "--rail-selected": "#18181b",
+  "--scrim": "rgba(15, 23, 42, 0.38)",
+
+  "--status-idle": "#71717a",
+  "--status-thinking": "#6d4bc4",
+  "--status-running": "#2563eb",
+  "--status-waiting": "#c02b3f",
+  "--status-paused": "#52525b",
+  "--status-success": "#157347",
+  "--status-danger": "#c02b3f",
+
+  "--success-text": "#157347",
+  "--success-soft": "rgba(21, 115, 71, 0.1)",
+  "--success-wash": "rgba(21, 115, 71, 0.045)",
+  "--warning-text": "#8a5a00",
+  "--warning-soft": "rgba(180, 120, 0, 0.12)",
+  "--danger-text": "#c02b3f",
+  "--danger-hover": "#a52236",
+  "--danger-soft": "rgba(192, 43, 63, 0.08)",
+  "--danger-soft-hover": "rgba(192, 43, 63, 0.14)",
+  "--danger-focus": "rgba(192, 43, 63, 0.32)",
+  "--danger-border": "rgba(192, 43, 63, 0.4)",
+
+  "--question-option": "#0f6f73",
+  "--question-option-soft": "rgba(15, 111, 115, 0.1)",
+  "--question-option-hover": "rgba(15, 111, 115, 0.15)",
+  "--question-option-pressed": "rgba(15, 111, 115, 0.2)",
+  "--question-badge-text": "#0b5c60",
+  "--question-badge-soft": "rgba(15, 111, 115, 0.12)",
+  "--message-badge-text": "#1d4ed8",
+  "--message-badge-soft": "rgba(37, 99, 235, 0.1)",
+  "--approval-badge-soft": "rgba(180, 120, 0, 0.12)",
+  "--badge-new": "#b0246e",
+  "--badge-new-soft": "rgba(176, 36, 110, 0.1)",
+  "--unread-surface": "#1d4ed8",
+  "--unread-text": "#ffffff",
+
+  "--data-table-border": "#e4e4e7",
+  "--data-table-header-text": "#52525b",
+  "--data-table-text": "#18181b",
+  "--text-readable": "rgba(24, 24, 27, 0.56)",
+  "--text-placeholder": "#71717a",
+  "--text-muted-on-light": "rgba(255, 255, 255, 0.62)",
+  "--scrollbar-thumb": "rgba(24, 24, 27, 0.16)",
+  "--scrollbar-thumb-hover": "rgba(24, 24, 27, 0.28)",
+
+  // Tailwind status aliases are HSL triplets consumed by utilities like
+  // `text-warning` and `bg-warning/10`. They are not derived from the four
+  // palette colours, so a light canvas needs its own readable set.
+  "--success": hexToHslTriplet("#157347"),
+  "--warning": hexToHslTriplet("#8a5a00"),
+  "--danger": hexToHslTriplet("#c02b3f"),
+  "--info": hexToHslTriplet("#1d4ed8"),
+};
+
+function applyLightRoleTokens(root: HTMLElement) {
+  for (const [name, value] of Object.entries(LIGHT_ROLE_TOKENS)) {
+    root.style.setProperty(name, value);
+  }
+}
+
+/**
+ * Removing the inline overrides is the inverse of applying them. Without this,
+ * trying Paper Light and then picking a dark theme would leave the light
+ * status ladder, washes and scrollbar colours inline for the rest of the
+ * session — the palette would switch while half the role tokens did not.
+ */
+function clearLightRoleTokens(root: HTMLElement) {
+  for (const name of Object.keys(LIGHT_ROLE_TOKENS)) {
+    root.style.removeProperty(name);
+  }
 }
 
 export function subscribeTheme(fn: (theme: ThemeDefinition) => void) {

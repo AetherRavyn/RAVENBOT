@@ -2,9 +2,9 @@
 //! into RAVENBOT's Skill trait. These skills return structured instructions
 //! that the LLM follows as a multi-turn workflow.
 
+use crate::traits::{Skill, SkillContext, SkillError, SkillKind, SkillResult};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillKind};
 
 /// A prompt-based skill that returns a structured workflow guide to the LLM.
 /// Unlike tool skills that execute code, these provide instructions for the
@@ -29,20 +29,44 @@ impl PromptSkill {
         prompt: &'static str,
         input_schema: serde_json::Value,
     ) -> Self {
-        Self { id, name, description, version, permissions, prompt, input_schema }
+        Self {
+            id,
+            name,
+            description,
+            version,
+            permissions,
+            prompt,
+            input_schema,
+        }
     }
 }
 
 #[async_trait]
 impl Skill for PromptSkill {
-    fn id(&self) -> &str { self.id }
-    fn name(&self) -> &str { self.name }
-    fn description(&self) -> &str { self.description }
-    fn version(&self) -> &str { self.version }
-    fn required_permissions(&self) -> Vec<Permission> { self.permissions.clone() }
-    fn input_schema(&self) -> serde_json::Value { self.input_schema.clone() }
-    fn kind(&self) -> SkillKind { SkillKind::Workflow }
-    fn prompt(&self) -> Option<&str> { Some(self.prompt) }
+    fn id(&self) -> &str {
+        self.id
+    }
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        self.description
+    }
+    fn version(&self) -> &str {
+        self.version
+    }
+    fn required_permissions(&self) -> Vec<Permission> {
+        self.permissions.clone()
+    }
+    fn input_schema(&self) -> serde_json::Value {
+        self.input_schema.clone()
+    }
+    fn kind(&self) -> SkillKind {
+        SkillKind::Workflow
+    }
+    fn prompt(&self) -> Option<&str> {
+        Some(self.prompt)
+    }
 
     async fn execute(
         &self,
@@ -52,7 +76,10 @@ impl Skill for PromptSkill {
         let arg_context = if arguments.is_null() || arguments == serde_json::json!({}) {
             String::new()
         } else {
-            format!("\n\n## User-provided context\n{}", serde_json::to_string_pretty(&arguments).unwrap_or_default())
+            format!(
+                "\n\n## User-provided context\n{}",
+                serde_json::to_string_pretty(&arguments).unwrap_or_default()
+            )
         };
 
         Ok(SkillResult::success(serde_json::json!({
@@ -557,4 +584,113 @@ pub fn wizard_skill() -> PromptSkill {
             "required": ["procedure"]
         }),
     )
+}
+
+// ─── Visual production ──────────────────────────────────────────────────────
+
+pub fn visuals_skill() -> PromptSkill {
+    PromptSkill::new(
+        "visuals",
+        "Visuals",
+        "Render data charts, slide decks, diagrams, and static HTML previews in chat. Use whenever the user asks for a chart, graph, plot, dashboard, slide deck, presentation, diagram, or visual report.",
+        "1.0.0",
+        vec![],
+        include_str!("./prompts/visuals.md"),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "brief": {"type": "string", "description": "What the visual must communicate"},
+                "data": {"type": "string", "description": "Data or source facts to chart (optional)"},
+                "format": {"type": "string", "description": "chart, slides, mermaid, or html (optional)"}
+            },
+            "required": ["brief"]
+        }),
+    )
+}
+
+pub fn slides_skill() -> PromptSkill {
+    PromptSkill::new(
+        "slides",
+        "Slide Design",
+        "Design and export slide decks, presentations, pitch decks, and handouts. Covers the argument, layout, palette, icons, charts, math, in-chat preview, rendered slide images, and a full-bleed image .pptx export.",
+        "1.0.0",
+        vec![Permission::FileSystem { paths: vec!["/".to_string()] }],
+        include_str!("./prompts/slides.md"),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "brief": {"type": "string", "description": "Audience, decision, and length"},
+                "data": {"type": "string", "description": "Real numbers or source facts"},
+                "format": {"type": "string", "description": "pptx, pdf, docx, or preview only (optional)"}
+            },
+            "required": ["brief"]
+        }),
+    )
+}
+
+pub fn fframes_skill() -> PromptSkill {
+    PromptSkill::new(
+        "fframes",
+        "Motion graphics (fframes)",
+        "Create and render motion graphics, explainers, promos, social clips, and title cards with fframes (Rust + SVG + ffmpeg). Use whenever the user asks for a video, animation, motion graphic, reel, short, promo, or rendered mp4/webm.",
+        "1.0.0",
+        vec![
+            Permission::FileSystem { paths: vec![".".to_string()] },
+            Permission::Shell,
+            Permission::Network { domains: vec!["*".to_string()] },
+        ],
+        include_str!("./prompts/fframes.md"),
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "brief": {"type": "string", "description": "What the video must say and who watches it"},
+                "format": {"type": "string", "description": "landscape, portrait, square, or uhd"},
+                "duration_seconds": {"type": "number", "description": "Target duration in seconds"},
+                "assets": {"type": "string", "description": "Existing logo, footage, music, or voice-over paths (optional)"}
+            },
+            "required": ["brief"]
+        }),
+    )
+}
+
+#[cfg(test)]
+mod visual_prompt_tests {
+    use super::*;
+    use crate::traits::Skill;
+
+    #[test]
+    fn visuals_workflow_documents_the_real_fences() {
+        let skill = visuals_skill();
+        let prompt = skill.prompt().expect("visuals prompt");
+        assert!(prompt.contains("## Chart block"));
+        assert!(prompt.contains("## Slide block"));
+        assert!(prompt.contains("```chart"));
+        assert!(prompt.contains("```slides"));
+        assert!(prompt.contains("make_document"));
+    }
+
+    #[test]
+    fn slides_workflow_covers_design_preview_and_export() {
+        let skill = slides_skill();
+        let prompt = skill.prompt().expect("slides prompt");
+        assert!(prompt.contains("## 1. Pin the brief"));
+        assert!(prompt.contains("make_slides"));
+        assert!(prompt.contains("make_document"));
+        assert!(prompt.contains("pptx"));
+        assert!(prompt.contains("full-bleed"));
+        assert!(prompt.contains("accent lines"));
+    }
+
+    #[test]
+    fn fframes_workflow_covers_install_render_and_verify() {
+        let skill = fframes_skill();
+        let prompt = skill.prompt().expect("fframes prompt");
+        assert!(prompt.contains("cargo fframes new"));
+        assert!(prompt.contains("cargo run --release"));
+        assert!(prompt.contains("ffprobe"));
+        assert!(prompt.contains("inspect"));
+        assert!(prompt.contains("--template multi-scene"));
+        assert!(prompt.contains("ffmpeg fallback"));
+        assert!(prompt.contains("loudnorm"));
+    }
 }

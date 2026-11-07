@@ -136,6 +136,27 @@ describe("MarkdownMessage", () => {
     expect(container.textContent).toContain("Kinesis");
   });
 
+  it("offers Markdown and CSV export for a table", () => {
+    const { container } = renderMd("| Label | Value |\n| --- | --- |\n| one | two |");
+    expect(container.querySelectorAll(".md-table-action")).toHaveLength(2);
+    expect(container.querySelector(".md-table-actions")?.textContent).toContain("Markdown");
+    expect(container.querySelector(".md-table-actions")?.textContent).toContain("CSV");
+  });
+
+  it("marks a table's column count for the layout rules", () => {
+    const pair = renderMd("| Label | Value |\n| --- | --- |\n| one | two |");
+    const pairTable = pair.container.querySelector("table");
+    expect(pairTable?.classList.contains("md-table--pair")).toBe(true);
+    expect(pairTable?.getAttribute("style")).toContain("--md-cols: 2");
+
+    const multi = renderMd(
+      "| Table | Schema | Notes |\n| --- | --- | --- |\n| users | id | keep it |",
+    );
+    const multiTable = multi.container.querySelector("table");
+    expect(multiTable?.classList.contains("md-table--multi")).toBe(true);
+    expect(multiTable?.getAttribute("style")).toContain("--md-cols: 3");
+  });
+
   it("renders a blockquote", () => {
     const { container } = renderMd("> the office is isolated");
     expect(container.querySelector("blockquote")?.textContent).toContain("isolated");

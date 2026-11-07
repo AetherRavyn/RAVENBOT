@@ -9,12 +9,15 @@
   import { Input } from "$lib/components/ui/input";
   import { Label } from "$lib/components/ui/label";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
+  import { matchesQuery } from "$lib/search/highlight";
   import { getDiceBearUrl, cn } from "$lib/utils";
   import { getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition, THEMES } from "$lib/theme";
   import { setLocale, getAvailableLocales, localeState, type Locale } from "$lib/i18n";
   import { t } from "$lib/i18n";
   import ThemeLogo from "$lib/components/ThemeLogo.svelte";
   import ConnectorCenter from "$lib/components/ConnectorCenter.svelte";
+  import LocalSkillsPanel from "$lib/components/LocalSkillsPanel.svelte";
+  import UsagePanel from "$lib/components/UsagePanel.svelte";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
   import * as Select from "$lib/components/ui/select";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
@@ -27,7 +30,7 @@
     Loader2, Wifi, WifiOff, RefreshCw, AlertCircle, Zap, Layers,
     DollarSign, Shield, BookOpen, Settings, ChevronRight, Sparkles,
     Cpu, Globe, Lock, Unlock, Trash2, ExternalLink, X, Plug, Plus,
-    Activity,
+    Activity, BarChart3, Bot, Search,
   } from "@lucide/svelte";
 
   interface Props {
@@ -74,6 +77,7 @@
     icon: any;
     badge?: string;
     color?: string;
+    keywords?: string;
   }
 
   // Legacy section ids from older callers ("keys", "mcp") map to real ones.
@@ -88,19 +92,27 @@
   let curatedModelCount = $derived(catalog.reduce((s, p) => s + p.fallback_models.length, 0));
 
   const navSections = $derived<NavSection[]>([
-    { id: "providers", label: t("settings.navProviders"), icon: Key, color: "text-[var(--brand-text)]" },
-    { id: "connectors", label: t("ui.connectors"), icon: Layers, badge: "135+", color: "text-[var(--brand-text)]" },
-    { id: "models", label: t("settings.navModels"), icon: Cpu, badge: t("settings.live"), color: "text-warning" },
-    { id: "budgets", label: t("settings.navBudgets"), icon: DollarSign, color: "text-success" },
-    { id: "diagnostics", label: "Diagnostics", icon: Activity, color: "text-[var(--text-tertiary)]" },
-    { id: "profile", label: t("settings.navProfile"), icon: User, color: "text-[var(--brand-text)]" },
-    { id: "themes", label: t("settings.navThemes"), icon: Palette, color: "text-info" },
-    { id: "local", label: t("settings.navLocal"), icon: Server, color: "text-success" },
-    { id: "about", label: t("settings.about"), icon: Info, color: "text-[var(--text-tertiary)]" },
+    { id: "providers", label: t("settings.navProviders"), icon: Key, color: "text-[var(--brand-text)]", keywords: "api key keys provider token connect model" },
+    { id: "connectors", label: t("ui.connectors"), icon: Layers, badge: "135+", color: "text-[var(--brand-text)]", keywords: "mcp connectors integrations tools servers" },
+    { id: "models", label: t("settings.navModels"), icon: Cpu, badge: t("settings.live"), color: "text-warning", keywords: "model manager ai context provider" },
+    { id: "skills", label: t("settings.navSkills"), icon: Sparkles, color: "text-[var(--brand-text)]", keywords: "skills local capability marketplace" },
+    { id: "budgets", label: t("settings.navBudgets"), icon: DollarSign, color: "text-success", keywords: "budget cost spend usage limit" },
+    { id: "usage", label: t("settings.navUsage"), icon: BarChart3, color: "text-success", keywords: "usage cost tokens spend runs" },
+    { id: "diagnostics", label: "Diagnostics", icon: Activity, color: "text-[var(--text-tertiary)]", keywords: "runs errors logs audit" },
+    { id: "profile", label: t("settings.navProfile"), icon: User, color: "text-[var(--brand-text)]", keywords: "profile avatar name identity" },
+    { id: "themes", label: t("settings.navThemes"), icon: Palette, color: "text-info", keywords: "theme appearance dark light color" },
+    { id: "local", label: t("settings.navLocal"), icon: Server, color: "text-success", keywords: "local ollama endpoint offline" },
+    { id: "about", label: t("settings.about"), icon: Info, color: "text-[var(--text-tertiary)]", keywords: "about version update release" },
   ]);
 
   let activeSection = $state("providers");
   let searchQuery = $state("");
+  let sectionQuery = $state("");
+  let filteredSections = $derived(
+    navSections.filter((section) =>
+      matchesQuery([section.label, section.id, section.keywords], sectionQuery),
+    ),
+  );
 
   // ── Provider key state (UI-only; catalog owns names/icons/urls) ────────────
 
@@ -142,6 +154,9 @@
   let defaultSaved = $state(false);
   let defaultModels = $state<any[]>([]);
   let defaultLoadingModels = $state(false);
+  let defaultAgent = $state<any | null>(null);
+  let defaultAgentSaving = $state(false);
+  let defaultAgentError = $state<string | null>(null);
   // Honest facts for the chosen default (discovery cache first, list second).
   let defaultFacts = $derived(
     modelSummary(modelMetaFor(defaultProvider, defaultModel)) ||
@@ -272,8 +287,37 @@
   }
 
   // ── Effects ─────────────────────────────────────────────────────────────────
+  let modelsRefreshed = false;
+  /**
+   * Refresh every configured provider's live model list once when Settings
+   * opens.
+   *
+   * The model picker already fetches when opened, but the provider cards showed
+   * "0 models" until someone pressed Test — which made an auto-synced catalog
+   * look empty. This is silent and cached by the backend (1h), so opening
+   * Settings twice does not re-hit every provider.
+   */
+  async function refreshConfiguredModels() {
+    if (modelsRefreshed) return;
+    modelsRefreshed = true;
+    try {
+      const all = await invoke<Record<string, any[]>>("fetch_all_provider_models");
+      for (const [id, models] of Object.entries(all || {})) {
+        if (!Array.isArray(models)) continue;
+        discoveredModels[id] = models;
+        const st = ui[id];
+        if (st) st.models = models.length;
+        noteDiscovery(id, models);
+      }
+      totalDiscovered = Object.values(discoveredModels).reduce((sum, arr) => sum + arr.length, 0);
+    } catch {
+      // Fallbacks stay visible; a failed refresh must not look like a broken key.
+    }
+  }
+
   $effect(() => {
     if (open) {
+      sectionQuery = "";
       if (initialSection) activeSection = mapSection(initialSection);
       // Catalog first (everything else keys off it), then keys + ollama.
       getCatalog().then((list) => {
@@ -281,9 +325,10 @@
         for (const p of list) {
           if (!ui[p.id]) ui[p.id] = defaultUi();
         }
-        loadConfiguredProviders();
+        loadConfiguredProviders().then(refreshConfiguredModels);
         loadOllamaUrl();
         loadDefaultModel();
+        loadDefaultAgent();
         loadCustomProviders();
       }).catch(() => {
         loadConfiguredProviders();
@@ -515,6 +560,46 @@
     }
   }
 
+  // ── Office designer ─────────────────────────────────────────────────────
+  async function loadDefaultAgent() {
+    try {
+      defaultAgent = await invoke<any>("get_default_agent");
+    } catch {
+      defaultAgent = null;
+    }
+  }
+
+  async function saveDefaultAgent(botId: string) {
+    if (!botId) return;
+    defaultAgentSaving = true;
+    defaultAgentError = null;
+    try {
+      defaultAgent = await invoke<any>("set_default_agent", { botId });
+      window.dispatchEvent(new CustomEvent("bots-changed"));
+    } catch (e) {
+      defaultAgentError = String(e);
+    } finally {
+      defaultAgentSaving = false;
+    }
+  }
+
+  async function createDefaultAgentHere() {
+    defaultAgentSaving = true;
+    defaultAgentError = null;
+    try {
+      defaultAgent = await invoke<any>("create_default_agent", {
+        name: "Chief of Staff",
+        provider: defaultProvider,
+        model: defaultModel,
+      });
+      window.dispatchEvent(new CustomEvent("bots-changed"));
+    } catch (e) {
+      defaultAgentError = String(e);
+    } finally {
+      defaultAgentSaving = false;
+    }
+  }
+
   async function loadBudget() {
     if (!budgetBotId) return;
     budgetState = null;
@@ -590,7 +675,7 @@
 {#if open}
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 " onclick={(e) => { if (e.target === e.currentTarget) onClose(); }} onkeydown={(e) => { if (e.key === "Escape") onClose(); }} role="dialog" aria-modal="true" tabindex="-1">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--scrim)] " onclick={(e) => { if (e.target === e.currentTarget) onClose(); }} onkeydown={(e) => { if (e.key === "Escape") onClose(); }} role="dialog" aria-modal="true" tabindex="-1">
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div role="document" class="modal-panel w-[95vw] max-w-[1400px] h-[92vh] flex overflow-hidden" onclick={(e) => e.stopPropagation()}>
@@ -610,9 +695,23 @@
         </div>
       </div>
 
+      <!-- Navigation search -->
+      <div class="px-3 pt-3">
+        <div class="relative">
+          <Search class="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--text-muted)]" />
+          <Input
+            bind:value={sectionQuery}
+            type="search"
+            aria-label={t("palette.settingsSearch")}
+            placeholder={t("palette.settingsSearch")}
+            class="h-8 pl-8 text-xs"
+          />
+        </div>
+      </div>
+
       <!-- Navigation -->
       <nav class="flex-1 overflow-y-auto no-scrollbar p-3 space-y-1">
-        {#each navSections as section}
+        {#each filteredSections as section}
           {@const SectionIcon = section.icon}
           <button
             type="button"
@@ -639,6 +738,12 @@
             {/if}
           </button>
         {/each}
+        {#if filteredSections.length === 0}
+          <div class="px-3 py-4 text-center">
+            <p class="text-[11px] font-medium text-[var(--text-secondary)]">{t("palette.noSettingsMatch")}</p>
+            <p class="mt-0.5 text-[11px] text-[var(--text-muted)]">{t("palette.noSettingsMatchHint")}</p>
+          </div>
+        {/if}
       </nav>
 
       <!--
@@ -976,6 +1081,15 @@
         </div>
       {/if}
 
+      <!-- Section: Local skills -->
+      {#if activeSection === "skills"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="max-w-5xl mx-auto">
+            <LocalSkillsPanel onClose={onClose} />
+          </div>
+        </div>
+      {/if}
+
       <!-- Section: Model Manager -->
       {#if activeSection === "models"}
         <div class="flex-1 overflow-y-auto no-scrollbar p-6">
@@ -1052,6 +1166,71 @@
                   {#if defaultSaving}<Loader2 class="size-3 animate-spin" />{:else}<Save class="size-3" />{/if} {t("settings.saveDefault")}
                 </Button>
               </div>
+            </div>
+
+            <!-- Office designer -->
+            <div class="p-4 rounded-2xl border border-[var(--hairline)] bg-card/60 space-y-3">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">Office designer</h4>
+                  <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
+                    The agent that designs each new office from its name and mission — using only the
+                    skills, connectors, and plugins installed here.
+                  </p>
+                </div>
+                <span class="size-8 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/30 flex items-center justify-center text-[var(--brand-text)] shrink-0">
+                  <Bot class="size-4" />
+                </span>
+              </div>
+
+              {#if defaultAgent}
+                <div class="flex items-center gap-2 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] px-3 py-2 min-w-0">
+                  <span class="size-7 rounded-lg bg-[var(--surface-3)] flex items-center justify-center shrink-0">
+                    <Bot class="size-3.5 text-[var(--brand-text)]" />
+                  </span>
+                  <div class="min-w-0">
+                    <div class="text-xs font-bold text-[var(--text-primary)] truncate">{defaultAgent.name}</div>
+                    <div class="text-[11px] font-mono text-[var(--text-muted)] truncate">
+                      {defaultAgent.config?.model_provider}/{defaultAgent.config?.model_id}
+                    </div>
+                  </div>
+                </div>
+              {:else}
+                <p class="text-[11px] text-warning leading-snug">
+                  No office designer set. New offices fall back to the default model and an anonymous designer.
+                </p>
+              {/if}
+
+              <div class="flex items-center gap-2">
+                <Select.Root type="single" value={defaultAgent?.id ?? ""} onValueChange={(v) => v && saveDefaultAgent(v)}>
+                  <Select.Trigger class="flex-1 min-w-0 h-9 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--hairline-strong)] px-3 flex items-center justify-between text-xs cursor-pointer">
+                    <span class="truncate {defaultAgent ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]'}">
+                      {defaultAgent?.name ?? "Choose an existing agent"}
+                    </span>
+                    <ChevronDown class="size-4 text-[var(--text-muted)] shrink-0" />
+                  </Select.Trigger>
+                  <Select.Content class="max-h-72">
+                    {#each bots as b (b.id)}
+                      <Select.Item value={b.id} class="text-xs">
+                        {b.name}{b.is_orchestrator ? " · lead" : ""}
+                      </Select.Item>
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  class="h-9 gap-1.5 text-xs border-[var(--hairline-strong)] shrink-0"
+                  onclick={createDefaultAgentHere}
+                  disabled={defaultAgentSaving}
+                >
+                  {#if defaultAgentSaving}<Loader2 class="size-3 animate-spin" />{:else}<Sparkles class="size-3" />{/if}
+                  Create Chief of Staff
+                </Button>
+              </div>
+              {#if defaultAgentError}
+                <p class="text-[11px] text-danger leading-snug">{defaultAgentError}</p>
+              {/if}
             </div>
 
             <!-- Discovered models by provider -->
@@ -1194,6 +1373,14 @@
       {/if}
 
       <!-- Section: Profile -->
+      {#if activeSection === "usage"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="mx-auto max-w-5xl">
+            <UsagePanel {bots} />
+          </div>
+        </div>
+      {/if}
+
       {#if activeSection === "diagnostics"}
         <div class="flex-1 overflow-y-auto no-scrollbar p-6">
           <div class="max-w-3xl mx-auto space-y-6">
@@ -1272,22 +1459,22 @@
             <div class="grid grid-cols-2 gap-4">
               {#each THEMES as theme}
                 {@const isSelected = currentTheme.id === theme.id}
-                <button type="button" class="flex flex-col text-left p-4 rounded-2xl border transition-all {isSelected ? 'shadow-xl ring-2 scale-[1.02]' : 'hover:bg-[var(--surface-3)] hover:scale-[1.01]'}" style={isSelected ? `background-color: ${theme.cardHex}; border-color: ${theme.primaryColor};` : `background-color: ${theme.cardHex}90; border-color: ${theme.borderHex};`} onclick={() => pickTheme(theme)} aria-pressed={isSelected}>
+                <button type="button" class="flex flex-col text-left p-4 rounded-2xl border transition-all {isSelected ? 'shadow-xl ring-2 scale-[1.02]' : 'hover:scale-[1.01]'}" style="{isSelected ? `background-color: ${theme.cardHex}; border-color: ${theme.primaryColor};` : `background-color: ${theme.cardHex}90; border-color: ${theme.borderHex};`} color: ${theme.textColor};" onclick={() => pickTheme(theme)} aria-pressed={isSelected}>
                   <div class="flex items-center gap-3 mb-2">
                     <ThemeLogo theme={theme} size="sm" class="!size-10" />
                     <div>
-                      <span class="font-bold text-sm text-[var(--text-primary)] block">{theme.name}</span>
-                      <span class="text-[11px] font-mono text-[var(--text-tertiary)]">{theme.brand.badgeLabel}</span>
+                      <span class="font-bold text-sm block" style="color: {theme.textColor}">{theme.name}</span>
+                      <span class="text-[11px] font-mono" style="color: {theme.mutedTextColor}">{theme.brand.badgeLabel}</span>
                     </div>
                   </div>
-                  <p class="text-xs text-[var(--text-tertiary)]">{theme.description}</p>
+                  <p class="text-xs" style="color: {theme.mutedTextColor}">{theme.description}</p>
                   <div class="flex items-center gap-1 mt-2.5">
                     {#each [theme.bgHex, theme.cardHex, theme.borderHex, theme.primaryColor, theme.accentColor, theme.secondaryAccent].filter(Boolean) as c}
                       <span class="size-3 rounded-sm border border-black/40" style="background-color: {c};" title={c}></span>
                     {/each}
                   </div>
                   {#if isSelected}
-                    <div class="mt-2 text-[11px] text-success font-bold flex items-center gap-1"><Check class="size-3" /> {t("settings.active")}</div>
+                    <div class="mt-2 text-[11px] font-bold flex items-center gap-1" style="color: {theme.secondaryAccent || theme.primaryColor}"><Check class="size-3" /> {t("settings.active")}</div>
                   {/if}
                 </button>
               {/each}

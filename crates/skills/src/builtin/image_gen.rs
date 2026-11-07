@@ -69,7 +69,9 @@ impl Skill for ImageGenSkill {
         })
     }
 
-    fn risk(&self) -> SkillRisk { SkillRisk::Low }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::Low
+    }
 
     async fn execute(
         &self,
@@ -121,7 +123,10 @@ impl Skill for ImageGenSkill {
 
         // Fallback: Pollinations (keyless) — GET the image URL directly
         let encoded = urlencoding::encode(prompt);
-        let url = format!("https://image.pollinations.ai/prompt/{}?width=1024&height=1024&nologo=true", encoded);
+        let url = format!(
+            "https://image.pollinations.ai/prompt/{}?width=1024&height=1024&nologo=true",
+            encoded
+        );
 
         // Probe once so failures surface as skill errors rather than broken <img> tags
         let probe = self

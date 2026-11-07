@@ -7,16 +7,33 @@ use ravenbot_core::Permission;
 
 pub struct GitSkill;
 
-impl GitSkill { pub fn new() -> Self { Self } }
+impl GitSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for GitSkill {
-    fn id(&self) -> &str { "git" }
-    fn name(&self) -> &str { "Git" }
-    fn description(&self) -> &str { "Git operations: status, diff, log, commit, branch, push, create_branch" }
-    fn version(&self) -> &str { "1.1.0" }
+    fn id(&self) -> &str {
+        "git"
+    }
+    fn name(&self) -> &str {
+        "Git"
+    }
+    fn description(&self) -> &str {
+        "Git operations: status, diff, log, commit, branch, push, create_branch"
+    }
+    fn version(&self) -> &str {
+        "1.1.0"
+    }
     fn required_permissions(&self) -> Vec<Permission> {
-        vec![Permission::Shell, Permission::FileSystem { paths: vec![".".to_string()] }]
+        vec![
+            Permission::Shell,
+            Permission::FileSystem {
+                paths: vec![".".to_string()],
+            },
+        ]
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -37,7 +54,11 @@ impl Skill for GitSkill {
     /// was never resolved. Running `git` directly means the workspace roots
     /// are bound, the cwd went through the confinement check, and a commit
     /// message containing a quote is just a commit message.
-    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
@@ -98,7 +119,11 @@ async fn run(
     Ok(exec::output_to_result(action, &out))
 }
 
-impl Default for GitSkill { fn default() -> Self { Self::new() } }
+impl Default for GitSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -150,4 +175,3 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 }
-

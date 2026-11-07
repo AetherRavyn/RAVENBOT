@@ -82,7 +82,14 @@ export type MessageContent =
    * marker showed private notes as answer text. Optional because rows written
    * before the field existed simply do not have one.
    */
-  | { type: "Text"; text: string; sources?: unknown[]; reasoning?: string | null; tools?: ToolTrace[] }
+  | {
+      type: "Text";
+      text: string;
+      sources?: unknown[];
+      reasoning?: string | null;
+      tools?: ToolTrace[];
+      spans?: TraceSpan[];
+    }
   | { type: "Checklist"; text: string | null; items: ChecklistItem[] }
   | { type: "ToolCall"; tool_name: string; arguments: any }
   | { type: "ToolResult"; tool_name: string; result: any; is_error: boolean };
@@ -109,6 +116,16 @@ export interface ToolTrace {
   is_error?: boolean;
   /** Wall-clock milliseconds. A slow turn is usually one slow call. */
   duration_ms?: number | null;
+}
+
+export interface TraceSpan {
+  id: string;
+  kind: "model" | "tool" | "memory" | "context" | "delegation" | string;
+  label: string;
+  started_ms: number;
+  duration_ms: number;
+  failed?: boolean;
+  detail?: string | null;
 }
 
 export interface Message {

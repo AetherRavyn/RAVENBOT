@@ -57,7 +57,9 @@ impl Skill for VoiceInputSkill {
         })
     }
 
-    fn risk(&self) -> SkillRisk { SkillRisk::Low }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::Low
+    }
 
     async fn execute(
         &self,
@@ -67,7 +69,9 @@ impl Skill for VoiceInputSkill {
         let audio_data = arguments
             .get("audio_data")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| SkillError::InvalidArguments("Missing 'audio_data' field".to_string()))?;
+            .ok_or_else(|| {
+                SkillError::InvalidArguments("Missing 'audio_data' field".to_string())
+            })?;
 
         let format = arguments
             .get("format")
@@ -81,7 +85,9 @@ impl Skill for VoiceInputSkill {
             .map_err(|e| SkillError::InvalidArguments(format!("Invalid base64: {}", e)))?;
 
         let transcriber = ravenbot_vision::AudioTranscriber::new();
-        let result = transcriber.transcribe(&audio_bytes, format).await
+        let result = transcriber
+            .transcribe(&audio_bytes, format)
+            .await
             .map_err(|e| SkillError::Execution(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({

@@ -32,6 +32,8 @@ pub enum ModelProvider {
     MiMo,
     /// OpenCode
     OpenCode,
+    /// OpenCode Go — the subscription inference endpoint (distinct from Zen)
+    OpenCodeGo,
     /// Cline
     Cline,
     /// xAI Grok
@@ -61,6 +63,7 @@ impl ModelProvider {
             Self::Cohere => "Cohere",
             Self::MiMo => "MiMo",
             Self::OpenCode => "OpenCode",
+            Self::OpenCodeGo => "OpenCode Go",
             Self::Cline => "Cline",
             Self::XAI => "xAI Grok",
             Self::TokenRouter => "TokenRouter",
@@ -389,6 +392,21 @@ pub fn builtin_models() -> Vec<ModelConfig> {
             input_cost_per_1m: 3.0,
             output_cost_per_1m: 15.0,
             supports_vision: true,
+            supports_tools: true,
+        },
+        // ── OpenCode Go ─────────────────────────────────────────────────
+        // The Go subscription endpoint. One entry per model would be noise
+        // here (the live catalog is fetched from `/inference/go/v1/models`);
+        // this is the default a new bot starts on.
+        ModelConfig {
+            provider: ModelProvider::OpenCodeGo,
+            model_id: "deepseek-v4.1-flash".to_string(),
+            display_name: "DeepSeek V4.1 Flash (Go)".to_string(),
+            context_window: 1000000,
+            max_output_tokens: 8192,
+            input_cost_per_1m: 0.30,
+            output_cost_per_1m: 1.20,
+            supports_vision: false,
             supports_tools: true,
         },
         // ── Cline ───────────────────────────────────────────────────────

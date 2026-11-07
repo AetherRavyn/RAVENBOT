@@ -1,22 +1,36 @@
 //! Environment manager — manage .env files, environment variables, and secrets
 
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 use std::path::Path;
 
 pub struct EnvManagerSkill;
 
-impl EnvManagerSkill { pub fn new() -> Self { Self } }
+impl EnvManagerSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for EnvManagerSkill {
-    fn id(&self) -> &str { "env_manager" }
-    fn name(&self) -> &str { "Environment Manager" }
-    fn description(&self) -> &str { "Manage .env files: read, write, validate, diff, and sync environment variables" }
-    fn version(&self) -> &str { "1.0.0" }
+    fn id(&self) -> &str {
+        "env_manager"
+    }
+    fn name(&self) -> &str {
+        "Environment Manager"
+    }
+    fn description(&self) -> &str {
+        "Manage .env files: read, write, validate, diff, and sync environment variables"
+    }
+    fn version(&self) -> &str {
+        "1.0.0"
+    }
     fn required_permissions(&self) -> Vec<Permission> {
-        vec![Permission::FileSystem { paths: vec![".".to_string()] }]
+        vec![Permission::FileSystem {
+            paths: vec![".".to_string()],
+        }]
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -50,7 +64,11 @@ impl Skill for EnvManagerSkill {
         })
     }
 
-    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
@@ -70,7 +88,11 @@ impl Skill for EnvManagerSkill {
         confine_path(ctx, &mut args, "file", ".env")?;
         confine_path(ctx, &mut args, "source", ".env")?;
         confine_path(ctx, &mut args, "target", ".env")?;
-        let file = args.get("file").and_then(|v| v.as_str()).unwrap_or(".env").to_string();
+        let file = args
+            .get("file")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".env")
+            .to_string();
 
         match action.as_str() {
             "read" => self.read_env(&file).await,
@@ -101,7 +123,10 @@ fn confine_path(
     let raw = args.get(key).and_then(|v| v.as_str()).unwrap_or(default);
     let resolved = ctx.resolve_path(raw)?;
     if let Some(obj) = args.as_object_mut() {
-        obj.insert(key.to_string(), serde_json::Value::String(resolved.to_string_lossy().to_string()));
+        obj.insert(
+            key.to_string(),
+            serde_json::Value::String(resolved.to_string_lossy().to_string()),
+        );
     }
     Ok(())
 }
@@ -112,7 +137,8 @@ impl EnvManagerSkill {
             return Ok(SkillResult::failure(format!("File not found: {}", file)));
         }
 
-        let content = tokio::fs::read_to_string(file).await
+        let content = tokio::fs::read_to_string(file)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         let vars: std::collections::HashMap<String, String> = content
@@ -120,7 +146,15 @@ impl EnvManagerSkill {
             .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
             .filter_map(|line| {
                 let mut parts = line.splitn(2, '=');
-                Some((parts.next()?.trim().to_string(), parts.next()?.trim().trim_matches('"').trim_matches('\'').to_string()))
+                Some((
+                    parts.next()?.trim().to_string(),
+                    parts
+                        .next()?
+                        .trim()
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .to_string(),
+                ))
             })
             .collect();
 
@@ -131,9 +165,15 @@ impl EnvManagerSkill {
         })))
     }
 
-    async fn write_env(&self, file: &str, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn write_env(
+        &self,
+        file: &str,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let mut content = if Path::new(file).exists() {
-            tokio::fs::read_to_string(file).await.map_err(|e| SkillError::Io(e.to_string()))?
+            tokio::fs::read_to_string(file)
+                .await
+                .map_err(|e| SkillError::Io(e.to_string()))?
         } else {
             String::new()
         };
@@ -155,7 +195,8 @@ impl EnvManagerSkill {
             }
         }
 
-        tokio::fs::write(file, &content).await
+        tokio::fs::write(file, &content)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({
@@ -186,19 +227,28 @@ impl EnvManagerSkill {
         result
     }
 
-    async fn delete_key(&self, file: &str, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let key = args.get("key").and_then(|v| v.as_str())
+    async fn delete_key(
+        &self,
+        file: &str,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let key = args
+            .get("key")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'key'".into()))?;
 
-        let content = tokio::fs::read_to_string(file).await
+        let content = tokio::fs::read_to_string(file)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
-        let new_content: String = content.lines()
+        let new_content: String = content
+            .lines()
             .filter(|line| !line.starts_with(&format!("{}=", key)))
             .collect::<Vec<_>>()
             .join("\n");
 
-        tokio::fs::write(file, &new_content).await
+        tokio::fs::write(file, &new_content)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({
@@ -209,21 +259,33 @@ impl EnvManagerSkill {
         })))
     }
 
-    async fn validate_env(&self, file: &str, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let content = tokio::fs::read_to_string(file).await
+    async fn validate_env(
+        &self,
+        file: &str,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let content = tokio::fs::read_to_string(file)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
-        let existing: std::collections::HashSet<String> = content.lines()
+        let existing: std::collections::HashSet<String> = content
+            .lines()
             .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
             .filter_map(|line| line.splitn(2, '=').next().map(|s| s.trim().to_string()))
             .collect();
 
-        let required: Vec<String> = args.get("required_keys")
+        let required: Vec<String> = args
+            .get("required_keys")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
 
-        let missing: Vec<String> = required.iter()
+        let missing: Vec<String> = required
+            .iter()
             .filter(|key| !existing.contains(*key))
             .cloned()
             .collect();
@@ -237,20 +299,30 @@ impl EnvManagerSkill {
     }
 
     async fn diff_env(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let source = args.get("source").and_then(|v| v.as_str()).unwrap_or(".env");
-        let target = args.get("target").and_then(|v| v.as_str()).unwrap_or(".env.example");
+        let source = args
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".env");
+        let target = args
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".env.example");
 
-        let source_content = tokio::fs::read_to_string(source).await
+        let source_content = tokio::fs::read_to_string(source)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
-        let target_content = tokio::fs::read_to_string(target).await
+        let target_content = tokio::fs::read_to_string(target)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
-        let source_vars: std::collections::HashSet<String> = source_content.lines()
+        let source_vars: std::collections::HashSet<String> = source_content
+            .lines()
             .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
             .filter_map(|l| l.splitn(2, '=').next().map(|s| s.trim().to_string()))
             .collect();
 
-        let target_vars: std::collections::HashSet<String> = target_content.lines()
+        let target_vars: std::collections::HashSet<String> = target_content
+            .lines()
             .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
             .filter_map(|l| l.splitn(2, '=').next().map(|s| s.trim().to_string()))
             .collect();
@@ -269,14 +341,23 @@ impl EnvManagerSkill {
     }
 
     async fn sync_env(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let source = args.get("source").and_then(|v| v.as_str()).unwrap_or(".env.example");
-        let target = args.get("target").and_then(|v| v.as_str()).unwrap_or(".env");
+        let source = args
+            .get("source")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".env.example");
+        let target = args
+            .get("target")
+            .and_then(|v| v.as_str())
+            .unwrap_or(".env");
 
-        let source_content = tokio::fs::read_to_string(source).await
+        let source_content = tokio::fs::read_to_string(source)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         let mut target_content = if Path::new(target).exists() {
-            tokio::fs::read_to_string(target).await.map_err(|e| SkillError::Io(e.to_string()))?
+            tokio::fs::read_to_string(target)
+                .await
+                .map_err(|e| SkillError::Io(e.to_string()))?
         } else {
             String::new()
         };
@@ -288,14 +369,19 @@ impl EnvManagerSkill {
             }
             if let Some(key) = line.splitn(2, '=').next() {
                 let key = key.trim();
-                if !target_content.lines().any(|l| l.starts_with(&format!("{}=", key))) {
-                    target_content.push_str(&format!("{}=\n", line.splitn(2, '=').next().unwrap_or("")));
+                if !target_content
+                    .lines()
+                    .any(|l| l.starts_with(&format!("{}=", key)))
+                {
+                    target_content
+                        .push_str(&format!("{}=\n", line.splitn(2, '=').next().unwrap_or("")));
                     added += 1;
                 }
             }
         }
 
-        tokio::fs::write(target, &target_content).await
+        tokio::fs::write(target, &target_content)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({
@@ -310,23 +396,33 @@ impl EnvManagerSkill {
         self.read_env(file).await
     }
 
-    async fn export_env(&self, file: &str, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn export_env(
+        &self,
+        file: &str,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let format = args.get("key").and_then(|v| v.as_str()).unwrap_or("shell");
-        let content = tokio::fs::read_to_string(file).await
+        let content = tokio::fs::read_to_string(file)
+            .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
 
         let export = match format {
-            "shell" | "sh" => content.lines()
+            "shell" | "sh" => content
+                .lines()
                 .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
                 .map(|l| format!("export {}", l.trim()))
                 .collect::<Vec<_>>()
                 .join("\n"),
             "json" => {
-                let vars: std::collections::HashMap<String, String> = content.lines()
+                let vars: std::collections::HashMap<String, String> = content
+                    .lines()
                     .filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#'))
                     .filter_map(|l| {
                         let mut parts = l.splitn(2, '=');
-                        Some((parts.next()?.trim().to_string(), parts.next()?.trim().trim_matches('"').to_string()))
+                        Some((
+                            parts.next()?.trim().to_string(),
+                            parts.next()?.trim().trim_matches('"').to_string(),
+                        ))
                     })
                     .collect();
                 serde_json::to_string_pretty(&vars).unwrap_or_default()
@@ -342,5 +438,7 @@ impl EnvManagerSkill {
 }
 
 impl Default for EnvManagerSkill {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

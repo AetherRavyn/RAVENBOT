@@ -2,13 +2,13 @@
 //!
 //! Manages API keys and creates model providers on demand.
 
-use std::collections::HashMap;
 use ravenbot_core::ModelProvider;
+use std::collections::HashMap;
 
-use super::{ModelProviderTrait, ModelError, create_provider};
 use super::anthropic::AnthropicProvider;
 use super::ollama::OllamaProvider;
 use super::openai_compat;
+use super::{create_provider, ModelError, ModelProviderTrait};
 
 /// A user-defined provider (migration 018 `custom_providers`).
 #[derive(Debug, Clone)]
@@ -50,6 +50,7 @@ impl ProviderManager {
             ("COHERE_API_KEY", "cohere"),
             ("MIMO_API_KEY", "mimo"),
             ("OPENCODE_API_KEY", "opencode"),
+            ("OPENCODE_GO_API_KEY", "opencode-go"),
             ("CLINE_API_KEY", "cline"),
             ("XAI_API_KEY", "xai"),
             ("GROK_API_KEY", "xai"),
@@ -158,15 +159,30 @@ impl ProviderManager {
             ModelProvider::Cohere => "cohere",
             ModelProvider::MiMo => "mimo",
             ModelProvider::OpenCode => "opencode",
+            ModelProvider::OpenCodeGo => "opencode-go",
             ModelProvider::Cline => "cline",
             ModelProvider::XAI => "xai",
             ModelProvider::TokenRouter => "tokenrouter",
             ModelProvider::Custom => "custom",
         };
 
-        let api_key = self.api_keys.get(provider_str)
-            .or_else(|| if provider_str == "anthropic" { self.api_keys.get("claude") } else { None })
-            .or_else(|| if provider_str == "xai" { self.api_keys.get("grok") } else { None })
+        let api_key = self
+            .api_keys
+            .get(provider_str)
+            .or_else(|| {
+                if provider_str == "anthropic" {
+                    self.api_keys.get("claude")
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if provider_str == "xai" {
+                    self.api_keys.get("grok")
+                } else {
+                    None
+                }
+            })
             .cloned();
         let base_override = self
             .base_urls
@@ -179,16 +195,31 @@ impl ProviderManager {
         // OpenAI-compatible (or Anthropic-shape) support this; others keep
         // their compiled-in endpoint. Without a row the path is unchanged.
         const OPENAI_COMPAT_OVERRIDABLE: &[&str] = &[
-            "openai", "deepseek", "groq", "gemini", "mistral", "together",
-            "perplexity", "cohere", "opencode", "cline", "xai", "tokenrouter",
+            "openai",
+            "deepseek",
+            "groq",
+            "gemini",
+            "mistral",
+            "together",
+            "perplexity",
+            "cohere",
+            "opencode",
+            "opencode-go",
+            "cline",
+            "xai",
+            "tokenrouter",
         ];
         let mut provider_impl: Box<dyn ModelProviderTrait> = match provider_str {
-            "anthropic" if base_override.is_some() => Box::new(
-                AnthropicProvider::new(api_key).with_base_url(base_override.unwrap()),
-            ),
-            s if base_override.is_some() && OPENAI_COMPAT_OVERRIDABLE.contains(&s) => Box::new(
-                openai_compat::openai_compat_with_base(api_key, base_override.unwrap(), provider.clone()),
-            ),
+            "anthropic" if base_override.is_some() => {
+                Box::new(AnthropicProvider::new(api_key).with_base_url(base_override.unwrap()))
+            }
+            s if base_override.is_some() && OPENAI_COMPAT_OVERRIDABLE.contains(&s) => {
+                Box::new(openai_compat::openai_compat_with_base(
+                    api_key,
+                    base_override.unwrap(),
+                    provider.clone(),
+                ))
+            }
             _ => create_provider(provider, api_key, base_override),
         };
 
@@ -202,7 +233,10 @@ impl ProviderManager {
     }
 
     /// Create a provider from a string name
-    pub fn create_provider_from_str(&self, provider: &str) -> Result<Box<dyn ModelProviderTrait>, ModelError> {
+    pub fn create_provider_from_str(
+        &self,
+        provider: &str,
+    ) -> Result<Box<dyn ModelProviderTrait>, ModelError> {
         self.create_provider_from_str_with_model(provider, None)
     }
 
@@ -216,7 +250,16 @@ impl ProviderManager {
     ) -> Result<Box<dyn ModelProviderTrait>, ModelError> {
         let lower = provider.to_lowercase();
         if let Some(spec) = self.custom.get(&lower) {
-            return Ok(self.build_from_spec(spec, model_id));
+            // `opencode-go` is a first-class provider now. A leftover custom
+            // row pointing at the official endpoint must not shadow it, or the
+            // Go-specific session header and Claude routing silently
+            // disappear. A custom row that points somewhere else (a proxy or
+            // gateway) is a deliberate override and still wins.
+            let official_go =
+                lower == "opencode-go" && spec.base_url.contains("opencode.ai/inference/go");
+            if !official_go {
+                return Ok(self.build_from_spec(spec, model_id));
+            }
         }
 
         let model_provider = match lower.as_str() {
@@ -235,10 +278,18 @@ impl ProviderManager {
             "cohere" => ModelProvider::Cohere,
             "mimo" | "xiaomi" => ModelProvider::MiMo,
             "opencode" | "open_code" | "open-code" => ModelProvider::OpenCode,
+            "opencode-go" | "opencode_go" | "open-code-go" | "opencodego" => {
+                ModelProvider::OpenCodeGo
+            }
             "cline" => ModelProvider::Cline,
             "xai" | "grok" => ModelProvider::XAI,
             "tokenrouter" | "token_router" | "token-router" => ModelProvider::TokenRouter,
-            _ => return Err(ModelError::Provider(format!("Unknown provider: {}", provider))),
+            _ => {
+                return Err(ModelError::Provider(format!(
+                    "Unknown provider: {}",
+                    provider
+                )))
+            }
         };
 
         Ok(self.create_provider_with_model(model_provider, model_id))
@@ -325,24 +376,36 @@ impl Default for ProviderManager {
 pub fn is_reserved_provider_name(name: &str) -> bool {
     matches!(
         name.to_lowercase().as_str(),
-        "openrouter" | "open_router" | "open-router"
-            | "anthropic" | "claude"
+        "openrouter"
+            | "open_router"
+            | "open-router"
+            | "anthropic"
+            | "claude"
             | "openai"
             | "ollama"
             | "local"
-            | "commandcode" | "command_code" | "command-code"
+            | "commandcode"
+            | "command_code"
+            | "command-code"
             | "deepseek"
             | "groq"
-            | "gemini" | "google"
+            | "gemini"
+            | "google"
             | "mistral"
             | "together"
             | "perplexity"
             | "cohere"
-            | "mimo" | "xiaomi"
-            | "opencode" | "open_code" | "open-code"
+            | "mimo"
+            | "xiaomi"
+            | "opencode"
+            | "open_code"
+            | "open-code"
             | "cline"
-            | "xai" | "grok"
-            | "tokenrouter" | "token_router" | "token-router"
+            | "xai"
+            | "grok"
+            | "tokenrouter"
+            | "token_router"
+            | "token-router"
             | "custom"
     )
 }
@@ -415,7 +478,17 @@ mod tests {
 
     #[test]
     fn reserved_names_reject_custom_shadowing() {
-        for name in ["openai", "claude", "grok", "xai", "anthropic", "OpenRouter", "token-router", "ollama", "local"] {
+        for name in [
+            "openai",
+            "claude",
+            "grok",
+            "xai",
+            "anthropic",
+            "OpenRouter",
+            "token-router",
+            "ollama",
+            "local",
+        ] {
             assert!(is_reserved_provider_name(name), "{name} must be reserved");
         }
         assert!(!is_reserved_provider_name("lmstudio"));
@@ -430,13 +503,20 @@ mod tests {
         for name in ["deepseek", "groq", "anthropic", "tokenrouter"] {
             let a = plain.create_provider_from_str(name).unwrap();
             let b = overridden.create_provider_from_str(name).unwrap();
-            assert_eq!(a.provider_type(), b.provider_type(), "{name} type must not drift");
+            assert_eq!(
+                a.provider_type(),
+                b.provider_type(),
+                "{name} type must not drift"
+            );
         }
         // Providers outside the override-capable family ignore the row
         let mut weird = ProviderManager::new();
         weird.set_base_url("openrouter", "http://proxy.local:8000/v1".to_string());
         assert_eq!(
-            weird.create_provider_from_str("openrouter").unwrap().provider_type(),
+            weird
+                .create_provider_from_str("openrouter")
+                .unwrap()
+                .provider_type(),
             ModelProvider::OpenRouter
         );
     }

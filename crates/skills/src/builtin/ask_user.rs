@@ -5,27 +5,37 @@
 //! This skill exists so the model sees `ask_user` in its tool list and gets a
 //! sensible fallback if it is ever executed outside the runtime.
 
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 
 pub struct AskUserSkill;
 
 impl AskUserSkill {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
 #[async_trait]
 impl Skill for AskUserSkill {
-    fn id(&self) -> &str { "ask_user" }
-    fn name(&self) -> &str { "Ask the user" }
+    fn id(&self) -> &str {
+        "ask_user"
+    }
+    fn name(&self) -> &str {
+        "Ask the user"
+    }
     fn description(&self) -> &str {
         "Ask the user a clarifying question mid-task and wait for their answer. \
          Use when you are genuinely blocked on a decision only the user can make. \
          Provide an optional short header and a list of suggested options."
     }
-    fn version(&self) -> &str { "1.0.0" }
-    fn required_permissions(&self) -> Vec<Permission> { vec![] }
+    fn version(&self) -> &str {
+        "1.0.0"
+    }
+    fn required_permissions(&self) -> Vec<Permission> {
+        vec![]
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
@@ -45,9 +55,15 @@ impl Skill for AskUserSkill {
             "required": ["question"]
         })
     }
-    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::ReadOnly
+    }
 
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        _ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let question = args
             .get("question")
             .and_then(|v| v.as_str())
@@ -61,4 +77,8 @@ impl Skill for AskUserSkill {
     }
 }
 
-impl Default for AskUserSkill { fn default() -> Self { Self::new() } }
+impl Default for AskUserSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}

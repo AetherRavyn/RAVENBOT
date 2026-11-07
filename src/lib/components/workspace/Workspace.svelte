@@ -2,6 +2,7 @@
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import TitleBar from "$lib/components/TitleBar.svelte";
   import ScreenReader from "$lib/components/ScreenReader.svelte";
   import Toaster from "$lib/components/Toaster.svelte";
@@ -19,6 +20,11 @@
   import WorkspaceSidebar from "$lib/components/workspace/WorkspaceSidebar.svelte";
   import HomePane from "$lib/components/workspace/HomePane.svelte";
   import ProjectsView from "$lib/components/workspace/ProjectsView.svelte";
+  import BrowserDock from "$lib/components/workspace/BrowserDock.svelte";
+  import TeamChannelsView from "$lib/components/workspace/TeamChannelsView.svelte";
+  import { browserDock } from "$lib/browserDock.svelte";
+  import { requestMessageFocus } from "$lib/chat/messageFocus";
+  import { agentActivity, type AgentActivityEvent } from "$lib/agentActivity.svelte";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
   import { Loader2, Bot as BotIcon } from "@lucide/svelte";
@@ -34,6 +40,40 @@
   let skillsModalBotId = $state<string | null>(null);
   let marketplaceModalBotId = $state<string | null>(null);
   let showOnboarding = $state(false);
+
+  const ONBOARDING_DISMISSED = "ravenbot_onboarding_dismissed";
+  function onboardingDismissed(): boolean {
+    try {
+      return typeof localStorage !== "undefined" && localStorage.getItem(ONBOARDING_DISMISSED) === "1";
+    } catch {
+      return false;
+    }
+  }
+  function dismissOnboarding() {
+    showOnboarding = false;
+    try {
+      localStorage.setItem(ONBOARDING_DISMISSED, "1");
+    } catch {
+      /* storage unavailable — the overlay simply reappears next launch */
+    }
+  }
+  /**
+   * First run needs two things: a provider key and an office architect. The
+   * old check only looked for a key, so an installation with a key but no
+   * designer silently guessed a model and designed offices anonymously.
+   */
+  async function checkFirstRun() {
+    if (onboardingDismissed()) return;
+    try {
+      const [keys, agent] = await Promise.all([
+        invoke<string[]>("get_configured_providers"),
+        invoke<any>("get_default_agent").catch(() => null),
+      ]);
+      showOnboarding = !keys || keys.length === 0 || !agent;
+    } catch {
+      /* keep the current state if the backend is still starting */
+    }
+  }
 
   let skillsModalBot = $derived(workspace.bots.find((b: any) => b.id === skillsModalBotId));
   let marketplaceModalBot = $derived(workspace.bots.find((b: any) => b.id === marketplaceModalBotId));
@@ -113,7 +153,10 @@
   }
 
   let showSidebar = $derived(
-    !workspace.sidebarCollapsed && workspace.dest !== "connectors" && workspace.dest !== "routines",
+    !workspace.sidebarCollapsed &&
+      workspace.dest !== "connectors" &&
+      workspace.dest !== "routines" &&
+      workspace.dest !== "channels",
   );
   let routinesBot = $derived(
     workspace.bots.find((b: any) => b.id === routinesBotId) || workspace.bots[0],
@@ -128,14 +171,23 @@
     workspace.init();
     fleetActivity.start();
 
-    // First-run check: if no provider key is configured, show onboarding.
-    invoke<string[]>("get_configured_providers")
-      .then((keys) => {
-        if (!keys || keys.length === 0) {
-          showOnboarding = true;
-        }
+    // First-run check: a provider key and the office architect that designs
+    // offices. Both are asked for once; either missing opens the setup flow.
+    void checkFirstRun();
+
+    let unlistenActivity: UnlistenFn | null = null;
+    void listen<AgentActivityEvent>("agent-activity", (event) => {
+      agentActivity.record(event.payload);
+    })
+      .then((unlisten) => {
+        unlistenActivity = unlisten;
       })
-      .catch(() => {});
+      .catch((error) => console.debug("agent activity events unavailable:", error));
+    void invoke<boolean>("computer_takeover")
+      .then((paused) => {
+        agentActivity.computerPaused = paused;
+      })
+      .catch(() => undefined);
 
     const unsubK = keyboardShortcuts.register("mod+k", () => workspace.togglePalette());
     const unsubComma = keyboardShortcuts.register("mod+,", () => {
@@ -145,6 +197,7 @@
       workspace.sidebarCollapsed = !workspace.sidebarCollapsed;
     });
     const unsubN = keyboardShortcuts.register("mod+n", () => workspace.newChat());
+    const unsubBrowser = keyboardShortcuts.register("mod+shift+b", () => browserDock.toggle());
     const unsubEsc = keyboardShortcuts.register("escape", () => {
       workspace.showPalette = false;
       workspace.showSettings = false;
@@ -181,7 +234,9 @@
       unsubComma();
       unsubB();
       unsubN();
+      unsubBrowser();
       unsubEsc();
+      unlistenActivity?.();
       mediaQuery.removeEventListener("change", handler);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("open-settings", handleOpenSettings);
@@ -211,7 +266,9 @@
 
   <div
     class="app-frame flex-1 min-h-0"
-    style="--frame-sidebar: {showSidebar ? workspace.sidebarWidth + 'px' : '0px'}"
+    style="--frame-sidebar: {showSidebar ? workspace.sidebarWidth + 'px' : '0px'}; --frame-browser: {browserDock.open
+      ? 'min(620px, 46vw)'
+      : '0px'}"
   >
     <WorkspaceRail
       onOpenSettings={() => workspace.openSettings()}
@@ -288,6 +345,10 @@
         <div class="flex-1 min-h-0 overflow-hidden">
           <ProjectsView />
         </div>
+      {:else if workspace.dest === "channels"}
+        <div class="relative flex-1 min-h-0 overflow-hidden">
+          <TeamChannelsView />
+        </div>
       {:else if workspace.dest === "routines"}
         <!-- RoutinesPanel owns the pane header (title chips, bot switcher, New);
              the old duplicate 46px bar was removed. -->
@@ -344,6 +405,8 @@
         <HomePane theme={currentTheme} />
       {/if}
     </main>
+
+    <BrowserDock bots={workspace.bots} />
   </div>
 </div>
 
@@ -351,17 +414,41 @@
   open={workspace.showPalette}
   onClose={() => (workspace.showPalette = false)}
   bots={workspace.bots}
+  chatrooms={workspace.chatrooms}
   onSelectBot={(id) => {
     workspace.selectBot(id);
     workspace.showPalette = false;
+  }}
+  onSelectRoom={(id) => {
+    workspace.selectRoom(id);
+    workspace.showPalette = false;
+  }}
+  onNewChat={() => {
+    workspace.newChat();
   }}
   onCreateBot={() => {
     workspace.showPalette = false;
     workspace.showAgents();
   }}
-  onOpenSettings={() => {
+  onOpenSettings={(section) => {
     workspace.showPalette = false;
-    workspace.openSettings();
+    workspace.openSettings(section ?? "keys");
+  }}
+  onNavigate={(dest) => {
+    workspace.showPalette = false;
+    workspace.goto(dest);
+  }}
+  onOpenPlugins={openMarketplace}
+  onOpenSkills={openSkills}
+  onToggleBrowser={() => browserDock.toggle()}
+  onOpenMessage={(hit) => {
+    workspace.showPalette = false;
+    workspace.selectBot(hit.bot_id);
+    requestMessageFocus({
+      botId: hit.bot_id,
+      threadId: hit.thread_id,
+      messageId: hit.message_id,
+    });
   }}
 />
 
@@ -369,11 +456,7 @@
   open={workspace.showSettings}
   onClose={() => {
     workspace.showSettings = false;
-    invoke<string[]>("get_configured_providers")
-      .then((keys) => {
-        if (keys && keys.length > 0) showOnboarding = false;
-      })
-      .catch(() => {});
+    void checkFirstRun();
   }}
   bots={workspace.bots}
   initialSection={workspace.settingsTab}
@@ -401,5 +484,5 @@
     showOnboarding = false;
     workspace.openSettings("keys");
   }}
-  onSkip={() => { showOnboarding = false; }}
+  onSkip={() => { dismissOnboarding(); }}
 />

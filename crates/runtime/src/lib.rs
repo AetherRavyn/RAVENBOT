@@ -3,36 +3,46 @@
 //! This crate implements the directed task graph executor for parallel
 //! multi-agent orchestration with checkpoint/resume capabilities.
 
-pub mod graph;
 pub mod executor;
+pub mod governor;
+pub mod graph;
 pub mod orchestrator;
 pub mod state;
 pub mod tree;
 pub mod workspace;
 
+use base64::engine::general_purpose;
 use ravenbot_core::{Run, RunState};
 use ravenbot_db::Database;
-use ravenbot_models::{ProviderManager, Message, ToolDefinition, DeltaCallback, ModelProviderTrait, StreamChunk};
-use ravenbot_skills::{SkillRegistry, SkillContext, SkillKind};
-use ravenbot_plugins::PluginRegistry;
+use ravenbot_governance::{AuditLogger, BudgetManager, PromptVersionControl};
 use ravenbot_mcp::McpRegistry;
+use ravenbot_memory::{
+    embedding::LocalEmbedding, LearningEngine, MemoryRetriever, MemoryStore, OfficeMemoryStore,
+    SelfReviewer,
+};
+use ravenbot_models::{
+    DeltaCallback, Message, ModelProviderTrait, ProviderManager, StreamChunk, ToolDefinition,
+};
+use ravenbot_plugins::PluginRegistry;
 use ravenbot_sandbox::KillSwitch;
-use ravenbot_memory::{MemoryStore, MemoryRetriever, SelfReviewer, OfficeMemoryStore, LearningEngine, embedding::LocalEmbedding};
-use ravenbot_governance::{BudgetManager, AuditLogger, PromptVersionControl};
-use std::sync::Arc;
-use std::collections::{HashMap, HashSet};
-use tokio::sync::Mutex;
-use thiserror::Error;
-use uuid::Uuid;
+use ravenbot_skills::{SkillContext, SkillKind, SkillRegistry};
 use serde::Serialize;
-use base64::engine::general_purpose;
+use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
+use thiserror::Error;
+use tokio::sync::Mutex;
+use uuid::Uuid;
 
 /// Live events streamed to the UI during a run.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StreamEvent {
     /// A new assistant token delta arrived
-    Delta { bot_id: Uuid, thread_id: Uuid, content: String },
+    Delta {
+        bot_id: Uuid,
+        thread_id: Uuid,
+        content: String,
+    },
     /// A new reasoning (extended-thinking) token arrived.
     ///
     /// Its own event rather than text with `<think>` markers wrapped around it,
@@ -44,7 +54,11 @@ pub enum StreamEvent {
     ///
     /// Separate means it survives `Clear`, survives into the persisted message,
     /// and can be shown beside the agent while it happens.
-    Reasoning { bot_id: Uuid, thread_id: Uuid, content: String },
+    Reasoning {
+        bot_id: Uuid,
+        thread_id: Uuid,
+        content: String,
+    },
     /// Clear streamed text (a new model round begins, e.g. after tool use)
     Clear { bot_id: Uuid, thread_id: Uuid },
     /// A tool/skill execution started
@@ -60,11 +74,22 @@ pub enum StreamEvent {
         arguments: serde_json::Value,
     },
     /// A tool/skill execution finished
-    ToolFinished { thread_id: Uuid, bot_id: Uuid, name: String },
+    ToolFinished {
+        thread_id: Uuid,
+        bot_id: Uuid,
+        name: String,
+    },
     /// Web sources arrived from a search tool (live citation chips)
-    Sources { thread_id: Uuid, sources: Vec<ravenbot_core::Source> },
+    Sources {
+        thread_id: Uuid,
+        sources: Vec<ravenbot_core::Source>,
+    },
     /// A tool produced an image (e.g. a screenshot) — render inline live.
-    Image { thread_id: Uuid, name: String, data_url: String },
+    Image {
+        thread_id: Uuid,
+        name: String,
+        data_url: String,
+    },
     /// A tool call is parked waiting for user approval (Allow/Deny card)
     ApprovalRequested {
         bot_id: Uuid,
@@ -90,9 +115,29 @@ pub enum StreamEvent {
         answer: String,
     },
     /// Live bot status for the run lifecycle (thinking / running_tool / done)
-    Status { bot_id: Uuid, thread_id: Uuid, state: String },
+    Status {
+        bot_id: Uuid,
+        thread_id: Uuid,
+        state: String,
+    },
     /// Real token/cost usage for a completed run
-    Usage { thread_id: Uuid, tokens: u64, cost: f64 },
+    Usage {
+        thread_id: Uuid,
+        tokens: u64,
+        cost: f64,
+    },
+    /// Best-effort context-window usage for this round.
+    ///
+    /// Emitted after compaction, so the composer can show how full the model
+    /// window actually is instead of only a lifetime token total. `compacted`
+    /// says the round started after a compaction, including a manual one.
+    Context {
+        bot_id: Uuid,
+        thread_id: Uuid,
+        used_tokens: u64,
+        window_tokens: u64,
+        compacted: bool,
+    },
     /// An agent handed work to another agent.
     ///
     /// Carries the *office* thread as well as the delegating one, because the
@@ -146,6 +191,7 @@ fn stream_event_thread_id(event: &StreamEvent) -> Uuid {
         | StreamEvent::QuestionAnswered { thread_id, .. }
         | StreamEvent::Status { thread_id, .. }
         | StreamEvent::Usage { thread_id, .. }
+        | StreamEvent::Context { thread_id, .. }
         | StreamEvent::Delegation { thread_id, .. } => *thread_id,
     }
 }
@@ -162,8 +208,9 @@ fn cap_preserving_protected<T, F>(
 where
     F: Fn(&T) -> String,
 {
-    let (mut protected_items, mut extra): (Vec<T>, Vec<T>) =
-        items.into_iter().partition(|item| protected.contains(&id(item)));
+    let (mut protected_items, mut extra): (Vec<T>, Vec<T>) = items
+        .into_iter()
+        .partition(|item| protected.contains(&id(item)));
     let room = cap.saturating_sub(protected_items.len());
     extra.truncate(room);
     protected_items.extend(extra);
@@ -183,10 +230,15 @@ fn host_control_policy() -> &'static str {
                 .map(|v| !v.trim().is_empty())
                 .unwrap_or(false);
         if wayland {
-            let override_on = std::env::var("RAVENBOT_ALLOW_WAYLAND_CONTROL")
-                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-                .unwrap_or(false);
-            return if override_on { "opt_in_required" } else { "blocked" };
+            let override_on = ravenbot_core::wayland_control_allowed()
+                || std::env::var("RAVENBOT_ALLOW_WAYLAND_CONTROL")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false);
+            return if override_on {
+                "opt_in_required"
+            } else {
+                "blocked"
+            };
         }
     }
     "opt_in_required"
@@ -300,11 +352,20 @@ pub struct Runtime {
     /// node and race each other (silently auto-approving tools in a UI run, or
     /// blocking a headless node).
     auto_allow_runs: std::sync::Mutex<HashSet<Uuid>>,
+    /// Threads that asked for a manual compaction on their next run.
+    ///
+    /// Compaction is per-run state, so the request cannot act immediately from
+    /// the UI; it is consumed by the next `execute_run` for the thread. Entries
+    /// are removed when consumed, so a dismissed or never-run request does not
+    /// accumulate.
+    force_compaction: std::sync::Mutex<HashSet<Uuid>>,
     /// Cooperative cancellation flags by run id. `cancel_run` marks the run;
     /// the execution loop observes it between steps and stops cleanly.
     cancel_flags: std::sync::Mutex<HashSet<Uuid>>,
     /// Runs requested to pause at the next tool-round boundary (resumable).
     pause_flags: std::sync::Mutex<HashSet<Uuid>>,
+    /// Cross-run request pacing for model providers.
+    provider_governor: governor::ProviderGovernor,
 }
 
 /**
@@ -334,6 +395,48 @@ pub struct Runtime {
  * explicit boolean wins, then `denied`, then `error` only when it is actually
  * present *and* not null/false.
  */
+/// Resolve a provider callable name back to the skill that produced it.
+///
+/// The callable name is sanitized (`anthropics/pdf` → `anthropics_pdf_<hash>`)
+/// because providers reject anything outside `^[a-zA-Z0-9_-]+$`. Execution
+/// receives the sanitized name, so this is the mapping that keeps the skill
+/// callable. Raw ids are still accepted for older prompts and tests.
+fn find_skill_by_callable_name(
+    skills: &[Arc<dyn ravenbot_skills::Skill>],
+    name: &str,
+) -> Option<Arc<dyn ravenbot_skills::Skill>> {
+    skills
+        .iter()
+        .find(|s| s.tool_name() == name || s.id() == name)
+        .cloned()
+}
+
+#[cfg(test)]
+mod tool_name_tests {
+    use super::*;
+
+    #[test]
+    fn a_sanitized_tool_name_resolves_back_to_its_skill() {
+        let registry = ravenbot_skills::SkillRegistry::new_builtin();
+        let skill = registry.get("anthropics/pdf").expect("awesome skill");
+        let callable = skill.tool_name();
+        assert_ne!(callable, skill.id());
+        assert!(callable
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+        let resolved = find_skill_by_callable_name(&[skill.clone()], &callable)
+            .expect("callable name must resolve");
+        assert_eq!(resolved.id(), "anthropics/pdf");
+        // Older prompts and existing tests call the raw id; keep that working.
+        assert_eq!(
+            find_skill_by_callable_name(&[skill], "anthropics/pdf")
+                .expect("raw id must resolve")
+                .id(),
+            "anthropics/pdf"
+        );
+    }
+}
+
 impl Runtime {
     /**
      * Record every file this tool call changed.
@@ -372,8 +475,14 @@ impl Runtime {
             let Some(path) = entry.get("path").and_then(|v| v.as_str()) else {
                 continue;
             };
-            let added = entry.get("lines_added").and_then(|v| v.as_i64()).unwrap_or(0);
-            let deleted = entry.get("lines_deleted").and_then(|v| v.as_i64()).unwrap_or(0);
+            let added = entry
+                .get("lines_added")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
+            let deleted = entry
+                .get("lines_deleted")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0);
             // A change that touched nothing (a context-only hunk, a rewrite with
             // identical content) is not a change. Recording it would inflate the
             // file count and make a no-op look like work.
@@ -389,11 +498,118 @@ impl Runtime {
                 added,
                 deleted,
             )
-            .with_diff(entry.get("diff").and_then(|v| v.as_str()).map(str::to_string));
-            if let Err(e) = ravenbot_db::queries::FileChangeQueries::insert(self.db.pool(), &change).await {
+            .with_diff(
+                entry
+                    .get("diff")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            );
+            if let Err(e) =
+                ravenbot_db::queries::FileChangeQueries::insert(self.db.pool(), &change).await
+            {
                 tracing::warn!(path = %change.path, error = %e, "failed to journal file change");
             }
         }
+    }
+}
+
+/// Add one span to a run's trace, keeping the persisted list bounded.
+fn push_trace_span(
+    spans: &mut Vec<ravenbot_core::TraceSpan>,
+    kind: &str,
+    label: impl Into<String>,
+    started_ms: u64,
+    duration_ms: u64,
+    failed: bool,
+    detail: Option<String>,
+) {
+    if spans.len() >= ravenbot_core::MAX_MESSAGE_TRACE_SPANS {
+        return;
+    }
+    let mut span = ravenbot_core::TraceSpan::new(
+        format!("span-{}", spans.len()),
+        kind,
+        label,
+        started_ms,
+        duration_ms,
+    );
+    if failed {
+        span = span.failed();
+    }
+    if let Some(detail) = detail {
+        span = span.with_detail(detail);
+    }
+    spans.push(span);
+}
+
+/// The kind, label, and detail a tool call contributes to the turn trace.
+///
+/// Most calls are just their own name. Delegation and memory writes are the
+/// two that change another thread or the agent's future context, and "delegate
+/// ran" or "memory_save ran" makes the trace look busy without saying what
+/// happened — so those carry the target agent and the saved fact.
+fn tool_span_description(
+    name: &str,
+    arguments: &serde_json::Value,
+    result: &serde_json::Value,
+    failed: bool,
+) -> (&'static str, String, Option<String>) {
+    let output = result.get("output").unwrap_or(result);
+    match name {
+        "delegate" => {
+            let target = output
+                .get("target_bot")
+                .or_else(|| output.get("target_bot_id"))
+                .and_then(|value| value.as_str())
+                .or_else(|| arguments.get("bot_id").and_then(|value| value.as_str()))
+                .unwrap_or("another agent");
+            let detail = if failed {
+                result
+                    .get("error")
+                    .and_then(|value| value.as_str())
+                    .or_else(|| output.get("error").and_then(|value| value.as_str()))
+                    .map(str::to_string)
+            } else {
+                output
+                    .get("thread_id")
+                    .and_then(|value| value.as_str())
+                    .map(|thread| format!("thread {thread}"))
+            };
+            (
+                "delegation",
+                if failed {
+                    format!("Delegation to {target} failed")
+                } else {
+                    format!("Delegated to {target}")
+                },
+                detail,
+            )
+        }
+        "memory_save" => {
+            let saved = output
+                .get("saved")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .trim();
+            let detail = if saved.is_empty() {
+                result
+                    .get("error")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            } else {
+                Some(saved.chars().take(140).collect())
+            };
+            (
+                "memory",
+                if failed {
+                    "Memory save failed".to_string()
+                } else {
+                    "Memory saved".to_string()
+                },
+                detail,
+            )
+        }
+        _ => ("tool", name.to_string(), None),
     }
 }
 
@@ -408,7 +624,11 @@ fn tool_result_failed(result: &serde_json::Value) -> bool {
     {
         return true;
     }
-    if result.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+    if result
+        .get("is_error")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
         return true;
     }
     match result.get("error") {
@@ -444,11 +664,13 @@ impl Runtime {
     pub fn new(db: Database) -> Self {
         let embedding_provider = Box::new(LocalEmbedding::new(128));
         let memory_store = Arc::new(MemoryStore::new(db.pool().clone(), embedding_provider));
-        let memory_retriever = Arc::new(MemoryRetriever::new(
-            MemoryStore::new(db.pool().clone(), Box::new(LocalEmbedding::new(128)))
-        ));
-        let self_reviewer = Arc::new(SelfReviewer::new(db.pool().clone(),
-            MemoryStore::new(db.pool().clone(), Box::new(LocalEmbedding::new(128)))
+        let memory_retriever = Arc::new(MemoryRetriever::new(MemoryStore::new(
+            db.pool().clone(),
+            Box::new(LocalEmbedding::new(128)),
+        )));
+        let self_reviewer = Arc::new(SelfReviewer::new(
+            db.pool().clone(),
+            MemoryStore::new(db.pool().clone(), Box::new(LocalEmbedding::new(128))),
         ));
 
         let plugin_registry = Arc::new(PluginRegistry::new(db.pool().clone()));
@@ -465,7 +687,10 @@ impl Runtime {
         // expires as `SQLITE_BUSY: database is locked` instead of waiting.
         // That is the flake it produced. Schema setup belongs to the migration
         // that owns it; none of it needs to happen asynchronously.
-        let office_memory = Arc::new(OfficeMemoryStore::new(db.pool().clone(), Box::new(LocalEmbedding::new(128))));
+        let office_memory = Arc::new(OfficeMemoryStore::new(
+            db.pool().clone(),
+            Box::new(LocalEmbedding::new(128)),
+        ));
         let learning = Arc::new(LearningEngine::new(db.pool().clone()));
         Self {
             db: db.clone(),
@@ -490,8 +715,10 @@ impl Runtime {
             status_seq: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             auto_allow_approvals: std::sync::atomic::AtomicBool::new(false),
             auto_allow_runs: std::sync::Mutex::new(HashSet::new()),
+            force_compaction: std::sync::Mutex::new(HashSet::new()),
             cancel_flags: std::sync::Mutex::new(HashSet::new()),
             pause_flags: std::sync::Mutex::new(HashSet::new()),
+            provider_governor: governor::ProviderGovernor::default(),
         }
     }
 
@@ -611,9 +838,18 @@ impl Runtime {
         true
     }
 
-    /// Call the model, trying the primary then the fallback. Each provider gets
-    /// one automatic retry for transient failures. Returns the response and the
-    /// index of the provider that answered (so later rounds reuse it).
+    /// Call the model, trying the primary then the fallback.
+    ///
+    /// Every request goes through [`governor::ProviderGovernor`] first, so an
+    /// office that dispatches seven nodes at once sends at most three requests
+    /// to one provider and spaces their starts. A 429 pauses the provider for
+    /// every caller, not just this one.
+    ///
+    /// Retries are bounded and honest: three attempts for a transient failure,
+    /// exponential backoff with jitter, and **no retry after the stream has
+    /// emitted anything** — replaying a partially rendered answer duplicates
+    /// text the user is already reading. Auth/credit/protocol failures are
+    /// permanent and move straight to the fallback provider.
     #[allow(clippy::too_many_arguments)]
     async fn call_model(
         &self,
@@ -626,34 +862,86 @@ impl Runtime {
         on_delta: ravenbot_models::DeltaCallback,
         is_think: bool,
     ) -> Result<(ravenbot_models::ModelResponse, usize), RuntimeError> {
+        const MAX_ATTEMPTS: u32 = 3;
         let mut last_err: Option<String> = None;
-        for (offset, provider) in chain.iter().enumerate().skip(start_idx.min(chain.len().saturating_sub(1))) {
-            let first = provider
-                .complete_stream(messages, tools, temperature, max_tokens, on_delta.clone(), is_think)
-                .await;
-            match first {
-                Ok(resp) => return Ok((resp, offset)),
-                Err(e) => {
-                    let msg = e.to_string();
-                    if is_retryable_model_error(&msg) && !self.kill_switch.is_triggered().await {
-                        tracing::warn!(provider = offset, error = %msg, "Transient model failure; retrying once");
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        match provider
-                            .complete_stream(messages, tools, temperature, max_tokens, on_delta.clone(), is_think)
-                            .await
-                        {
-                            Ok(resp) => return Ok((resp, offset)),
-                            Err(e2) => last_err = Some(format!("{} (retry failed: {})", msg, e2)),
+        let first = start_idx.min(chain.len().saturating_sub(1));
+
+        for (offset, provider) in chain.iter().enumerate().skip(first) {
+            let key = format!("{:?}", provider.provider_type());
+            let mut attempt = 0u32;
+
+            loop {
+                attempt += 1;
+                let saw_output = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let tracked: ravenbot_models::DeltaCallback = {
+                    let flag = saw_output.clone();
+                    let inner = on_delta.clone();
+                    Arc::new(move |chunk| {
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                        inner(chunk);
+                    })
+                };
+
+                let permit = self.provider_governor.acquire(&key).await;
+                let result = provider
+                    .complete_stream(messages, tools, temperature, max_tokens, tracked, is_think)
+                    .await;
+                drop(permit);
+
+                match result {
+                    Ok(resp) => return Ok((resp, offset)),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        let emitted = saw_output.load(std::sync::atomic::Ordering::Relaxed);
+
+                        if is_permanent_provider_error(&msg) {
+                            tracing::error!(
+                                provider = offset,
+                                error = %msg,
+                                "Provider rejected the request permanently; not retrying"
+                            );
+                            last_err = Some(msg);
+                            break;
                         }
-                    } else {
-                        last_err = Some(msg);
+
+                        if attempt >= MAX_ATTEMPTS || emitted || !is_retryable_model_error(&msg) {
+                            if emitted {
+                                tracing::warn!(
+                                    provider = offset,
+                                    error = %msg,
+                                    "Stream failed after emitting output; not retrying to avoid duplicate text"
+                                );
+                            }
+                            last_err = Some(msg);
+                            break;
+                        }
+
+                        let wait = retry_delay(&msg, attempt);
+                        if is_rate_limit_error(&msg) {
+                            self.provider_governor.penalize(&key, wait);
+                            tracing::warn!(
+                                provider = offset,
+                                attempt,
+                                wait_secs = wait.as_secs(),
+                                "Rate limited; every request to this provider now waits"
+                            );
+                        } else {
+                            tracing::warn!(
+                                provider = offset,
+                                attempt,
+                                wait_secs = wait.as_secs(),
+                                "Transient model failure; retrying"
+                            );
+                        }
+                        tokio::time::sleep(wait).await;
                     }
                 }
             }
         }
-        Err(RuntimeError::Model(
-            last_err.unwrap_or_else(|| "no model provider available".to_string()),
-        ))
+
+        Err(RuntimeError::Model(last_err.unwrap_or_else(|| {
+            "no model provider available".to_string()
+        })))
     }
 
     /// Run a single-shot text completion as a specific bot (no tools). Public
@@ -671,6 +959,37 @@ impl Runtime {
         self.generate_text(&bot, system, prompt, max_tokens).await
     }
 
+    /// Single-shot text completion on an explicit provider/model (no tools, no
+    /// streaming). Used where there is no bot to borrow — designing a new
+    /// office, for example.
+    pub async fn complete_with_model(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        system: &str,
+        prompt: &str,
+        max_tokens: u32,
+    ) -> Result<String, RuntimeError> {
+        let provider: Arc<dyn ModelProviderTrait> = {
+            let manager = self.provider_manager.lock().await;
+            Arc::from(
+                manager
+                    .create_provider_from_str_with_model(provider_id, Some(model_id))
+                    .map_err(|e| RuntimeError::Model(e.to_string()))?,
+            )
+        };
+        let messages = vec![
+            Message::text("system", system),
+            Message::text("user", prompt),
+        ];
+        let noop: DeltaCallback = Arc::new(|_| {});
+        let chain = vec![provider];
+        let (resp, _) = self
+            .call_model(&chain, 0, &messages, &[], 0.3, max_tokens, noop, false)
+            .await?;
+        Ok(resp.content.unwrap_or_default())
+    }
+
     /// Single-shot text completion on a bot's provider (no tools, no
     /// streaming). Used by the office orchestrator for planning and synthesis.
     async fn generate_text(
@@ -681,19 +1000,14 @@ impl Runtime {
         max_tokens: u32,
     ) -> Result<String, RuntimeError> {
         let chain = self.provider_chain(bot).await?;
-        let provider = chain
-            .into_iter()
-            .next()
-            .ok_or_else(|| RuntimeError::Model("no provider available".to_string()))?;
         let messages = vec![
             Message::text("system", system),
             Message::text("user", prompt),
         ];
         let noop: DeltaCallback = Arc::new(|_| {});
-        let resp = provider
-            .complete_stream(&messages, &[], 0.3, max_tokens, noop, false)
-            .await
-            .map_err(|e| RuntimeError::Model(e.to_string()))?;
+        let (resp, _) = self
+            .call_model(&chain, 0, &messages, &[], 0.3, max_tokens, noop, false)
+            .await?;
         Ok(resp.content.unwrap_or_default())
     }
 
@@ -774,7 +1088,10 @@ impl Runtime {
             )
             .await;
 
-        let final_content = match response.reasoning.filter(|reasoning| !reasoning.trim().is_empty()) {
+        let final_content = match response
+            .reasoning
+            .filter(|reasoning| !reasoning.trim().is_empty())
+        {
             Some(reasoning) if !content.contains("<think>") => {
                 format!("<think>\n{}\n</think>\n\n{}", reasoning.trim(), content)
             }
@@ -819,14 +1136,33 @@ impl Runtime {
             .ok()
             .flatten()?;
         let prompt = orchestrator::plan_prompt(office_goal, office_policy, members, request);
-        let text = self
-            .generate_text(&bot, "You are a precise task planner. Output only JSON.", &prompt, 1200)
-            .await
-            .ok()?;
+        let generated = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            self.generate_text(
+                &bot,
+                "You are a precise task planner. Output only JSON.",
+                &prompt,
+                2000,
+            ),
+        )
+        .await;
+        let text = match generated {
+            Ok(Ok(text)) => text,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "Office plan model failed; using the deterministic role plan");
+                return None;
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Office plan timed out after 60s; using the deterministic role plan"
+                );
+                return None;
+            }
+        };
         match orchestrator::parse_plan(&text) {
             Some(plan) => Some(plan),
             None => {
-                tracing::warn!("Office plan was unparseable; falling back to fan-out");
+                tracing::warn!("Office plan was unparseable; using the deterministic role plan");
                 None
             }
         }
@@ -847,27 +1183,46 @@ impl Runtime {
                 .collect::<Vec<_>>()
                 .join("\n\n")
         };
-        let Ok(Some(bot)) = ravenbot_db::queries::BotQueries::get(self.db.pool(), lead_bot_id).await
+        let Ok(Some(bot)) =
+            ravenbot_db::queries::BotQueries::get(self.db.pool(), lead_bot_id).await
         else {
             return fallback();
         };
         let prompt = orchestrator::synthesis_prompt(request, results);
-        match self
-            .generate_text(
+        let generated = tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            self.generate_text(
                 &bot,
                 "You are the lead of an AI team, writing the final answer for the user.",
                 &prompt,
                 2000,
-            )
-            .await
-        {
-            Ok(text) if !text.trim().is_empty() => text,
+            ),
+        )
+        .await;
+        match generated {
+            Ok(Ok(text)) if !text.trim().is_empty() => text,
+            Ok(Err(e)) => {
+                tracing::warn!(error = %e, "Office synthesis failed; using the concatenated results");
+                fallback()
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Office synthesis timed out after 60s; using the concatenated results"
+                );
+                fallback()
+            }
             _ => fallback(),
         }
     }
 
     /// Max model↔tool rounds per run. Configurable via bot config key
-    /// `max_tool_rounds` or env `RAVENBOT_MAX_TOOL_ROUNDS` (default 12).
+    /// `max_tool_rounds` or env `RAVENBOT_MAX_TOOL_ROUNDS` (default 20).
+    ///
+    /// A real engineering turn is read → edit → run tests → read the failure →
+    /// edit again → rerun → write the handoff. At the old default of 12 those
+    /// turns ended in `PartialSuccess` with the work half-done, which then
+    /// skipped every dependent node. Twenty still bounds a runaway loop while
+    /// leaving room to finish a task and prove it.
     fn max_tool_rounds(&self, bot: &ravenbot_core::Bot) -> u32 {
         bot.config
             .max_tool_rounds
@@ -877,7 +1232,19 @@ impl Runtime {
                     .and_then(|v| v.trim().parse::<u32>().ok())
             })
             .filter(|v| *v > 0)
-            .unwrap_or(12)
+            .unwrap_or(20)
+    }
+
+    /// Ask the next run on this thread to compact its context more aggressively.
+    ///
+    /// A run's message state only exists while it runs, so the request is
+    /// recorded here and consumed at the next model round. It is intentionally
+    /// cheap and synchronous: the composer calls it from a button.
+    pub fn request_compaction(&self, thread_id: Uuid) {
+        self.force_compaction
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(thread_id);
     }
 
     /// Enable/disable headless auto-allow for approval gates.
@@ -887,7 +1254,8 @@ impl Runtime {
     }
 
     fn auto_allow(&self) -> bool {
-        self.auto_allow_approvals.load(std::sync::atomic::Ordering::SeqCst)
+        self.auto_allow_approvals
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Enable/disable headless auto-allow for one specific run. Use this for
@@ -923,13 +1291,19 @@ impl Runtime {
     /// Install (or remove, with `None`) the fallback live stream emitter used
     /// by runs that did not register a thread-specific emitter (office nodes).
     pub fn set_stream_emitter(&self, emitter: Option<StreamEmitter>) {
-        *self.default_stream_emitter.write().expect("stream emitter lock poisoned") = emitter;
+        *self
+            .default_stream_emitter
+            .write()
+            .expect("stream emitter lock poisoned") = emitter;
     }
 
     /// Install (or remove, with `None`) the stream emitter for one thread.
     /// Concurrent runs each use their own thread, so their streams stay isolated.
     pub fn set_thread_emitter(&self, thread_id: Uuid, emitter: Option<StreamEmitter>) {
-        let mut map = self.stream_emitters.write().expect("stream emitter lock poisoned");
+        let mut map = self
+            .stream_emitters
+            .write()
+            .expect("stream emitter lock poisoned");
         match emitter {
             Some(e) => {
                 map.insert(thread_id, e);
@@ -1250,21 +1624,20 @@ impl Runtime {
             .flatten();
         let office = self.office_of(parent_run.thread_id).await;
         let roster: Vec<Uuid> = match &office {
-            Some(room) => ravenbot_db::queries::ChatRoomQueries::list_members(self.db.pool(), room.id)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .map(|m| m.bot_id)
-                .collect(),
+            Some(room) => {
+                ravenbot_db::queries::ChatRoomQueries::list_members(self.db.pool(), room.id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| m.bot_id)
+                    .collect()
+            }
             None => Vec::new(),
         };
         if let Some(caller) = &caller {
-            if let Err(denial) = ravenbot_core::delegation_permitted(
-                caller,
-                target.id,
-                &target.name,
-                &roster,
-            ) {
+            if let Err(denial) =
+                ravenbot_core::delegation_permitted(caller, target.id, &target.name, &roster)
+            {
                 // Announced even though nothing will happen. A refused handoff
                 // is the one most worth seeing: the agent wanted to ask a
                 // colleague and was not allowed, and if that only appears as a
@@ -1285,7 +1658,10 @@ impl Runtime {
         // Run the instruction through the real runtime in a fresh thread
         let thread = ravenbot_core::Thread::new(
             target.id,
-            format!("Delegation: {}", instruction.chars().take(30).collect::<String>()),
+            format!(
+                "Delegation: {}",
+                instruction.chars().take(30).collect::<String>()
+            ),
         );
         if let Err(e) = ravenbot_db::queries::ThreadQueries::create(self.db.pool(), &thread).await {
             return ravenbot_skills::SkillResult::failure(e.to_string());
@@ -1329,7 +1705,9 @@ impl Runtime {
             )
             .await;
         let user_msg = ravenbot_core::Message::user(thread.id, &prompt);
-        if let Err(e) = ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &user_msg).await {
+        if let Err(e) =
+            ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &user_msg).await
+        {
             return ravenbot_skills::SkillResult::failure(e.to_string());
         }
         let mut child_run = Run::new(target.id, thread.id);
@@ -1338,7 +1716,10 @@ impl Runtime {
         }
 
         {
-            let mut map = self.delegation_depth.write().expect("delegation depth lock");
+            let mut map = self
+                .delegation_depth
+                .write()
+                .expect("delegation depth lock");
             map.insert(child_run.id, depth + 1);
         }
 
@@ -1354,8 +1735,24 @@ impl Runtime {
             None,
         );
 
+        // A child of an autonomous office node is autonomous too. Without
+        // this, a lead running headless could delegate to a fleet agent and
+        // park the whole chain on an approval card nobody will answer.
+        let inherited_auto_allow = self.auto_allow_for(parent_run.id);
+        if inherited_auto_allow {
+            self.allow_approvals_for_run(child_run.id, true);
+        }
+
+        // The child runs on its own thread, and the office should see it work
+        // rather than only the start/end handoff announcement. Inherit the
+        // parent's live emitter for the duration of the child run.
+        if let Some(emitter) = self.emitter_for(parent_run.thread_id) {
+            self.set_thread_emitter(thread.id, Some(emitter));
+        }
         // Box the recursive call (delegation → run → tool → delegation…)
         let exec_result = Box::pin(self.execute_run(&mut child_run)).await;
+        self.set_thread_emitter(thread.id, None);
+        self.allow_approvals_for_run(child_run.id, false);
 
         // The chain ended, one way or the other, so the depth entry has done its
         // job. Every exit path reaches here, including the error and kill-switch
@@ -1367,18 +1764,21 @@ impl Runtime {
             .expect("delegation depth lock")
             .remove(&child_run.id);
 
-        let response_text = match ravenbot_db::queries::MessageQueries::list_by_thread(self.db.pool(), thread.id).await {
-            Ok(messages) => messages
-                .iter()
-                .rev()
-                .find(|m| matches!(m.role, ravenbot_core::MessageRole::Assistant))
-                .and_then(|m| match &m.content {
-                    ravenbot_core::MessageContent::Text { text, .. } => Some(text.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default(),
-            Err(_) => String::new(),
-        };
+        let response_text =
+            match ravenbot_db::queries::MessageQueries::list_by_thread(self.db.pool(), thread.id)
+                .await
+            {
+                Ok(messages) => messages
+                    .iter()
+                    .rev()
+                    .find(|m| matches!(m.role, ravenbot_core::MessageRole::Assistant))
+                    .and_then(|m| match &m.content {
+                        ravenbot_core::MessageContent::Text { text, .. } => Some(text.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default(),
+                Err(_) => String::new(),
+            };
 
         match exec_result {
             Ok(()) => {
@@ -1516,11 +1916,7 @@ impl Runtime {
     /// says who *could* help; a roster with status says who is free, and that is
     /// the difference between delegating to a specialist who answers in a minute
     /// and one who is already three tool calls deep.
-    async fn office_roster(
-        &self,
-        chatroom_id: Uuid,
-        exclude: Uuid,
-    ) -> Vec<String> {
+    async fn office_roster(&self, chatroom_id: Uuid, exclude: Uuid) -> Vec<String> {
         #[derive(sqlx::FromRow)]
         struct RosterRow {
             id: String,
@@ -1651,8 +2047,8 @@ impl Runtime {
             .map_err(|e| format!("Could not link the delegated thread to the office: {e}"))?;
 
         if !office.project_folders.is_empty() {
-            let folders = serde_json::to_string(&office.project_folders)
-                .map_err(|e| e.to_string())?;
+            let folders =
+                serde_json::to_string(&office.project_folders).map_err(|e| e.to_string())?;
             sqlx::query("UPDATE threads SET project_folders = ? WHERE id = ?")
                 .bind(folders)
                 .bind(thread.id.to_string())
@@ -1663,6 +2059,22 @@ impl Runtime {
         Ok(())
     }
 
+    /// Find the skill behind a tool call among an assembled list.
+    ///
+    /// Match the provider-safe callable name first, then the raw id (older
+    /// prompts and hand-written tests still use ids).
+    fn resolve_tool_skill(
+        &self,
+        tool_skills: &[Arc<dyn ravenbot_skills::Skill>],
+        name: &str,
+    ) -> Option<Arc<dyn ravenbot_skills::Skill>> {
+        find_skill_by_callable_name(tool_skills, name).or_else(|| {
+            self.skill_registry
+                .get(name)
+                .or_else(|| find_skill_by_callable_name(&self.skill_registry.list(), name))
+        })
+    }
+
     /// Resolve a tool name to its approval risk level.
     /// Order: assembled per-run skills -> global registry -> MCP tools are
     /// High (third-party code, fail-closed) -> runtime-native memory/delegate
@@ -1670,6 +2082,7 @@ impl Runtime {
     async fn resolve_tool_risk(
         &self,
         tool_name: &str,
+        arguments: &serde_json::Value,
         tool_skills: &[std::sync::Arc<dyn ravenbot_skills::Skill>],
     ) -> ravenbot_skills::SkillRisk {
         #[allow(unused_imports)]
@@ -1683,14 +2096,44 @@ impl Runtime {
         if tool_name == "delegate" {
             return ravenbot_skills::SkillRisk::High;
         }
-        if let Some(skill) = tool_skills.iter().find(|s| s.id() == tool_name) {
-            return skill.risk();
+        let action = arguments
+            .get("action")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if tool_name == "browser_dom" {
+            return Self::browser_dom_risk(action);
         }
-        if let Some(skill) = self.skill_registry.get(tool_name) {
+        if tool_name == "computer_control" {
+            return Self::computer_control_risk(action);
+        }
+        if let Some(skill) = self.resolve_tool_skill(tool_skills, tool_name) {
             return skill.risk();
         }
         // MCP + unknown: fail closed.
         ravenbot_skills::SkillRisk::High
+    }
+
+    /// Inspecting or navigating a page is not a destructive act. Clicking,
+    /// typing, submitting, and eval are.
+    fn browser_dom_risk(action: &str) -> ravenbot_skills::SkillRisk {
+        match action {
+            // Reload can resubmit a form, so it is not treated as a pure read.
+            "click" | "fill" | "press" | "eval" | "reload" => {
+                ravenbot_skills::SkillRisk::High
+            }
+            _ => ravenbot_skills::SkillRisk::ReadOnly,
+        }
+    }
+
+    /// Listing windows and taking screenshots are observation. Focusing a
+    /// window, clicking, typing, and scrolling change the machine.
+    fn computer_control_risk(action: &str) -> ravenbot_skills::SkillRisk {
+        match action {
+            "windows" | "screenshot" | "screenshot_window" | "wait" => {
+                ravenbot_skills::SkillRisk::ReadOnly
+            }
+            _ => ravenbot_skills::SkillRisk::High,
+        }
     }
 
     /// Human label for an approval card header ("Run a command", ...).
@@ -1709,6 +2152,15 @@ impl Runtime {
             "git" => "Run git".to_string(),
             "docker" => "Run docker".to_string(),
             "browser_navigate" => "Open a web page".to_string(),
+            "browser_open" => "Show a web page".to_string(),
+            "browser_dom" => "Use the browser page".to_string(),
+            "make_document" => "Create a document".to_string(),
+            "make_slides" => "Design image slides".to_string(),
+            "create_skill" => "Create a local skill".to_string(),
+            "revise_skill" => "Revise a local skill".to_string(),
+            "list_local_skills" => "List local skills".to_string(),
+            "read_local_skill" => "Read a local skill".to_string(),
+            "install_local_skill" => "Install a local skill".to_string(),
             "http_request" => "Call an API".to_string(),
             "db_query" => "Query the database".to_string(),
             "delegate" => "Delegate to another bot".to_string(),
@@ -1754,8 +2206,12 @@ impl Runtime {
         // auto-allow with a clear audit trail instead of parking forever.
         if self.auto_allow_for(run.id) {
             let _ = ravenbot_db::queries::ApprovalQueries::decide(
-                self.db.pool(), req.id, true, Some("auto-allowed: headless run"),
-            ).await;
+                self.db.pool(),
+                req.id,
+                true,
+                Some("auto-allowed: headless run"),
+            )
+            .await;
             self.emit(StreamEvent::ApprovalDecided {
                 thread_id: run.thread_id,
                 approval_id: req.id,
@@ -1776,13 +2232,16 @@ impl Runtime {
             thread_id: run.thread_id,
             approval: req.clone(),
         });
-        let _ = self.audit_logger.log_tool_call(
-            bot.id,
-            Some(run.id),
-            Some(run.thread_id),
-            &format!("approval_requested:{}", tool_name),
-            arguments.clone(),
-        ).await;
+        let _ = self
+            .audit_logger
+            .log_tool_call(
+                bot.id,
+                Some(run.id),
+                Some(run.thread_id),
+                &format!("approval_requested:{}", tool_name),
+                arguments.clone(),
+            )
+            .await;
 
         // Poll the row: short interval, bounded wait (10 min). The UI decides
         // via decide_approval; expiry denies.
@@ -1790,8 +2249,12 @@ impl Runtime {
         loop {
             if self.kill_switch.is_triggered().await {
                 let _ = ravenbot_db::queries::ApprovalQueries::decide(
-                    self.db.pool(), req.id, false, Some("run paused"),
-                ).await;
+                    self.db.pool(),
+                    req.id,
+                    false,
+                    Some("run paused"),
+                )
+                .await;
                 self.emit(StreamEvent::ApprovalDecided {
                     thread_id: run.thread_id,
                     approval_id: req.id,
@@ -1832,8 +2295,12 @@ impl Runtime {
             }
             if std::time::Instant::now() >= deadline {
                 let _ = ravenbot_db::queries::ApprovalQueries::decide(
-                    self.db.pool(), req.id, false, Some("approval timed out"),
-                ).await;
+                    self.db.pool(),
+                    req.id,
+                    false,
+                    Some("approval timed out"),
+                )
+                .await;
                 self.emit(StreamEvent::ApprovalDecided {
                     thread_id: run.thread_id,
                     approval_id: req.id,
@@ -1866,11 +2333,9 @@ impl Runtime {
         // the user, which is a different question. A refusal here is the
         // agent's own grant, not the operator's patience, and it does not
         // consume an approval.
-        let needed: Vec<ravenbot_core::Permission> = tool_skills
-            .iter()
-            .find(|s| s.id() == name)
+        let needed: Vec<ravenbot_core::Permission> = self
+            .resolve_tool_skill(tool_skills, name)
             .map(|s| s.required_permissions())
-            .or_else(|| self.skill_registry.get(name).map(|s| s.required_permissions()))
             .unwrap_or_default();
         if !needed.is_empty() {
             if let Err(denial) = ravenbot_core::tool_permitted(bot, name, &needed) {
@@ -1879,55 +2344,51 @@ impl Runtime {
             }
         }
 
-        let result: Result<ravenbot_skills::SkillResult, ravenbot_skills::SkillError> =
-            if name == "ask_user" {
-                return self.ask_user(run, bot, args.clone()).await;
-            } else if name == "delegate" {
-                Ok(self.exec_delegation(run, args.clone()).await)
-            } else if name == "memory_save" {
-                Ok(self.exec_memory_save(bot.id, args.clone()).await)
-            } else if name == "memory_recall" {
-                Ok(self.exec_memory_recall(bot.id, args.clone()).await)
-            } else if name == "todo" {
-                Ok(self.exec_todo(bot.id, args.clone()).await)
-            } else if name == "analyze_image" {
-                Ok(self.exec_analyze_image(bot.id, args.clone()).await)
-            } else if name == "computer_control" {
-                // Host-control safety gate: per-agent opt-in + platform policy.
-                // Wayland is fail-closed unless explicitly overridden.
-                if !bot.config.host_control {
-                    Ok(ravenbot_skills::SkillResult::failure(
+        let result: Result<ravenbot_skills::SkillResult, ravenbot_skills::SkillError> = if name
+            == "ask_user"
+        {
+            return self.ask_user(run, bot, args.clone()).await;
+        } else if name == "delegate" {
+            Ok(self.exec_delegation(run, args.clone()).await)
+        } else if name == "memory_save" {
+            Ok(self.exec_memory_save(bot.id, args.clone()).await)
+        } else if name == "memory_recall" {
+            Ok(self.exec_memory_recall(bot.id, args.clone()).await)
+        } else if name == "todo" {
+            Ok(self.exec_todo(bot.id, args.clone()).await)
+        } else if name == "analyze_image" {
+            Ok(self.exec_analyze_image(bot.id, args.clone()).await)
+        } else if name == "computer_control" {
+            // Host-control safety gate: per-agent opt-in + platform policy.
+            // Wayland is fail-closed unless explicitly overridden.
+            if !bot.config.host_control {
+                Ok(ravenbot_skills::SkillResult::failure(
                         "Host control is OFF for this agent. Enable 'Control this computer' in the agent's settings first.",
                     ))
-                } else if host_control_policy() == "blocked" {
-                    Ok(ravenbot_skills::SkillResult::failure(
+            } else if host_control_policy() == "blocked" {
+                Ok(ravenbot_skills::SkillResult::failure(
                         "Host control is blocked on this Wayland session (safety gate). Use the agent's isolated desktop instead, or set RAVENBOT_ALLOW_WAYLAND_CONTROL=1 to override.",
                     ))
-                } else if let Some(skill) = tool_skills
-                    .iter()
-                    .find(|s| s.id() == name)
-                    .cloned()
-                    .or_else(|| self.skill_registry.get(name))
-                {
-                    skill.execute(skill_context, args.clone()).await
-                } else {
-                    Ok(ravenbot_skills::SkillResult::failure(
-                        "computer_control skill is unavailable",
-                    ))
-                }
-            } else if let Some(skill) = tool_skills.iter().find(|s| s.id() == name) {
+            } else if let Some(skill) = self.resolve_tool_skill(tool_skills, name) {
                 skill.execute(skill_context, args.clone()).await
-            } else if let Some(skill) = self.skill_registry.get(name) {
-                skill.execute(skill_context, args.clone()).await
-            } else if let Ok(Some((cfg, env))) = self.mcp_registry.resolve_tool(name).await {
-                let client = ravenbot_mcp::client::McpClient::with_env(cfg, env);
-                match client.call_tool(name, args.clone()).await {
-                    Ok(v) => Ok(ravenbot_skills::SkillResult::success(v)),
-                    Err(e) => Err(ravenbot_skills::SkillError::Execution(e)),
-                }
             } else {
-                self.skill_registry.execute(name, skill_context, args.clone()).await
-            };
+                Ok(ravenbot_skills::SkillResult::failure(
+                    "computer_control skill is unavailable",
+                ))
+            }
+        } else if let Some(skill) = self.resolve_tool_skill(tool_skills, name) {
+            skill.execute(skill_context, args.clone()).await
+        } else if let Ok(Some((cfg, env))) = self.mcp_registry.resolve_tool(name).await {
+            let client = ravenbot_mcp::client::McpClient::with_env(cfg, env);
+            match client.call_tool(name, args.clone()).await {
+                Ok(v) => Ok(ravenbot_skills::SkillResult::success(v)),
+                Err(e) => Err(ravenbot_skills::SkillError::Execution(e)),
+            }
+        } else {
+            self.skill_registry
+                .execute(name, skill_context, args.clone())
+                .await
+        };
 
         match result {
             Ok(r) => serde_json::to_value(r).unwrap_or_default(),
@@ -1998,13 +2459,16 @@ impl Runtime {
             thread_id: run.thread_id,
             question: req.clone(),
         });
-        let _ = self.audit_logger.log_tool_call(
-            bot.id,
-            Some(run.id),
-            Some(run.thread_id),
-            "ask_user",
-            serde_json::json!({ "question": req.question }),
-        ).await;
+        let _ = self
+            .audit_logger
+            .log_tool_call(
+                bot.id,
+                Some(run.id),
+                Some(run.thread_id),
+                "ask_user",
+                serde_json::json!({ "question": req.question }),
+            )
+            .await;
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
         loop {
@@ -2013,9 +2477,7 @@ impl Runtime {
                 return serde_json::json!({ "error": "run interrupted before the user answered" });
             }
             match ravenbot_db::queries::QuestionQueries::get(self.db.pool(), req.id).await {
-                Ok(Some(current))
-                    if current.status == ravenbot_core::QuestionStatus::Answered =>
-                {
+                Ok(Some(current)) if current.status == ravenbot_core::QuestionStatus::Answered => {
                     self.emit(StreamEvent::QuestionAnswered {
                         thread_id: run.thread_id,
                         question_id: req.id,
@@ -2026,9 +2488,7 @@ impl Runtime {
                         "question": current.question,
                     });
                 }
-                Ok(Some(current))
-                    if current.status == ravenbot_core::QuestionStatus::Expired =>
-                {
+                Ok(Some(current)) if current.status == ravenbot_core::QuestionStatus::Expired => {
                     return serde_json::json!({
                         "answer": null,
                         "timed_out": true,
@@ -2139,11 +2599,19 @@ impl Runtime {
         bot_id: Uuid,
         args: serde_json::Value,
     ) -> ravenbot_skills::SkillResult {
-        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("list");
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("list");
         let pool = self.db.pool();
         match action {
             "add" => {
-                let task = args.get("task").and_then(|v| v.as_str()).unwrap_or_default().trim().to_string();
+                let task = args
+                    .get("task")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
                 if task.is_empty() {
                     return ravenbot_skills::SkillResult::failure("Missing 'task' field");
                 }
@@ -2157,15 +2625,24 @@ impl Runtime {
                 {
                     return ravenbot_skills::SkillResult::failure(e.to_string());
                 }
-                let (count,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM bot_todos WHERE bot_id = ? AND done = 0")
-                    .bind(bot_id.to_string()).fetch_one(pool).await.unwrap_or((0,));
-                ravenbot_skills::SkillResult::success(serde_json::json!({"added": task, "id": id.to_string(), "open": count}))
+                let (count,): (i64,) =
+                    sqlx::query_as("SELECT COUNT(*) FROM bot_todos WHERE bot_id = ? AND done = 0")
+                        .bind(bot_id.to_string())
+                        .fetch_one(pool)
+                        .await
+                        .unwrap_or((0,));
+                ravenbot_skills::SkillResult::success(
+                    serde_json::json!({"added": task, "id": id.to_string(), "open": count}),
+                )
             }
             "list" => {
                 let rows: Vec<(String, String, i64)> = sqlx::query_as(
                     "SELECT id, task, done FROM bot_todos WHERE bot_id = ? ORDER BY created_at ASC",
                 )
-                .bind(bot_id.to_string()).fetch_all(pool).await.unwrap_or_default();
+                .bind(bot_id.to_string())
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default();
                 let todos: Vec<serde_json::Value> = rows.into_iter().map(|(id, task, done)| {
                     serde_json::json!({"id": id, "task": task, "done": done != 0})
                 }).collect();
@@ -2176,18 +2653,27 @@ impl Runtime {
                 if id.is_empty() {
                     return ravenbot_skills::SkillResult::failure("Missing 'id' field");
                 }
-                let res = sqlx::query("UPDATE bot_todos SET done = 1, updated_at = ? WHERE id = ? AND bot_id = ?")
-                    .bind(chrono::Utc::now().to_rfc3339()).bind(id).bind(bot_id.to_string())
-                    .execute(pool).await;
+                let res = sqlx::query(
+                    "UPDATE bot_todos SET done = 1, updated_at = ? WHERE id = ? AND bot_id = ?",
+                )
+                .bind(chrono::Utc::now().to_rfc3339())
+                .bind(id)
+                .bind(bot_id.to_string())
+                .execute(pool)
+                .await;
                 match res {
-                    Ok(r) if r.rows_affected() > 0 => ravenbot_skills::SkillResult::success(serde_json::json!({"done": id})),
+                    Ok(r) if r.rows_affected() > 0 => {
+                        ravenbot_skills::SkillResult::success(serde_json::json!({"done": id}))
+                    }
                     Ok(_) => ravenbot_skills::SkillResult::failure("Todo not found"),
                     Err(e) => ravenbot_skills::SkillResult::failure(e.to_string()),
                 }
             }
             "clear" => {
                 if let Err(e) = sqlx::query("DELETE FROM bot_todos WHERE bot_id = ? AND done = 1")
-                    .bind(bot_id.to_string()).execute(pool).await
+                    .bind(bot_id.to_string())
+                    .execute(pool)
+                    .await
                 {
                     return ravenbot_skills::SkillResult::failure(e.to_string());
                 }
@@ -2206,13 +2692,18 @@ impl Runtime {
         args: serde_json::Value,
     ) -> ravenbot_skills::SkillResult {
         use base64::Engine;
-        let image_data = args.get("image_data").and_then(|v| v.as_str()).unwrap_or_default();
+        let image_data = args
+            .get("image_data")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
         if image_data.is_empty() {
             return ravenbot_skills::SkillResult::failure("Missing 'image_data' field");
         }
         let image_bytes = match general_purpose::STANDARD.decode(image_data) {
             Ok(b) => b,
-            Err(e) => return ravenbot_skills::SkillResult::failure(format!("Invalid base64: {}", e)),
+            Err(e) => {
+                return ravenbot_skills::SkillResult::failure(format!("Invalid base64: {}", e))
+            }
         };
         // Downscale to keep prompt size reasonable (≤1568px longest edge).
         let resized = match ravenbot_vision::resize_for_vision(&image_bytes, 1568) {
@@ -2221,12 +2712,16 @@ impl Runtime {
         };
         let b64 = general_purpose::STANDARD.encode(&resized);
 
-        let question = args.get("question").and_then(|v| v.as_str())
-            .unwrap_or("Describe this image concisely — what it shows, any text, and notable UI elements.");
+        let question = args.get("question").and_then(|v| v.as_str()).unwrap_or(
+            "Describe this image concisely — what it shows, any text, and notable UI elements.",
+        );
 
         // Build a vision message.
         let msg = ravenbot_models::Message::text("user", question).with_images(vec![
-            ravenbot_models::MessageImage { data: b64, mime: "image/png".to_string() },
+            ravenbot_models::MessageImage {
+                data: b64,
+                mime: "image/png".to_string(),
+            },
         ]);
 
         // Use the bot's configured provider.
@@ -2255,7 +2750,9 @@ impl Runtime {
                     "note": "analyzed by the bot's own vision provider"
                 }))
             }
-            Err(e) => ravenbot_skills::SkillResult::failure(format!("Vision analysis failed: {}", e)),
+            Err(e) => {
+                ravenbot_skills::SkillResult::failure(format!("Vision analysis failed: {}", e))
+            }
         }
     }
 
@@ -2325,22 +2822,25 @@ impl Runtime {
 
         // 3) Office project folders (the thread's chatroom).
         if let Some(cid) = chatroom_id {
-            if let Ok(Some(room)) = ravenbot_db::queries::ChatRoomQueries::get(self.db.pool(), cid).await {
+            if let Ok(Some(room)) =
+                ravenbot_db::queries::ChatRoomQueries::get(self.db.pool(), cid).await
+            {
                 dirs.extend(room.project_folders);
             }
         }
 
         // 4) Channel working folder.
         if dirs.is_empty() {
-            let channel_id: Option<Uuid> =
-                sqlx::query_scalar::<_, Option<String>>("SELECT channel_id FROM threads WHERE id = ?")
-                    .bind(thread_id.to_string())
-                    .fetch_optional(self.db.pool())
-                    .await
-                    .ok()
-                    .flatten()
-                    .flatten()
-                    .and_then(|s| Uuid::parse_str(&s).ok());
+            let channel_id: Option<Uuid> = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT channel_id FROM threads WHERE id = ?",
+            )
+            .bind(thread_id.to_string())
+            .fetch_optional(self.db.pool())
+            .await
+            .ok()
+            .flatten()
+            .flatten()
+            .and_then(|s| Uuid::parse_str(&s).ok());
             if let Some(cid) = channel_id {
                 if let Ok(Some(channel)) =
                     ravenbot_db::queries::ChannelQueries::get(self.db.pool(), cid).await
@@ -2405,7 +2905,10 @@ impl Runtime {
         // down rather than overwrite a newer state with an older one.
         let seq = self.status_seq.fetch_add(1, Ordering::SeqCst) + 1;
         {
-            let mut intent = self.status_intent.lock().expect("status intent lock poisoned");
+            let mut intent = self
+                .status_intent
+                .lock()
+                .expect("status intent lock poisoned");
             intent.insert(bot_id, (seq, status.clone()));
         }
 
@@ -2422,7 +2925,8 @@ impl Runtime {
                     _ => {}
                 }
             }
-            if let Err(e) = ravenbot_db::queries::BotQueries::mark_active(&pool, bot_id, status).await
+            if let Err(e) =
+                ravenbot_db::queries::BotQueries::mark_active(&pool, bot_id, status).await
             {
                 tracing::warn!(%bot_id, error = %e, "Could not record bot status");
             }
@@ -2439,18 +2943,21 @@ impl Runtime {
     pub async fn execute_run(&self, run: &mut Run) -> Result<(), RuntimeError> {
         // Check kill switch first
         if self.kill_switch.is_triggered().await {
-            let reason = self.kill_switch.reason().await.unwrap_or_else(|| "Unknown".to_string());
+            let reason = self
+                .kill_switch
+                .reason()
+                .await
+                .unwrap_or_else(|| "Unknown".to_string());
             return Err(RuntimeError::KillSwitchActive(reason));
         }
 
         // Load thread to get the ephemeral flag (temporary chats skip memory)
-        let thread_row: Option<(bool,)> = sqlx::query_as(
-            "SELECT ephemeral FROM threads WHERE id = ?"
-        )
-        .bind(run.thread_id.to_string())
-        .fetch_optional(self.db.pool())
-        .await
-        .unwrap_or(None);
+        let thread_row: Option<(bool,)> =
+            sqlx::query_as("SELECT ephemeral FROM threads WHERE id = ?")
+                .bind(run.thread_id.to_string())
+                .fetch_optional(self.db.pool())
+                .await
+                .unwrap_or(None);
         let thread_ephemeral = thread_row.map(|(e,)| e).unwrap_or(false);
 
         // Get the bot for this run
@@ -2459,7 +2966,10 @@ impl Runtime {
             .ok_or_else(|| RuntimeError::TaskFailed("Bot not found".to_string()))?;
 
         // Enforce the bot's budget BEFORE spending (safety-critical)
-        let budget_check = self.budget_manager.check_budget(bot.id).await
+        let budget_check = self
+            .budget_manager
+            .check_budget(bot.id)
+            .await
             .map_err(|e| RuntimeError::Model(e.to_string()))?;
         if !budget_check.allowed {
             return Err(RuntimeError::BudgetExceeded(format!(
@@ -2480,10 +2990,13 @@ impl Runtime {
         });
 
         // Get the thread for context
-        let messages = ravenbot_db::queries::MessageQueries::list_by_thread(self.db.pool(), run.thread_id).await?;
+        let messages =
+            ravenbot_db::queries::MessageQueries::list_by_thread(self.db.pool(), run.thread_id)
+                .await?;
 
         // Get relevant memories for context
-        let last_user_message = messages.iter()
+        let last_user_message = messages
+            .iter()
             .rev()
             .find(|m| matches!(m.role, ravenbot_core::MessageRole::User))
             .and_then(|m| match &m.content {
@@ -2505,11 +3018,10 @@ impl Runtime {
         let memory_context = if thread_ephemeral {
             String::new()
         } else {
-            self.memory_retriever.get_context(
-                bot.id,
-                last_user_message,
-                5,
-            ).await.unwrap_or_default()
+            self.memory_retriever
+                .get_context(bot.id, last_user_message, 5)
+                .await
+                .unwrap_or_default()
         };
 
         // Build the provider chain (honoring the bot's configured model id and
@@ -2558,80 +3070,194 @@ impl Runtime {
         }
 
         // Priority 4: DeepSearch and Intent-Driven dynamic inclusions
-        let is_deep_search = last_user_message.contains("[DeepSearch]") || 
-                             last_user_message.to_lowercase().contains("search the web") ||
-                             last_user_message.to_lowercase().contains("google") ||
-                             last_user_message.to_lowercase().contains("latest news");
-        
+        let is_deep_search = last_user_message.contains("[DeepSearch]")
+            || last_user_message.to_lowercase().contains("search the web")
+            || last_user_message.to_lowercase().contains("google")
+            || last_user_message.to_lowercase().contains("latest news");
+
         let is_think = last_user_message.contains("[Think]");
 
         if is_deep_search {
-            if let Some(s) = self.skill_registry.get("web_search") { push_skill(s); }
-            if let Some(s) = self.skill_registry.get("tavily_search") { push_skill(s); }
-            if let Some(s) = self.skill_registry.get("browser_navigate") { push_skill(s); }
+            if let Some(s) = self.skill_registry.get("web_search") {
+                push_skill(s);
+            }
+            if let Some(s) = self.skill_registry.get("tavily_search") {
+                push_skill(s);
+            }
+            if let Some(s) = self.skill_registry.get("browser_navigate") {
+                push_skill(s);
+            }
         }
 
         let user_lower = last_user_message.to_lowercase();
-        if user_lower.contains("code") || user_lower.contains("git") || user_lower.contains("repo") || user_lower.contains("file") {
-            for id in &["file_read", "file_write", "file_tree", "code_search", "code_edit", "git"] {
-                if let Some(s) = self.skill_registry.get(id) { push_skill(s); }
+        if user_lower.contains("code")
+            || user_lower.contains("git")
+            || user_lower.contains("repo")
+            || user_lower.contains("file")
+        {
+            for id in &[
+                "file_read",
+                "file_write",
+                "file_tree",
+                "code_search",
+                "code_edit",
+                "git",
+            ] {
+                if let Some(s) = self.skill_registry.get(id) {
+                    push_skill(s);
+                }
             }
         }
-        if user_lower.contains("bash") || user_lower.contains("terminal") || user_lower.contains("exec") || user_lower.contains("command") {
-            if let Some(s) = self.skill_registry.get("shell_exec") { push_skill(s); }
+        if user_lower.contains("bash")
+            || user_lower.contains("terminal")
+            || user_lower.contains("exec")
+            || user_lower.contains("command")
+        {
+            if let Some(s) = self.skill_registry.get("shell_exec") {
+                push_skill(s);
+            }
         }
         if user_lower.contains("docker") || user_lower.contains("container") {
-            if let Some(s) = self.skill_registry.get("docker") { push_skill(s); }
+            if let Some(s) = self.skill_registry.get("docker") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("database") || user_lower.contains("sql") || user_lower.contains("sqlite") {
-            if let Some(s) = self.skill_registry.get("db_query") { push_skill(s); }
+        if user_lower.contains("database")
+            || user_lower.contains("sql")
+            || user_lower.contains("sqlite")
+        {
+            if let Some(s) = self.skill_registry.get("db_query") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("http") || user_lower.contains("api") || user_lower.contains("curl") {
-            if let Some(s) = self.skill_registry.get("http_request") { push_skill(s); }
+        if user_lower.contains("http") || user_lower.contains("api") || user_lower.contains("curl")
+        {
+            if let Some(s) = self.skill_registry.get("http_request") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("image") || user_lower.contains("draw") || user_lower.contains("picture") || user_lower.contains("photo") {
-            if let Some(s) = self.skill_registry.get("image_gen") { push_skill(s); }
+        if user_lower.contains("image")
+            || user_lower.contains("draw")
+            || user_lower.contains("picture")
+            || user_lower.contains("photo")
+        {
+            if let Some(s) = self.skill_registry.get("image_gen") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("test") || user_lower.contains("tdd") || user_lower.contains("red green") {
-            if let Some(s) = self.skill_registry.get("tdd") { push_skill(s); }
+        if user_lower.contains("test")
+            || user_lower.contains("tdd")
+            || user_lower.contains("red green")
+        {
+            if let Some(s) = self.skill_registry.get("tdd") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("review") || user_lower.contains("code review") || user_lower.contains("pr") {
-            if let Some(s) = self.skill_registry.get("code_review") { push_skill(s); }
+        if user_lower.contains("review")
+            || user_lower.contains("code review")
+            || user_lower.contains("pr")
+        {
+            if let Some(s) = self.skill_registry.get("code_review") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("debug") || user_lower.contains("bug") || user_lower.contains("fix") || user_lower.contains("broken") {
-            if let Some(s) = self.skill_registry.get("diagnosing_bugs") { push_skill(s); }
+        if user_lower.contains("debug")
+            || user_lower.contains("bug")
+            || user_lower.contains("fix")
+            || user_lower.contains("broken")
+        {
+            if let Some(s) = self.skill_registry.get("diagnosing_bugs") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("research") || user_lower.contains("investigate") || user_lower.contains("find out") {
-            if let Some(s) = self.skill_registry.get("research") { push_skill(s); }
+        if user_lower.contains("research")
+            || user_lower.contains("investigate")
+            || user_lower.contains("find out")
+        {
+            if let Some(s) = self.skill_registry.get("research") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("design") || user_lower.contains("architecture") || user_lower.contains("refactor") {
-            if let Some(s) = self.skill_registry.get("codebase_design") { push_skill(s); }
-            if let Some(s) = self.skill_registry.get("improve_architecture") { push_skill(s); }
+        if user_lower.contains("design")
+            || user_lower.contains("architecture")
+            || user_lower.contains("refactor")
+        {
+            if let Some(s) = self.skill_registry.get("codebase_design") {
+                push_skill(s);
+            }
+            if let Some(s) = self.skill_registry.get("improve_architecture") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("domain") || user_lower.contains("glossary") || user_lower.contains("terminology") {
-            if let Some(s) = self.skill_registry.get("domain_modeling") { push_skill(s); }
+        if user_lower.contains("domain")
+            || user_lower.contains("glossary")
+            || user_lower.contains("terminology")
+        {
+            if let Some(s) = self.skill_registry.get("domain_modeling") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("prototype") || user_lower.contains("experiment") || user_lower.contains("spike") {
-            if let Some(s) = self.skill_registry.get("prototype") { push_skill(s); }
+        if user_lower.contains("prototype")
+            || user_lower.contains("experiment")
+            || user_lower.contains("spike")
+        {
+            if let Some(s) = self.skill_registry.get("prototype") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("merge conflict") || user_lower.contains("conflict") || user_lower.contains("rebase") {
-            if let Some(s) = self.skill_registry.get("resolving_merge_conflicts") { push_skill(s); }
+        if user_lower.contains("merge conflict")
+            || user_lower.contains("conflict")
+            || user_lower.contains("rebase")
+        {
+            if let Some(s) = self.skill_registry.get("resolving_merge_conflicts") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("grill") || user_lower.contains("interview me") || user_lower.contains("plan") {
-            if let Some(s) = self.skill_registry.get("grilling") { push_skill(s); }
-            if let Some(s) = self.skill_registry.get("grill_me") { push_skill(s); }
+        if user_lower.contains("grill")
+            || user_lower.contains("interview me")
+            || user_lower.contains("plan")
+        {
+            if let Some(s) = self.skill_registry.get("grilling") {
+                push_skill(s);
+            }
+            if let Some(s) = self.skill_registry.get("grill_me") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("handoff") || user_lower.contains("summary") || user_lower.contains("continue later") {
-            if let Some(s) = self.skill_registry.get("handoff") { push_skill(s); }
+        if user_lower.contains("handoff")
+            || user_lower.contains("summary")
+            || user_lower.contains("continue later")
+        {
+            if let Some(s) = self.skill_registry.get("handoff") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("teach") || user_lower.contains("learn") || user_lower.contains("explain") {
-            if let Some(s) = self.skill_registry.get("teach") { push_skill(s); }
+        if user_lower.contains("teach")
+            || user_lower.contains("learn")
+            || user_lower.contains("explain")
+        {
+            if let Some(s) = self.skill_registry.get("teach") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("monitor") || user_lower.contains("system") || user_lower.contains("cpu") || user_lower.contains("memory") {
-            if let Some(s) = self.skill_registry.get("system_monitor") { push_skill(s); }
+        if user_lower.contains("monitor")
+            || user_lower.contains("system")
+            || user_lower.contains("cpu")
+            || user_lower.contains("memory")
+        {
+            if let Some(s) = self.skill_registry.get("system_monitor") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("install") || user_lower.contains("package") || user_lower.contains("dependency") || user_lower.contains("npm") || user_lower.contains("pip") {
-            if let Some(s) = self.skill_registry.get("package_manager") { push_skill(s); }
+        if user_lower.contains("install")
+            || user_lower.contains("package")
+            || user_lower.contains("dependency")
+            || user_lower.contains("npm")
+            || user_lower.contains("pip")
+        {
+            if let Some(s) = self.skill_registry.get("package_manager") {
+                push_skill(s);
+            }
         }
         // Real desktop control (gated by the approval broker).
         if user_lower.contains("desktop")
@@ -2642,22 +3268,154 @@ impl Runtime {
             || user_lower.contains("on my screen")
             || user_lower.contains("computer")
         {
-            if let Some(s) = self.skill_registry.get("computer_control") { push_skill(s); }
+            if let Some(s) = self.skill_registry.get("computer_control") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("ssh") || user_lower.contains("remote") || user_lower.contains("server") {
-            if let Some(s) = self.skill_registry.get("ssh_remote") { push_skill(s); }
+        if user_lower.contains("ssh")
+            || user_lower.contains("remote")
+            || user_lower.contains("server")
+        {
+            if let Some(s) = self.skill_registry.get("ssh_remote") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("api test") || user_lower.contains("endpoint") || user_lower.contains("rest") || user_lower.contains("graphql") {
-            if let Some(s) = self.skill_registry.get("api_tester") { push_skill(s); }
+        if user_lower.contains("api test")
+            || user_lower.contains("endpoint")
+            || user_lower.contains("rest")
+            || user_lower.contains("graphql")
+        {
+            if let Some(s) = self.skill_registry.get("api_tester") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("env") || user_lower.contains("environment") || user_lower.contains(".env") || user_lower.contains("secret") {
-            if let Some(s) = self.skill_registry.get("env_manager") { push_skill(s); }
+        if user_lower.contains("env")
+            || user_lower.contains("environment")
+            || user_lower.contains(".env")
+            || user_lower.contains("secret")
+        {
+            if let Some(s) = self.skill_registry.get("env_manager") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("note") || user_lower.contains("bookmark") || user_lower.contains("save this") {
-            if let Some(s) = self.skill_registry.get("note_manager") { push_skill(s); }
+        if user_lower.contains("note")
+            || user_lower.contains("bookmark")
+            || user_lower.contains("save this")
+        {
+            if let Some(s) = self.skill_registry.get("note_manager") {
+                push_skill(s);
+            }
         }
-        if user_lower.contains("run") || user_lower.contains("build") || user_lower.contains("task") || user_lower.contains("make") {
-            if let Some(s) = self.skill_registry.get("task_runner") { push_skill(s); }
+        if user_lower.contains("run")
+            || user_lower.contains("build")
+            || user_lower.contains("task")
+            || user_lower.contains("make")
+        {
+            if let Some(s) = self.skill_registry.get("task_runner") {
+                push_skill(s);
+            }
+        }
+
+        // Visual production: charts, slides, diagrams, and motion graphics.
+        // These are workflow guides, not tools, so they are injected only for
+        // the runs that need them instead of taxing every conversation.
+        let words: Vec<&str> = user_lower
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .collect();
+        let mentions = |term: &str| {
+            term.split_whitespace()
+                .all(|part| words.iter().any(|word| *word == part))
+        };
+        let wants_visual = [
+            "chart",
+            "charts",
+            "graph",
+            "graphs",
+            "plot",
+            "dashboard",
+            "visualize",
+            "visualise",
+            "visualization",
+            "visualisation",
+            "slide",
+            "slides",
+            "deck",
+            "presentation",
+        ]
+        .iter()
+        .any(|term| mentions(term));
+        if wants_visual {
+            if let Some(s) = self.skill_registry.get("visuals") {
+                push_skill(s);
+            }
+        }
+        let wants_slides = [
+            "slide",
+            "slides",
+            "deck",
+            "presentation",
+            "pitch deck",
+            "pptx",
+            "powerpoint",
+            "keynote",
+        ]
+        .iter()
+        .any(|term| mentions(term));
+        if wants_slides {
+            if let Some(s) = self.skill_registry.get("slides") {
+                push_skill(s);
+            }
+        }
+        let wants_motion = [
+            "video",
+            "animation",
+            "animate",
+            "motion",
+            "fframes",
+            "mp4",
+            "webm",
+            "reel",
+            "reels",
+            "promo",
+            "explainer",
+            "lyric video",
+            "title card",
+            "trailer",
+        ]
+        .iter()
+        .any(|term| mentions(term));
+        if wants_motion {
+            if let Some(s) = self.skill_registry.get("fframes") {
+                push_skill(s);
+            }
+            // A video usually needs a title card or an end card too.
+            if let Some(s) = self.skill_registry.get("visuals") {
+                push_skill(s);
+            }
+        }
+        // Office documents have real, maintained skills in the awesome catalog
+        // (pptx, docx, xlsx, pdf). Equip the gateway so the model can load the
+        // exact one instead of improvising an OpenXML writer.
+        let wants_office_document = [
+            "pptx",
+            "powerpoint",
+            "docx",
+            "word document",
+            "word doc",
+            "xlsx",
+            "excel",
+            "spreadsheet",
+            "keynote",
+            "google slides",
+            "pdf",
+        ]
+        .iter()
+        .any(|term| mentions(term));
+        if wants_office_document {
+            if let Some(s) = self.skill_registry.get("awesome_fetch") {
+                push_skill(s);
+            }
         }
 
         // Vision: user attached an image — equip analysis so the model can inspect it
@@ -2665,11 +3423,7 @@ impl Runtime {
             .iter()
             .rev()
             .find(|m| matches!(m.role, ravenbot_core::MessageRole::User))
-            .map(|m| {
-                m.attachments
-                    .iter()
-                    .any(|a| a.is_image && a.data.is_some())
-            })
+            .map(|m| m.attachments.iter().any(|a| a.is_image && a.data.is_some()))
             .unwrap_or(false);
         if has_image_attachment {
             if let Some(s) = self.skill_registry.get("analyze_image") {
@@ -2679,37 +3433,114 @@ impl Runtime {
 
         // Auto-equip skills matching the agent's specialty or role (especially in offices)
         let specialty_lower = bot.specialty.as_deref().unwrap_or("").to_lowercase();
-        if specialty_lower.contains("dev") || specialty_lower.contains("code") || specialty_lower.contains("software") || specialty_lower.contains("backend") || specialty_lower.contains("frontend") {
-            for id in &["code_search", "code_edit", "git", "file_read", "file_write", "file_tree", "shell_exec"] {
-                if let Some(s) = self.skill_registry.get(id) { push_skill(s); }
+        if specialty_lower.contains("dev")
+            || specialty_lower.contains("code")
+            || specialty_lower.contains("software")
+            || specialty_lower.contains("backend")
+            || specialty_lower.contains("frontend")
+        {
+            for id in &[
+                "code_search",
+                "code_edit",
+                "git",
+                "file_read",
+                "file_write",
+                "file_tree",
+                "shell_exec",
+            ] {
+                if let Some(s) = self.skill_registry.get(id) {
+                    push_skill(s);
+                }
             }
         }
-        if specialty_lower.contains("infra") || specialty_lower.contains("devops") || specialty_lower.contains("sysadmin") {
-            for id in &["shell_exec", "docker", "git", "http_request", "file_read", "file_write"] {
-                if let Some(s) = self.skill_registry.get(id) { push_skill(s); }
+        if specialty_lower.contains("infra")
+            || specialty_lower.contains("devops")
+            || specialty_lower.contains("sysadmin")
+        {
+            for id in &[
+                "shell_exec",
+                "docker",
+                "git",
+                "http_request",
+                "file_read",
+                "file_write",
+            ] {
+                if let Some(s) = self.skill_registry.get(id) {
+                    push_skill(s);
+                }
             }
         }
         if specialty_lower.contains("qa") || specialty_lower.contains("test") {
-            for id in &["browser_navigate", "shell_exec", "http_request", "code_search"] {
-                if let Some(s) = self.skill_registry.get(id) { push_skill(s); }
+            for id in &[
+                "browser_navigate",
+                "browser_open",
+                "browser_dom",
+                "shell_exec",
+                "http_request",
+                "code_search",
+            ] {
+                if let Some(s) = self.skill_registry.get(id) {
+                    push_skill(s);
+                }
             }
         }
-        if specialty_lower.contains("research") || specialty_lower.contains("lead") || specialty_lower.contains("architect") {
-            for id in &["web_search", "tavily_search", "arxiv_search", "code_search", "memory_recall"] {
-                if let Some(s) = self.skill_registry.get(id) { push_skill(s); }
+        if specialty_lower.contains("research")
+            || specialty_lower.contains("lead")
+            || specialty_lower.contains("architect")
+        {
+            for id in &[
+                "web_search",
+                "tavily_search",
+                "arxiv_search",
+                "code_search",
+                "memory_recall",
+                "list_local_skills",
+                "read_local_skill",
+                "create_skill",
+                "revise_skill",
+                "install_local_skill",
+            ] {
+                if let Some(s) = self.skill_registry.get(id) {
+                    push_skill(s);
+                }
             }
         }
-        if specialty_lower.contains("design") || specialty_lower.contains("ui") || specialty_lower.contains("ux") {
-            for id in &["browser_navigate", "screenshot", "analyze_image"] {
-                if let Some(s) = self.skill_registry.get(id) { push_skill(s); }
+        if specialty_lower.contains("design")
+            || specialty_lower.contains("ui")
+            || specialty_lower.contains("ux")
+        {
+            for id in &[
+                "browser_navigate",
+                "browser_open",
+                "browser_dom",
+                "make_document",
+                "make_slides",
+                "screenshot",
+                "analyze_image",
+            ] {
+                if let Some(s) = self.skill_registry.get(id) {
+                    push_skill(s);
+                }
             }
         }
 
         // Priority 5: Foundational baseline skills
         let default_core = [
-            "web_search", "file_read", "file_write", "file_tree", 
-            "shell_exec", "code_search", "code_edit", "git", 
-            "http_request", "memory_save", "memory_recall"
+            "web_search",
+            "file_read",
+            "file_write",
+            "file_tree",
+            "shell_exec",
+            "code_search",
+            "code_edit",
+            "git",
+            "http_request",
+            "browser_open",
+            "browser_dom",
+            "make_document",
+            "make_slides",
+            "memory_save",
+            "memory_recall",
         ];
         for id in &default_core {
             if let Some(s) = self.skill_registry.get(id) {
@@ -2754,9 +3585,14 @@ impl Runtime {
         // with a few connectors assigned silently lost file_read/file_write/
         // shell_exec/git access. Protected tools are always kept.
         const PROTECTED_NATIVE_TOOLS: &[&str] = &[
-            "memory_save", "memory_recall", "todo", "ask_user", "delegate", "analyze_image",
+            "memory_save",
+            "memory_recall",
+            "todo",
+            "ask_user",
+            "delegate",
+            "analyze_image",
         ];
-        const TOOL_CAP: usize = 40;
+        const TOOL_CAP: usize = 64;
         let protected: HashSet<String> = bot
             .skills
             .iter()
@@ -2764,17 +3600,22 @@ impl Runtime {
             .chain(default_core.iter().map(|s| s.to_string()))
             .chain(PROTECTED_NATIVE_TOOLS.iter().map(|s| s.to_string()))
             .collect();
-        let tool_skills = cap_preserving_protected(tool_skills, &protected, TOOL_CAP, |s| {
-            s.id().to_string()
-        });
+        let tool_skills =
+            cap_preserving_protected(tool_skills, &protected, TOOL_CAP, |s| s.id().to_string());
 
-        let tool_definitions: Vec<ToolDefinition> = tool_skills.iter().map(|skill| {
-            ToolDefinition {
-                name: skill.id().to_string(),
+        let tool_definitions: Vec<ToolDefinition> = tool_skills
+            .iter()
+            .map(|skill| ToolDefinition {
+                // Providers only accept `^[a-zA-Z0-9_-]+$` here. Skill ids may
+                // contain `/` (awesome/plugin ids), which made the whole tools
+                // array invalid and the request fail with a 400 before the
+                // model ever saw it. `tool_name()` is the provider-safe alias;
+                // execution resolves it back to the skill.
+                name: skill.tool_name(),
                 description: skill.description().to_string(),
                 parameters: skill.input_schema(),
-            }
-        }).collect();
+            })
+            .collect();
 
         // Tool-less models (Local llama.cpp builds, custom providers that
         // declare no tool calling) cannot receive a native tools array. When
@@ -2808,8 +3649,11 @@ impl Runtime {
         let mut office_context = String::new();
         {
             if let Some(cid) = self.office_id_for_thread(run.thread_id).await {
-                if let Ok(Some(room)) = ravenbot_db::queries::ChatRoomQueries::get(self.db.pool(), cid).await {
-                    let mut parts = vec![format!("Office: {} ({})", room.name, room.office_template)];
+                if let Ok(Some(room)) =
+                    ravenbot_db::queries::ChatRoomQueries::get(self.db.pool(), cid).await
+                {
+                    let mut parts =
+                        vec![format!("Office: {} ({})", room.name, room.office_template)];
                     if let Some(goal) = &room.goal {
                         parts.push(format!("Quarterly Objective: {}", goal));
                     }
@@ -2831,9 +3675,16 @@ impl Runtime {
                             list = colleagues.join("\n"),
                         ));
                     }
-                    if let Ok(memories) = self.office_memory.retrieve(cid, last_user_message, 5, 0.3).await {
+                    if let Ok(memories) = self
+                        .office_memory
+                        .retrieve(cid, last_user_message, 5, 0.3)
+                        .await
+                    {
                         if !memories.is_empty() {
-                            let mem_lines: Vec<String> = memories.iter().map(|(m, _)| format!("• [{}] {}", m.category, m.content)).collect();
+                            let mem_lines: Vec<String> = memories
+                                .iter()
+                                .map(|(m, _)| format!("• [{}] {}", m.category, m.content))
+                                .collect();
                             parts.push(format!("Shared Team Knowledge:\n{}", mem_lines.join("\n")));
                         }
                     }
@@ -2845,13 +3696,12 @@ impl Runtime {
         // Channel context: a thread filed under a channel inherits its shared
         // instructions and working folder.
         let mut channel_context = String::new();
-        let channel_row: Option<(Option<String>,)> = sqlx::query_as(
-            "SELECT channel_id FROM threads WHERE id = ?"
-        )
-        .bind(run.thread_id.to_string())
-        .fetch_optional(self.db.pool())
-        .await
-        .unwrap_or(None);
+        let channel_row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT channel_id FROM threads WHERE id = ?")
+                .bind(run.thread_id.to_string())
+                .fetch_optional(self.db.pool())
+                .await
+                .unwrap_or(None);
         if let Some((Some(cid_str),)) = channel_row {
             if let Ok(cid) = uuid::Uuid::parse_str(&cid_str) {
                 if let Ok(Some(channel)) =
@@ -2875,7 +3725,7 @@ impl Runtime {
         // Add system prompt with skill and memory information
         let system_prompt = bot.config.custom_prompt.as_deref()
             .unwrap_or("You are a helpful AI assistant. Complete tasks as requested. You have access to tools that can help you accomplish tasks.");
-        
+
         let mut context_parts = Vec::new();
 
         if !channel_context.is_empty() {
@@ -2890,6 +3740,13 @@ impl Runtime {
         }
         if !office_context.is_empty() {
             context_parts.push(format!("🏢 Team Office Context:\n{}", office_context));
+            context_parts.push(
+                "## Office handoff\n\
+- You are one node in an office run; no user is watching this turn. Do not ask questions — proceed with the best available information.\n\
+- Before you finish, update Shared/STATUS.md with the artifact path, a one-line result, and what remains. Your answer is read by the next teammate and by the office lead.\n\
+- If a file named in your task is missing, inspect the workspace tree once, record the blocker, and continue with the closest available artifact. Never scan the machine."
+                    .to_string(),
+            );
         }
 
         if !working_dirs.is_empty() {
@@ -2908,13 +3765,58 @@ impl Runtime {
             if emulate_tools {
                 context_parts.push(tool_emulation_prompt(&tool_definitions));
             } else {
-                let skill_names: Vec<&str> = tool_definitions.iter().map(|d| d.name.as_str()).collect();
+                let skill_names: Vec<&str> =
+                    tool_definitions.iter().map(|d| d.name.as_str()).collect();
                 context_parts.push(format!("Tools available: {}", skill_names.join(", ")));
             }
+            // The baseline prompt is intentionally short; this is the part that
+            // keeps a tool-using run from spending its whole round budget
+            // looking for files it was never going to find. It is written as
+            // rules rather than advice because a model under a task deadline
+            // treats "prefer" as optional.
+            let workspace_rule = if working_dirs.is_empty() {
+                "Work inside the project workspace.".to_string()
+            } else {
+                format!(
+                    "Work only inside these project folders: {}. Never scan /, $HOME, /proc, /sys, or other users' folders.",
+                    working_dirs
+                        .iter()
+                        .map(|d| d.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            context_parts.push(format!(
+                "## Tool discipline\n\
+- {workspace_rule}\n\
+- Discover paths with file_tree. Search file contents with code_search. Read text files with file_read; use its offset/limit for large files. Do not use shell find, ls -R, or grep -r for discovery.\n\
+- Use shell_exec for builds, tests, git, and processes — not for browsing the filesystem. Do not sleep or poll for a process; run it with a timeout and inspect the result.\n\
+- Read an existing file before overwriting it; prefer code_edit for targeted changes. Treat unfamiliar files as someone else's work: inspect them before deleting or rewriting.\n\
+- Issue independent reads and searches together in one tool round; the runtime runs them in parallel. Do not serialize work that has no dependency.\n\
+- After a tool result, check success and exit_code. If it failed, change the approach; never repeat the same failing call. A sandbox denial is policy, not a command bug — adapt instead of retrying.\n\
+- If a file named in the task does not exist, inspect the workspace tree once, adapt the task, or write the blocker to Shared/STATUS.md. Do not search the machine.\n\
+- When you have enough evidence, stop and answer. Do not spend more than two rounds looking for a missing file.\n\
+- Final answer: what you completed, the exact artifact paths, how you verified it, and what remains. Never claim a test or command you did not run. If the task is incomplete, say so plainly."
+            ));
         }
 
+        // The renderer understands these fences even when no visual workflow
+        // was enabled. Tell every model the contract, so "make a chart" does
+        // not become a wall of CSV.
+        context_parts.push(
+            "## Visual output\n\
+When a visual explains the answer better than prose, emit one of these fenced blocks:\n\
+- A `chart` code fence containing a JSON object {type, title, labels, series:[{name, values}]} (bar, line, area, pie, donut, scatter).\n\
+- A `slides` code fence with Markdown slides separated by a line containing only ---.\n\
+- A `visual` code fence with a self-contained HTML page for an interactive dashboard, calculator, or animation. It runs scripts in a sandboxed separate origin.\n\
+- A `mermaid` code fence for flowcharts, sequence diagrams, gantt charts, and timelines.\n\
+- An `html` code fence for a self-contained static preview with no scripts or network.\n\
+Use real data only, label units, start bar charts at zero, and keep one idea per visual. An invalid block renders as an error, not a picture.".to_string(),
+        );
+
         // Inject workflow skill instructions into the system prompt
-        let workflow_prompts: Vec<String> = workflow_skills.iter()
+        let workflow_prompts: Vec<String> = workflow_skills
+            .iter()
             .filter_map(|s| s.prompt().map(|p| (s, p)))
             .map(|(s, p)| format!("### Workflow: {}\n{}", s.name(), p))
             .collect();
@@ -2924,17 +3826,21 @@ impl Runtime {
                 workflow_prompts.join("\n\n---\n\n")
             ));
         }
-        
+
         if !memory_context.is_empty() {
             context_parts.push(memory_context);
         }
-        
+
         let full_system = if context_parts.is_empty() {
             system_prompt.to_string()
         } else {
-            format!("{}\n\nContext:\n{}", system_prompt, context_parts.join("\n\n"))
+            format!(
+                "{}\n\nContext:\n{}",
+                system_prompt,
+                context_parts.join("\n\n")
+            )
         };
-        
+
         model_messages.push(Message::text("system", full_system));
 
         // Add conversation history
@@ -2949,19 +3855,23 @@ impl Runtime {
             let mut content = match &msg.content {
                 ravenbot_core::MessageContent::Text { text, .. } => text.clone(),
                 ravenbot_core::MessageContent::Checklist { text, items } => {
-                    let checklist_text: Vec<String> = items.iter().map(|item| {
-                        let status = match item.status {
-                            ravenbot_core::ChecklistStatus::Completed => "✓",
-                            ravenbot_core::ChecklistStatus::Failed => "✗",
-                            ravenbot_core::ChecklistStatus::InProgress => "○",
-                            _ => "○",
-                        };
-                        format!("{} {}", status, item.label)
-                    }).collect();
-                    text.clone().map_or_else(|| checklist_text.join("\n"), |t| {
-                        format!("{}\n{}", t, checklist_text.join("\n"))
-                    })
-                },
+                    let checklist_text: Vec<String> = items
+                        .iter()
+                        .map(|item| {
+                            let status = match item.status {
+                                ravenbot_core::ChecklistStatus::Completed => "✓",
+                                ravenbot_core::ChecklistStatus::Failed => "✗",
+                                ravenbot_core::ChecklistStatus::InProgress => "○",
+                                _ => "○",
+                            };
+                            format!("{} {}", status, item.label)
+                        })
+                        .collect();
+                    text.clone().map_or_else(
+                        || checklist_text.join("\n"),
+                        |t| format!("{}\n{}", t, checklist_text.join("\n")),
+                    )
+                }
                 _ => continue,
             };
 
@@ -3023,8 +3933,7 @@ impl Runtime {
                     .as_ref()
                     .and_then(|cp| cp.state_data.get("rounds"))
                     .and_then(|v| v.as_u64())
-                    .unwrap_or(0)
-                    as u32;
+                    .unwrap_or(0) as u32;
                 tracing::info!(run = %run.id, rounds = resumed_rounds, "Resuming paused run from checkpoint");
                 model_messages = restored;
             }
@@ -3040,17 +3949,71 @@ impl Runtime {
         let max_tokens = bot.config.max_tokens.unwrap_or(4096);
         let context_window = context_window_for(&bot.config.model_id);
         let context_reserve = max_tokens as u64 + 2000;
+        // Trace offsets are relative to the turn start, so they survive reload.
+        let turn_started = std::time::Instant::now();
+        let mut run_spans: Vec<ravenbot_core::TraceSpan> = Vec::new();
+        let mut model_round = 1u32;
 
         // Compact before the first call so an over-long thread can't overflow.
-        compact_messages(&mut model_messages, context_window, context_reserve);
+        // A manual request compacts against half the window so it actually
+        // removes something even when the thread is below the automatic line.
+        let force_compact = self
+            .force_compaction
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&run.thread_id);
+        let before_compact = estimate_messages_tokens(&model_messages);
+        compact_messages(
+            &mut model_messages,
+            if force_compact {
+                (context_window / 2).max(1)
+            } else {
+                context_window
+            },
+            context_reserve,
+        );
+        let after_compact = estimate_messages_tokens(&model_messages);
+        self.emit(StreamEvent::Context {
+            bot_id: bot.id,
+            thread_id: run.thread_id,
+            used_tokens: after_compact,
+            window_tokens: context_window,
+            compacted: force_compact || after_compact < before_compact,
+        });
+        if force_compact || after_compact < before_compact {
+            push_trace_span(
+                &mut run_spans,
+                "context",
+                if force_compact {
+                    "Manual compaction"
+                } else {
+                    "Context compacted"
+                },
+                0,
+                1,
+                false,
+                Some(format!("{} → {} tokens", before_compact, after_compact)),
+            );
+        }
 
         // Emulation passes the model an EMPTY native tool list — the protocol
         // lives in the system prompt and comes back as fenced JSON.
-        let model_tools: &[ToolDefinition] = if emulate_tools { &[] } else { &tool_definitions };
+        let model_tools: &[ToolDefinition] = if emulate_tools {
+            &[]
+        } else {
+            &tool_definitions
+        };
         let mut last_raw_content = String::new();
         let mut last_call_sig: Option<String> = None;
         let mut repeat_count = 0u32;
         let mut repeat_nudged = false;
+        // Native tool-calling models need the same guard as the emulated path.
+        // Without it, an agent can run the identical `find /` or `git status`
+        // command every round, paying for the same failure forever.
+        let mut last_native_sig: Option<String> = None;
+        let mut native_repeat_count = 0u32;
+        let mut native_repeat_nudged = false;
+        let mut budget_nudged = false;
 
         // Every round's reasoning, for the whole run.
         //
@@ -3070,6 +4033,7 @@ impl Runtime {
         // with no account of how it was reached.
         let mut run_tools: Vec<ravenbot_core::ToolTrace> = Vec::new();
 
+        let initial_model_started = turn_started.elapsed().as_millis() as u64;
         let (mut response, idx) = self
             .call_model(
                 &providers,
@@ -3082,18 +4046,32 @@ impl Runtime {
                 is_think,
             )
             .await?;
+        push_trace_span(
+            &mut run_spans,
+            "model",
+            format!("Model round {model_round}"),
+            initial_model_started,
+            turn_started.elapsed().as_millis() as u64 - initial_model_started,
+            false,
+            None,
+        );
+        model_round += 1;
         active_provider = idx;
         if emulate_tools {
             last_raw_content = apply_emulated_response(&mut response);
         }
         fold_reasoning(&mut run_reasoning, response.reasoning.as_deref(), true);
 
-        // Record this round's usage against the bot's budget (every call counts)
-        let _ = self.budget_manager.record_usage(
-            bot.id,
-            response.usage.input_tokens + response.usage.output_tokens,
-            response.usage.cost(0.003, 0.015),
-        ).await;
+        // Record this round's usage against both the bot's budget and the run
+        // ledger. The Usage screen reads the run rows; recording only in the
+        // budget manager made full runs look free.
+        let round_tokens = response.usage.input_tokens + response.usage.output_tokens;
+        let round_cost = response.usage.cost(0.003, 0.015);
+        run.add_usage(round_tokens, round_cost);
+        let _ = self
+            .budget_manager
+            .record_usage(bot.id, round_tokens, round_cost)
+            .await;
 
         // Handle tool calls
         let mut run_sources: Vec<ravenbot_core::Source> = Vec::new();
@@ -3105,7 +4083,9 @@ impl Runtime {
         let mut max_tool_rounds = total_tool_rounds.saturating_sub(resumed_rounds);
         while !response.tool_calls.is_empty() && max_tool_rounds > 0 {
             if self.kill_switch.is_triggered().await {
-                return Err(RuntimeError::KillSwitchActive("Kill switch triggered during execution".to_string()));
+                return Err(RuntimeError::KillSwitchActive(
+                    "Kill switch triggered during execution".to_string(),
+                ));
             }
             if self.is_cancelled(run.id) {
                 run.complete(ravenbot_core::RunOutcome::Cancelled {
@@ -3190,7 +4170,77 @@ impl Runtime {
                 // Native assistant turn carrying the tool-call ids, so models
                 // continue the tool loop correctly (previously tool results were
                 // flattened into fake user text and ids were lost).
-                model_messages.push(Message::assistant_tool_calls(assistant_content, calls.clone()));
+                model_messages.push(Message::assistant_tool_calls(
+                    assistant_content,
+                    calls.clone(),
+                ));
+            }
+
+            // Native repeat guard. The emulated guard above only covered
+            // text-protocol models; native tool callers could loop on the same
+            // call indefinitely. Skip the duplicate, feed the model a tool
+            // result it can use, and force a final answer if it repeats again.
+            if !emulate_tools && !calls.is_empty() {
+                let sig = emulated_call_signature(&calls);
+                if Some(&sig) == last_native_sig.as_ref() {
+                    native_repeat_count += 1;
+                } else {
+                    native_repeat_count = 1;
+                    last_native_sig = Some(sig);
+                    // A new action gets a fresh chance; only a loop on the
+                    // same action escalates.
+                    native_repeat_nudged = false;
+                }
+                if native_repeat_count >= 2 {
+                    self.emit(StreamEvent::Clear {
+                        bot_id: bot.id,
+                        thread_id: run.thread_id,
+                    });
+                    for call in &calls {
+                        model_messages.push(Message::tool_result(
+                            &call.id,
+                            call.name.clone(),
+                            "Skipped duplicate: this exact tool call already ran. Use the result above; do not repeat it.",
+                        ));
+                    }
+                    if native_repeat_nudged {
+                        tracing::warn!(
+                            bot = %bot.name,
+                            "Tool loop repeated after a nudge; forcing a final answer"
+                        );
+                        model_messages.push(Message::text(
+                            "user",
+                            "Stop calling tools. Write your final answer now from the results you already have.",
+                        ));
+                        compact_messages(&mut model_messages, context_window, context_reserve);
+                        let (final_response, _) = self
+                            .call_model(
+                                &providers,
+                                active_provider,
+                                &model_messages,
+                                &[],
+                                bot.config.temperature.unwrap_or(0.7),
+                                bot.config.max_tokens.unwrap_or(4096),
+                                on_delta.clone(),
+                                is_think,
+                            )
+                            .await?;
+                        response = final_response;
+                        break;
+                    }
+                    native_repeat_nudged = true;
+                    tracing::warn!(
+                        bot = %bot.name,
+                        tool = %calls[0].name,
+                        "Skipping a repeated tool call; nudging the model"
+                    );
+                    model_messages.push(Message::text(
+                        "user",
+                        "You requested the same tool call twice. It will not run again. Use the result you already have, or choose a different action and finish.",
+                    ));
+                    compact_messages(&mut model_messages, context_window, context_reserve);
+                    continue;
+                }
             }
 
             // The run is confined to its workspace, always.
@@ -3224,13 +4274,16 @@ impl Runtime {
                     state: "running_tool".to_string(),
                 });
 
-                let _ = self.audit_logger.log_tool_call(
-                    bot.id,
-                    Some(run.id),
-                    Some(run.thread_id),
-                    &tool_call.name,
-                    tool_call.arguments.clone(),
-                ).await;
+                let _ = self
+                    .audit_logger
+                    .log_tool_call(
+                        bot.id,
+                        Some(run.id),
+                        Some(run.thread_id),
+                        &tool_call.name,
+                        tool_call.arguments.clone(),
+                    )
+                    .await;
 
                 // ask_user never gates: the card *is* the interaction.
                 if tool_call.name == "ask_user" {
@@ -3238,7 +4291,9 @@ impl Runtime {
                     continue;
                 }
 
-                let tool_risk = self.resolve_tool_risk(&tool_call.name, &tool_skills).await;
+                let tool_risk = self
+                    .resolve_tool_risk(&tool_call.name, &tool_call.arguments, &tool_skills)
+                    .await;
                 let mut needs_approval = match bot.approval_mode {
                     ravenbot_core::ApprovalMode::Full => false,
                     ravenbot_core::ApprovalMode::Auto => {
@@ -3256,7 +4311,13 @@ impl Runtime {
 
                 if needs_approval {
                     match self
-                        .request_approval(run, &bot, &tool_call.name, &tool_call.arguments, tool_risk)
+                        .request_approval(
+                            run,
+                            &bot,
+                            &tool_call.name,
+                            &tool_call.arguments,
+                            tool_risk,
+                        )
                         .await
                     {
                         Ok(allowed) => decisions.push(allowed),
@@ -3286,12 +4347,14 @@ impl Runtime {
                                 "tool": tool_call.name,
                                 "note": "The user denied this action. Do NOT retry it - explain briefly and continue with something else.",
                             }),
+                            turn_started.elapsed().as_millis() as u64,
                             0u64,
                         );
                     }
                     // Timed per call rather than per pass: the pass runs them
                     // concurrently, so a pass total is the *slowest* call wearing
                     // the costume of all of them.
+                    let started_at = turn_started.elapsed().as_millis() as u64;
                     let started = std::time::Instant::now();
                     tracing::info!(
                         skill = %tool_call.name,
@@ -3312,6 +4375,7 @@ impl Runtime {
                         tool_call.id.clone(),
                         tool_call.name.clone(),
                         json,
+                        started_at,
                         started.elapsed().as_millis() as u64,
                     )
                 }
@@ -3322,11 +4386,13 @@ impl Runtime {
             // merely that something was. `id` is what ties a result back to the
             // call that produced it — results come back in completion order,
             // which is not the order they were issued in.
-            let args_by_id: std::collections::HashMap<&str, serde_json::Value> =
-                calls.iter().map(|c| (c.id.as_str(), c.arguments.clone())).collect();
+            let args_by_id: std::collections::HashMap<&str, serde_json::Value> = calls
+                .iter()
+                .map(|c| (c.id.as_str(), c.arguments.clone()))
+                .collect();
 
             // ── Feed native tool results back in call order + harvest sources ──
-            for (id, name, result_json, duration_ms) in results {
+            for (id, name, result_json, started_at, duration_ms) in results {
                 // A tool trace for every call, allowed or denied. A denied call is
                 // the most interesting entry in the whole turn — it is the moment
                 // the agent wanted to do something and could not — and dropping it
@@ -3334,13 +4400,33 @@ impl Runtime {
                 let failed = tool_result_failed(&result_json);
                 let trace = ravenbot_core::ToolTrace::new(
                     name.clone(),
-                    args_by_id.get(id.as_str()).cloned().unwrap_or(serde_json::Value::Null),
+                    args_by_id
+                        .get(id.as_str())
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null),
                 )
                 .with_result(result_json.clone(), failed)
                 .with_duration_ms(duration_ms);
                 if run_tools.len() < ravenbot_core::MAX_MESSAGE_TOOL_TRACES {
                     run_tools.push(trace);
                 }
+                let (span_kind, span_label, span_detail) = tool_span_description(
+                    &name,
+                    args_by_id
+                        .get(id.as_str())
+                        .unwrap_or(&serde_json::Value::Null),
+                    &result_json,
+                    failed,
+                );
+                push_trace_span(
+                    &mut run_spans,
+                    span_kind,
+                    span_label,
+                    started_at,
+                    duration_ms,
+                    failed,
+                    span_detail,
+                );
 
                 // Journal the write itself, the moment it happens.
                 //
@@ -3351,7 +4437,8 @@ impl Runtime {
                 // question nobody could answer. Written here, it is a fact in
                 // the database that any view can read, live, without having
                 // seen the run happen.
-                self.journal_file_changes(run, &bot, &name, &result_json).await;
+                self.journal_file_changes(run, &bot, &name, &result_json)
+                    .await;
 
                 let mut extracted_sources = Vec::new();
                 extract_sources(&result_json, &mut extracted_sources);
@@ -3385,7 +4472,10 @@ impl Runtime {
                 if emulate_tools {
                     // Plain-text transcript for models without tool support:
                     // results ride back in as bracketed user turns.
-                    model_messages.push(Message::text("user", format!("[tool_result:{}]\n{}", name, result_text)));
+                    model_messages.push(Message::text(
+                        "user",
+                        format!("[tool_result:{}]\n{}", name, result_text),
+                    ));
                 } else {
                     model_messages.push(Message::tool_result(id, name.clone(), result_text));
                 }
@@ -3418,7 +4508,39 @@ impl Runtime {
                 thread_id: run.thread_id,
             });
 
+            if !budget_nudged && max_tool_rounds <= 2 {
+                budget_nudged = true;
+                model_messages.push(Message::text(
+                    "user",
+                    "Only two tool rounds remain. Stop exploring and start converging. If you have enough evidence, write the final answer now; otherwise finish the most important incomplete step and report exactly what remains.",
+                ));
+            }
+            let before_next_compact = estimate_messages_tokens(&model_messages);
             compact_messages(&mut model_messages, context_window, context_reserve);
+            let after_next_compact = estimate_messages_tokens(&model_messages);
+            self.emit(StreamEvent::Context {
+                bot_id: bot.id,
+                thread_id: run.thread_id,
+                used_tokens: after_next_compact,
+                window_tokens: context_window,
+                compacted: after_next_compact < before_next_compact,
+            });
+            if after_next_compact < before_next_compact {
+                let at = turn_started.elapsed().as_millis() as u64;
+                push_trace_span(
+                    &mut run_spans,
+                    "context",
+                    "Context compacted",
+                    at,
+                    1,
+                    false,
+                    Some(format!(
+                        "{} → {} tokens",
+                        before_next_compact, after_next_compact
+                    )),
+                );
+            }
+            let round_started = turn_started.elapsed().as_millis() as u64;
             let (next_response, idx) = self
                 .call_model(
                     &providers,
@@ -3431,6 +4553,16 @@ impl Runtime {
                     is_think,
                 )
                 .await?;
+            push_trace_span(
+                &mut run_spans,
+                "model",
+                format!("Model round {model_round}"),
+                round_started,
+                turn_started.elapsed().as_millis() as u64 - round_started,
+                false,
+                None,
+            );
+            model_round += 1;
             active_provider = idx;
             response = next_response;
             if emulate_tools {
@@ -3438,12 +4570,117 @@ impl Runtime {
             }
             fold_reasoning(&mut run_reasoning, response.reasoning.as_deref(), false);
 
-            // Record each tool-round's usage as well
-            let _ = self.budget_manager.record_usage(
-                bot.id,
-                response.usage.input_tokens + response.usage.output_tokens,
-                response.usage.cost(0.003, 0.015),
-            ).await;
+            // Record each tool-round's usage as well, in both ledgers.
+            let round_tokens = response.usage.input_tokens + response.usage.output_tokens;
+            let round_cost = response.usage.cost(0.003, 0.015);
+            run.add_usage(round_tokens, round_cost);
+            let _ = self
+                .budget_manager
+                .record_usage(bot.id, round_tokens, round_cost)
+                .await;
+        }
+
+        // ── Final answer when the tool phase ends without one ─────────────
+        //
+        // The loop can stop because the round budget is exhausted while the
+        // last response is still asking for another tool, or a provider can
+        // return an empty final message. Persisting nothing in either case is
+        // what made a node show up as "done" with no result after a dozen
+        // useful tool calls. Ask once more with tools disabled for a report,
+        // then fall back to a deterministic progress note if even that yields
+        // nothing.
+        let hit_tool_limit = !response.tool_calls.is_empty();
+        let mut used_fallback_report = false;
+        let empty_answer = response
+            .content
+            .as_deref()
+            .map(str::trim)
+            .map(str::is_empty)
+            .unwrap_or(true);
+        if hit_tool_limit || empty_answer {
+            self.emit(StreamEvent::Clear {
+                bot_id: bot.id,
+                thread_id: run.thread_id,
+            });
+            model_messages.push(Message::text(
+                "user",
+                "The tool phase is over. Do not call any more tools. Write the final answer now from the evidence above: what you completed, the exact files or artifacts produced, how you verified it, and what remains or is blocked. If the task is incomplete, say so plainly. Be concise.",
+            ));
+            let final_started = turn_started.elapsed().as_millis() as u64;
+            match self
+                .call_model(
+                    &providers,
+                    active_provider,
+                    &model_messages,
+                    &[],
+                    temperature,
+                    max_tokens,
+                    on_delta.clone(),
+                    is_think,
+                )
+                .await
+            {
+                Ok((next_response, _idx)) => {
+                    push_trace_span(
+                        &mut run_spans,
+                        "model",
+                        "Final report",
+                        final_started,
+                        turn_started.elapsed().as_millis() as u64 - final_started,
+                        false,
+                        None,
+                    );
+                    response = next_response;
+                    // Tools are disabled for this call; a provider that emits
+                    // a stray call anyway must not restart the loop.
+                    response.tool_calls.clear();
+                    fold_reasoning(&mut run_reasoning, response.reasoning.as_deref(), false);
+                    let final_tokens =
+                        response.usage.input_tokens + response.usage.output_tokens;
+                    let final_cost = response.usage.cost(0.003, 0.015);
+                    run.add_usage(final_tokens, final_cost);
+                    let _ = self
+                        .budget_manager
+                        .record_usage(bot.id, final_tokens, final_cost)
+                        .await;
+                }
+                Err(error) => {
+                    push_trace_span(
+                        &mut run_spans,
+                        "model",
+                        "Final report",
+                        final_started,
+                        turn_started.elapsed().as_millis() as u64 - final_started,
+                        true,
+                        Some(error.to_string()),
+                    );
+                    tracing::warn!(
+                        bot_id = %bot.id,
+                        error = %error,
+                        "Final-answer call failed; using the gathered evidence"
+                    );
+                }
+            }
+
+            let answer_empty = response
+                .content
+                .as_deref()
+                .map(str::trim)
+                .map(str::is_empty)
+                .unwrap_or(true);
+            if answer_empty {
+                let rounds = total_tool_rounds.saturating_sub(max_tool_rounds);
+                response.content = Some(tool_rounds_report(rounds, &run_tools, hit_tool_limit));
+                used_fallback_report = true;
+            }
+        }
+        if hit_tool_limit {
+            if let Some(content) = response.content.as_mut() {
+                let rounds = total_tool_rounds.saturating_sub(max_tool_rounds);
+                content.push_str(&format!(
+                    "\n\n> Tool-round limit reached ({rounds}). This is a progress report; some work may remain."
+                ));
+            }
         }
 
         // Update usage
@@ -3485,8 +4722,11 @@ impl Runtime {
             if has_images {
                 assistant_msg.attachments = run_images;
             }
-            if let ravenbot_core::MessageContent::Text { tools, .. } = &mut assistant_msg.content {
+            if let ravenbot_core::MessageContent::Text { tools, spans, .. } =
+                &mut assistant_msg.content
+            {
                 *tools = run_tools;
+                *spans = run_spans;
             }
             ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &assistant_msg).await?;
         }
@@ -3498,10 +4738,23 @@ impl Runtime {
             state: "done".to_string(),
         });
 
-        // Complete the run
-        run.complete(ravenbot_core::RunOutcome::Success {
-            result: "Response generated".to_string(),
-        });
+        // Complete the run. A report produced after the tool limit (or a
+        // deterministic evidence report) is useful, but it is not a completed
+        // task: the executor must not let dependents build on it.
+        if hit_tool_limit || used_fallback_report {
+            run.complete(ravenbot_core::RunOutcome::PartialSuccess {
+                result: "Progress report generated; the task may be incomplete".to_string(),
+                errors: vec![if hit_tool_limit {
+                    "tool-round limit reached".to_string()
+                } else {
+                    "the model did not produce a final answer".to_string()
+                }],
+            });
+        } else {
+            run.complete(ravenbot_core::RunOutcome::Success {
+                result: "Response generated".to_string(),
+            });
+        }
 
         // Save to database
         ravenbot_db::queries::RunQueries::update(self.db.pool(), run).await?;
@@ -3510,7 +4763,10 @@ impl Runtime {
         if !thread_ephemeral {
             if let Ok(review) = self.self_reviewer.review_run(run).await {
                 if !review.memory_updates.is_empty() {
-                    let _ = self.self_reviewer.apply_updates(bot.id, &review.memory_updates).await;
+                    let _ = self
+                        .self_reviewer
+                        .apply_updates(bot.id, &review.memory_updates)
+                        .await;
                 }
                 tracing::info!(
                     bot_id = %bot.id,
@@ -3557,10 +4813,7 @@ fn extract_sources(value: &serde_json::Value, out: &mut Vec<ravenbot_core::Sourc
             Some(u) if u.starts_with("http") => u,
             _ => return,
         };
-        let title = obj
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or(url);
+        let title = obj.get("title").and_then(|v| v.as_str()).unwrap_or(url);
         let snippet = obj
             .get("snippet")
             .and_then(|v| v.as_str())
@@ -3605,7 +4858,11 @@ fn extract_image(value: &serde_json::Value) -> Option<(String, String)> {
                     .or_else(|| value.get("mime_type"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("image/png");
-                let mime = if key == "audio_b64" { "audio/wav" } else { mime };
+                let mime = if key == "audio_b64" {
+                    "audio/wav"
+                } else {
+                    mime
+                };
                 return Some((name, format!("data:{};base64,{}", mime, b64)));
             }
         }
@@ -3753,6 +5010,56 @@ fn emulated_call_signature(calls: &[ravenbot_models::ToolCall]) -> String {
         .join("|")
 }
 
+/// Char-safe preview for a tool report. Slicing a UTF-8 string by bytes at an
+/// arbitrary offset panics; the model's evidence can contain any script.
+fn preview_text(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    let mut out: String = text.chars().take(max_chars).collect();
+    out.push('…');
+    out
+}
+
+/// The honest answer a run gets when the model will not write one.
+///
+/// It is deliberately a progress report, not a fabricated completion: the
+/// office can pick it up on the next heartbeat, and the board's preview tells
+/// the next agent what was actually tried.
+fn tool_rounds_report(rounds: u32, tools: &[ravenbot_core::ToolTrace], hit_limit: bool) -> String {
+    let recent = tools
+        .iter()
+        .rev()
+        .take(6)
+        .map(|trace| {
+            let args = preview_text(&trace.arguments.to_string(), 180);
+            let result = preview_text(&trace.result.to_string(), 260);
+            format!(
+                "- {}({}) → {}: {}",
+                trace.name,
+                args,
+                if trace.is_error { "error" } else { "ok" },
+                result
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let recent = if recent.is_empty() {
+        "No tool calls completed.".to_string()
+    } else {
+        recent
+    };
+    let reason = if hit_limit {
+        format!("I reached the tool-round limit ({rounds}) before completing this task. This is a progress report, not a finished answer.")
+    } else {
+        "The model did not produce a final answer. This is the evidence gathered so far."
+            .to_string()
+    };
+    format!(
+        "{reason}\n\nRecent work:\n{recent}\n\nContinue from these results and the files in the workspace; record what remains in Shared/STATUS.md."
+    )
+}
+
 /// Post-process one model response in emulation mode: synthesize tool calls
 /// from fenced JSON and remove the protocol text from the user-visible
 /// content. Returns the raw content so the transcript can show the model its
@@ -3805,11 +5112,7 @@ const COMPACT_KEEP_TAIL: usize = 12;
 /// most recent messages that fit, replacing the dropped middle with a single
 /// marker so the model knows history was elided. The kept tail never starts on
 /// a `tool` result (which would orphan it from its assistant tool call).
-fn compact_messages(
-    messages: &mut Vec<ravenbot_models::Message>,
-    window: u64,
-    reserve: u64,
-) {
+fn compact_messages(messages: &mut Vec<ravenbot_models::Message>, window: u64, reserve: u64) {
     let available = window.saturating_sub(reserve).max(1024);
     if estimate_messages_tokens(messages) <= available {
         return;
@@ -4036,12 +5339,104 @@ fn is_retryable_model_error(err: &str) -> bool {
         || e.contains("timed out")
         || e.contains("connection")
         || e.contains("rate limited")
+        || e.contains("rate limit")
         || e.contains("429")
         || e.contains("500")
         || e.contains("502")
         || e.contains("503")
         || e.contains("504")
         || e.contains("temporarily unavailable")
+        || e.contains("overloaded")
+}
+
+/// Is this specifically a rate-limit response?
+fn is_rate_limit_error(err: &str) -> bool {
+    let e = err.to_lowercase();
+    e.contains("429") || e.contains("rate limited") || e.contains("rate limit")
+}
+
+/// Failures that will fail again identically: no retry, and in an office they
+/// stop the whole run instead of burning every remaining node.
+///
+/// `FreeUsageLimitError` is in this list even though it arrives as a 429. It
+/// carries "subscribe to OpenCode Go to keep going" — waiting does not fix it,
+/// and retrying six times only makes the user wait longer to see the one
+/// sentence that matters.
+fn is_permanent_provider_error(err: &str) -> bool {
+    let e = err.to_lowercase();
+    e.contains("free usage limit")
+        || e.contains("subscribe to opencode go")
+        || e.contains("insufficient account funds")
+        || e.contains("insufficient funds")
+        || e.contains("insufficient credits")
+        || e.contains("payment required")
+        || e.contains("modelprotocolunsupported")
+        || e.contains("model does not support this protocol")
+        || e.contains("invalid api key")
+        || e.contains("401")
+        || e.contains("402")
+        || e.contains("403")
+}
+
+/// Seconds a provider asked us to wait, from `Retry-After` or a body that says
+/// "retry after N". Both shapes appear in the wild.
+fn retry_after_secs(err: &str) -> Option<u64> {
+    let lower = err.to_lowercase();
+    for marker in [
+        "retry after ",
+        "retry_after\":",
+        "retry-after:",
+        "retry_after:",
+    ] {
+        if let Some(idx) = lower.find(marker) {
+            let digits: String = lower[idx + marker.len()..]
+                .chars()
+                .skip_while(|c| !c.is_ascii_digit())
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
+            if let Ok(secs) = digits.parse::<u64>() {
+                return Some(secs);
+            }
+        }
+    }
+    None
+}
+
+/// Is this a 5xx / upstream-unavailable failure?
+fn is_server_error(err: &str) -> bool {
+    let e = err.to_lowercase();
+    e.contains("500")
+        || e.contains("502")
+        || e.contains("503")
+        || e.contains("504")
+        || e.contains("endpoint is unavailable")
+        || e.contains("service unavailable")
+}
+
+/// Delay before the next attempt.
+///
+/// A provider's own retry window wins, clamped to 30s: an interactive run that
+/// sleeps for five minutes is indistinguishable from a hang. Otherwise rate
+/// limits back off 5s/10s, a 5xx upstream outage 2s/4s, and other transient
+/// failures 1s/2s, all with a little jitter so parallel nodes do not wake
+/// together.
+fn retry_delay(err: &str, attempt: u32) -> std::time::Duration {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    if let Some(secs) = retry_after_secs(err) {
+        return Duration::from_secs(secs.clamp(1, 30));
+    }
+    let base_secs = if is_rate_limit_error(err) {
+        5 * attempt as u64
+    } else if is_server_error(err) {
+        2 * attempt as u64
+    } else {
+        1u64 << (attempt.saturating_sub(1)).min(3)
+    };
+    let jitter_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_millis() as u64 % 400)
+        .unwrap_or(0);
+    Duration::from_millis(base_secs * 1000 + jitter_ms)
 }
 
 /// Heuristic: is this failure a configuration problem rather than a transient
@@ -4056,9 +5451,76 @@ fn is_config_error(err: &str) -> bool {
         || e.contains("402")
         || e.contains("insufficient credits")
         || e.contains("insufficient funds")
+        || e.contains("free usage limit")
+        || e.contains("subscribe to opencode go")
+        || e.contains("modelprotocolunsupported")
+        || e.contains("model does not support this protocol")
         || e.contains("unknown provider")
         || e.contains("no model provider available")
         || e.contains("not configured")
+}
+
+#[cfg(test)]
+mod retry_policy_tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn a_free_limit_429_is_permanent_not_retried() {
+        let msg = r#"API error 429 Too Many Requests: {"type":"error","error":{"type":"FreeUsageLimitError","message":"Free usage limit reached. Free models work in OpenCode; subscribe to OpenCode Go to keep going"}}"#;
+        assert!(is_rate_limit_error(msg));
+        assert!(is_permanent_provider_error(msg));
+        assert!(is_config_error(msg));
+    }
+
+    #[test]
+    fn a_transient_429_is_retried() {
+        let msg = "API error 429 Too Many Requests: slow down";
+        assert!(is_retryable_model_error(msg));
+        assert!(!is_permanent_provider_error(msg));
+    }
+
+    #[test]
+    fn a_protocol_mismatch_is_permanent() {
+        let msg = r#"API error 400: {"type":"ModelProtocolUnsupported","message":"Model does not support this protocol."}"#;
+        assert!(is_permanent_provider_error(msg));
+        assert!(!is_retryable_model_error(msg));
+        assert!(is_config_error(msg));
+    }
+
+    #[test]
+    fn retry_after_is_parsed_from_both_shapes() {
+        assert_eq!(
+            retry_after_secs("Rate limited, retry after 12 seconds"),
+            Some(12)
+        );
+        assert_eq!(retry_after_secs(r#"{"retry_after": 7}"#), Some(7));
+        assert_eq!(retry_after_secs("HTTP 429"), None);
+    }
+
+    #[test]
+    fn a_five_minute_retry_window_is_clamped() {
+        let wait = retry_delay("429 retry after 300", 1);
+        assert_eq!(wait, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn transient_backoff_grows_and_rate_limits_wait_longer() {
+        let first = retry_delay("connection reset", 1);
+        let second = retry_delay("connection reset", 2);
+        assert!(second >= first);
+        assert!(retry_delay("429 rate limited", 1) >= Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_5xx_outage_waits_longer_than_a_plain_transient() {
+        assert!(is_server_error("503 Service Unavailable"));
+        assert!(is_server_error(
+            r#"{"type":"server_error","message":"Endpoint is unavailable."}"#
+        ));
+        assert!(retry_delay("503 Service Unavailable", 1) >= Duration::from_secs(2));
+        assert!(retry_delay("503 Service Unavailable", 2) >= Duration::from_secs(4));
+    }
 }
 
 #[cfg(test)]
@@ -4103,10 +5565,18 @@ mod source_tests {
 
     #[test]
     fn retryable_heuristic() {
-        assert!(is_retryable_model_error("error sending request: connection reset"));
-        assert!(is_retryable_model_error("API error 503 Service Unavailable"));
-        assert!(is_retryable_model_error("Rate limited, retry after 3 seconds"));
-        assert!(!is_retryable_model_error("OpenRouter API key not configured"));
+        assert!(is_retryable_model_error(
+            "error sending request: connection reset"
+        ));
+        assert!(is_retryable_model_error(
+            "API error 503 Service Unavailable"
+        ));
+        assert!(is_retryable_model_error(
+            "Rate limited, retry after 3 seconds"
+        ));
+        assert!(!is_retryable_model_error(
+            "OpenRouter API key not configured"
+        ));
         assert!(!is_retryable_model_error("Unknown provider: localx"));
     }
 
@@ -4120,10 +5590,7 @@ mod source_tests {
             ravenbot_core::slugify("Core Engineering!"),
             ravenbot_core::slugify("Core Engineering!")
         );
-        assert_eq!(
-            expand_home("/tmp/x"),
-            ravenbot_core::expand_home("/tmp/x")
-        );
+        assert_eq!(expand_home("/tmp/x"), ravenbot_core::expand_home("/tmp/x"));
         // A name that cannot be slugified still yields a usable folder name
         // rather than an empty one.
         assert_eq!(ravenbot_core::slugify("  "), "workspace");
@@ -4174,8 +5641,9 @@ mod source_tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let mut items: Vec<(String, usize)> =
-            (0..50).map(|i| (format!("connector_tool_{i}"), i)).collect();
+        let mut items: Vec<(String, usize)> = (0..50)
+            .map(|i| (format!("connector_tool_{i}"), i))
+            .collect();
         items.push(("file_read".to_string(), 100));
         items.push(("shell_exec".to_string(), 101));
 
@@ -4183,8 +5651,14 @@ mod source_tests {
         let ids: Vec<&str> = capped.iter().map(|(id, _)| id.as_str()).collect();
 
         assert_eq!(capped.len(), 5, "cap is still enforced");
-        assert!(ids.contains(&"file_read"), "core file tool must survive: {ids:?}");
-        assert!(ids.contains(&"shell_exec"), "core shell tool must survive: {ids:?}");
+        assert!(
+            ids.contains(&"file_read"),
+            "core file tool must survive: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"shell_exec"),
+            "core shell tool must survive: {ids:?}"
+        );
         assert_eq!(ids[0], "file_read", "protected tools come first");
     }
 }
@@ -4305,7 +5779,9 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let bot = Bot::new("Ledger", "keeps books");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
 
         /// Poll rather than read once, and the reason is the design rather than a
         /// test convenience.
@@ -4347,7 +5823,9 @@ mod integration_tests {
 
         // And the roster must see it, because that is what the test is for.
         let room = ravenbot_core::ChatRoom::new("Roster", "office", "it-office");
-        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
         let asker = member(&db, &room, "Asker", "Lead", "General", "idle").await;
         ravenbot_db::queries::ChatRoomQueries::add_member(
             db.pool(),
@@ -4375,7 +5853,6 @@ mod integration_tests {
         );
     }
 
-
     /// A delegation cycle has to stop, and say something useful when it does.
     ///
     /// The cap is not only a correctness guard. A asks B asks A asks B is a cycle,
@@ -4390,7 +5867,10 @@ mod integration_tests {
     /// work out what to do instead — its best guess being to delegate again.
     #[tokio::test]
     async fn a_delegation_cycle_stops_at_the_cap_and_says_what_to_do() {
-        assert_eq!(MAX_DELEGATION_CHAIN, 3, "the documented depth is three hops");
+        assert_eq!(
+            MAX_DELEGATION_CHAIN, 3,
+            "the documented depth is three hops"
+        );
 
         // A run with no entry is depth 0: a fresh run that delegates is hop one.
         let map: HashMap<Uuid, u32> = HashMap::new();
@@ -4415,18 +5895,30 @@ mod integration_tests {
             .expect("depth lock")
             .insert(run_id, 2);
         assert_eq!(
-            runtime.delegation_depth.read().expect("depth lock").get(&run_id).copied(),
+            runtime
+                .delegation_depth
+                .read()
+                .expect("depth lock")
+                .get(&run_id)
+                .copied(),
             Some(2),
         );
 
         // What `exec_delegation` does once the child's run returns.
-        runtime.delegation_depth.write().expect("depth lock").remove(&run_id);
+        runtime
+            .delegation_depth
+            .write()
+            .expect("depth lock")
+            .remove(&run_id);
         assert!(
-            !runtime.delegation_depth.read().expect("depth lock").contains_key(&run_id),
+            !runtime
+                .delegation_depth
+                .read()
+                .expect("depth lock")
+                .contains_key(&run_id),
             "the depth slot outlived its run",
         );
     }
-
 
     /// A delegate must receive the conversation, not just the caller's summary of it.
     ///
@@ -4442,9 +5934,13 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let lead = Bot::new("Priya", "leads");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &lead).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &lead)
+            .await
+            .unwrap();
         let thread = Thread::new(lead.id, "office");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
 
         // The detail that a paraphrase reliably drops: a version string.
         let exact = "The login form 500s on POST /api/session for Safari 18.2 only. \\
@@ -4454,17 +5950,37 @@ mod integration_tests {
         insert_text(db.pool(), thread.id, "user", exact).await;
 
         let prompt = runtime
-            .delegation_prompt("", "investigate the login failure", thread.id, Some("Priya".into()))
+            .delegation_prompt(
+                "",
+                "investigate the login failure",
+                thread.id,
+                Some("Priya".into()),
+            )
             .await;
 
-        assert!(prompt.contains("Safari 18.2"), "the exact detail was lost:\n{prompt}");
-        assert!(prompt.contains("undefined is not a function"), "the error text was lost:\n{prompt}");
-        assert!(prompt.contains("User:"), "the user's own words are missing:\n{prompt}");
-        assert!(prompt.contains("Priya:"), "the caller is unnamed:\n{prompt}");
+        assert!(
+            prompt.contains("Safari 18.2"),
+            "the exact detail was lost:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("undefined is not a function"),
+            "the error text was lost:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("User:"),
+            "the user's own words are missing:\n{prompt}"
+        );
+        assert!(
+            prompt.contains("Priya:"),
+            "the caller is unnamed:\n{prompt}"
+        );
         // The task goes last, because it is the last thing read.
         let task_at = prompt.find("Your task:").expect("no task section");
         let detail_at = prompt.find("Safari 18.2").expect("no transcript");
-        assert!(detail_at < task_at, "the task must come after the context it explains");
+        assert!(
+            detail_at < task_at,
+            "the task must come after the context it explains"
+        );
         assert!(prompt.contains("investigate the login failure"));
     }
 
@@ -4478,9 +5994,13 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db);
         let bot = Bot::new("Priya", "leads");
-        ravenbot_db::queries::BotQueries::insert(runtime.db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(runtime.db.pool(), &bot)
+            .await
+            .unwrap();
         let thread = Thread::new(bot.id, "office");
-        ravenbot_db::queries::ThreadQueries::create(runtime.db.pool(), &thread).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(runtime.db.pool(), &thread)
+            .await
+            .unwrap();
 
         let prompt = runtime
             .delegation_prompt(
@@ -4511,9 +6031,13 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let bot = Bot::new("Priya", "leads");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let thread = Thread::new(bot.id, "office");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
 
         // Twenty turns, so the eight-message window must discard some.
         for i in 0..20 {
@@ -4526,12 +6050,18 @@ mod integration_tests {
             .delegation_prompt("", "do the thing", thread.id, Some("Priya".into()))
             .await;
 
-        assert!(prompt.contains("[truncated]"), "a cut was not marked:\n{prompt}");
+        assert!(
+            prompt.contains("[truncated]"),
+            "a cut was not marked:\n{prompt}"
+        );
         assert!(
             !prompt.contains("message number 0"),
             "the window did not drop old turns",
         );
-        assert!(prompt.contains("message number 19"), "the most recent turn was dropped");
+        assert!(
+            prompt.contains("message number 19"),
+            "the most recent turn was dropped"
+        );
 
         // The whole thing must stay a prompt, not a transcript.
         let transcript_end = prompt.find("---\n\nYour task:").expect("no task section");
@@ -4548,16 +6078,23 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let bot = Bot::new("Priya", "leads");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let thread = Thread::new(bot.id, "office");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
 
         let prompt = runtime
             .delegation_prompt("", "do the thing", thread.id, Some("Priya".into()))
             .await;
 
         assert!(!prompt.contains("called into a conversation"), "{prompt}");
-        assert!(!prompt.contains("From the agent who called you"), "{prompt}");
+        assert!(
+            !prompt.contains("From the agent who called you"),
+            "{prompt}"
+        );
         assert!(prompt.trim_start().starts_with("Your task:"), "{prompt}");
     }
 
@@ -4567,9 +6104,10 @@ mod integration_tests {
         } else {
             ravenbot_core::Message::assistant(thread, text)
         };
-        ravenbot_db::queries::MessageQueries::insert(pool, &msg).await.unwrap();
+        ravenbot_db::queries::MessageQueries::insert(pool, &msg)
+            .await
+            .unwrap();
     }
-
 
     /// An office has to tell its agents who else is in it.
     ///
@@ -4597,10 +6135,20 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let room = ravenbot_core::ChatRoom::new("Roster", "office", "it-office");
-        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
 
         member(&db, &room, "Priya", "Lead", "Orchestration", "idle").await;
-        member(&db, &room, "Sam", "Developer", "Implementation", "running_tool").await;
+        member(
+            &db,
+            &room,
+            "Sam",
+            "Developer",
+            "Implementation",
+            "running_tool",
+        )
+        .await;
         member(&db, &room, "Kim", "Auditor", "Review", "paused").await;
         let ghost = member(&db, &room, "Ghost", "Intern", "Nothing", "idle").await;
         // Set directly: `bots.hidden` is written outside `BotQueries`, and what is
@@ -4619,13 +6167,28 @@ mod integration_tests {
         let joined = roster.join("\n");
 
         assert_eq!(roster.len(), 3, "hidden members are excluded: {joined}");
-        assert!(!joined.contains("Ghost"), "a hidden member leaked: {joined}");
-        assert!(!joined.contains("Me"), "the roster listed the asker: {joined}");
+        assert!(
+            !joined.contains("Ghost"),
+            "a hidden member leaked: {joined}"
+        );
+        assert!(
+            !joined.contains("Me"),
+            "the roster listed the asker: {joined}"
+        );
 
         // Role and specialty, because "who do I ask" is answered by what they do.
-        assert!(joined.contains("Priya (Lead, Orchestration) — free"), "{joined}");
-        assert!(joined.contains("Sam (Developer, Implementation) — busy"), "{joined}");
-        assert!(joined.contains("PAUSED"), "a paused agent reads as available: {joined}");
+        assert!(
+            joined.contains("Priya (Lead, Orchestration) — free"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("Sam (Developer, Implementation) — busy"),
+            "{joined}"
+        );
+        assert!(
+            joined.contains("PAUSED"),
+            "a paused agent reads as available: {joined}"
+        );
         assert!(joined.contains("Kim"), "{joined}");
 
         // Busy really is different from free — that is the whole point of the
@@ -4643,7 +6206,9 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let room = ravenbot_core::ChatRoom::new("Solo", "office", "it-office");
-        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
         let me = member(&db, &room, "Only", "Solver", "General", "idle").await;
 
         assert!(runtime.office_roster(room.id, me.id).await.is_empty());
@@ -4659,7 +6224,9 @@ mod integration_tests {
         status: &str,
     ) -> Bot {
         let bot = Bot::new(name, "colleague");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         sqlx::query("UPDATE bots SET rank = ?, specialty = ?, status = ? WHERE id = ?")
             .bind(rank)
             .bind(specialty)
@@ -4708,13 +6275,12 @@ mod integration_tests {
 
         // The office still opens onto its own conversation. This is the query
         // `get_chatroom_thread` runs, unchanged, and it must keep working.
-        let opened: Option<String> = sqlx::query_scalar(
-            "SELECT thread_id FROM chatroom_threads WHERE chatroom_id = ?",
-        )
-        .bind(room.id.to_string())
-        .fetch_optional(runtime.db.pool())
-        .await
-        .unwrap();
+        let opened: Option<String> =
+            sqlx::query_scalar("SELECT thread_id FROM chatroom_threads WHERE chatroom_id = ?")
+                .bind(room.id.to_string())
+                .fetch_optional(runtime.db.pool())
+                .await
+                .unwrap();
         assert_eq!(
             opened.as_deref(),
             Some(office.id.to_string().as_str()),
@@ -4759,39 +6325,47 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let room = ravenbot_core::ChatRoom::new("Repeated", "office", "it-office");
-        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
         let owner = Bot::new("Owner", "asks for help");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner)
+            .await
+            .unwrap();
 
         let office = Thread::new(owner.id, "office group");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office)
+            .await
+            .unwrap();
         link_own_thread(db.pool(), room.id, office.id).await;
 
         for _ in 0..3 {
             let child = Thread::new(owner.id, "Delegation");
-            ravenbot_db::queries::ThreadQueries::create(db.pool(), &child).await.unwrap();
+            ravenbot_db::queries::ThreadQueries::create(db.pool(), &child)
+                .await
+                .unwrap();
             runtime.link_thread_to_office(&child, &room).await.unwrap();
             // A retry must not duplicate the link.
             runtime.link_thread_to_office(&child, &room).await.unwrap();
         }
 
-        let rows: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM chatroom_office_threads WHERE chatroom_id = ?")
-                .bind(room.id.to_string())
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
-        assert_eq!(rows, 3, "one row per delegated agent, not per link attempt");
-
-        // And the office's own link is still exactly where it was, in its own
-        // table, untouched.
-        let own: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM chatroom_threads WHERE chatroom_id = ?",
+        let rows: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM chatroom_office_threads WHERE chatroom_id = ?",
         )
         .bind(room.id.to_string())
         .fetch_one(db.pool())
         .await
         .unwrap();
+        assert_eq!(rows, 3, "one row per delegated agent, not per link attempt");
+
+        // And the office's own link is still exactly where it was, in its own
+        // table, untouched.
+        let own: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chatroom_threads WHERE chatroom_id = ?")
+                .bind(room.id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
         assert_eq!(own, 1);
     }
 
@@ -4806,11 +6380,17 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let room = ravenbot_core::ChatRoom::new("Plain", "office", "it-office");
-        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
         let owner = Bot::new("Owner", "asks for help");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner)
+            .await
+            .unwrap();
         let office = Thread::new(owner.id, "office group");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office)
+            .await
+            .unwrap();
         link_own_thread(db.pool(), room.id, office.id).await;
 
         assert_eq!(runtime.office_id_for_thread(office.id).await, Some(room.id));
@@ -4825,9 +6405,13 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let bot = Bot::new("Solo", "no office");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let thread = Thread::new(bot.id, "direct conversation");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
 
         assert_eq!(runtime.office_id_for_thread(thread.id).await, None);
         assert!(runtime.office_of(thread.id).await.is_none());
@@ -4838,17 +6422,25 @@ mod integration_tests {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
         let room = ravenbot_core::ChatRoom::new("Two Threads", "office", "it-office");
-        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
 
         let owner = Bot::new("Owner", "asks for help");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner)
+            .await
+            .unwrap();
 
         let office = Thread::new(owner.id, "office group");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &office)
+            .await
+            .unwrap();
         link_own_thread(db.pool(), room.id, office.id).await;
 
         let child = Thread::new(owner.id, "Delegation: check the logs");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &child).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &child)
+            .await
+            .unwrap();
         runtime.link_thread_to_office(&child, &room).await.unwrap();
 
         (runtime, room, office, child)
@@ -4895,13 +6487,15 @@ mod integration_tests {
         ravenbot_db::queries::ThreadQueries::create(db.pool(), &office_thread)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO chatroom_threads (chatroom_id, thread_id, created_at) VALUES (?, ?, ?)")
-            .bind(room.id.to_string())
-            .bind(office_thread.id.to_string())
-            .bind(chrono::Utc::now().to_rfc3339())
-            .execute(db.pool())
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO chatroom_threads (chatroom_id, thread_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(room.id.to_string())
+        .bind(office_thread.id.to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db.pool())
+        .await
+        .unwrap();
 
         let specialist = Bot::new("Specialist", "does the work");
         ravenbot_db::queries::BotQueries::insert(db.pool(), &specialist)
@@ -4925,7 +6519,9 @@ mod integration_tests {
             .await
             .unwrap();
         let run = Run::new(specialist.id, delegate_thread.id);
-        ravenbot_db::queries::RunQueries::insert(db.pool(), &run).await.unwrap();
+        ravenbot_db::queries::RunQueries::insert(db.pool(), &run)
+            .await
+            .unwrap();
 
         runtime
             .link_thread_to_office(&delegate_thread, &room)
@@ -4947,13 +6543,12 @@ mod integration_tests {
 
         // And the office's own conversation is still linked, which is the half
         // that used to be destroyed.
-        let office_still_linked: Option<String> = sqlx::query_scalar(
-            "SELECT thread_id FROM chatroom_threads WHERE chatroom_id = ?",
-        )
-        .bind(room.id.to_string())
-        .fetch_optional(db.pool())
-        .await
-        .unwrap();
+        let office_still_linked: Option<String> =
+            sqlx::query_scalar("SELECT thread_id FROM chatroom_threads WHERE chatroom_id = ?")
+                .bind(room.id.to_string())
+                .fetch_optional(db.pool())
+                .await
+                .unwrap();
         assert_eq!(office_still_linked, Some(office_thread.id.to_string()));
 
         // …and carrying the office's folders, so the runtime confines it there.
@@ -5018,7 +6613,10 @@ mod integration_tests {
             .as_str()
             .expect("the call should be refused")
             .to_string();
-        assert!(err.contains("shell"), "the refusal should name the missing capability: {err}");
+        assert!(
+            err.contains("shell"),
+            "the refusal should name the missing capability: {err}"
+        );
         // The strongest form of the assertion: the command did not run.
         assert!(
             !std::path::Path::new("/tmp/should-not-exist").exists(),
@@ -5132,7 +6730,12 @@ mod integration_tests {
             runtime.emit(StreamEvent::Status {
                 bot_id: bot.id,
                 thread_id: Uuid::new_v4(),
-                state: if i % 3 == 0 { "running_tool" } else { "thinking" }.to_string(),
+                state: if i % 3 == 0 {
+                    "running_tool"
+                } else {
+                    "thinking"
+                }
+                .to_string(),
             });
         }
         runtime.emit(StreamEvent::Status {
@@ -5208,11 +6811,10 @@ mod integration_tests {
 mod e2e_tests {
     use super::*;
     use ravenbot_core::{Bot, Thread};
-    use sqlx::Row;
     use ravenbot_models::{
-        ModelProviderTrait, ModelResponse, Message as ModelMessage, ToolCall, ToolDefinition,
-        Usage,
+        Message as ModelMessage, ModelProviderTrait, ModelResponse, ToolCall, ToolDefinition, Usage,
     };
+    use sqlx::Row;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -5271,7 +6873,10 @@ mod e2e_tests {
                     .map(|m| (m.role.clone(), m.content.clone(), m.tool_calls.len()))
                     .collect(),
             );
-            self.seen_enable_reasoning.lock().unwrap().push(enable_reasoning);
+            self.seen_enable_reasoning
+                .lock()
+                .unwrap()
+                .push(enable_reasoning);
 
             if round == 0 {
                 // Reasoning on its own tagged channel, interleaved in the order the
@@ -5279,7 +6884,9 @@ mod e2e_tests {
                 // literal `<think>` markers, which is what let the trace be
                 // cleared away at the next tool round and left open markers in the
                 // answer whenever a stream was cut mid-thought.
-                on_delta(StreamChunk::Reasoning("The user wants me to remember rust facts."));
+                on_delta(StreamChunk::Reasoning(
+                    "The user wants me to remember rust facts.",
+                ));
                 on_delta(StreamChunk::Text("Saving that."));
                 Ok(ModelResponse {
                     content: None,
@@ -5291,7 +6898,10 @@ mod e2e_tests {
                         }),
                         id: "call-1".to_string(),
                     }],
-                    usage: Usage { input_tokens: 12, output_tokens: 8 },
+                    usage: Usage {
+                        input_tokens: 12,
+                        output_tokens: 8,
+                    },
                     reasoning: Some("The user wants me to remember rust facts.".to_string()),
                 })
             } else {
@@ -5301,7 +6911,10 @@ mod e2e_tests {
                 Ok(ModelResponse {
                     content: Some("Here is what I found about rust.".to_string()),
                     tool_calls: vec![],
-                    usage: Usage { input_tokens: 30, output_tokens: 10 },
+                    usage: Usage {
+                        input_tokens: 30,
+                        output_tokens: 10,
+                    },
                     reasoning: Some("Checked the saved memory.".to_string()),
                 })
             }
@@ -5314,8 +6927,8 @@ mod e2e_tests {
 
     async fn temp_db() -> ravenbot_db::Database {
         redirect_data_root_to_temp();
-        let path = PathBuf::from(std::env::temp_dir())
-            .join(format!("ravenbot-e2e-{}.db", Uuid::new_v4()));
+        let path =
+            PathBuf::from(std::env::temp_dir()).join(format!("ravenbot-e2e-{}.db", Uuid::new_v4()));
         ravenbot_db::Database::new(&path).await.expect("temp db")
     }
 
@@ -5326,20 +6939,30 @@ mod e2e_tests {
 
         let mut bot = Bot::new("E2E", "end-to-end test bot");
         bot.config.model_provider = "openrouter".to_string();
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
 
         let thread = Thread::new(bot.id, "e2e thread");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
 
-        let user_msg = ravenbot_core::Message::user(thread.id, "[Think] remember: rust is memory-safe");
-        ravenbot_db::queries::MessageQueries::insert(db.pool(), &user_msg).await.unwrap();
+        let user_msg =
+            ravenbot_core::Message::user(thread.id, "[Think] remember: rust is memory-safe");
+        ravenbot_db::queries::MessageQueries::insert(db.pool(), &user_msg)
+            .await
+            .unwrap();
 
         let mock = Arc::new(MockProvider::new());
-        runtime.set_provider_override(Some(mock.clone() as Arc<dyn ModelProviderTrait>)).await;
+        runtime
+            .set_provider_override(Some(mock.clone() as Arc<dyn ModelProviderTrait>))
+            .await;
         runtime.set_auto_allow_approvals(true);
 
         // Collect stream events
-        let events: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let events: Arc<std::sync::Mutex<Vec<String>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let events_cb = events.clone();
         runtime.set_stream_emitter(Some(Arc::new(move |ev: StreamEvent| {
             let label = match &ev {
@@ -5351,10 +6974,13 @@ mod e2e_tests {
                 StreamEvent::Sources { .. } => "sources".to_string(),
                 StreamEvent::Image { name, .. } => format!("image:{}", name),
                 StreamEvent::Status { state, .. } => format!("status:{}", state),
-                StreamEvent::Delegation { to_bot_name, done, .. } => {
+                StreamEvent::Delegation {
+                    to_bot_name, done, ..
+                } => {
                     format!("delegation:{}:{}", to_bot_name, done)
                 }
                 StreamEvent::Usage { tokens, .. } => format!("usage:{}", tokens),
+                StreamEvent::Context { .. } => "context".to_string(),
                 StreamEvent::ApprovalRequested { .. } => "approval_requested".to_string(),
                 StreamEvent::ApprovalDecided { allowed, .. } => {
                     format!("approval_decided:{}", allowed)
@@ -5366,16 +6992,40 @@ mod e2e_tests {
         })));
 
         let mut run = ravenbot_core::Run::new(bot.id, thread.id);
-        runtime.execute_run(&mut run).await.expect("run should succeed");
+        runtime
+            .execute_run(&mut run)
+            .await
+            .expect("run should succeed");
 
         // 1. Two model rounds happened (tool round + final)
         assert_eq!(mock.calls.load(Ordering::SeqCst), 2);
 
         // 2. [Think] intent reached the provider as enable_reasoning
-        assert_eq!(*mock.seen_enable_reasoning.lock().unwrap(), vec![true, true]);
+        assert_eq!(
+            *mock.seen_enable_reasoning.lock().unwrap(),
+            vec![true, true]
+        );
 
         // 3. Native tool round-trip: round 2 must carry the assistant turn with
         //    its tool_call ids AND a matching `tool`-role result message.
+        {
+            let seen = mock.seen_turns.lock().unwrap();
+            let round1 = &seen[0];
+            assert!(
+                round1
+                    .iter()
+                    .any(|(role, content, _)| role == "system"
+                        && content.contains("Tool discipline")),
+                "the system prompt must carry the tool-discipline rules"
+            );
+            assert!(
+                round1
+                    .iter()
+                    .any(|(role, content, _)| role == "system" && content.contains("file_tree")),
+                "the system prompt must name the preferred discovery tool"
+            );
+        }
+
         let round2 = &mock.seen_turns.lock().unwrap()[1];
         assert!(
             round2
@@ -5431,18 +7081,29 @@ mod e2e_tests {
             .unwrap();
         let last = messages.last().unwrap();
         let (final_text, final_reasoning) = match &last.content {
-            ravenbot_core::MessageContent::Text { text, reasoning, .. } => (text.clone(), reasoning.clone()),
+            ravenbot_core::MessageContent::Text {
+                text, reasoning, ..
+            } => (text.clone(), reasoning.clone()),
             other => panic!("unexpected content: {other:?}"),
         };
         assert!(final_text.contains("Here is what I found about rust."));
-        assert!(!final_text.contains("<think>"), "markers in the answer: {final_text}");
+        assert!(
+            !final_text.contains("<think>"),
+            "markers in the answer: {final_text}"
+        );
         let reasoning = final_reasoning.expect("reasoning must be persisted");
 
         // Both rounds' reasoning, not just the last one's. The first round's is
         // the part that used to be thrown away, and it is the part that explains
         // why the tool was chosen at all.
-        assert!(reasoning.contains("The user wants me to remember rust facts."), "{reasoning}");
-        assert!(reasoning.contains("Checked the saved memory."), "{reasoning}");
+        assert!(
+            reasoning.contains("The user wants me to remember rust facts."),
+            "{reasoning}"
+        );
+        assert!(
+            reasoning.contains("Checked the saved memory."),
+            "{reasoning}"
+        );
 
         // And the tool call that produced the answer is on the message.
         //
@@ -5454,7 +7115,11 @@ mod e2e_tests {
             ravenbot_core::MessageContent::Text { tools, .. } => tools.clone(),
             other => panic!("unexpected content: {other:?}"),
         };
-        assert_eq!(tools.len(), 1, "every tool call in the run must be traced: {tools:?}");
+        assert_eq!(
+            tools.len(),
+            1,
+            "every tool call in the run must be traced: {tools:?}"
+        );
         assert_eq!(tools[0].name, "memory_save");
         // Arguments recorded, not just the name — otherwise a trace cannot say
         // *what* was saved, which is the only reason to look at it.
@@ -5464,25 +7129,31 @@ mod e2e_tests {
         // Duration recorded from the wall clock. It will not be zero in any real
         // run, but the field must at least be *present* or the UI can never show
         // which call made the turn slow.
-        assert!(tools[0].duration_ms.is_some(), "duration missing: {tools:?}");
+        assert!(
+            tools[0].duration_ms.is_some(),
+            "duration missing: {tools:?}"
+        );
 
         // 6. Run completed successfully
         assert!(matches!(run.state, ravenbot_core::RunState::Completed));
 
         // 7. Memory tool actually executed (a fact was saved)
-        let facts = sqlx::query("SELECT COUNT(*) as c FROM memory_facts WHERE content LIKE '%memory-safe%'")
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
+        let facts = sqlx::query(
+            "SELECT COUNT(*) as c FROM memory_facts WHERE content LIKE '%memory-safe%'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
         let count: i64 = facts.get("c");
         assert!(count >= 1, "memory_save tool must have persisted a fact");
 
         // 8. Audit log captured the tool call (event stores serialized
         // AuditEventType JSON containing the tool name)
-        let rows = sqlx::query("SELECT COUNT(*) as c FROM audit_log WHERE event LIKE '%memory_save%'")
-            .fetch_one(db.pool())
-            .await
-            .unwrap();
+        let rows =
+            sqlx::query("SELECT COUNT(*) as c FROM audit_log WHERE event LIKE '%memory_save%'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
         let audit_count: i64 = rows.get("c");
         assert!(audit_count >= 1, "tool call must be audited");
     }
@@ -5494,8 +7165,7 @@ mod honesty_tests {
     use ravenbot_core::{Bot, Budget, BudgetLimit, BudgetPeriod, Thread};
     use ravenbot_governance::BudgetManager;
     use ravenbot_models::{
-        ModelProviderTrait, ModelResponse, Message as ModelMessage, ToolCall, ToolDefinition,
-        Usage,
+        Message as ModelMessage, ModelProviderTrait, ModelResponse, ToolCall, ToolDefinition, Usage,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -5554,11 +7224,15 @@ mod honesty_tests {
             calls: AtomicUsize::new(0),
             target_name: "Specialist".to_string(),
         });
-        runtime.set_provider_override(Some(mock.clone() as Arc<dyn ModelProviderTrait>)).await;
+        runtime
+            .set_provider_override(Some(mock.clone() as Arc<dyn ModelProviderTrait>))
+            .await;
         runtime.set_auto_allow_approvals(true);
 
         let mut run = Run::new(lead.id, thread.id);
-        ravenbot_db::queries::RunQueries::insert(db.pool(), &run).await.unwrap();
+        ravenbot_db::queries::RunQueries::insert(db.pool(), &run)
+            .await
+            .unwrap();
         runtime.execute_run(&mut run).await.expect("delegating run");
 
         let events = seen.lock().unwrap();
@@ -5572,12 +7246,22 @@ mod honesty_tests {
                     error,
                     child_thread_id,
                     ..
-                } => Some((to_bot_name.clone(), *done, response.clone(), error.clone(), *child_thread_id)),
+                } => Some((
+                    to_bot_name.clone(),
+                    *done,
+                    response.clone(),
+                    error.clone(),
+                    *child_thread_id,
+                )),
                 _ => None,
             })
             .collect();
 
-        assert_eq!(handoffs.len(), 2, "expected an acceptance and a completion: {handoffs:?}");
+        assert_eq!(
+            handoffs.len(),
+            2,
+            "expected an acceptance and a completion: {handoffs:?}"
+        );
 
         // Accepted first, and carrying the thread the work runs in.
         let (name, done, response, error, child) = &handoffs[0];
@@ -5585,14 +7269,20 @@ mod honesty_tests {
         assert!(!done);
         assert!(response.is_none());
         assert!(error.is_none());
-        assert!(child.is_some(), "the accepted handoff should name the child's thread");
+        assert!(
+            child.is_some(),
+            "the accepted handoff should name the child's thread"
+        );
 
         // Then it lands, with the reply.
         let (name, done, response, error, _) = &handoffs[1];
         assert_eq!(name, "Specialist");
         assert!(done);
         assert!(error.is_none(), "unexpected error: {error:?}");
-        assert!(response.is_some(), "a landed handoff should carry the reply");
+        assert!(
+            response.is_some(),
+            "a landed handoff should carry the reply"
+        );
     }
 
     /// A handoff the delegate list refuses is announced anyway.
@@ -5641,25 +7331,41 @@ mod honesty_tests {
                 }),
             )
             .await;
-        assert!(result.error.is_some(), "the handoff should have been refused");
+        assert!(
+            result.error.is_some(),
+            "the handoff should have been refused"
+        );
 
         let events = seen.lock().unwrap();
         let refusals: Vec<_> = events
             .iter()
             .filter_map(|e| match e {
                 StreamEvent::Delegation {
-                    done, error, child_thread_id, ..
+                    done,
+                    error,
+                    child_thread_id,
+                    ..
                 } => Some((*done, error.clone(), *child_thread_id)),
                 _ => None,
             })
             .collect();
 
-        assert_eq!(refusals.len(), 1, "a refusal is the only event there is: {refusals:?}");
+        assert_eq!(
+            refusals.len(),
+            1,
+            "a refusal is the only event there is: {refusals:?}"
+        );
         let (done, error, child) = &refusals[0];
         assert!(done, "a refusal is announced as already finished");
-        assert!(child.is_none(), "no thread is created for a refused handoff");
+        assert!(
+            child.is_none(),
+            "no thread is created for a refused handoff"
+        );
         let reason = error.as_deref().unwrap_or("");
-        assert!(reason.contains("Stranger"), "the reason should name the target: {reason}");
+        assert!(
+            reason.contains("Stranger"),
+            "the reason should name the target: {reason}"
+        );
     }
 
     /// Provider that delegates on round 0 and answers on later rounds.
@@ -5709,7 +7415,10 @@ mod honesty_tests {
                         }),
                         id: "call-1".to_string(),
                     }],
-                    usage: Usage { input_tokens: 10, output_tokens: 5 },
+                    usage: Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
                     reasoning: None,
                 })
             } else {
@@ -5722,7 +7431,10 @@ mod honesty_tests {
                 Ok(ModelResponse {
                     content: Some(text.to_string()),
                     tool_calls: vec![],
-                    usage: Usage { input_tokens: 20, output_tokens: 6 },
+                    usage: Usage {
+                        input_tokens: 20,
+                        output_tokens: 6,
+                    },
                     reasoning: None,
                 })
             }
@@ -5739,18 +7451,28 @@ mod honesty_tests {
         let runtime = Runtime::new(db.clone());
 
         let bot = Bot::new("Budgeted", "budget test");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
 
         let budgets = BudgetManager::new(db.pool().clone());
         budgets
-            .set_budget(&Budget::new(bot.id, BudgetLimit::Tokens { max: 0 }, BudgetPeriod::Total))
+            .set_budget(&Budget::new(
+                bot.id,
+                BudgetLimit::Tokens { max: 0 },
+                BudgetPeriod::Total,
+            ))
             .await
             .unwrap();
 
         let thread = Thread::new(bot.id, "budget thread");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
         let msg = ravenbot_core::Message::user(thread.id, "hello");
-        ravenbot_db::queries::MessageQueries::insert(db.pool(), &msg).await.unwrap();
+        ravenbot_db::queries::MessageQueries::insert(db.pool(), &msg)
+            .await
+            .unwrap();
 
         let mut run = ravenbot_core::Run::new(bot.id, thread.id);
         let err = runtime.execute_run(&mut run).await.unwrap_err();
@@ -5763,18 +7485,31 @@ mod honesty_tests {
         let runtime = Runtime::new(db.clone());
 
         let specialist = Bot::new("Specialist", "target bot");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &specialist).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &specialist)
+            .await
+            .unwrap();
 
         let manager_bot = Bot::new("Manager", "delegating bot");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &manager_bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &manager_bot)
+            .await
+            .unwrap();
 
         let thread = Thread::new(manager_bot.id, "delegation thread");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
         let msg = ravenbot_core::Message::user(thread.id, "delegate please");
-        ravenbot_db::queries::MessageQueries::insert(db.pool(), &msg).await.unwrap();
+        ravenbot_db::queries::MessageQueries::insert(db.pool(), &msg)
+            .await
+            .unwrap();
 
-        let mock = Arc::new(DelegatingProvider { calls: AtomicUsize::new(0), target_name: "Specialist".to_string() });
-        runtime.set_provider_override(Some(mock.clone() as Arc<dyn ModelProviderTrait>)).await;
+        let mock = Arc::new(DelegatingProvider {
+            calls: AtomicUsize::new(0),
+            target_name: "Specialist".to_string(),
+        });
+        runtime
+            .set_provider_override(Some(mock.clone() as Arc<dyn ModelProviderTrait>))
+            .await;
         runtime.set_auto_allow_approvals(true);
 
         // Delegation is now scoped: the target has to be on the caller's list.
@@ -5787,19 +7522,30 @@ mod honesty_tests {
             .unwrap();
 
         let mut run = ravenbot_core::Run::new(manager_bot.id, thread.id);
-        runtime.execute_run(&mut run).await.expect("delegating run should succeed");
+        runtime
+            .execute_run(&mut run)
+            .await
+            .expect("delegating run should succeed");
 
         // 3 model rounds: parent round 0 (delegate tool), child run, parent final
         assert_eq!(mock.calls.load(Ordering::SeqCst), 3);
 
         // The specialist actually answered in its own thread
-        let specialist_threads = ravenbot_db::queries::ThreadQueries::list_by_bot(db.pool(), specialist.id)
-            .await
-            .unwrap();
-        assert_eq!(specialist_threads.len(), 1, "delegation must create a thread for the target bot");
-        let specialist_msgs = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), specialist_threads[0].id)
-            .await
-            .unwrap();
+        let specialist_threads =
+            ravenbot_db::queries::ThreadQueries::list_by_bot(db.pool(), specialist.id)
+                .await
+                .unwrap();
+        assert_eq!(
+            specialist_threads.len(),
+            1,
+            "delegation must create a thread for the target bot"
+        );
+        let specialist_msgs = ravenbot_db::queries::MessageQueries::list_by_thread(
+            db.pool(),
+            specialist_threads[0].id,
+        )
+        .await
+        .unwrap();
         let specialist_answer = specialist_msgs
             .iter()
             .rev()
@@ -5809,7 +7555,10 @@ mod honesty_tests {
                 _ => None,
             })
             .unwrap_or_default();
-        assert!(specialist_answer.contains("4"), "specialist must actually answer: {specialist_answer}");
+        assert!(
+            specialist_answer.contains("4"),
+            "specialist must actually answer: {specialist_answer}"
+        );
 
         // Manager's persisted final message exists (the specialist's answer is
         // fed back in-memory to the parent run — proven by the 3 model rounds
@@ -5839,35 +7588,66 @@ mod budget_tracking_tests {
         let runtime = Runtime::new(db.clone());
 
         let bot = Bot::new("Tracker", "budget tracking test");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
 
         let budgets = BudgetManager::new(db.pool().clone());
         // The scripted mock spends exactly 60 tokens (20 + 40)
         budgets
-            .set_budget(&Budget::new(bot.id, BudgetLimit::Tokens { max: 59 }, BudgetPeriod::Total))
+            .set_budget(&Budget::new(
+                bot.id,
+                BudgetLimit::Tokens { max: 59 },
+                BudgetPeriod::Total,
+            ))
             .await
             .unwrap();
 
         let thread = Thread::new(bot.id, "budget tracking thread");
-        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread).await.unwrap();
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
         // Use task-like text so this exercises the full tool loop rather than
         // the standalone-greeting fast path.
         let msg = ravenbot_core::Message::user(thread.id, "remember this");
-        ravenbot_db::queries::MessageQueries::insert(db.pool(), &msg).await.unwrap();
+        ravenbot_db::queries::MessageQueries::insert(db.pool(), &msg)
+            .await
+            .unwrap();
 
-        runtime.set_provider_override(Some(Arc::new(MockProvider::new()) as Arc<dyn ModelProviderTrait>)).await;
+        runtime
+            .set_provider_override(Some(
+                Arc::new(MockProvider::new()) as Arc<dyn ModelProviderTrait>
+            ))
+            .await;
         runtime.set_auto_allow_approvals(true);
 
         let mut run = ravenbot_core::Run::new(bot.id, thread.id);
-        runtime.execute_run(&mut run).await.expect("first run under budget");
+        runtime
+            .execute_run(&mut run)
+            .await
+            .expect("first run under budget");
 
         // Usage MUST be recorded (was a no-op stub before)
         let (tokens_used, _) = budgets.get_usage(bot.id).await.unwrap();
         assert_eq!(tokens_used, 60, "record_usage must accumulate real tokens");
 
+        // The run ledger powers the Usage screen. It must carry the same
+        // usage as the budget ledger, not just the lightweight fast path.
+        assert_eq!(
+            run.tokens_consumed, 60,
+            "the run ledger must match the budget ledger"
+        );
+        assert!(
+            run.cost_estimate > 0.0,
+            "the run ledger must carry the model cost"
+        );
+
         // The budget is now exhausted: next run must be refused
         let check = budgets.check_budget(bot.id).await.unwrap();
-        assert!(!check.allowed, "59-token budget must be exhausted after 60 tokens");
+        assert!(
+            !check.allowed,
+            "59-token budget must be exhausted after 60 tokens"
+        );
         assert!(check.percentage_used >= 100.0);
 
         // Reset works
@@ -5911,7 +7691,7 @@ mod parity_tests {
     use super::*;
     use ravenbot_core::{Bot, Thread};
     use ravenbot_models::{
-        ModelProviderTrait, ModelResponse, Message as ModelMessage, ToolCall, ToolDefinition, Usage,
+        Message as ModelMessage, ModelProviderTrait, ModelResponse, ToolCall, ToolDefinition, Usage,
     };
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -5983,7 +7763,10 @@ mod parity_tests {
                 .unwrap_or_else(|| ModelResponse {
                     content: Some("done".to_string()),
                     tool_calls: vec![],
-                    usage: Usage { input_tokens: 1, output_tokens: 1 },
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
                     reasoning: None,
                 });
             if let Some(text) = &resp.content {
@@ -5999,13 +7782,14 @@ mod parity_tests {
     }
 
     fn tool_call(name: &str, args: serde_json::Value, id: &str) -> ToolCall {
-        ToolCall { name: name.to_string(), arguments: args, id: id.to_string() }
+        ToolCall {
+            name: name.to_string(),
+            arguments: args,
+            id: id.to_string(),
+        }
     }
 
-    async fn seed_run(
-        db: &ravenbot_db::Database,
-        bot: &Bot,
-    ) -> (Thread, ravenbot_core::Run) {
+    async fn seed_run(db: &ravenbot_db::Database, bot: &Bot) -> (Thread, ravenbot_core::Run) {
         let thread = Thread::new(bot.id, "parity thread");
         ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
             .await
@@ -6024,7 +7808,9 @@ mod parity_tests {
         let runtime = Arc::new(Runtime::new(db.clone()));
 
         let bot = Bot::new("Asker", "asks questions");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let (thread, _) = seed_run(&db, &bot).await;
 
         let script = vec![
@@ -6039,13 +7825,19 @@ mod parity_tests {
                     }),
                     "call-ask",
                 )],
-                usage: Usage { input_tokens: 5, output_tokens: 2 },
+                usage: Usage {
+                    input_tokens: 5,
+                    output_tokens: 2,
+                },
                 reasoning: None,
             },
             ModelResponse {
                 content: Some("Understood.".to_string()),
                 tool_calls: vec![],
-                usage: Usage { input_tokens: 6, output_tokens: 2 },
+                usage: Usage {
+                    input_tokens: 6,
+                    output_tokens: 2,
+                },
                 reasoning: None,
             },
         ];
@@ -6063,10 +7855,12 @@ mod parity_tests {
         // Wait for the question to park, then answer it.
         let mut answered = false;
         for _ in 0..100 {
-            let pending =
-                ravenbot_db::queries::QuestionQueries::list_pending_for_thread(db.pool(), thread.id)
-                    .await
-                    .unwrap();
+            let pending = ravenbot_db::queries::QuestionQueries::list_pending_for_thread(
+                db.pool(),
+                thread.id,
+            )
+            .await
+            .unwrap();
             if let Some(q) = pending.first() {
                 assert!(q.question.contains("Which database"));
                 assert_eq!(q.options, vec!["Postgres", "SQLite"]);
@@ -6100,7 +7894,9 @@ mod parity_tests {
         let runtime = Runtime::new(db.clone());
 
         let bot = Bot::new("Parallel", "multi tool");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let (thread, _) = seed_run(&db, &bot).await;
 
         let script = vec![
@@ -6118,13 +7914,19 @@ mod parity_tests {
                         "call-2",
                     ),
                 ],
-                usage: Usage { input_tokens: 5, output_tokens: 3 },
+                usage: Usage {
+                    input_tokens: 5,
+                    output_tokens: 3,
+                },
                 reasoning: None,
             },
             ModelResponse {
                 content: Some("Saved both.".to_string()),
                 tool_calls: vec![],
-                usage: Usage { input_tokens: 7, output_tokens: 2 },
+                usage: Usage {
+                    input_tokens: 7,
+                    output_tokens: 2,
+                },
                 reasoning: None,
             },
         ];
@@ -6139,7 +7941,8 @@ mod parity_tests {
 
         let seen = provider.seen.lock().unwrap();
         let round2 = &seen[1];
-        let tool_msgs: Vec<&(String, String)> = round2.iter().filter(|(r, _)| r == "tool").collect();
+        let tool_msgs: Vec<&(String, String)> =
+            round2.iter().filter(|(r, _)| r == "tool").collect();
         assert_eq!(tool_msgs.len(), 2, "both tool results must be fed back");
         assert!(tool_msgs.iter().any(|(_, c)| c.contains("fact one")));
         assert!(tool_msgs.iter().any(|(_, c)| c.contains("fact two")));
@@ -6202,7 +8005,10 @@ mod parity_tests {
                 Ok(ModelResponse {
                     content: Some("fallback answer".into()),
                     tool_calls: vec![],
-                    usage: Usage { input_tokens: 1, output_tokens: 1 },
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
                     reasoning: None,
                 })
             }
@@ -6218,7 +8024,10 @@ mod parity_tests {
                 Ok(ModelResponse {
                     content: Some("fallback answer".into()),
                     tool_calls: vec![],
-                    usage: Usage { input_tokens: 1, output_tokens: 1 },
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
                     reasoning: None,
                 })
             }
@@ -6250,7 +8059,10 @@ mod parity_tests {
         let mut messages = vec![msg("system", "SYSTEM")];
         for i in 0..40 {
             messages.push(msg("user", &format!("filler {} {}", i, "x".repeat(2000))));
-            messages.push(msg("assistant", &format!("reply {} {}", i, "y".repeat(2000))));
+            messages.push(msg(
+                "assistant",
+                &format!("reply {} {}", i, "y".repeat(2000)),
+            ));
         }
         messages.push(msg("user", "THE MOST RECENT QUESTION"));
         let before = messages.len();
@@ -6259,9 +8071,15 @@ mod parity_tests {
         compact_messages(&mut messages, 700, 200);
 
         assert!(messages.len() < before, "should have dropped the middle");
-        assert!(messages.len() <= COMPACT_KEEP_TAIL + 2, "kept tail floor: {}", messages.len());
+        assert!(
+            messages.len() <= COMPACT_KEEP_TAIL + 2,
+            "kept tail floor: {}",
+            messages.len()
+        );
         assert_eq!(messages[0].role, "system");
-        assert!(messages.iter().any(|m| m.role == "user" && m.content.contains("compacted")));
+        assert!(messages
+            .iter()
+            .any(|m| m.role == "user" && m.content.contains("compacted")));
         assert_eq!(messages.last().unwrap().content, "THE MOST RECENT QUESTION");
 
         // The kept tail must not begin on an orphaned tool result.
@@ -6312,8 +8130,7 @@ mod parity_tests {
 
     #[test]
     fn attachments_and_stale_history_need_the_full_agent_loop() {
-        let mut attached =
-            ravenbot_core::Message::user(Uuid::new_v4(), "how are you ?");
+        let mut attached = ravenbot_core::Message::user(Uuid::new_v4(), "how are you ?");
         attached.attachments.push(ravenbot_core::Attachment {
             id: Uuid::new_v4(),
             name: "screenshot.png".to_string(),
@@ -6323,13 +8140,21 @@ mod parity_tests {
             data: Some("AAAA".to_string()),
             is_image: true,
         });
-        assert!(!is_simple_conversational_turn("RANO", "how are you ?", &[attached]));
+        assert!(!is_simple_conversational_turn(
+            "RANO",
+            "how are you ?",
+            &[attached]
+        ));
 
         let stale = vec![
             ravenbot_core::Message::user(Uuid::new_v4(), "how are you ?"),
             ravenbot_core::Message::assistant(Uuid::new_v4(), "Fine."),
         ];
-        assert!(!is_simple_conversational_turn("RANO", "how are you ?", &stale));
+        assert!(!is_simple_conversational_turn(
+            "RANO",
+            "how are you ?",
+            &stale
+        ));
     }
 
     /// Pause parks the run at a tool-round boundary with a checkpoint; resume
@@ -6379,14 +8204,20 @@ mod parity_tests {
                             serde_json::json!({ "content": "paused fact" }),
                             "pause-1",
                         )],
-                        usage: Usage { input_tokens: 2, output_tokens: 1 },
+                        usage: Usage {
+                            input_tokens: 2,
+                            output_tokens: 1,
+                        },
                         reasoning: None,
                     })
                 } else {
                     Ok(ModelResponse {
                         content: Some("resumed and finished".to_string()),
                         tool_calls: vec![],
-                        usage: Usage { input_tokens: 3, output_tokens: 2 },
+                        usage: Usage {
+                            input_tokens: 3,
+                            output_tokens: 2,
+                        },
                         reasoning: None,
                     })
                 }
@@ -6399,7 +8230,9 @@ mod parity_tests {
         let db = temp_db().await;
         let runtime = Arc::new(Runtime::new(db.clone()));
         let bot = Bot::new("Resumable", "pause/resume test");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let (thread, mut run) = seed_run(&db, &bot).await;
         let run_id = run.id;
 
@@ -6414,14 +8247,31 @@ mod parity_tests {
         runtime.set_auto_allow_approvals(true);
 
         // First execution pauses at the loop boundary.
-        runtime.execute_run(&mut run).await.expect("first run parks");
-        assert_eq!(run.state, ravenbot_core::RunState::Paused, "run must be Paused");
-        assert!(run.checkpoint.is_some(), "a resume checkpoint must be written");
+        runtime
+            .execute_run(&mut run)
+            .await
+            .expect("first run parks");
+        assert_eq!(
+            run.state,
+            ravenbot_core::RunState::Paused,
+            "run must be Paused"
+        );
+        assert!(
+            run.checkpoint.is_some(),
+            "a resume checkpoint must be written"
+        );
 
         // Resume: restores the checkpoint and completes.
-        runtime.execute_run(&mut run).await.expect("resume completes");
+        runtime
+            .execute_run(&mut run)
+            .await
+            .expect("resume completes");
         assert_eq!(run.state, ravenbot_core::RunState::Completed);
-        assert_eq!(provider.calls.load(Ordering::SeqCst), 2, "one call per phase");
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            2,
+            "one call per phase"
+        );
 
         let messages = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)
             .await
@@ -6440,7 +8290,9 @@ mod parity_tests {
         let runtime = Runtime::new(db.clone());
 
         let bot = Bot::new("RANO", "casual replies");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let thread = Thread::new(bot.id, "greeting thread");
         ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
             .await
@@ -6453,7 +8305,10 @@ mod parity_tests {
         let provider = Arc::new(ScriptProvider::new(vec![ModelResponse {
             content: Some("Doing well, thanks!".to_string()),
             tool_calls: vec![],
-            usage: Usage { input_tokens: 8, output_tokens: 4 },
+            usage: Usage {
+                input_tokens: 8,
+                output_tokens: 4,
+            },
             reasoning: None,
         }]));
         runtime
@@ -6461,7 +8316,10 @@ mod parity_tests {
             .await;
 
         let mut run = ravenbot_core::Run::new(bot.id, thread.id);
-        runtime.execute_run(&mut run).await.expect("fast greeting run");
+        runtime
+            .execute_run(&mut run)
+            .await
+            .expect("fast greeting run");
 
         assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
         assert_eq!(*provider.tool_counts.lock().unwrap(), vec![0]);
@@ -6487,7 +8345,9 @@ mod parity_tests {
         let runtime = Runtime::new(db.clone());
 
         let bot = Bot::new("RANO", "casual replies");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let thread = Thread::new(bot.id, "empty greeting thread");
         ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
             .await
@@ -6501,13 +8361,19 @@ mod parity_tests {
             ModelResponse {
                 content: None,
                 tool_calls: vec![],
-                usage: Usage { input_tokens: 2, output_tokens: 0 },
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 0,
+                },
                 reasoning: None,
             },
             ModelResponse {
                 content: Some("Recovered.".to_string()),
                 tool_calls: vec![],
-                usage: Usage { input_tokens: 3, output_tokens: 1 },
+                usage: Usage {
+                    input_tokens: 3,
+                    output_tokens: 1,
+                },
                 reasoning: None,
             },
         ]));
@@ -6537,7 +8403,9 @@ mod parity_tests {
         let runtime = Runtime::new(db.clone());
 
         let bot = Bot::new("Cancellable", "cancel test");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let (_thread, mut run) = seed_run(&db, &bot).await;
 
         let script = vec![ModelResponse {
@@ -6547,23 +8415,143 @@ mod parity_tests {
                 serde_json::json!({ "content": "should not run" }),
                 "call-x",
             )],
-            usage: Usage { input_tokens: 1, output_tokens: 1 },
+            usage: Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+            },
             reasoning: None,
         }];
         runtime
-            .set_provider_override(Some(Arc::new(ScriptProvider::new(script)) as Arc<dyn ModelProviderTrait>))
+            .set_provider_override(Some(
+                Arc::new(ScriptProvider::new(script)) as Arc<dyn ModelProviderTrait>
+            ))
             .await;
         runtime.set_auto_allow_approvals(true);
 
         // Cancel before execution: the loop must stop at its first boundary.
         runtime.request_cancel(run.id);
-        runtime.execute_run(&mut run).await.expect("cancel returns Ok");
+        runtime
+            .execute_run(&mut run)
+            .await
+            .expect("cancel returns Ok");
 
         assert!(
-            matches!(run.outcome, Some(ravenbot_core::RunOutcome::Cancelled { .. })),
+            matches!(
+                run.outcome,
+                Some(ravenbot_core::RunOutcome::Cancelled { .. })
+            ),
             "run must be marked Cancelled, got {:?}",
             run.outcome
         );
+    }
+
+    /// A native tool-calling model that repeats the same `shell_exec` twice
+    /// must execute it once, get a synthetic "already ran" result, and then
+    /// finish — not run the command again.
+    #[tokio::test]
+    async fn a_repeated_native_tool_call_runs_once() {
+        struct RepeatProvider {
+            calls: AtomicUsize,
+        }
+        #[async_trait::async_trait]
+        impl ModelProviderTrait for RepeatProvider {
+            fn provider_type(&self) -> ravenbot_core::ModelProvider {
+                ravenbot_core::ModelProvider::OpenRouter
+            }
+            fn with_model(self: Box<Self>, _m: String) -> Box<dyn ModelProviderTrait> {
+                Box::new(*self)
+            }
+            async fn complete(
+                &self,
+                _m: &[ModelMessage],
+                _t: &[ToolDefinition],
+                _temp: f32,
+                _max: u32,
+            ) -> Result<ModelResponse, ravenbot_models::ModelError> {
+                unreachable!()
+            }
+            async fn complete_stream(
+                &self,
+                _m: &[ModelMessage],
+                _t: &[ToolDefinition],
+                _temp: f32,
+                _max: u32,
+                _cb: DeltaCallback,
+                _r: bool,
+            ) -> Result<ModelResponse, ravenbot_models::ModelError> {
+                let round = self.calls.fetch_add(1, Ordering::SeqCst);
+                if round <= 1 {
+                    Ok(ModelResponse {
+                        content: None,
+                        tool_calls: vec![tool_call(
+                            "shell_exec",
+                            serde_json::json!({ "command": "echo x >> dup.txt" }),
+                            // A real model issues a fresh id per round; the
+                            // repeat signature deliberately ignores the id.
+                            &format!("dup-{round}"),
+                        )],
+                        usage: Usage {
+                            input_tokens: 2,
+                            output_tokens: 1,
+                        },
+                        reasoning: None,
+                    })
+                } else {
+                    Ok(ModelResponse {
+                        content: Some("finished without rerunning".to_string()),
+                        tool_calls: vec![],
+                        usage: Usage {
+                            input_tokens: 3,
+                            output_tokens: 2,
+                        },
+                        reasoning: None,
+                    })
+                }
+            }
+            async fn health_check(&self) -> Result<bool, ravenbot_models::ModelError> {
+                Ok(true)
+            }
+        }
+
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+        let dir = std::env::temp_dir().join(format!("ravenbot-repeat-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut bot = Bot::new("Looper", "repeat test");
+        bot.config.working_folder = Some(dir.to_string_lossy().to_string());
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (thread, mut run) = seed_run(&db, &bot).await;
+
+        runtime
+            .set_provider_override(Some(Arc::new(RepeatProvider {
+                calls: AtomicUsize::new(0),
+            }) as Arc<dyn ModelProviderTrait>))
+            .await;
+        runtime.set_auto_allow_approvals(true);
+        runtime.execute_run(&mut run).await.expect("run");
+
+        let body = std::fs::read_to_string(dir.join("dup.txt")).unwrap_or_default();
+        assert_eq!(
+            body.lines().count(),
+            1,
+            "the duplicate call must not execute twice: {body:?}"
+        );
+        let messages = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)
+            .await
+            .unwrap();
+        assert!(
+            messages.iter().any(|m| {
+                serde_json::to_string(&m.content)
+                    .unwrap_or_default()
+                    .contains("finished without rerunning")
+            }),
+            "the run must finish after the duplicate is skipped"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 
@@ -6572,7 +8560,7 @@ mod office_tests {
     use super::*;
     use ravenbot_core::{Bot, ChatRoom, ChatRoomMember};
     use ravenbot_models::{
-        ModelProviderTrait, ModelResponse, Message as ModelMessage, ToolDefinition, Usage,
+        Message as ModelMessage, ModelProviderTrait, ModelResponse, ToolDefinition, Usage,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -6581,6 +8569,21 @@ mod office_tests {
         let path = std::path::PathBuf::from(std::env::temp_dir())
             .join(format!("ravenbot-office-{}.db", Uuid::new_v4()));
         ravenbot_db::Database::new(&path).await.expect("temp db")
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_request_is_scoped_to_a_thread() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db);
+        let thread = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        runtime.request_compaction(thread);
+        let pending = runtime
+            .force_compaction
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        assert!(pending.contains(&thread));
+        assert!(!pending.contains(&other));
     }
 
     /// Scripts planning JSON on the first call, a synthesized answer afterwards.
@@ -6629,7 +8632,10 @@ mod office_tests {
             Ok(ModelResponse {
                 content: Some(text),
                 tool_calls: vec![],
-                usage: Usage { input_tokens: 1, output_tokens: 1 },
+                usage: Usage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                },
                 reasoning: None,
             })
         }
@@ -6641,12 +8647,18 @@ mod office_tests {
     async fn seed_office(db: &ravenbot_db::Database) -> (Uuid, uuid::Uuid, uuid::Uuid) {
         let mut lead = Bot::new("Chief of Staff", "lead");
         lead.is_orchestrator = true;
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &lead).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &lead)
+            .await
+            .unwrap();
         let worker = Bot::new("Growth Marketer", "worker");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &worker).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &worker)
+            .await
+            .unwrap();
 
         let room = ChatRoom::new("Growth Office", "test", "marketing");
-        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room).await.unwrap();
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
         for (bot, rank) in [(&lead, "lead"), (&worker, "specialist")] {
             let m = ChatRoomMember {
                 chatroom_id: room.id,
@@ -6655,7 +8667,9 @@ mod office_tests {
                 specialty: "growth".to_string(),
                 joined_at: chrono::Utc::now(),
             };
-            ravenbot_db::queries::ChatRoomQueries::add_member(db.pool(), &m).await.unwrap();
+            ravenbot_db::queries::ChatRoomQueries::add_member(db.pool(), &m)
+                .await
+                .unwrap();
         }
         (room.id, lead.id, worker.id)
     }
@@ -6688,13 +8702,7 @@ mod office_tests {
             },
         ];
         let plan = runtime
-            .plan_office(
-                lead_id,
-                Some("Ship Q3"),
-                None,
-                &members,
-                "Launch a blog",
-            )
+            .plan_office(lead_id, Some("Ship Q3"), None, &members, "Launch a blog")
             .await
             .expect("plan");
         assert_eq!(plan.tasks.len(), 2);
@@ -6714,7 +8722,9 @@ mod office_tests {
             .await;
 
         let results = vec![("Growth Marketer".to_string(), "drafted".to_string())];
-        let out = runtime.synthesize_office(lead_id, "Launch a blog", &results).await;
+        let out = runtime
+            .synthesize_office(lead_id, "Launch a blog", &results)
+            .await;
         assert!(out.contains("integrated final answer"), "got: {out}");
     }
 
@@ -6766,7 +8776,10 @@ mod office_tests {
             rank: "lead".into(),
             specialty: "growth".into(),
         }];
-        assert!(runtime.plan_office(lead_id, None, None, &members, "hi").await.is_none());
+        assert!(runtime
+            .plan_office(lead_id, None, None, &members, "hi")
+            .await
+            .is_none());
     }
 }
 
@@ -6834,18 +8847,26 @@ mod emulation_tests {
 
     #[test]
     fn call_signature_detects_repeats() {
-        let mk = || vec![ravenbot_models::ToolCall {
-            name: "web_search".into(),
-            arguments: serde_json::json!({"query": "x"}),
-            id: "ignored".into(),
-        }];
-        assert_eq!(emulated_call_signature(&mk()), emulated_call_signature(&mk()));
+        let mk = || {
+            vec![ravenbot_models::ToolCall {
+                name: "web_search".into(),
+                arguments: serde_json::json!({"query": "x"}),
+                id: "ignored".into(),
+            }]
+        };
+        assert_eq!(
+            emulated_call_signature(&mk()),
+            emulated_call_signature(&mk())
+        );
         let other = vec![ravenbot_models::ToolCall {
             name: "web_search".into(),
             arguments: serde_json::json!({"query": "y"}),
             id: "ignored".into(),
         }];
-        assert_ne!(emulated_call_signature(&mk()), emulated_call_signature(&other));
+        assert_ne!(
+            emulated_call_signature(&mk()),
+            emulated_call_signature(&other)
+        );
     }
 
     #[test]
@@ -6855,5 +8876,358 @@ mod emulation_tests {
         assert!(prompt.contains("- web_search: web_search does things"));
         assert!(prompt.contains("\"query\""));
         assert!(prompt.contains("\"tool_calls\""));
+    }
+}
+
+#[cfg(test)]
+mod final_answer_tests {
+    use super::*;
+    use ravenbot_core::{ApprovalMode, Bot, Thread};
+    use ravenbot_models::{
+        Message as ModelMessage, ModelProviderTrait, ModelResponse, ToolCall, ToolDefinition, Usage,
+    };
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A provider that keeps asking for one harmless tool until the runtime
+    /// stops it, then answers only when the wrap-up call arrives without tools.
+    struct LoopProvider {
+        calls: AtomicUsize,
+        wrapups: AtomicUsize,
+    }
+
+    impl LoopProvider {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                wrapups: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ModelProviderTrait for LoopProvider {
+        fn provider_type(&self) -> ravenbot_core::ModelProvider {
+            ravenbot_core::ModelProvider::OpenRouter
+        }
+
+        fn with_model(self: Box<Self>, _model_id: String) -> Box<dyn ModelProviderTrait> {
+            Box::new(*self)
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[ModelMessage],
+            _tools: &[ToolDefinition],
+            _temperature: f32,
+            _max_tokens: u32,
+        ) -> Result<ModelResponse, ravenbot_models::ModelError> {
+            unreachable!("the run path uses complete_stream")
+        }
+
+        async fn complete_stream(
+            &self,
+            _messages: &[ModelMessage],
+            tools: &[ToolDefinition],
+            _temperature: f32,
+            _max_tokens: u32,
+            on_delta: DeltaCallback,
+            _enable_reasoning: bool,
+        ) -> Result<ModelResponse, ravenbot_models::ModelError> {
+            if tools.is_empty() {
+                self.wrapups.fetch_add(1, Ordering::SeqCst);
+                on_delta(StreamChunk::Text(
+                    "I reached the limit; here is what the evidence supports.",
+                ));
+                Ok(ModelResponse {
+                    content: Some(
+                        "I reached the limit; here is what the evidence supports.".to_string(),
+                    ),
+                    tool_calls: vec![],
+                    usage: Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
+                    reasoning: None,
+                })
+            } else {
+                let round = self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(ModelResponse {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        name: "file_tree".to_string(),
+                        arguments: serde_json::json!({ "path": ".", "depth": 1 }),
+                        id: format!("loop-{round}"),
+                    }],
+                    usage: Usage {
+                        input_tokens: 10,
+                        output_tokens: 5,
+                    },
+                    reasoning: None,
+                })
+            }
+        }
+
+        async fn health_check(&self) -> Result<bool, ravenbot_models::ModelError> {
+            Ok(true)
+        }
+    }
+
+    #[test]
+    fn the_deterministic_report_is_honest_and_never_empty() {
+        let traces = vec![
+            ravenbot_core::ToolTrace::new(
+                "file_tree",
+                serde_json::json!({ "path": ".", "depth": 1 }),
+            )
+            .with_result(serde_json::json!({ "count": 3 }), false),
+            ravenbot_core::ToolTrace::new(
+                "shell_exec",
+                serde_json::json!({ "command": "git status" }),
+            )
+            .with_result(serde_json::json!({ "stderr": "not a repo" }), true),
+        ];
+        let report = tool_rounds_report(12, &traces, true);
+        assert!(report.contains("tool-round limit (12)"), "{report}");
+        assert!(report.contains("not a finished answer"), "{report}");
+        assert!(report.contains("file_tree"), "{report}");
+        assert!(report.contains("shell_exec"), "{report}");
+        assert!(report.contains("Shared/STATUS.md"), "{report}");
+        assert!(!report.trim().is_empty());
+    }
+
+    #[test]
+    fn a_preview_is_bounded_by_characters_not_bytes() {
+        let text = "aébc";
+        let preview = preview_text(text, 2);
+        assert_eq!(preview, "aé…");
+    }
+
+    #[tokio::test]
+    async fn a_tool_loop_ends_with_a_report_not_an_empty_run() {
+        redirect_data_root_to_temp();
+        let path = std::env::temp_dir().join(format!("ravenbot-loop-{}.db", Uuid::new_v4()));
+        let db = ravenbot_db::Database::new(&path).await.expect("temp db");
+        let runtime = Runtime::new(db.clone());
+
+        let mut bot = Bot::new("Loop Test", "bounded tool loop");
+        bot.approval_mode = ApprovalMode::Full;
+        bot.config.model_provider = "openrouter".to_string();
+        bot.config.model_id = "test-model".to_string();
+        // Two tool rounds plus the wrap-up: small enough to keep the test fast.
+        bot.config.max_tool_rounds = Some(2);
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+
+        let thread = Thread::new(bot.id, "loop thread");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+        ravenbot_db::queries::MessageQueries::insert(
+            db.pool(),
+            &ravenbot_core::Message::user(
+                thread.id,
+                "Inspect the repository and produce the implementation artifact.",
+            ),
+        )
+        .await
+        .unwrap();
+
+        let provider = Arc::new(LoopProvider::new());
+        runtime
+            .set_provider_override(Some(provider.clone() as Arc<dyn ModelProviderTrait>))
+            .await;
+
+        let mut run = ravenbot_core::Run::new(bot.id, thread.id);
+        runtime
+            .execute_run(&mut run)
+            .await
+            .expect("the run must end with a report, not an error");
+
+        assert_eq!(
+            provider.calls.load(Ordering::SeqCst),
+            2,
+            "the tool loop must stop at the configured budget"
+        );
+        assert_eq!(
+            provider.wrapups.load(Ordering::SeqCst),
+            1,
+            "the runtime must ask once, with tools disabled, for a final report"
+        );
+
+        let messages = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)
+            .await
+            .unwrap();
+        let last = messages.last().expect("assistant answer");
+        let text = match &last.content {
+            ravenbot_core::MessageContent::Text { text, .. } => text.clone(),
+            other => panic!("unexpected content: {other:?}"),
+        };
+        assert!(
+            text.contains("here is what the evidence supports"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Tool-round limit reached (2)"),
+            "the report must say it is partial: {text}"
+        );
+        assert!(matches!(run.state, ravenbot_core::RunState::Completed));
+        assert!(
+            matches!(
+                run.outcome,
+                Some(ravenbot_core::RunOutcome::PartialSuccess { .. })
+            ),
+            "a report after the tool limit is partial, not a finished task"
+        );
+
+        drop(runtime);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+}
+
+#[cfg(test)]
+mod trace_span_helper_tests {
+    use super::*;
+
+    #[test]
+    fn trace_spans_are_capped_and_mark_failures() {
+        let mut spans = Vec::new();
+        push_trace_span(&mut spans, "tool", "file_read", 10, 20, false, None);
+        assert_eq!(spans.len(), 1);
+        assert!(!spans[0].failed);
+        push_trace_span(
+            &mut spans,
+            "memory",
+            "Memory saved",
+            30,
+            5,
+            true,
+            Some("detail".to_string()),
+        );
+        assert!(spans[1].failed);
+        assert_eq!(spans[1].detail.as_deref(), Some("detail"));
+
+        for i in 0..ravenbot_core::MAX_MESSAGE_TRACE_SPANS + 20 {
+            push_trace_span(&mut spans, "tool", format!("tool-{i}"), 0, 1, false, None);
+        }
+        assert_eq!(spans.len(), ravenbot_core::MAX_MESSAGE_TRACE_SPANS);
+    }
+
+    #[test]
+    fn delegation_spans_name_the_target_and_thread() {
+        let result = serde_json::json!({
+            "success": true,
+            "output": {
+                "status": "completed",
+                "target_bot": "Backend",
+                "target_bot_id": "bot-1",
+                "thread_id": "thread-9"
+            }
+        });
+        let (kind, label, detail) = tool_span_description(
+            "delegate",
+            &serde_json::json!({"bot_id": "bot-1"}),
+            &result,
+            false,
+        );
+        assert_eq!(kind, "delegation");
+        assert_eq!(label, "Delegated to Backend");
+        assert_eq!(detail.as_deref(), Some("thread thread-9"));
+    }
+
+    #[test]
+    fn failed_delegation_spans_carry_the_reason() {
+        let result = serde_json::json!({
+            "success": false,
+            "error": "Delegation target bot not found"
+        });
+        let (kind, label, detail) = tool_span_description(
+            "delegate",
+            &serde_json::json!({"bot_id": "missing"}),
+            &result,
+            true,
+        );
+        assert_eq!(kind, "delegation");
+        assert!(label.contains("missing"));
+        assert!(detail.unwrap().contains("not found"));
+    }
+
+    #[test]
+    fn memory_spans_carry_the_saved_fact() {
+        let result = serde_json::json!({
+            "success": true,
+            "output": {
+                "saved": "The office uses the staging database for preview builds.",
+                "importance": 0.8
+            }
+        });
+        let (kind, label, detail) =
+            tool_span_description("memory_save", &serde_json::Value::Null, &result, false);
+        assert_eq!(kind, "memory");
+        assert_eq!(label, "Memory saved");
+        assert!(detail.unwrap().contains("staging database"));
+    }
+
+    #[test]
+    fn ordinary_tools_stay_plain_tool_spans() {
+        let (kind, label, detail) = tool_span_description(
+            "file_read",
+            &serde_json::Value::Null,
+            &serde_json::json!({}),
+            false,
+        );
+        assert_eq!(kind, "tool");
+        assert_eq!(label, "file_read");
+        assert!(detail.is_none());
+    }
+}
+
+#[cfg(test)]
+mod tool_risk_tests {
+    use super::*;
+    use ravenbot_skills::SkillRisk;
+
+    #[test]
+    fn browser_reads_are_read_only_and_mutations_are_high() {
+        for action in [
+            "snapshot",
+            "text",
+            "html",
+            "scroll",
+            "highlight",
+            "back",
+            "forward",
+            "wait",
+        ] {
+            assert_eq!(
+                Runtime::browser_dom_risk(action),
+                SkillRisk::ReadOnly,
+                "{action}"
+            );
+        }
+        for action in ["click", "fill", "press", "eval", "reload"] {
+            assert_eq!(Runtime::browser_dom_risk(action), SkillRisk::High, "{action}");
+        }
+    }
+
+    #[test]
+    fn computer_observation_is_read_only_and_input_is_high() {
+        for action in ["windows", "screenshot", "screenshot_window", "wait"] {
+            assert_eq!(
+                Runtime::computer_control_risk(action),
+                SkillRisk::ReadOnly,
+                "{action}"
+            );
+        }
+        for action in ["click", "type", "key", "scroll", "focus_window"] {
+            assert_eq!(
+                Runtime::computer_control_risk(action),
+                SkillRisk::High,
+                "{action}"
+            );
+        }
     }
 }

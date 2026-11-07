@@ -103,7 +103,7 @@
 
 <div class="grid grid-cols-[10.5rem_1fr] gap-2 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] overflow-hidden">
   <!-- Provider rail -->
-  <div class="border-r border-[var(--hairline)] bg-black/20 p-1.5 space-y-1 {heightClass} overflow-y-auto">
+  <div class="border-r border-[var(--hairline)] bg-[var(--surface-0)] p-1.5 space-y-1 {heightClass} overflow-y-auto">
     <div class="relative pb-1">
       <Input bind:value={providerSearch} aria-label={t("model.searchProviders")} placeholder={t("model.searchProviders")} class="h-7 pl-7 text-[11px]" />
       <svg class="absolute left-2 top-1/2 -translate-y-1/2 size-3 text-[var(--text-muted)]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>

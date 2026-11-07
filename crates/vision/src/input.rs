@@ -68,9 +68,18 @@ impl InputInjector {
             || std::env::var("WAYLAND_DISPLAY").is_ok();
         let has_x_display = std::env::var("DISPLAY").is_ok();
 
-        let xdotool = find("xdotool").map(|p| Program { tool: Tool::Xdotool, path: p });
-        let ydotool = find("ydotool").map(|p| Program { tool: Tool::Ydotool, path: p });
-        let wtype = find("wtype").map(|p| Program { tool: Tool::Wtype, path: p });
+        let xdotool = find("xdotool").map(|p| Program {
+            tool: Tool::Xdotool,
+            path: p,
+        });
+        let ydotool = find("ydotool").map(|p| Program {
+            tool: Tool::Ydotool,
+            path: p,
+        });
+        let wtype = find("wtype").map(|p| Program {
+            tool: Tool::Wtype,
+            path: p,
+        });
 
         // Pointer: prefer native ydotool on Wayland, else xdotool.
         let pointer = if on_wayland {
@@ -80,19 +89,35 @@ impl InputInjector {
         };
         // Typing: wtype is purpose-built for Wayland; xdotool for X11.
         let typer = if on_wayland {
-            wtype.clone().or_else(|| xdotool.clone()).or_else(|| ydotool.clone())
+            wtype
+                .clone()
+                .or_else(|| xdotool.clone())
+                .or_else(|| ydotool.clone())
         } else {
-            xdotool.clone().or_else(|| wtype.clone()).or_else(|| ydotool.clone())
+            xdotool
+                .clone()
+                .or_else(|| wtype.clone())
+                .or_else(|| ydotool.clone())
         };
         // Key presses: xdotool on X11, wtype on Wayland.
         let keys = if on_wayland {
-            wtype.clone().or_else(|| xdotool.clone()).or_else(|| ydotool.clone())
+            wtype
+                .clone()
+                .or_else(|| xdotool.clone())
+                .or_else(|| ydotool.clone())
         } else {
-            xdotool.clone().or_else(|| wtype.clone()).or_else(|| ydotool.clone())
+            xdotool
+                .clone()
+                .or_else(|| wtype.clone())
+                .or_else(|| ydotool.clone())
         };
 
         let _ = has_x_display;
-        Self { pointer, typer, keys }
+        Self {
+            pointer,
+            typer,
+            keys,
+        }
     }
 
     /// True when at least pointer control is available.
@@ -122,7 +147,32 @@ impl InputInjector {
         let p = self.pointer.as_ref()?;
         let (x, y) = (x.round() as i64, y.round() as i64);
         match p.tool {
-            Tool::Xdotool | Tool::Ydotool => Some((p.tool, vec!["mousemove".into(), x.to_string(), y.to_string()])),
+            Tool::Xdotool => Some((
+                p.tool,
+                vec!["mousemove".into(), x.to_string(), y.to_string()],
+            )),
+            // ydotool defaults to relative movement; absolute is required for
+            // screen coordinates from a screenshot. A negative layout
+            // coordinate needs the two-step sentinel because uinput cannot
+            // express a negative absolute axis.
+            Tool::Ydotool => {
+                if x < 0 || y < 0 {
+                    Some((
+                        p.tool,
+                        vec!["__ydotool_move__".into(), x.to_string(), y.to_string()],
+                    ))
+                } else {
+                    Some((
+                        p.tool,
+                        vec![
+                            "mousemove".into(),
+                            "-a".into(),
+                            x.to_string(),
+                            y.to_string(),
+                        ],
+                    ))
+                }
+            }
             Tool::Wtype => None,
         }
     }
@@ -140,34 +190,67 @@ impl InputInjector {
                 Some((
                     p.tool,
                     vec![
-                        "mousemove".into(), x.to_string(), y.to_string(),
-                        "click".into(), btn.into(),
+                        "mousemove".into(),
+                        x.to_string(),
+                        y.to_string(),
+                        "click".into(),
+                        btn.into(),
                     ],
                 ))
             }
             Tool::Ydotool => {
+                // ydotool buttons are a base code plus a down/up mask. 0x00
+                // alone is deliberately a no-op, so a click is 0xC0 (left),
+                // 0xC1 (right), or 0xC2 (middle).
                 let code = match button {
                     Button::Left => "0xC0",
                     Button::Middle => "0xC2",
                     Button::Right => "0xC1",
                 };
                 // ydotool has no single move+click; the sentinel tells `run`
-                // to move first, then click.
-                Some((p.tool, vec![
-                    "__ydotool_click__".into(), code.into(), x.to_string(), y.to_string(),
-                ]))
+                // to move first, then click. Keep x/y at indices 1 and 2 so
+                // every ydotool sentinel shares the same coordinate shape.
+                Some((
+                    p.tool,
+                    vec![
+                        "__ydotool_click__".into(),
+                        x.to_string(),
+                        y.to_string(),
+                        code.into(),
+                    ],
+                ))
             }
             Tool::Wtype => None,
         }
     }
 
-    fn plan_scroll(&self, x: f32, y: f32, delta_x: i32, delta_y: i32) -> Option<(Tool, Vec<String>)> {
+    fn plan_scroll(
+        &self,
+        x: f32,
+        y: f32,
+        delta_x: i32,
+        delta_y: i32,
+    ) -> Option<(Tool, Vec<String>)> {
         let p = self.pointer.as_ref()?;
-        // Only xdotool has a reliable scroll-by-button mapping we can plan.
-        if p.tool != Tool::Xdotool {
-            return None;
-        }
         let (x, y) = (x.round() as i64, y.round() as i64);
+        if p.tool == Tool::Ydotool {
+            if delta_x == 0 && delta_y == 0 {
+                return None;
+            }
+            // Wheel events go to the pointer's current position, so move to
+            // the requested point first. The sentinel keeps negative layout
+            // coordinates working.
+            return Some((
+                p.tool,
+                vec![
+                    "__ydotool_scroll__".into(),
+                    x.to_string(),
+                    y.to_string(),
+                    delta_x.to_string(),
+                    delta_y.to_string(),
+                ],
+            ));
+        }
         let mut args = vec!["mousemove".into(), x.to_string(), y.to_string()];
         let repeat = |n: i32, btn: &str, args: &mut Vec<String>| {
             for _ in 0..n.unsigned_abs() {
@@ -189,7 +272,15 @@ impl InputInjector {
         let p = self.typer.as_ref()?;
         match p.tool {
             Tool::Wtype => Some((p.tool, vec!["--".into(), text.into()])),
-            Tool::Xdotool => Some((p.tool, vec!["type".into(), "--clearmodifiers".into(), "--".into(), text.into()])),
+            Tool::Xdotool => Some((
+                p.tool,
+                vec![
+                    "type".into(),
+                    "--clearmodifiers".into(),
+                    "--".into(),
+                    text.into(),
+                ],
+            )),
             Tool::Ydotool => Some((p.tool, vec!["type".into(), "--".into(), text.into()])),
         }
     }
@@ -197,33 +288,128 @@ impl InputInjector {
     fn plan_key(&self, key: &str) -> Option<(Tool, Vec<String>)> {
         let p = self.keys.as_ref()?;
         match p.tool {
-            Tool::Xdotool => Some((p.tool, vec!["key".into(), "--clearmodifiers".into(), key.into()])),
+            Tool::Xdotool => Some((
+                p.tool,
+                vec!["key".into(), "--clearmodifiers".into(), key.into()],
+            )),
             Tool::Wtype => Some((p.tool, vec!["-k".into(), key.into()])),
-            Tool::Ydotool => Some((p.tool, vec!["key".into(), key.into()])),
+            Tool::Ydotool => {
+                // ydotool key takes Linux keycodes, not names. Map the common
+                // navigation keys and refuse combinations we cannot encode.
+                let code = match key {
+                    "Return" | "Enter" => "28",
+                    "Tab" => "15",
+                    "Escape" | "Esc" => "1",
+                    "Backspace" => "14",
+                    "Delete" => "111",
+                    "space" | "Space" => "57",
+                    "Up" | "ArrowUp" => "103",
+                    "Down" | "ArrowDown" => "108",
+                    "Left" | "ArrowLeft" => "105",
+                    "Right" | "ArrowRight" => "106",
+                    "Home" => "102",
+                    "End" => "107",
+                    "PageUp" => "104",
+                    "PageDown" => "109",
+                    _ => return None,
+                };
+                Some((p.tool, vec!["key".into(), code.into()]))
+            }
         }
     }
 
     // ── Execution ─────────────────────────────────────────────────────────
 
+    /// Move to a layout coordinate. uinput's absolute axes cannot represent a
+    /// negative coordinate, so warp to the closest non-negative point first
+    /// and cover the remainder with relative motion. This keeps clicks on a
+    /// monitor placed above or left of the origin working.
+    async fn move_pointer_to(&self, path: &std::path::Path, x: i64, y: i64) -> Result<(), String> {
+        let absolute_x = x.max(0);
+        let absolute_y = y.max(0);
+        self.exec_path(
+            path,
+            &[
+                "mousemove".into(),
+                "-a".into(),
+                absolute_x.to_string(),
+                absolute_y.to_string(),
+            ],
+        )
+        .await?;
+        let delta_x = x - absolute_x;
+        let delta_y = y - absolute_y;
+        if delta_x != 0 || delta_y != 0 {
+            self.exec_path(
+                path,
+                &[
+                    "mousemove".into(),
+                    "--".into(),
+                    delta_x.to_string(),
+                    delta_y.to_string(),
+                ],
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn run(&self, plan: (Tool, Vec<String>)) -> Result<(), String> {
         let (tool, args) = plan;
-        // ydotool click needs a move first; the sentinel encodes that.
-        if args.first().map(String::as_str) == Some("__ydotool_click__") {
-            let code = &args[1];
-            let x = &args[2];
-            let y = &args[3];
-            let path = self
-                .pointer
-                .as_ref()
-                .map(|p| p.path.clone())
-                .ok_or("no pointer backend")?;
-            self.exec_path(&path, &["mousemove".into(), x.clone(), y.clone()]).await?;
-            return self.exec_path(&path, &["click".into(), code.clone()]).await;
+        if let Some(sentinel) = args.first().map(String::as_str) {
+            if sentinel.starts_with("__ydotool_") {
+                let path = self
+                    .pointer
+                    .as_ref()
+                    .map(|p| p.path.clone())
+                    .ok_or("no pointer backend")?;
+                let x = args
+                    .get(1)
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .ok_or("ydotool action is missing an x coordinate")?;
+                let y = args
+                    .get(2)
+                    .and_then(|value| value.parse::<i64>().ok())
+                    .ok_or("ydotool action is missing a y coordinate")?;
+                self.move_pointer_to(&path, x, y).await?;
+                match sentinel {
+                    "__ydotool_click__" => {
+                        let code = args.get(3).ok_or("ydotool click is missing a button")?;
+                        return self.exec_path(&path, &["click".into(), code.clone()]).await;
+                    }
+                    "__ydotool_scroll__" => {
+                        let delta_x = args.get(3).ok_or("ydotool scroll is missing delta_x")?;
+                        let delta_y = args.get(4).ok_or("ydotool scroll is missing delta_y")?;
+                        return self
+                            .exec_path(
+                                &path,
+                                &[
+                                    "mousemove".into(),
+                                    "-w".into(),
+                                    delta_x.clone(),
+                                    delta_y.clone(),
+                                ],
+                            )
+                            .await;
+                    }
+                    // "__ydotool_move__" (and any future move action) has
+                    // already been satisfied by move_pointer_to.
+                    _ => return Ok(()),
+                }
+            }
         }
 
         let path = match tool {
-            Tool::Xdotool => self.pointer.as_ref().or(self.typer.as_ref()).or(self.keys.as_ref()),
-            Tool::Ydotool => self.pointer.as_ref().or(self.typer.as_ref()).or(self.keys.as_ref()),
+            Tool::Xdotool => self
+                .pointer
+                .as_ref()
+                .or(self.typer.as_ref())
+                .or(self.keys.as_ref()),
+            Tool::Ydotool => self
+                .pointer
+                .as_ref()
+                .or(self.typer.as_ref())
+                .or(self.keys.as_ref()),
             Tool::Wtype => self.typer.as_ref().or(self.keys.as_ref()),
         }
         .map(|p| p.path.clone())
@@ -256,11 +442,16 @@ impl InputInjector {
     // ── Public actions ────────────────────────────────────────────────────
 
     pub async fn move_mouse(&self, x: f32, y: f32) -> Result<(), String> {
-        self.run(self.plan_move(x, y).ok_or("pointer control unavailable")?).await
+        self.run(self.plan_move(x, y).ok_or("pointer control unavailable")?)
+            .await
     }
 
     pub async fn click(&self, x: f32, y: f32, button: Button) -> Result<(), String> {
-        self.run(self.plan_click(x, y, button).ok_or("pointer control unavailable")?).await
+        self.run(
+            self.plan_click(x, y, button)
+                .ok_or("pointer control unavailable")?,
+        )
+        .await
     }
 
     pub async fn scroll(&self, x: f32, y: f32, delta_x: i32, delta_y: i32) -> Result<(), String> {
@@ -272,22 +463,38 @@ impl InputInjector {
     }
 
     pub async fn type_text(&self, text: &str) -> Result<(), String> {
-        self.run(self.plan_type(text).ok_or("typing is not supported by the detected backend")?).await
+        self.run(
+            self.plan_type(text)
+                .ok_or("typing is not supported by the detected backend")?,
+        )
+        .await
     }
 
     pub async fn press_key(&self, key: &str) -> Result<(), String> {
-        self.run(self.plan_key(key).ok_or("key presses are not supported by the detected backend")?).await
+        self.run(
+            self.plan_key(key)
+                .ok_or("key presses are not supported by the detected backend")?,
+        )
+        .await
     }
 
     /// Plan an action without executing (used by tests and the UI preview).
-    pub fn describe_plan(&self, action: &crate::computer_control::ComputerAction) -> Option<String> {
+    pub fn describe_plan(
+        &self,
+        action: &crate::computer_control::ComputerAction,
+    ) -> Option<String> {
         use crate::computer_control::ComputerAction as A;
         let plan = match action {
             A::MoveMouse { x, y } => self.plan_move(*x, *y),
             A::Click { x, y, button } => self.plan_click(*x, *y, map_button(button)),
             A::DoubleClick { x, y } => self.plan_click(*x, *y, Button::Left),
             A::RightClick { x, y } => self.plan_click(*x, *y, Button::Right),
-            A::Scroll { x, y, delta_x, delta_y } => self.plan_scroll(*x, *y, *delta_x, *delta_y),
+            A::Scroll {
+                x,
+                y,
+                delta_x,
+                delta_y,
+            } => self.plan_scroll(*x, *y, *delta_x, *delta_y),
             A::TypeText { text } => self.plan_type(text),
             A::PressKey { key } => self.plan_key(key),
             A::Wait { .. } => return Some("wait".to_string()),
@@ -321,7 +528,10 @@ mod tests {
     use crate::computer_control::{ComputerAction, MouseButton};
 
     fn x11_injector() -> InputInjector {
-        let xdotool = find("xdotool").map(|p| Program { tool: Tool::Xdotool, path: p });
+        let xdotool = find("xdotool").map(|p| Program {
+            tool: Tool::Xdotool,
+            path: p,
+        });
         InputInjector {
             pointer: xdotool.clone(),
             typer: xdotool.clone(),
@@ -379,9 +589,64 @@ mod tests {
         assert!(desc.unwrap().contains("mousemove 5 6 click 1"));
     }
 
+    fn ydotool_injector() -> InputInjector {
+        let tool = Program {
+            tool: Tool::Ydotool,
+            path: PathBuf::from("ydotool"),
+        };
+        InputInjector {
+            pointer: Some(tool.clone()),
+            typer: Some(tool.clone()),
+            keys: Some(tool),
+        }
+    }
+
+    #[test]
+    fn ydotool_uses_absolute_coordinates_and_click_masks() {
+        let injector = ydotool_injector();
+        assert_eq!(
+            injector.plan_move(10.0, 20.0).unwrap().1,
+            vec!["mousemove", "-a", "10", "20"]
+        );
+        // 0x00 is a ydotool no-op: a real click needs the down+up mask.
+        assert_eq!(
+            injector.plan_click(10.0, 20.0, Button::Left).unwrap().1,
+            vec!["__ydotool_click__", "10", "20", "0xC0"]
+        );
+        assert_eq!(
+            injector.plan_click(10.0, 20.0, Button::Right).unwrap().1[3],
+            "0xC1"
+        );
+        assert_eq!(
+            injector.plan_click(10.0, 20.0, Button::Middle).unwrap().1[3],
+            "0xC2"
+        );
+        // A negative y cannot be an absolute uinput axis; the plan switches
+        // to the two-step move sentinel.
+        assert_eq!(
+            injector.plan_move(10.0, -50.0).unwrap().1,
+            vec!["__ydotool_move__", "10", "-50"]
+        );
+    }
+
+    #[test]
+    fn ydotool_wheel_and_simple_keys_are_planned_honestly() {
+        let injector = ydotool_injector();
+        assert_eq!(
+            injector.plan_scroll(5.0, 6.0, 0, 3).unwrap().1,
+            vec!["__ydotool_scroll__", "5", "6", "0", "3"]
+        );
+        assert_eq!(injector.plan_key("Return").unwrap().1, vec!["key", "28"]);
+        assert!(injector.plan_key("ctrl+c").is_none());
+    }
+
     #[test]
     fn no_backend_reports_unavailable() {
-        let injector = InputInjector { pointer: None, typer: None, keys: None };
+        let injector = InputInjector {
+            pointer: None,
+            typer: None,
+            keys: None,
+        };
         assert!(!injector.is_available());
         assert!(injector.plan_click(0.0, 0.0, Button::Left).is_none());
         assert!(injector.plan_type("x").is_none());

@@ -14,8 +14,16 @@
  * background actually behind it, and comparing. So these tests are the same
  * measurement, written down so it cannot regress silently.
  */
-import { describe, it, expect } from "vitest";
-import { contrastRatio, ensureContrast, AA_TEXT } from "./theme";
+// @vitest-environment jsdom
+import { beforeEach, describe, it, expect } from "vitest";
+import {
+  contrastRatio,
+  ensureContrast,
+  AA_TEXT,
+  THEMES,
+  applyTheme,
+  isLightColor,
+} from "./theme";
 
 /** WCAG relative luminance, spelled out rather than imported, so a change to
  *  the implementation cannot quietly change what the test means. */
@@ -154,5 +162,69 @@ it("terminates rather than looping on degenerate input", () => {
     const faint = ensureContrast("#4e4e53", SURFACES.raised, 3);
     expect(ratio(faint, SURFACES.raised)).toBeGreaterThanOrEqual(3);
     expect(ratio(faint, SURFACES.raised)).toBeLessThan(AA_TEXT + 0.25);
+  });
+});
+
+describe("theme catalogue", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("ships a light theme whose ink is legible on its paper", () => {
+    const light = THEMES.find((theme) => theme.id === "paper-light");
+    expect(light, "the light theme must be in the catalogue").toBeTruthy();
+    expect(isLightColor(light!.bgHex!)).toBe(true);
+    expect(isLightColor(light!.cardHex!)).toBe(true);
+    expect(contrastRatio(light!.textColor!, light!.bgHex!)).toBeGreaterThanOrEqual(AA_TEXT);
+    expect(contrastRatio(light!.textColor!, light!.cardHex!)).toBeGreaterThanOrEqual(AA_TEXT);
+    expect(contrastRatio(light!.accentColor!, light!.cardHex!)).toBeGreaterThanOrEqual(AA_TEXT);
+  });
+
+  it("keeps every theme's primary text readable on its own canvas", () => {
+    for (const theme of THEMES) {
+      expect(
+        contrastRatio(theme.textColor ?? "#ffffff", theme.bgHex ?? "#000000"),
+        `${theme.name} (${theme.id})`,
+      ).toBeGreaterThanOrEqual(AA_TEXT);
+    }
+  });
+
+  it("keeps the generated text ramp readable in every theme", () => {
+    for (const theme of THEMES) {
+      applyTheme(theme.id);
+      const style = document.documentElement.style;
+      const surface = style.getPropertyValue("--surface-2");
+      for (const token of ["--text-primary", "--text-secondary", "--text-tertiary", "--text-muted"]) {
+        const value = style.getPropertyValue(token);
+        expect(
+          contrastRatio(value, surface),
+          `${theme.name}: ${token} on ${surface}`,
+        ).toBeGreaterThanOrEqual(AA_TEXT - 0.01);
+      }
+      expect(
+        contrastRatio(style.getPropertyValue("--text-faint"), surface),
+        `${theme.name}: --text-faint`,
+      ).toBeGreaterThanOrEqual(3 - 0.01);
+    }
+    applyTheme("openbot");
+  });
+
+  it("derives color-scheme and light role tokens from the canvas", () => {
+    applyTheme("paper-light");
+    const root = document.documentElement;
+    expect(root.getAttribute("data-color-scheme")).toBe("light");
+    expect(root.getAttribute("style")).toContain("color-scheme: light");
+    expect(root.style.getPropertyValue("--text-primary")).toBe("#18181b");
+    expect(root.style.getPropertyValue("--danger-text")).toBe("#c02b3f");
+    expect(root.style.getPropertyValue("--scrim")).toContain("rgba");
+
+    applyTheme("openbot");
+    expect(root.getAttribute("data-color-scheme")).toBe("dark");
+    expect(root.getAttribute("style")).toContain("color-scheme: dark");
+    expect(root.style.getPropertyValue("--text-primary")).toBe("#ffffff");
+    // The light-only role overrides must be removed, not merely repainted:
+    // otherwise the static dark values in tokens.css never get a chance.
+    expect(root.style.getPropertyValue("--warning")).toBe("");
+    expect(root.style.getPropertyValue("--scrollbar-thumb")).toBe("");
   });
 });

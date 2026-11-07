@@ -77,7 +77,12 @@ pub struct SkillContext {
 
 impl SkillContext {
     /// Context for a bot with an explicit sandbox tier.
-    pub fn new(bot_id: Uuid, run_id: Uuid, thread_id: Uuid, sandbox_tier: ravenbot_core::SandboxTier) -> Self {
+    pub fn new(
+        bot_id: Uuid,
+        run_id: Uuid,
+        thread_id: Uuid,
+        sandbox_tier: ravenbot_core::SandboxTier,
+    ) -> Self {
         Self {
             bot_id,
             run_id,
@@ -135,7 +140,12 @@ impl SkillContext {
 
     /// Context with the default (OS-level) tier — for tests and headless paths.
     pub fn with_default_tier(bot_id: Uuid, run_id: Uuid, thread_id: Uuid) -> Self {
-        Self::new(bot_id, run_id, thread_id, ravenbot_core::SandboxTier::OsLevel)
+        Self::new(
+            bot_id,
+            run_id,
+            thread_id,
+            ravenbot_core::SandboxTier::OsLevel,
+        )
     }
 
     /// The primary working directory (first configured project folder).
@@ -350,7 +360,26 @@ impl SkillRisk {
     }
 }
 
-/// The core skill trait that all skills must implement
+/// Replace characters a provider will not accept in a function name.
+///
+/// OpenAI-shaped gateways reject a `tools[].function.name` that does not match
+/// `^[a-zA-Z0-9_-]+$`. Awesome/plugin skill ids are allowed to contain `/` and
+/// `.`, so the callable name and the stored id cannot always be the same thing.
+pub fn sanitize_tool_name(id: &str) -> String {
+    let mut out = String::with_capacity(id.len());
+    for c in id.chars() {
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        "tool".to_string()
+    } else {
+        out
+    }
+}
 #[async_trait]
 pub trait Skill: Send + Sync {
     /// Unique identifier for the skill
@@ -373,16 +402,44 @@ pub trait Skill: Send + Sync {
 
     /// Whether this skill is a function-calling tool or a workflow guide.
     /// Default is `Tool`. Prompt-based skills override this to `Workflow`.
-    fn kind(&self) -> SkillKind { SkillKind::Tool }
+    fn kind(&self) -> SkillKind {
+        SkillKind::Tool
+    }
+
+    /// The name exposed to a model as a function-calling tool.
+    ///
+    /// A skill id is an internal identifier and may contain characters a
+    /// provider rejects (`anthropics/pdf`). The callable name is sanitized and,
+    /// when sanitization occurred, carries a short stable hash so two ids that
+    /// collapse to the same string cannot collide. Execution resolves this
+    /// name back to the skill.
+    fn tool_name(&self) -> String {
+        let id = self.id();
+        if id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return id.to_string();
+        }
+        let safe = sanitize_tool_name(id);
+        let hash = id.bytes().fold(2_166_136_261u32, |h, b| {
+            (h ^ b as u32).wrapping_mul(16_777_619)
+        });
+        format!("{safe}_{hash:08x}")
+    }
 
     /// Risk level for the approval gate. Defaults to `High` (fail-closed:
     /// unknown skills ask, they don't run silent). Read-only skills override
     /// to `ReadOnly`.
-    fn risk(&self) -> SkillRisk { SkillRisk::High }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::High
+    }
 
     /// For workflow skills: return the full prompt/instructions that should
     /// be injected into the system prompt. Default returns None.
-    fn prompt(&self) -> Option<&str> { None }
+    fn prompt(&self) -> Option<&str> {
+        None
+    }
 
     /// Execute the skill with the given arguments
     async fn execute(
@@ -400,9 +457,10 @@ pub trait Skill: Send + Sync {
                 for field in fields {
                     if let Some(field_name) = field.as_str() {
                         if arguments.get(field_name).is_none() {
-                            return Err(SkillError::InvalidArguments(
-                                format!("Missing required field: {}", field_name)
-                            ));
+                            return Err(SkillError::InvalidArguments(format!(
+                                "Missing required field: {}",
+                                field_name
+                            )));
                         }
                     }
                 }
@@ -411,7 +469,6 @@ pub trait Skill: Send + Sync {
         Ok(())
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -427,7 +484,11 @@ mod tests {
         fn new() -> Self {
             let root = std::env::temp_dir().join(format!("rb-confine-{}", Uuid::new_v4()));
             let office = root.join("office");
-            for d in [office.join("deliverables"), office.join("Shared"), root.join("outside")] {
+            for d in [
+                office.join("deliverables"),
+                office.join("Shared"),
+                root.join("outside"),
+            ] {
                 std::fs::create_dir_all(&d).unwrap();
             }
             std::fs::write(office.join("deliverables/ok.txt"), "fine").unwrap();
@@ -456,7 +517,11 @@ mod tests {
         let s = Sandbox::new();
         let ctx = s.ctx();
         let resolved = ctx.resolve_path("deliverables/ok.txt").unwrap();
-        assert!(resolved.ends_with("office/deliverables/ok.txt"), "{}", resolved.display());
+        assert!(
+            resolved.ends_with("office/deliverables/ok.txt"),
+            "{}",
+            resolved.display()
+        );
         // It comes back real, not as a bare join, so a skill can use it.
         assert!(resolved.exists());
     }
@@ -465,7 +530,10 @@ mod tests {
     fn absolute_paths_inside_the_office_are_allowed() {
         let s = Sandbox::new();
         let target = s.office().join("deliverables/ok.txt");
-        assert_eq!(s.ctx().resolve_path(target.to_str().unwrap()).unwrap(), target);
+        assert_eq!(
+            s.ctx().resolve_path(target.to_str().unwrap()).unwrap(),
+            target
+        );
     }
 
     #[test]
@@ -474,7 +542,10 @@ mod tests {
         let ctx = s.ctx();
         let secret = s.root.join("outside/secret.txt");
         let err = ctx.resolve_path(secret.to_str().unwrap()).unwrap_err();
-        assert!(err.to_string().contains("outside this office's workspace"), "{err}");
+        assert!(
+            err.to_string().contains("outside this office's workspace"),
+            "{err}"
+        );
         // The message names where the agent *can* work, so it can correct itself.
         assert!(err.to_string().contains("office"), "{err}");
     }
@@ -487,7 +558,10 @@ mod tests {
         let ctx = s.ctx();
         let secret = s.root.join("outside/secret.txt");
         let relative = format!("../outside/secret.txt");
-        assert!(ctx.resolve_path(&relative).is_err(), "escaped via {relative}");
+        assert!(
+            ctx.resolve_path(&relative).is_err(),
+            "escaped via {relative}"
+        );
 
         let deeper = format!("deliverables/../../../outside/secret.txt");
         assert!(ctx.resolve_path(&deeper).is_err(), "escaped via {deeper}");
@@ -508,7 +582,11 @@ mod tests {
         let ctx = s.ctx();
         let inside = "deliverables/../Shared/scratch.md";
         let resolved = ctx.resolve_path(inside).unwrap();
-        assert!(resolved.ends_with("office/Shared/scratch.md"), "{}", resolved.display());
+        assert!(
+            resolved.ends_with("office/Shared/scratch.md"),
+            "{}",
+            resolved.display()
+        );
     }
 
     #[test]
@@ -518,7 +596,10 @@ mod tests {
         std::os::unix::fs::symlink(s.root.join("outside"), &link).unwrap();
         let ctx = s.ctx();
 
-        assert!(ctx.resolve_path("escape/secret.txt").is_err(), "symlinked dir escaped");
+        assert!(
+            ctx.resolve_path("escape/secret.txt").is_err(),
+            "symlinked dir escaped"
+        );
         assert!(ctx
             .resolve_path(link.join("secret.txt").to_str().unwrap())
             .is_err());
@@ -555,7 +636,10 @@ mod tests {
         let s = Sandbox::new();
         let evil = s.root.join("office-evil");
         std::fs::create_dir_all(&evil).unwrap();
-        assert!(s.ctx().resolve_path(evil.join("x").to_str().unwrap()).is_err());
+        assert!(s
+            .ctx()
+            .resolve_path(evil.join("x").to_str().unwrap())
+            .is_err());
     }
 
     #[test]
@@ -595,13 +679,28 @@ mod tests {
     #[test]
     fn lexical_normalization_is_itself_correct() {
         use std::path::Path;
-        assert_eq!(lexically_normalize(Path::new("/a/b/../c")), PathBuf::from("/a/c"));
-        assert_eq!(lexically_normalize(Path::new("/a/./b/")), PathBuf::from("/a/b"));
+        assert_eq!(
+            lexically_normalize(Path::new("/a/b/../c")),
+            PathBuf::from("/a/c")
+        );
+        assert_eq!(
+            lexically_normalize(Path::new("/a/./b/")),
+            PathBuf::from("/a/b")
+        );
         // Cannot climb above an absolute root.
-        assert_eq!(lexically_normalize(Path::new("/../etc")), PathBuf::from("/etc"));
-        assert_eq!(lexically_normalize(Path::new("/a/b/../..")), PathBuf::from("/"));
+        assert_eq!(
+            lexically_normalize(Path::new("/../etc")),
+            PathBuf::from("/etc")
+        );
+        assert_eq!(
+            lexically_normalize(Path::new("/a/b/../..")),
+            PathBuf::from("/")
+        );
         // A relative path that walks above its start keeps the `..`.
-        assert_eq!(lexically_normalize(Path::new("../x")), PathBuf::from("../x"));
+        assert_eq!(
+            lexically_normalize(Path::new("../x")),
+            PathBuf::from("../x")
+        );
         assert_eq!(lexically_normalize(Path::new("")), PathBuf::from("."));
     }
 
@@ -610,7 +709,11 @@ mod tests {
         let s = Sandbox::new();
         let missing = s.office().join("deliverables/not/created/yet.txt");
         let resolved = resolve_real_path(&missing);
-        assert!(resolved.ends_with("deliverables/not/created/yet.txt"), "{}", resolved.display());
+        assert!(
+            resolved.ends_with("deliverables/not/created/yet.txt"),
+            "{}",
+            resolved.display()
+        );
         assert!(!resolved.exists());
         // The existing prefix is still real, not a string join.
         assert!(resolved.starts_with(&s.office()));

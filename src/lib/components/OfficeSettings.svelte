@@ -419,7 +419,7 @@
               </Avatar.Root>
               <button
                 type="button"
-                class="absolute inset-0 bg-black/60 rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-[11px] font-bold text-[var(--text-primary)] cursor-pointer"
+                class="absolute inset-0 bg-[var(--scrim)] rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-[11px] font-bold text-[var(--text-primary)] cursor-pointer"
                 aria-pressed={showAvatarPicker}
                 onclick={() => (showAvatarPicker = !showAvatarPicker)}
               >

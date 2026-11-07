@@ -146,8 +146,7 @@ impl TaskGraph {
         self.nodes
             .values()
             .filter(|node| {
-                matches!(node.state, NodeState::Pending)
-                    && self.dependencies_met(node.id)
+                matches!(node.state, NodeState::Pending) && self.dependencies_met(node.id)
             })
             .collect()
     }
@@ -189,7 +188,9 @@ impl TaskGraph {
             let to_skip: Vec<NodeId> = self
                 .nodes
                 .values()
-                .filter(|n| matches!(n.state, NodeState::Pending) && self.has_failed_dependency(n.id))
+                .filter(|n| {
+                    matches!(n.state, NodeState::Pending) && self.has_failed_dependency(n.id)
+                })
                 .map(|n| n.id)
                 .collect();
             if to_skip.is_empty() {
@@ -229,7 +230,9 @@ impl TaskGraph {
 
     /// Mark a node as running
     pub fn mark_running(&mut self, node_id: NodeId, run_id: Uuid) -> Result<(), String> {
-        let node = self.nodes.get_mut(&node_id)
+        let node = self
+            .nodes
+            .get_mut(&node_id)
             .ok_or_else(|| format!("Node not found: {}", node_id))?;
         node.state = NodeState::Running(run_id);
         Ok(())
@@ -237,20 +240,24 @@ impl TaskGraph {
 
     /// Mark a node as done and store output in blackboard
     pub fn mark_done(&mut self, node_id: NodeId, output: String) -> Result<(), String> {
-        let node = self.nodes.get_mut(&node_id)
+        let node = self
+            .nodes
+            .get_mut(&node_id)
             .ok_or_else(|| format!("Node not found: {}", node_id))?;
         node.state = NodeState::Done(output.clone());
         node.output = Some(output.clone());
-        
+
         // Store in blackboard with node ID as key
         self.blackboard.set(node_id.to_string(), output);
-        
+
         Ok(())
     }
 
     /// Mark a node as failed
     pub fn mark_failed(&mut self, node_id: NodeId, error: String) -> Result<(), String> {
-        let node = self.nodes.get_mut(&node_id)
+        let node = self
+            .nodes
+            .get_mut(&node_id)
             .ok_or_else(|| format!("Node not found: {}", node_id))?;
         node.state = NodeState::Failed(error);
         Ok(())
@@ -258,7 +265,9 @@ impl TaskGraph {
 
     /// Skip a node (e.g., because a dependency failed)
     pub fn mark_skipped(&mut self, node_id: NodeId) -> Result<(), String> {
-        let node = self.nodes.get_mut(&node_id)
+        let node = self
+            .nodes
+            .get_mut(&node_id)
             .ok_or_else(|| format!("Node not found: {}", node_id))?;
         node.state = NodeState::Skipped;
         Ok(())
@@ -271,7 +280,8 @@ impl TaskGraph {
 
     /// Get all running nodes
     pub fn running_nodes(&self) -> Vec<&TaskNode> {
-        self.nodes.values()
+        self.nodes
+            .values()
             .filter(|node| matches!(node.state, NodeState::Running(_)))
             .collect()
     }
@@ -315,8 +325,9 @@ impl TaskGraph {
     pub fn to_checklist(&self) -> Vec<ChecklistItem> {
         // Sort nodes by dependency order (topological sort)
         let sorted = self.topological_sort();
-        
-        sorted.iter()
+
+        sorted
+            .iter()
             .filter_map(|id| self.nodes.get(id))
             .map(|node| match &node.state {
                 NodeState::Done(result) => ChecklistItem {
@@ -382,7 +393,8 @@ impl TaskGraph {
         }
 
         // Start with nodes that have no dependencies
-        let mut queue: Vec<NodeId> = in_degree.iter()
+        let mut queue: Vec<NodeId> = in_degree
+            .iter()
             .filter(|(_, &degree)| degree == 0)
             .map(|(&id, _)| id)
             .collect();
@@ -432,7 +444,7 @@ mod tests {
         let mut graph = TaskGraph::new("test");
         let bot_id = Uuid::new_v4();
         let node_id = graph.add_node(bot_id, "Do something");
-        
+
         assert!(!graph.is_complete());
         assert_eq!(graph.ready_nodes().len(), 1);
         assert_eq!(graph.ready_nodes()[0].id, node_id);
@@ -442,14 +454,14 @@ mod tests {
     fn test_dependency_chain() {
         let mut graph = TaskGraph::new("test");
         let bot_id = Uuid::new_v4();
-        
+
         let a = graph.add_node(bot_id, "Task A");
         let b = graph.add_node(bot_id, "Task B");
         let c = graph.add_node(bot_id, "Task C");
-        
+
         graph.add_edge(a, b);
         graph.add_edge(b, c);
-        
+
         // Only A should be ready initially
         let ready = graph.ready_nodes();
         assert_eq!(ready.len(), 1);
@@ -460,15 +472,15 @@ mod tests {
     fn test_parallel_execution() {
         let mut graph = TaskGraph::new("test");
         let bot_id = Uuid::new_v4();
-        
+
         let a = graph.add_node(bot_id, "Task A");
         let b = graph.add_node(bot_id, "Task B");
         let c = graph.add_node(bot_id, "Task C");
-        
+
         // C depends on both A and B
         graph.add_edge(a, c);
         graph.add_edge(b, c);
-        
+
         // Both A and B should be ready initially
         let ready = graph.ready_nodes();
         assert_eq!(ready.len(), 2);
@@ -478,18 +490,18 @@ mod tests {
     fn test_mark_done_releases_dependents() {
         let mut graph = TaskGraph::new("test");
         let bot_id = Uuid::new_v4();
-        
+
         let a = graph.add_node(bot_id, "Task A");
         let b = graph.add_node(bot_id, "Task B");
-        
+
         graph.add_edge(a, b);
-        
+
         // Initially only A is ready
         assert_eq!(graph.ready_nodes().len(), 1);
-        
+
         // Mark A as done
         graph.mark_done(a, "Result A".to_string()).unwrap();
-        
+
         // Now B should be ready
         assert_eq!(graph.ready_nodes().len(), 1);
         assert_eq!(graph.ready_nodes()[0].id, b);
@@ -499,20 +511,23 @@ mod tests {
     fn test_blackboard_sharing() {
         let mut graph = TaskGraph::new("test");
         let bot_id = Uuid::new_v4();
-        
+
         // Set initial data
         graph.blackboard.set("input", "initial data");
-        
+
         let a = graph.add_node_with_input(bot_id, "Process input", "input");
-        
+
         // A can read from blackboard
         assert_eq!(graph.nodes[&a].input.as_deref(), Some("initial data"));
-        
+
         // Mark A as done with output
         graph.mark_done(a, "processed data".to_string()).unwrap();
-        
+
         // Output should be in blackboard
-        assert_eq!(graph.blackboard.get(&a.to_string()).unwrap(), "processed data");
+        assert_eq!(
+            graph.blackboard.get(&a.to_string()).unwrap(),
+            "processed data"
+        );
     }
 
     #[test]
@@ -528,7 +543,10 @@ mod tests {
         // A fails → B (depends on A) and then C (depends on B) must skip.
         graph.mark_failed(a, "boom".to_string()).unwrap();
         assert_eq!(graph.propagate_skips(), 2);
-        assert!(graph.is_complete(), "graph must complete after skip cascade");
+        assert!(
+            graph.is_complete(),
+            "graph must complete after skip cascade"
+        );
         assert!(matches!(graph.nodes[&b].state, NodeState::Skipped));
         assert!(matches!(graph.nodes[&c].state, NodeState::Skipped));
     }
@@ -563,21 +581,21 @@ mod tests {
     fn test_topological_sort() {
         let mut graph = TaskGraph::new("test");
         let bot_id = Uuid::new_v4();
-        
+
         let a = graph.add_node(bot_id, "A");
         let b = graph.add_node(bot_id, "B");
         let c = graph.add_node(bot_id, "C");
-        
+
         graph.add_edge(a, b);
         graph.add_edge(a, c);
-        
+
         let sorted = graph.topological_sort();
-        
+
         // A should come before B and C
         let a_pos = sorted.iter().position(|&id| id == a).unwrap();
         let b_pos = sorted.iter().position(|&id| id == b).unwrap();
         let c_pos = sorted.iter().position(|&id| id == c).unwrap();
-        
+
         assert!(a_pos < b_pos);
         assert!(a_pos < c_pos);
     }

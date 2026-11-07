@@ -7,16 +7,30 @@ use ravenbot_core::Permission;
 
 pub struct CodeSearchSkill;
 
-impl CodeSearchSkill { pub fn new() -> Self { Self } }
+impl CodeSearchSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for CodeSearchSkill {
-    fn id(&self) -> &str { "code_search" }
-    fn name(&self) -> &str { "Code Search" }
-    fn description(&self) -> &str { "Search codebase for pattern (ripgrep-like), returns file:line matches" }
-    fn version(&self) -> &str { "1.1.0" }
+    fn id(&self) -> &str {
+        "code_search"
+    }
+    fn name(&self) -> &str {
+        "Code Search"
+    }
+    fn description(&self) -> &str {
+        "Search file contents inside the workspace and return file:line matches. Prefer this over shell grep or rg for discovery."
+    }
+    fn version(&self) -> &str {
+        "1.1.0"
+    }
     fn required_permissions(&self) -> Vec<Permission> {
-        vec![Permission::FileSystem { paths: vec![".".to_string()] }]
+        vec![Permission::FileSystem {
+            paths: vec![".".to_string()],
+        }]
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -28,7 +42,9 @@ impl Skill for CodeSearchSkill {
             },"required":["pattern"]
         })
     }
-    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::ReadOnly
+    }
 
     /// `grep` is invoked as an argv, not through a shell.
     ///
@@ -41,7 +57,11 @@ impl Skill for CodeSearchSkill {
     /// `-r` and not `-R`: the lower-case form does not follow symlinks found
     /// while walking, so a symlink planted in the office cannot pull a file
     /// from outside it into the results.
-    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let pattern = args
             .get("pattern")
             .and_then(|v| v.as_str())
@@ -76,7 +96,9 @@ impl Skill for CodeSearchSkill {
         let mut matches: Vec<String> = stdout.lines().take(max).map(str::to_string).collect();
         let truncated = stdout.lines().count() > max;
         if truncated {
-            matches.push(format!("… more matches omitted; raise max_results to see them"));
+            matches.push(format!(
+                "… more matches omitted; raise max_results to see them"
+            ));
         }
 
         Ok(SkillResult::success(serde_json::json!({
@@ -142,7 +164,11 @@ fn collect_globs(args: &serde_json::Value) -> Result<Vec<String>, SkillError> {
     Ok(out)
 }
 
-impl Default for CodeSearchSkill { fn default() -> Self { Self::new() } }
+impl Default for CodeSearchSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -178,6 +204,9 @@ mod tests {
     #[test]
     fn a_wrong_typed_globs_value_is_a_clear_error() {
         let args = serde_json::json!({"globs": 42});
-        assert!(collect_globs(&args).unwrap_err().to_string().contains("array"));
+        assert!(collect_globs(&args)
+            .unwrap_err()
+            .to_string()
+            .contains("array"));
     }
 }

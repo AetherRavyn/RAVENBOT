@@ -56,7 +56,9 @@ impl Skill for VoiceOutputSkill {
         })
     }
 
-    fn risk(&self) -> SkillRisk { SkillRisk::Low }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::Low
+    }
 
     async fn execute(
         &self,
@@ -78,14 +80,17 @@ impl Skill for VoiceOutputSkill {
             .and_then(|v| v.as_f64())
             .unwrap_or(1.0) as f32;
 
-        let tts = ravenbot_vision::TextToSpeech::new()
-            .with_voice(ravenbot_vision::audio::tts::VoiceOptions {
+        let tts = ravenbot_vision::TextToSpeech::new().with_voice(
+            ravenbot_vision::audio::tts::VoiceOptions {
                 voice: voice.to_string(),
                 rate,
                 ..Default::default()
-            });
+            },
+        );
 
-        let audio = tts.synthesize(text).await
+        let audio = tts
+            .synthesize(text)
+            .await
             .map_err(|e| SkillError::Execution(e.to_string()))?;
 
         // Return base64 audio so the UI can play it via Web Audio API.

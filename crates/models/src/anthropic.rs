@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{StreamChunk, ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
+use super::{
+    streaming, DeltaCallback, Message, ModelError, ModelProviderTrait, ModelResponse,
+    StreamAccumulator, StreamChunk, ToolDefinition, Usage,
+};
 
 const BASE_URL: &str = "https://api.anthropic.com/v1";
 
@@ -59,7 +62,11 @@ enum ContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +81,8 @@ pub struct AnthropicProvider {
     client: reqwest::Client,
     /// User-configured base URL override (None = official api.anthropic.com)
     base_url: Option<String>,
+    /// Extra headers for gateways that require them (OpenCode Go's session id).
+    headers: std::collections::HashMap<String, String>,
 }
 
 impl AnthropicProvider {
@@ -83,7 +92,14 @@ impl AnthropicProvider {
             model_id: "claude-3-5-sonnet-20241022".to_string(),
             client: reqwest::Client::new(),
             base_url: None,
+            headers: std::collections::HashMap::new(),
         }
+    }
+
+    /// Extra headers applied to every request (and the health check).
+    pub fn with_headers(mut self, headers: std::collections::HashMap<String, String>) -> Self {
+        self.headers = headers;
+        self
     }
 
     pub fn with_model(mut self, model_id: impl Into<String>) -> Self {
@@ -116,16 +132,20 @@ impl AnthropicProvider {
         on_delta: Option<&DeltaCallback>,
         enable_reasoning: bool,
     ) -> Result<ModelResponse, ModelError> {
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or_else(|| ModelError::Auth("Anthropic API key not configured".to_string()))?;
 
         // Extract system message if present
-        let system_message = messages.iter()
+        let system_message = messages
+            .iter()
             .find(|m| m.role == "system")
             .map(|m| m.content.clone());
 
         // Filter out system message from messages
-        let chat_messages: Vec<ChatMessage> = messages.iter()
+        let chat_messages: Vec<ChatMessage> = messages
+            .iter()
             .filter(|m| m.role != "system")
             .map(|m| {
                 // Tool result: Anthropic expects role "user" with a
@@ -180,18 +200,26 @@ impl AnthropicProvider {
                     blocks.push(serde_json::json!({"type": "text", "text": m.content}));
                     serde_json::Value::Array(blocks)
                 };
-                ChatMessage { role: m.role.clone(), content }
+                ChatMessage {
+                    role: m.role.clone(),
+                    content,
+                }
             })
             .collect();
 
         let tools_param = if tools.is_empty() {
             None
         } else {
-            Some(tools.iter().map(|t| ToolParam {
-                name: t.name.clone(),
-                description: t.description.clone(),
-                input_schema: t.parameters.clone(),
-            }).collect())
+            Some(
+                tools
+                    .iter()
+                    .map(|t| ToolParam {
+                        name: t.name.clone(),
+                        description: t.description.clone(),
+                        input_schema: t.parameters.clone(),
+                    })
+                    .collect(),
+            )
         };
 
         let request = ChatRequest {
@@ -201,7 +229,11 @@ impl AnthropicProvider {
             max_tokens,
             // Anthropic constraint: temperature must be exactly 1 when
             // extended thinking is enabled
-            temperature: if enable_reasoning { Some(1.0) } else { Some(temperature) },
+            temperature: if enable_reasoning {
+                Some(1.0)
+            } else {
+                Some(temperature)
+            },
             system: system_message,
             stream,
             thinking: if enable_reasoning {
@@ -216,11 +248,16 @@ impl AnthropicProvider {
             },
         };
 
-        let response = self.client
+        let mut builder = self
+            .client
             .post(format!("{}/messages", self.base_url()))
             .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        for (k, v) in &self.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        let response = builder
             .json(&request)
             .send()
             .await
@@ -229,7 +266,10 @@ impl AnthropicProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(ModelError::Provider(format!("API error {}: {}", status, body)));
+            return Err(ModelError::Provider(format!(
+                "API error {}: {}",
+                status, body
+            )));
         }
 
         if let Some(on_delta) = on_delta {
@@ -242,7 +282,10 @@ impl AnthropicProvider {
             streaming::consume_sse(response, |json| {
                 match json.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                     "message_start" => {
-                        if let Some(input) = json.pointer("/message/usage/input_tokens").and_then(|v| v.as_u64()) {
+                        if let Some(input) = json
+                            .pointer("/message/usage/input_tokens")
+                            .and_then(|v| v.as_u64())
+                        {
                             let output = acc.usage().map(|u| u.output_tokens).unwrap_or(0);
                             acc.set_usage(input, output);
                         }
@@ -250,7 +293,11 @@ impl AnthropicProvider {
                     "content_block_start" => {
                         if let Some(block) = json.get("content_block") {
                             if block.get("type").and_then(|v| v.as_str()) == Some("tool_use") {
-                                let index = json.get("index").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                                let index = json
+                                    .get("index")
+                                    .and_then(|v| v.as_u64())
+                                    .map(|v| v as usize)
+                                    .unwrap_or(0);
                                 let id = block.get("id").and_then(|v| v.as_str()).unwrap_or("");
                                 let name = block.get("name").and_then(|v| v.as_str()).unwrap_or("");
                                 acc.push_tool_use_start(index, id, name);
@@ -258,7 +305,11 @@ impl AnthropicProvider {
                         }
                     }
                     "content_block_delta" => {
-                        let index = json.get("index").and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(0);
+                        let index = json
+                            .get("index")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as usize)
+                            .unwrap_or(0);
                         if let Some(delta) = json.get("delta") {
                             match delta.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                                 "text_delta" => {
@@ -279,7 +330,9 @@ impl AnthropicProvider {
                                 // round erased it, and a stream cut mid-thought
                                 // left the markers open in the user's paragraph.
                                 "thinking_delta" => {
-                                    if let Some(thinking) = delta.get("thinking").and_then(|v| v.as_str()) {
+                                    if let Some(thinking) =
+                                        delta.get("thinking").and_then(|v| v.as_str())
+                                    {
                                         if !thinking.is_empty() {
                                             acc.push_reasoning(thinking);
                                             on_delta(StreamChunk::Reasoning(thinking));
@@ -289,7 +342,9 @@ impl AnthropicProvider {
                                 // Signature blocks accompany thinking — never rendered
                                 "signature_delta" => {}
                                 "input_json_delta" => {
-                                    if let Some(pj) = delta.get("partial_json").and_then(|v| v.as_str()) {
+                                    if let Some(pj) =
+                                        delta.get("partial_json").and_then(|v| v.as_str())
+                                    {
                                         acc.push_tool_json_delta(index, pj);
                                     }
                                 }
@@ -298,7 +353,10 @@ impl AnthropicProvider {
                         }
                     }
                     "message_delta" => {
-                        if let Some(output) = json.pointer("/usage/output_tokens").and_then(|v| v.as_u64()) {
+                        if let Some(output) = json
+                            .pointer("/usage/output_tokens")
+                            .and_then(|v| v.as_u64())
+                        {
                             let input = acc.usage().map(|u| u.input_tokens).unwrap_or(0);
                             acc.set_usage(input, output);
                         }
@@ -306,12 +364,12 @@ impl AnthropicProvider {
                     _ => {}
                 }
                 Ok(())
-            }).await?;
+            })
+            .await?;
             Ok(acc.finish())
         } else {
             // Non-streaming path
-            let chat_response: ChatResponse = response.json().await
-                .map_err(ModelError::Http)?;
+            let chat_response: ChatResponse = response.json().await.map_err(ModelError::Http)?;
 
             let mut content_text = String::new();
             let mut tool_calls = Vec::new();
@@ -337,7 +395,11 @@ impl AnthropicProvider {
             };
 
             Ok(ModelResponse {
-                content: if content_text.is_empty() { None } else { Some(content_text) },
+                content: if content_text.is_empty() {
+                    None
+                } else {
+                    Some(content_text)
+                },
                 tool_calls,
                 usage,
                 reasoning: None,
@@ -359,7 +421,8 @@ impl ModelProviderTrait for AnthropicProvider {
         temperature: f32,
         max_tokens: u32,
     ) -> Result<ModelResponse, ModelError> {
-        self.send_chat(messages, tools, temperature, max_tokens, false, None, false).await
+        self.send_chat(messages, tools, temperature, max_tokens, false, None, false)
+            .await
     }
 
     async fn complete_stream(
@@ -371,7 +434,16 @@ impl ModelProviderTrait for AnthropicProvider {
         on_delta: DeltaCallback,
         enable_reasoning: bool,
     ) -> Result<ModelResponse, ModelError> {
-        self.send_chat(messages, tools, temperature, max_tokens, true, Some(&on_delta), enable_reasoning).await
+        self.send_chat(
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            true,
+            Some(&on_delta),
+            enable_reasoning,
+        )
+        .await
     }
 
     fn with_model(mut self: Box<Self>, model_id: String) -> Box<dyn ModelProviderTrait> {
@@ -385,12 +457,15 @@ impl ModelProviderTrait for AnthropicProvider {
             None => return Ok(false),
         };
 
-        let response = self.client
+        let mut builder = self
+            .client
             .get(format!("{}/models", self.base_url()))
             .header("x-api-key", api_key)
-            .header("anthropic-version", "2023-06-01")
-            .send()
-            .await;
+            .header("anthropic-version", "2023-06-01");
+        for (k, v) in &self.headers {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+        let response = builder.send().await;
 
         Ok(response.is_ok())
     }
