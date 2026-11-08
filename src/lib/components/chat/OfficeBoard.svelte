@@ -30,6 +30,7 @@
     Circle,
     MinusCircle,
     ListChecks,
+    CornerDownRight,
   } from "@lucide/svelte";
 
   export interface BoardNode {
@@ -58,13 +59,21 @@
     runActive: boolean;
     /** Per-bot self-tracked checklists (`todo` tool), keyed by bot id. */
     todos?: Record<string, BotTodo[]>;
+    /**
+     * `wide` lays the four states side by side above the conversation.
+     * `rail` stacks them in the office's right-hand column, where 380px is
+     * not enough for four columns and a 90px card is not a card.
+     */
+    variant?: "wide" | "rail";
   }
 
-  let { goal, nodes, members, runActive, todos }: Props = $props();
+  let { goal, nodes, members, runActive, todos, variant = "wide" }: Props = $props();
+  const rail = $derived(variant === "rail");
 
-  let collapsed = $state(false);
-  // Re-expand for a new run; auto-collapse when the run ends so the
-  // conversation gets the vertical space back.
+  // A settled office opens with the board summarized; a live run expands it.
+  // The three DONE cards can carry long previews, and the conversation should
+  // own the space until there is work to watch. The user can still open it.
+  let collapsed = $state(true);
   let sawActive = $state(false);
   $effect(() => {
     if (runActive) {
@@ -105,6 +114,40 @@
     }));
   });
   const hasDeps = $derived(nodes.some((n) => n.dependsOn.length > 0));
+
+  /**
+   * Dependency depth per node, for the rail's vertical graph.
+   *
+   * The wide board can afford `PlanDag`'s left-to-right canvas. In a 380px
+   * rail that canvas is wider than the column and the right-hand nodes are
+   * clipped; a depth-indented list says the same thing without a hidden
+   * horizontal scroll. Cycles cannot occur in a planned graph, but the guard
+   * keeps a malformed plan from recursing forever.
+   */
+  const dagRows = $derived.by(() => {
+    const depthOf = (node: BoardNode, seen: Set<string>): number => {
+      if (seen.has(node.nodeId)) return 0;
+      const next = new Set(seen);
+      next.add(node.nodeId);
+      let depth = 0;
+      for (const dep of node.dependsOn) {
+        const parent = nodes.find((candidate) => candidate.nodeId === dep);
+        if (parent) depth = Math.max(depth, depthOf(parent, next) + 1);
+      }
+      return depth;
+    };
+    return nodes.map((node) => ({ node, depth: depthOf(node, new Set()) }));
+  });
+
+  function stateDot(state: BoardNode["state"]): string {
+    switch (state) {
+      case "running": return "bg-[var(--brand)] animate-pulse";
+      case "done": return "bg-success";
+      case "failed": return "bg-danger";
+      case "skipped": return "bg-warning";
+      default: return "bg-[var(--text-faint)]";
+    }
+  }
 
   function memberFor(botId: string) {
     return members.find((m: any) => (m.bot?.id ?? m.bot_id) === botId);
@@ -159,7 +202,7 @@
 
     {#if !collapsed}
       <div class="px-3 pb-3 pt-2.5 space-y-3">
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-x-3 gap-y-4 min-w-0">
+        <div class="grid gap-x-3 gap-y-4 min-w-0 {rail ? 'grid-cols-1 gap-y-3' : 'grid-cols-2 lg:grid-cols-4'}">
           {#each columns as col (col.key)}
             <div class="min-w-0">
               <div class="flex items-baseline gap-1.5 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
@@ -167,8 +210,10 @@
                 <span class="ml-auto tabular-nums font-normal">{col.items.length}</span>
               </div>
               <!-- No `no-scrollbar` here: a column that has silently clipped its
-                   cards is worse than one that admits it scrolls. -->
-              <div class="space-y-1 min-w-0 max-h-56 overflow-y-auto">
+                   cards is worse than one that admits it scrolls. In the rail
+                   the whole column scrolls, so per-column caps would nest two
+                   scroll areas for no gain. -->
+              <div class="space-y-1 min-w-0 {rail ? '' : 'max-h-56 overflow-y-auto'}">
                 {#each col.items as n (n.nodeId)}
                   <div use:entrance class="min-w-0 rounded-lg px-2 py-1.5 {cardTone(n.state)}">
                     <div class="flex items-center gap-1.5 min-w-0">
@@ -229,7 +274,40 @@
               <span>{t("room.board.dagLive")}</span>
               <span class="font-normal normal-case tracking-normal">{t("room.dagTitle")}</span>
             </div>
-            <PlanDag tasks={dagTasks} {members} stateFor={(i) => nodes[i]?.state} />
+            {#if rail}
+              <div class="space-y-1">
+                {#each dagRows as row (row.node.nodeId)}
+                  <div
+                    class="flex items-center gap-1.5 min-w-0 rounded-md bg-[var(--surface-2)] px-1.5 py-1"
+                    style={`margin-left:${Math.min(row.depth, 4) * 0.75}rem`}
+                  >
+                    {#if row.depth > 0}
+                      <CornerDownRight class="size-2.5 text-[var(--text-faint)] shrink-0" strokeWidth={2} aria-hidden="true" />
+                    {:else}
+                      <span class="size-2.5 shrink-0" aria-hidden="true"></span>
+                    {/if}
+                    <RavenAvatar
+                      name={nameFor(row.node.botId)}
+                      imageUrl={memberFor(row.node.botId)?.bot?.avatar_url}
+                      style={memberFor(row.node.botId)?.bot?.avatar_style}
+                      decorative
+                      class="size-4 rounded-full shrink-0"
+                    />
+                    <div class="min-w-0 flex-1">
+                      <div class="text-[11px] font-semibold text-[var(--text-primary)] truncate leading-tight">
+                        {nameFor(row.node.botId)}
+                      </div>
+                      <div class="text-[11px] text-[var(--text-muted)] leading-snug line-clamp-2">
+                        {row.node.label}
+                      </div>
+                    </div>
+                    <span class="size-1.5 rounded-full shrink-0 {stateDot(row.node.state)}" aria-hidden="true"></span>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <PlanDag tasks={dagTasks} {members} stateFor={(i) => nodes[i]?.state} />
+            {/if}
           </div>
         {/if}
       </div>

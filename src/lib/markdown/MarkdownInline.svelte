@@ -34,6 +34,10 @@
 
   const resolved = $derived(tokens ?? (inlineSource ? lexInline(inlineSource) : []));
 
+  function openImage(src: string, alt: string) {
+    window.dispatchEvent(new CustomEvent("ravenbot:image", { detail: { src, alt } }));
+  }
+
   //
   // A note on comments in this file, since the fix is not obvious. An HTML
   // comment in a Svelte template is a *node*. Inside a rendered branch that
@@ -98,7 +102,28 @@
     {@const img = token as Tokens.Image}
     {@const src = safeImageSrc(img.href)}
     {#if src}
-      <img class="md-image" {src} alt={img.text || ""} title={img.title || undefined} loading="lazy" />
+      <!-- svelte-ignore a11y_no_noninteractive_element_to_interactive_role -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+      <img
+        class="md-image md-image--zoom"
+        {src}
+        alt={img.text || ""}
+        title={img.title || undefined}
+        loading="lazy"
+        role="button"
+        tabindex="0"
+        aria-label={img.text ? `Open image: ${img.text}` : "Open image"}
+        onclick={(event) => {
+          if ((event.currentTarget as HTMLElement).closest("a")) return;
+          openImage(src, img.text || "");
+        }}
+        onkeydown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          if ((event.currentTarget as HTMLElement).closest("a")) return;
+          event.preventDefault();
+          openImage(src, img.text || "");
+        }}
+      />
     {:else}
       <span class="md-link-refused">{img.text || img.href}</span>
     {/if}

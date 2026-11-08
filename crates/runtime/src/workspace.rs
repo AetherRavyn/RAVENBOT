@@ -158,7 +158,10 @@ fn write_charter(ws: &Workspace, room: &ChatRoom, roster: &[RosterEntry]) {
     // replaced by ours. The policy had always been protected this way; it was
     // the only one that was.
     write_seeded(&ws.root.join("README.md"), &readme_md(room, ws));
-    write_seeded(&ws.shared.join("STATUS.md"), &status_md(room, roster));
+    // STATUS.md is the office's live board. Seed it once; after that the
+    // agents own it. Re-seeding it on every roster refresh would erase the
+    // exact progress the next context window needs.
+    write_new_only(&ws.shared.join("STATUS.md"), &status_md(room, roster));
 
     if let Some(policy) = room
         .policy
@@ -179,6 +182,25 @@ fn may_write(path: &Path) -> bool {
     std::fs::read_to_string(path)
         .map(|s| s.starts_with(GENERATED_MARKER))
         .unwrap_or(false)
+}
+
+/// Write a file only when it does not exist.
+///
+/// For a document the agents take ownership of after creation (`STATUS.md`),
+/// updating it on a roster refresh is data loss, not a refresh.
+fn write_new_only(path: &Path, body: &str) {
+    if path.exists() {
+        return;
+    }
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(path = %parent.display(), error = %e, "Could not create workspace folder");
+            return;
+        }
+    }
+    if let Err(e) = std::fs::write(path, body) {
+        tracing::warn!(path = %path.display(), error = %e, "Could not write workspace file");
+    }
 }
 
 /// Write a seeded file, leaving a file the operator wrote alone.
@@ -395,10 +417,28 @@ fn readme_md(room: &ChatRoom, ws: &Workspace) -> String {
 }
 
 fn status_md(room: &ChatRoom, roster: &[RosterEntry]) -> String {
+    let mission = room
+        .goal
+        .as_deref()
+        .map(str::trim)
+        .filter(|goal| !goal.is_empty())
+        .unwrap_or_else(|| room.description.trim());
     let mut s = String::new();
     s.push_str(&format!("# {} — status\n\n", room.name));
+    s.push_str("## Mission\n");
+    s.push_str(if mission.is_empty() {
+        "_No mission set yet._\n\n"
+    } else {
+        mission
+    });
+    s.push_str("\n\n## Current milestone\n");
     s.push_str(
-        "Update this when you start a task and when you finish one, so nobody \
+        "_The lead writes the next concrete deliverable here before briefing the team._\n\n",
+    );
+    s.push_str("## Blockers\n");
+    s.push_str("_None._\n\n");
+    s.push_str(
+        "## Agent status\nUpdate this when you start a task and when you finish one, so nobody \
          duplicates work. One line per agent, most recent activity last.\n\n",
     );
     if roster.is_empty() {
@@ -410,7 +450,7 @@ fn status_md(room: &ChatRoom, roster: &[RosterEntry]) -> String {
         s.push_str(&format!("| {} | — | idle |\n", escape_cell(&r.name)));
     }
     s.push('\n');
-    s.push_str(&format!("_Last reset: {}_\n", room.updated_at.to_rfc3339()));
+    s.push_str(&format!("_Seeded: {}_\n", room.updated_at.to_rfc3339()));
     s
 }
 
@@ -667,6 +707,24 @@ mod tests {
     /// If a generated file could never be rewritten, an office's README would
     /// describe the workspace as it was when the office was made, and the
     /// folder list in it would be wrong forever.
+    #[test]
+    fn a_live_status_file_is_not_reset_by_reseeding() {
+        locked(|| {
+            let r = room();
+            let first = seed(&r, &roster());
+            let status = first.root.join("Shared/STATUS.md");
+            let live = "# live status\n\n| Agent | Working on | Status |\n|---|---|---|\n| Lead | checkout | done |\n";
+            std::fs::write(&status, live).unwrap();
+
+            let second = seed(&r, &roster());
+            assert_eq!(
+                std::fs::read_to_string(second.root.join("Shared/STATUS.md")).unwrap(),
+                live,
+                "reseeding must not erase the office's live progress"
+            );
+        });
+    }
+
     #[test]
     fn a_generated_workspace_file_is_still_refreshed() {
         locked(|| {

@@ -138,7 +138,7 @@
   }
 </script>
 
-<div class="fixed inset-0 z-[60] flex items-center justify-center bg-black/60  p-4">
+<div class="fixed inset-0 z-[60] flex items-center justify-center bg-[var(--scrim)]  p-4">
   <div class="modal-panel w-full max-w-3xl flex flex-col max-h-[88vh]">
     <div class="modal-header flex items-center justify-between shrink-0">
       <div class="flex items-center gap-2">

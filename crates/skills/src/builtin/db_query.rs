@@ -61,7 +61,9 @@ impl Skill for DbQuerySkill {
         "1.2.0"
     }
     fn required_permissions(&self) -> Vec<Permission> {
-        vec![Permission::FileSystem { paths: vec![".".into()] }]
+        vec![Permission::FileSystem {
+            paths: vec![".".into()],
+        }]
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -194,7 +196,9 @@ mod tests {
         let path = std::env::temp_dir().join(format!("ravenbot-dbq-{}.db", Uuid::new_v4()));
         let db = ravenbot_db::Database::new(&path).await.expect("temp db");
         let bot = ravenbot_core::Bot::new("QueryBot", "db test");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         path
     }
 
@@ -210,16 +214,27 @@ mod tests {
             .await
             .expect("execute");
         assert!(result.success);
-        let rows = result.output.get("rows").and_then(|v| v.as_array()).unwrap();
+        let rows = result
+            .output
+            .get("rows")
+            .and_then(|v| v.as_array())
+            .unwrap();
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].get("name").and_then(|v| v.as_str()), Some("QueryBot"));
+        assert_eq!(
+            rows[0].get("name").and_then(|v| v.as_str()),
+            Some("QueryBot")
+        );
         let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
     async fn rejects_write_statements() {
         let skill = DbQuerySkill::new();
-        for sql in ["DROP TABLE bots", "DELETE FROM bots", "UPDATE bots SET name='x'"] {
+        for sql in [
+            "DROP TABLE bots",
+            "DELETE FROM bots",
+            "UPDATE bots SET name='x'",
+        ] {
             let result = skill
                 .execute(&ctx(), serde_json::json!({ "sql": sql }))
                 .await
@@ -254,14 +269,21 @@ mod tests {
             .await
             .expect("execute");
         let n = check.output.pointer("/rows/0/n").and_then(|v| v.as_i64());
-        assert_eq!(n, Some(1), "bots table must still exist: {:?}", check.output);
+        assert_eq!(
+            n,
+            Some(1),
+            "bots table must still exist: {:?}",
+            check.output
+        );
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn prefix_classifier_is_conservative() {
         assert!(is_read_only_statement("SELECT 1"));
-        assert!(is_read_only_statement("  with x as (select 1) select * from x"));
+        assert!(is_read_only_statement(
+            "  with x as (select 1) select * from x"
+        ));
         assert!(is_read_only_statement("PRAGMA table_info(bots)"));
         assert!(!is_read_only_statement("INSERT INTO bots VALUES (1)"));
         assert!(!is_read_only_statement("drop table bots"));

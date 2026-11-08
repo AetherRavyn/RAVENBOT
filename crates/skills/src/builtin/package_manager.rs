@@ -1,21 +1,38 @@
 //! Package manager — install, update, search, and manage packages (npm, pip, cargo, apt, etc.)
 
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 
 pub struct PackageManagerSkill;
 
-impl PackageManagerSkill { pub fn new() -> Self { Self } }
+impl PackageManagerSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for PackageManagerSkill {
-    fn id(&self) -> &str { "package_manager" }
-    fn name(&self) -> &str { "Package Manager" }
-    fn description(&self) -> &str { "Install, update, search, and manage packages via npm, pip, cargo, apt, brew, etc." }
-    fn version(&self) -> &str { "1.0.0" }
+    fn id(&self) -> &str {
+        "package_manager"
+    }
+    fn name(&self) -> &str {
+        "Package Manager"
+    }
+    fn description(&self) -> &str {
+        "Install, update, search, and manage packages via npm, pip, cargo, apt, brew, etc."
+    }
+    fn version(&self) -> &str {
+        "1.0.0"
+    }
     fn required_permissions(&self) -> Vec<Permission> {
-        vec![Permission::Shell, Permission::Network { domains: vec!["*".to_string()] }]
+        vec![
+            Permission::Shell,
+            Permission::Network {
+                domains: vec!["*".to_string()],
+            },
+        ]
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -50,16 +67,30 @@ impl Skill for PackageManagerSkill {
         })
     }
 
-    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let action = args.get("action").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'action' field".into()))?;
 
         let manager = args.get("manager").and_then(|v| v.as_str());
-        let packages: Vec<String> = args.get("packages")
+        let packages: Vec<String> = args
+            .get("packages")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
-        let global = args.get("global").and_then(|v| v.as_bool()).unwrap_or(false);
+        let global = args
+            .get("global")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let cwd = args.get("cwd").and_then(|v| v.as_str());
 
         // The directory is confined before anything else uses it — including
@@ -77,7 +108,9 @@ impl Skill for PackageManagerSkill {
         };
 
         if manager.is_empty() {
-            return Ok(SkillResult::failure("Could not auto-detect package manager. Please specify one.".to_string()));
+            return Ok(SkillResult::failure(
+                "Could not auto-detect package manager. Please specify one.".to_string(),
+            ));
         }
 
         let cmd = self.build_command(&manager, action, &packages, global)?;
@@ -86,12 +119,10 @@ impl Skill for PackageManagerSkill {
             .command("sh", &["-c".to_string(), cmd], Some(&dir))
             .map_err(SkillError::Execution)?;
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(120),
-            command.output(),
-        ).await
-        .map_err(|_| SkillError::Execution("Command timed out after 120s".into()))?
-        .map_err(|e| SkillError::Execution(e.to_string()))?;
+        let output = tokio::time::timeout(std::time::Duration::from_secs(120), command.output())
+            .await
+            .map_err(|_| SkillError::Execution("Command timed out after 120s".into()))?
+            .map_err(|e| SkillError::Execution(e.to_string()))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -129,7 +160,9 @@ impl PackageManagerSkill {
             }
         } else if tokio::fs::metadata(&cargo_toml).await.is_ok() {
             "cargo".to_string()
-        } else if tokio::fs::metadata(&pyproject).await.is_ok() || tokio::fs::metadata(&requirements).await.is_ok() {
+        } else if tokio::fs::metadata(&pyproject).await.is_ok()
+            || tokio::fs::metadata(&requirements).await.is_ok()
+        {
             "pip".to_string()
         } else if tokio::fs::metadata(&gemfile).await.is_ok() {
             "gem".to_string()
@@ -177,15 +210,33 @@ impl PackageManagerSkill {
             .collect::<Vec<_>>()
             .join(" ");
         match (manager, action) {
-            ("npm", "install") => if pkgs.is_empty() { "npm install 2>&1".to_string() } else { format!("npm install {} 2>&1", pkgs) },
+            ("npm", "install") => {
+                if pkgs.is_empty() {
+                    "npm install 2>&1".to_string()
+                } else {
+                    format!("npm install {} 2>&1", pkgs)
+                }
+            }
             ("npm", "uninstall") => format!("npm uninstall {} 2>&1", pkgs),
             ("npm", "update") => "npm update 2>&1".to_string(),
             ("npm", "search") => format!("npm search {} 2>&1 | head -n 20", pkgs),
-            ("npm", "list") => if global { "npm list -g --depth=0 2>&1".to_string() } else { "npm list --depth=0 2>&1".to_string() },
+            ("npm", "list") => {
+                if global {
+                    "npm list -g --depth=0 2>&1".to_string()
+                } else {
+                    "npm list --depth=0 2>&1".to_string()
+                }
+            }
             ("npm", "outdated") => "npm outdated 2>&1".to_string(),
             ("npm", "audit") => "npm audit 2>&1".to_string(),
             ("npm", "info") => format!("npm info {} 2>&1", pkgs),
-            ("pip", "install") => if global { format!("pip install {} 2>&1", pkgs) } else { format!("pip install --user {} 2>&1", pkgs) },
+            ("pip", "install") => {
+                if global {
+                    format!("pip install {} 2>&1", pkgs)
+                } else {
+                    format!("pip install --user {} 2>&1", pkgs)
+                }
+            }
             ("pip", "uninstall") => format!("pip uninstall -y {} 2>&1", pkgs),
             ("pip", "update") => format!("pip install --upgrade {} 2>&1", pkgs),
             ("pip", "search") => format!("pip search {} 2>&1 | head -n 20", pkgs),
@@ -200,10 +251,22 @@ impl PackageManagerSkill {
             ("cargo", "info") => format!("cargo info {} 2>&1", pkgs),
             ("cargo", "audit") => "cargo audit 2>&1".to_string(),
             ("cargo", "init") => "cargo init 2>&1".to_string(),
-            ("yarn", "install") => if pkgs.is_empty() { "yarn install 2>&1".to_string() } else { format!("yarn add {} 2>&1", pkgs) },
+            ("yarn", "install") => {
+                if pkgs.is_empty() {
+                    "yarn install 2>&1".to_string()
+                } else {
+                    format!("yarn add {} 2>&1", pkgs)
+                }
+            }
             ("yarn", "uninstall") => format!("yarn remove {} 2>&1", pkgs),
             ("yarn", "update") => "yarn upgrade 2>&1".to_string(),
-            ("pnpm", "install") => if pkgs.is_empty() { "pnpm install 2>&1".to_string() } else { format!("pnpm add {} 2>&1", pkgs) },
+            ("pnpm", "install") => {
+                if pkgs.is_empty() {
+                    "pnpm install 2>&1".to_string()
+                } else {
+                    format!("pnpm add {} 2>&1", pkgs)
+                }
+            }
             ("pnpm", "uninstall") => format!("pnpm remove {} 2>&1", pkgs),
             ("apt", "install") => format!("sudo apt install -y {} 2>&1", pkgs),
             ("apt", "update") => "sudo apt update && sudo apt upgrade -y 2>&1".to_string(),
@@ -236,5 +299,7 @@ trait Pipe: Sized {
 impl<T> Pipe for T {}
 
 impl Default for PackageManagerSkill {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

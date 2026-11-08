@@ -19,7 +19,7 @@ pub enum MigrationError {
 /// else, because that is the only thing it can honestly describe: a database
 /// whose `_migrations` table tops out at 23 is at 23, whatever an earlier
 /// constant still says.
-pub const CURRENT_VERSION: i32 = 23;
+pub const CURRENT_VERSION: i32 = 35;
 
 /// SQL for each migration version
 const MIGRATIONS: &[(i32, &str)] = &[
@@ -31,22 +31,75 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (6, include_str!("migrations/006_mcp.sql")),
     (7, include_str!("migrations/007_ephemeral.sql")),
     (8, include_str!("migrations/008_budget_usage.sql")),
-    (9, include_str!("migrations/009_bot_skills_and_settings.sql")),
+    (
+        9,
+        include_str!("migrations/009_bot_skills_and_settings.sql"),
+    ),
     (10, include_str!("migrations/010_approvals.sql")),
     (11, include_str!("migrations/011_message_senders.sql")),
-    (12, include_str!("migrations/012_todos_skills_openapi_threads.sql")),
+    (
+        12,
+        include_str!("migrations/012_todos_skills_openapi_threads.sql"),
+    ),
     (13, include_str!("migrations/013_questions.sql")),
     (14, include_str!("migrations/014_webhooks_channels.sql")),
-    (15, include_str!("migrations/015_contacts_and_channel_rules.sql")),
-    (16, include_str!("migrations/016_office_project_folders.sql")),
-    (17, include_str!("migrations/017_thread_project_folders.sql")),
+    (
+        15,
+        include_str!("migrations/015_contacts_and_channel_rules.sql"),
+    ),
+    (
+        16,
+        include_str!("migrations/016_office_project_folders.sql"),
+    ),
+    (
+        17,
+        include_str!("migrations/017_thread_project_folders.sql"),
+    ),
     (18, include_str!("migrations/018_custom_providers.sql")),
     (19, include_str!("migrations/019_mcp_remote_plugins.sql")),
     (20, include_str!("migrations/020_bot_sort_order.sql")),
-    (21, include_str!("migrations/021_chatroom_office_threads.sql")),
+    (
+        21,
+        include_str!("migrations/021_chatroom_office_threads.sql"),
+    ),
     (22, include_str!("migrations/022_file_changes.sql")),
     (23, include_str!("migrations/023_file_changes_diff.sql")),
-    (24, include_str!("migrations/024_custom_provider_headers.sql")),
+    (
+        24,
+        include_str!("migrations/024_custom_provider_headers.sql"),
+    ),
+    (25, include_str!("migrations/025_promote_opencode_go.sql")),
+    (26, include_str!("migrations/026_office_autonomy.sql")),
+    (27, include_str!("migrations/027_office_queue.sql")),
+    (28, include_str!("migrations/028_team_channels.sql")),
+    (
+        29,
+        include_str!("migrations/029_message_reactions.sql"),
+    ),
+    (
+        30,
+        include_str!("migrations/030_office_queue_reply.sql"),
+    ),
+    (
+        31,
+        include_str!("migrations/031_retire_placeholder_plugins.sql"),
+    ),
+    (
+        32,
+        include_str!("migrations/032_plugin_base_url.sql"),
+    ),
+    (
+        33,
+        include_str!("migrations/033_plugin_credential_hint.sql"),
+    ),
+    (
+        34,
+        include_str!("migrations/034_operation_body_format.sql"),
+    ),
+    (
+        35,
+        include_str!("migrations/035_operation_query_params.sql"),
+    ),
 ];
 
 /// Run all pending migrations
@@ -56,22 +109,23 @@ pub async fn run(pool: &SqlitePool) -> Result<(), super::DbError> {
         "CREATE TABLE IF NOT EXISTS _migrations (
             version INTEGER PRIMARY KEY,
             applied_at TEXT NOT NULL DEFAULT (datetime('now'))
-        )"
+        )",
     )
     .execute(pool)
     .await?;
 
     // Get current version
-    let current_version: i32 = sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _migrations")
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0);
+    let current_version: i32 =
+        sqlx::query_scalar("SELECT COALESCE(MAX(version), 0) FROM _migrations")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
 
     // Apply pending migrations
     for &(version, sql) in MIGRATIONS {
         if version > current_version {
             tracing::info!("Applying migration v{}", version);
-            
+
             // Split by semicolons and execute each statement
             for statement in sql.split(';') {
                 let statement = statement.trim();

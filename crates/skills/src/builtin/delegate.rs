@@ -131,12 +131,18 @@ mod tests {
     #[tokio::test]
     async fn it_refuses_rather_than_pretending_to_delegate() {
         let err = DelegateSkill::new()
-            .execute(&ctx(), json!({ "bot_id": Uuid::nil().to_string(), "instruction": "do it" }))
+            .execute(
+                &ctx(),
+                json!({ "bot_id": Uuid::nil().to_string(), "instruction": "do it" }),
+            )
             .await
             .expect_err("the stub must not report success");
 
         let text = err.to_string();
-        assert!(text.contains("was not delegated"), "unhelpful error: {text}");
+        assert!(
+            text.contains("was not delegated"),
+            "unhelpful error: {text}"
+        );
         assert!(text.contains("dispatch"), "does not name the cause: {text}");
     }
 

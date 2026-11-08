@@ -1,20 +1,34 @@
 //! System monitor — CPU, memory, disk, network, process info
 
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 
 pub struct SystemMonitorSkill;
 
-impl SystemMonitorSkill { pub fn new() -> Self { Self } }
+impl SystemMonitorSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for SystemMonitorSkill {
-    fn id(&self) -> &str { "system_monitor" }
-    fn name(&self) -> &str { "System Monitor" }
-    fn description(&self) -> &str { "Get system resource usage: CPU, memory, disk, network, and running processes" }
-    fn version(&self) -> &str { "1.0.0" }
-    fn required_permissions(&self) -> Vec<Permission> { vec![Permission::Shell] }
+    fn id(&self) -> &str {
+        "system_monitor"
+    }
+    fn name(&self) -> &str {
+        "System Monitor"
+    }
+    fn description(&self) -> &str {
+        "Get system resource usage: CPU, memory, disk, network, and running processes"
+    }
+    fn version(&self) -> &str {
+        "1.0.0"
+    }
+    fn required_permissions(&self) -> Vec<Permission> {
+        vec![Permission::Shell]
+    }
 
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -33,9 +47,17 @@ impl Skill for SystemMonitorSkill {
         })
     }
 
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        _ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let metric = args.get("metric").and_then(|v| v.as_str()).unwrap_or("all");
-        let process_count = args.get("process_count").and_then(|v| v.as_u64()).unwrap_or(10).min(50);
+        let process_count = args
+            .get("process_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(10)
+            .min(50);
 
         let mut results = serde_json::json!({});
 
@@ -138,7 +160,10 @@ impl SystemMonitorSkill {
         } else if cfg!(target_os = "macos") {
             format!("ps aux -m | head -n {}", count + 1)
         } else {
-            format!("wmic process get Name,ProcessId,WorkingSetSize /format:csv | sort /R | head -n {}", count + 1)
+            format!(
+                "wmic process get Name,ProcessId,WorkingSetSize /format:csv | sort /R | head -n {}",
+                count + 1
+            )
         };
 
         let output = run_command(&cmd).await?;
@@ -160,5 +185,7 @@ async fn run_command(cmd: &str) -> Result<String, SkillError> {
 }
 
 impl Default for SystemMonitorSkill {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

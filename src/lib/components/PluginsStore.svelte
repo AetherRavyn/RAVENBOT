@@ -2,14 +2,11 @@
   import { invoke } from "@tauri-apps/api/core";
   import { t, type TranslationKey } from "$lib/i18n";
   import * as Dialog from "$lib/components/ui/dialog";
-  import * as Card from "$lib/components/ui/card";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
-  import { Label } from "$lib/components/ui/label";
-  import { Badge } from "$lib/components/ui/badge";
-  import { Separator } from "$lib/components/ui/separator";
   import PluginLogo from "$lib/components/PluginLogo.svelte";
-  import { onMount } from "svelte";
+  import { notify } from "$lib/toast";
+  import { untrack } from "svelte";
   import {
     Plug,
     Search,
@@ -17,12 +14,11 @@
     Plus,
     Check,
     Globe,
-    ExternalLink,
-    Sliders,
-    Layers,
-    Sparkles,
-    Shield,
+    KeyRound,
+    ChevronDown,
+    AlertTriangle,
     CheckCircle2,
+    Trash2,
     X,
   } from "@lucide/svelte";
 
@@ -32,320 +28,1097 @@
     onClose: () => void;
   }
 
+  interface PluginSummary {
+    id: string;
+    name: string;
+    description: string;
+    logo: string;
+    enabled_global: boolean;
+    operations: number;
+    has_credential: boolean;
+    requires_auth: boolean;
+    source_url?: string | null;
+    base_url_override?: string | null;
+    credential_header_hint?: string | null;
+  }
+
+  interface PluginOperation {
+    id: string;
+    method: string;
+    path: string;
+    description: string;
+    input_schema: any;
+  }
+
+  interface PluginDetails {
+    summary: PluginSummary;
+    operations: PluginOperation[];
+    credential_header?: string | null;
+  }
+
+  interface CatalogEntry {
+    id: string;
+    name: string;
+    description: string;
+    spec_url: string;
+    category: string;
+    categories: string[];
+    provider: string;
+    logo: string;
+    version: string;
+    openapi_version: string;
+    requires_auth: boolean | null;
+    featured: boolean;
+    source: string;
+  }
+
+  interface CatalogCategory {
+    id: string;
+    label: string;
+    count: number;
+  }
+
+  interface CatalogPage {
+    entries: CatalogEntry[];
+    total: number;
+    catalog_total: number;
+    categories: CatalogCategory[];
+    source: string;
+    fetched_at: string;
+    stale: boolean;
+    warning?: string | null;
+    has_more: boolean;
+  }
+
+  interface SyncReport {
+    verified: number;
+    removed: number;
+    failed: { plugin_id: string; error: string }[];
+  }
+
   let { bot, open, onClose }: Props = $props();
 
-  let plugins = $state<[string, string, string, string][]>([]);
+  let plugins = $state<PluginSummary[]>([]);
+  let catalog = $state<CatalogEntry[]>([]);
+  let catalogQuery = $state("");
+  let catalogCategory = $state("all");
+  let catalogCategories = $state<CatalogCategory[]>([]);
+  let catalogTotal = $state(0);
+  let catalogGrandTotal = $state(0);
+  let catalogHasMore = $state(false);
+  let catalogLoading = $state(false);
+  let catalogRefreshing = $state(false);
+  let catalogError = $state<string | null>(null);
+  let catalogSource = $state("cache");
+  let catalogFetchedAt = $state("");
+  let catalogStale = $state(false);
+  let catalogWarning = $state<string | null>(null);
+  let catalogRequestId = 0;
+  let catalogTimer: ReturnType<typeof setTimeout> | null = null;
+  let catalogTouched = false;
+  let lastCatalogKey = "";
+  let installingCatalog = $state<string | null>(null);
   let botPlugins = $state<Set<string>>(new Set());
-  // Plugins enabled for every bot (P8 global scope, list_global_plugins).
   let globalPlugins = $state<Set<string>>(new Set());
   let query = $state("");
   let selectedCategory = $state("All");
   let customUrl = $state("");
   let importing = $state(false);
   let syncing = $state(false);
+  let expanded = $state<string | null>(null);
+  let details = $state<Record<string, PluginDetails>>({});
+  let loadingDetails = $state<string | null>(null);
+  let headerDraft = $state<Record<string, string>>({});
+  let tokenDraft = $state<Record<string, string>>({});
+  let baseUrlDraft = $state<Record<string, string>>({});
+  let savingKey = $state<string | null>(null);
+  let notice = $state<{ tone: "success" | "warning"; text: string } | null>(null);
 
   const categories = [
     { id: "All", labelKey: "store.catAll" },
-    { id: "productivity", labelKey: "store.catProductivity", matches: ["gmail", "calendar", "drive", "notion", "outlook"] },
-    { id: "dev", labelKey: "store.catDev", matches: ["github", "linear", "jira", "supabase", "aws", "context7"] },
+    { id: "productivity", labelKey: "store.catProductivity", matches: ["gmail", "calendar", "drive", "notion", "outlook", "mail"] },
+    { id: "dev", labelKey: "store.catDev", matches: ["github", "linear", "jira", "supabase", "aws", "context7", "gitlab", "bitbucket"] },
     { id: "chat", labelKey: "store.catChat", matches: ["slack", "discord", "telegram", "twitter", "youtube", "zoom"] },
     { id: "sales", labelKey: "store.catSales", matches: ["stripe", "hubspot", "salesforce", "trello", "asana"] },
-    { id: "custom", labelKey: "store.catCustom", matches: ["openapi", "custom"] },
+    { id: "custom", labelKey: "store.catCustom", matches: [] },
   ];
 
-  let filtered = $derived(
-    plugins.filter(([id, name, desc]) => {
+  function categoryMatches(plugin: PluginSummary, categoryId: string): boolean {
+    if (categoryId === "All") return true;
+    const category = categories.find((entry) => entry.id === categoryId);
+    if (!category) return true;
+    const haystack = `${plugin.id} ${plugin.name}`.toLowerCase();
+    if (category.id === "custom") {
+      const known = categories
+        .filter((entry) => entry.matches && entry.matches.length > 0)
+        .flatMap((entry) => entry.matches ?? []);
+      return !known.some((keyword) => haystack.includes(keyword));
+    }
+    return (category.matches ?? []).some((keyword) => haystack.includes(keyword));
+  }
+
+  const filtered = $derived(
+    plugins.filter((plugin) => {
+      const needle = query.trim().toLowerCase();
       const matchesQuery =
-        !query ||
-        id.toLowerCase().includes(query.toLowerCase()) ||
-        name.toLowerCase().includes(query.toLowerCase()) ||
-        desc.toLowerCase().includes(query.toLowerCase());
-
-      if (!matchesQuery) return false;
-
-      if (selectedCategory === "All") return true;
-
-      const catDef = categories.find((c) => c.id === selectedCategory);
-      if (!catDef || !catDef.matches) return true;
-
-      const lowerId = id.toLowerCase();
-      const lowerName = name.toLowerCase();
-      return catDef.matches.some((m) => lowerId.includes(m) || lowerName.includes(m));
-    })
+        !needle ||
+        plugin.id.toLowerCase().includes(needle) ||
+        plugin.name.toLowerCase().includes(needle) ||
+        plugin.description.toLowerCase().includes(needle);
+      return matchesQuery && categoryMatches(plugin, selectedCategory);
+    }),
   );
 
-  async function load() {
+  const totalOperations = $derived(
+    plugins.reduce((total, plugin) => total + plugin.operations, 0),
+  );
+  const installedSources = $derived(
+    new Set(
+      plugins
+        .map((plugin) => (plugin.source_url ?? "").replace(/\/$/, ""))
+        .filter(Boolean),
+    ),
+  );
+  const readyCount = $derived(
+    plugins.filter((plugin) => plugin.operations > 0 && (!plugin.requires_auth || plugin.has_credential)).length,
+  );
+
+  function statusFor(plugin: PluginSummary): {
+    label: string;
+    tone: "success" | "warning" | "muted";
+  } {
+    if (plugin.operations === 0) {
+      return { label: t("store.noOperations"), tone: "muted" };
+    }
+    if (plugin.requires_auth && !plugin.has_credential) {
+      return { label: t("store.needsKey"), tone: "warning" };
+    }
+    return { label: t("store.ready"), tone: "success" };
+  }
+
+  function sourceLabel(plugin: PluginSummary): string {
+    if (!plugin.source_url) return t("store.addedManually");
     try {
-      plugins = await invoke("list_plugins", { query: query || null });
-      globalPlugins = new Set(
-        (await invoke<[string, string, string, string][]>("list_global_plugins")).map((r) => r[0]),
-      );
-      if (bot?.id) {
-        botPlugins = new Set(await invoke("list_bot_plugins", { botId: bot.id }));
-      }
-    } catch (e) {
-      console.error("Failed to load plugins:", e);
+      return new URL(plugin.source_url).hostname.replace(/^www\./, "");
+    } catch {
+      return plugin.source_url;
     }
   }
 
-  async function toggleGlobal(id: string) {
-    const enabled = !globalPlugins.has(id);
+  function parameterCount(operation: PluginOperation): number {
+    const properties = operation.input_schema?.properties;
+    return properties && typeof properties === "object" ? Object.keys(properties).length : 0;
+  }
+
+  function catalogCategoryLabel(entry: CatalogEntry): string {
+    return (
+      catalogCategories.find((category) => category.id === entry.category)?.label ??
+      entry.category.replaceAll("_", " ")
+    );
+  }
+
+  function catalogAuthLabel(entry: CatalogEntry): string {
+    if (entry.requires_auth === true) return t("store.keyRequired");
+    if (entry.requires_auth === false) return t("store.publicTool");
+    return t("store.catalogAuthOnInstall");
+  }
+
+  function credentialHeaderFor(loaded: PluginDetails): string {
+    return (
+      loaded.credential_header ||
+      loaded.summary.credential_header_hint ||
+      "Authorization"
+    );
+  }
+
+  function catalogUpdatedLabel(): string {
+    if (!catalogFetchedAt) return "";
+    const date = new Date(catalogFetchedAt);
+    if (Number.isNaN(date.getTime())) return "";
+    return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+
+  function catalogKey(): string {
+    return `${catalogQuery.trim().toLowerCase()}|${catalogCategory}`;
+  }
+
+  async function loadCatalog(refresh = false, append = false) {
+    const key = catalogKey();
+    if (!append && !refresh && key === lastCatalogKey && catalog.length > 0) {
+      return;
+    }
+    const requestId = ++catalogRequestId;
+    catalogLoading = true;
+    catalogRefreshing = refresh;
+    if (!append) {
+      catalogError = null;
+      catalogWarning = null;
+    }
     try {
-      await invoke("toggle_plugin_global", { pluginId: id, enabled });
-      if (enabled) globalPlugins.add(id);
-      else globalPlugins.delete(id);
-      globalPlugins = new Set(globalPlugins);
+      const page = await invoke<CatalogPage>("search_plugin_catalog", {
+        query: catalogQuery.trim() || null,
+        category: catalogCategory === "all" ? null : catalogCategory,
+        limit: 48,
+        offset: append ? catalog.length : 0,
+        refresh,
+      });
+      if (requestId !== catalogRequestId) return;
+      catalog = append ? [...catalog, ...page.entries] : page.entries;
+      catalogCategories = page.categories;
+      catalogTotal = page.total;
+      catalogGrandTotal = page.catalog_total;
+      catalogHasMore = page.has_more;
+      catalogSource = page.source;
+      catalogFetchedAt = page.fetched_at;
+      catalogStale = page.stale;
+      catalogWarning = page.warning ?? null;
+      lastCatalogKey = key;
+    } catch (error) {
+      if (requestId !== catalogRequestId) return;
+      catalogError = String(error);
+      if (!append) {
+        catalog = [];
+        catalogTotal = 0;
+        catalogHasMore = false;
+      }
+    } finally {
+      if (requestId === catalogRequestId) {
+        catalogLoading = false;
+        catalogRefreshing = false;
+      }
+    }
+  }
+
+  async function load() {
+    try {
+      plugins = await invoke<PluginSummary[]>("list_plugins", { query: null });
+      globalPlugins = new Set(
+        (await invoke<[string, string, string, string][]>("list_global_plugins")).map((row) => row[0]),
+      );
+      if (bot?.id) {
+        botPlugins = new Set(await invoke<string[]>("list_bot_plugins", { botId: bot.id }));
+      }
     } catch (e) {
-      console.error("Global toggle error:", e);
+      notify(`Could not load plugins: ${String(e)}`, "error");
     }
   }
 
   async function sync() {
     syncing = true;
+    notice = null;
     try {
-      await invoke("sync_plugins");
+      const report = await invoke<SyncReport>("sync_plugins");
       await load();
+      const parts = [
+        t("store.syncVerified", { n: report.verified }),
+        report.removed > 0 ? t("store.syncRemoved", { n: report.removed }) : "",
+        report.failed.length > 0 ? t("store.syncFailed", { n: report.failed.length }) : "",
+      ].filter(Boolean);
+      notice = {
+        tone: report.failed.length > 0 ? "warning" : "success",
+        text: parts.join(" · "),
+      };
     } catch (e) {
-      console.error("Sync error:", e);
+      notify(`Verification failed: ${String(e)}`, "error");
     } finally {
       syncing = false;
     }
   }
 
-  async function toggle(id: string) {
-    if (!bot?.id) return;
-    const enabled = !botPlugins.has(id);
-    try {
-      await invoke("toggle_bot_plugin", { botId: bot.id, pluginId: id, enabled });
-      if (enabled) botPlugins.add(id);
-      else botPlugins.delete(id);
-      botPlugins = new Set(botPlugins);
-    } catch (e) {
-      console.error("Toggle error:", e);
-    }
-  }
-
-  async function importOpenApi() {
-    if (!customUrl.trim()) return;
+  async function importPlugin() {
+    const url = customUrl.trim();
+    if (!url) return;
     importing = true;
+    notice = null;
     try {
-      await invoke("import_openapi_plugin", { manifestUrl: customUrl.trim() });
+      const imported = await invoke<PluginDetails>("import_openapi_plugin", {
+        manifestUrl: url,
+      });
       customUrl = "";
       await load();
+      expanded = imported.summary.id;
+      details = { ...details, [imported.summary.id]: imported };
+      headerDraft[imported.summary.id] = credentialHeaderFor(imported);
+      tokenDraft[imported.summary.id] = "";
+      baseUrlDraft[imported.summary.id] =
+        imported.summary.base_url_override || "";
+      notice = {
+        tone: "success",
+        text: t("store.imported", {
+          name: imported.summary.name,
+          n: imported.operations.length,
+        }),
+      };
     } catch (e) {
-      alert(t("store.importFailed") + String(e));
+      notify(`${t("store.importFailed")}${String(e)}`, "error");
     } finally {
       importing = false;
     }
   }
 
+  async function installCatalog(entry: CatalogEntry) {
+    if (installingCatalog) return;
+    installingCatalog = entry.id;
+    notice = null;
+    try {
+      const imported = await invoke<PluginDetails>("install_catalog_plugin", {
+        catalogId: entry.id,
+        specUrl: entry.spec_url,
+      });
+      await load();
+      expanded = imported.summary.id;
+      details = { ...details, [imported.summary.id]: imported };
+      headerDraft[imported.summary.id] = credentialHeaderFor(imported);
+      tokenDraft[imported.summary.id] = "";
+      baseUrlDraft[imported.summary.id] =
+        imported.summary.base_url_override || "";
+      notice = {
+        tone: "success",
+        text: t("store.imported", {
+          name: imported.summary.name,
+          n: imported.operations.length,
+        }),
+      };
+    } catch (e) {
+      notify(`${t("store.importFailed")}${String(e)}`, "error");
+    } finally {
+      installingCatalog = null;
+    }
+  }
+
+  async function toggleGlobal(plugin: PluginSummary) {
+    const enabled = !globalPlugins.has(plugin.id);
+    try {
+      await invoke("toggle_plugin_global", { pluginId: plugin.id, enabled });
+      const next = new Set(globalPlugins);
+      if (enabled) next.add(plugin.id);
+      else next.delete(plugin.id);
+      globalPlugins = next;
+      plugins = plugins.map((entry) =>
+        entry.id === plugin.id ? { ...entry, enabled_global: enabled } : entry,
+      );
+    } catch (e) {
+      notify(`Could not update global scope: ${String(e)}`, "error");
+    }
+  }
+
+  async function toggle(plugin: PluginSummary) {
+    if (!bot?.id) return;
+    if (plugin.operations === 0) {
+      notify(t("store.importFirst"), "error");
+      return;
+    }
+    const enabled = !botPlugins.has(plugin.id);
+    try {
+      await invoke("toggle_bot_plugin", {
+        botId: bot.id,
+        pluginId: plugin.id,
+        enabled,
+      });
+      const next = new Set(botPlugins);
+      if (enabled) next.add(plugin.id);
+      else next.delete(plugin.id);
+      botPlugins = next;
+    } catch (e) {
+      notify(`Could not update this agent: ${String(e)}`, "error");
+    }
+  }
+
+  async function toggleDetails(plugin: PluginSummary) {
+    if (expanded === plugin.id) {
+      expanded = null;
+      return;
+    }
+    expanded = plugin.id;
+    if (!details[plugin.id]) {
+      loadingDetails = plugin.id;
+      try {
+        const loaded = await invoke<PluginDetails>("get_plugin_details", {
+          pluginId: plugin.id,
+        });
+        details = { ...details, [plugin.id]: loaded };
+        headerDraft[plugin.id] = credentialHeaderFor(loaded);
+        tokenDraft[plugin.id] = "";
+        baseUrlDraft[plugin.id] = loaded.summary.base_url_override || "";
+      } catch (e) {
+        notify(`Could not load details: ${String(e)}`, "error");
+      } finally {
+        loadingDetails = null;
+      }
+    } else {
+      headerDraft[plugin.id] = credentialHeaderFor(details[plugin.id]);
+      tokenDraft[plugin.id] = "";
+      baseUrlDraft[plugin.id] =
+        details[plugin.id].summary.base_url_override || "";
+    }
+  }
+
+  async function saveBaseUrl(plugin: PluginSummary) {
+    try {
+      const updated = await invoke<PluginDetails>("set_plugin_base_url", {
+        pluginId: plugin.id,
+        baseUrl: (baseUrlDraft[plugin.id] ?? "").trim() || null,
+      });
+      details = { ...details, [plugin.id]: updated };
+      baseUrlDraft[plugin.id] = updated.summary.base_url_override || "";
+      await load();
+      notice = { tone: "success", text: t("store.serverSaved") };
+    } catch (e) {
+      notify(`Could not save the server URL: ${String(e)}`, "error");
+    }
+  }
+
+  async function saveKey(plugin: PluginSummary) {
+    const value = (tokenDraft[plugin.id] ?? "").trim();
+    if (!value || savingKey) return;
+    savingKey = plugin.id;
+    try {
+      const updated = await invoke<PluginDetails>("set_plugin_credential", {
+        pluginId: plugin.id,
+        headerName: headerDraft[plugin.id] || "Authorization",
+        headerValue: value,
+      });
+      details = { ...details, [plugin.id]: updated };
+      tokenDraft[plugin.id] = "";
+      await load();
+      notice = { tone: "success", text: t("store.credentialSaved") };
+    } catch (e) {
+      notify(`Could not save the key: ${String(e)}`, "error");
+    } finally {
+      savingKey = null;
+    }
+  }
+
+  async function clearKey(plugin: PluginSummary) {
+    try {
+      const updated = await invoke<PluginDetails>("clear_plugin_credential", {
+        pluginId: plugin.id,
+      });
+      details = { ...details, [plugin.id]: updated };
+      await load();
+    } catch (e) {
+      notify(`Could not remove the key: ${String(e)}`, "error");
+    }
+  }
+
+  function onKeySubmit(event: SubmitEvent, plugin: PluginSummary) {
+    event.preventDefault();
+    void saveKey(plugin);
+  }
+
   $effect(() => {
-    if (open && bot) load();
+    if (open && bot) void load();
+  });
+  $effect(() => {
+    if (!open) return;
+    // Read both filters so changing either schedules a new search.
+    const queryKey = catalogQuery;
+    const categoryKey = catalogCategory;
+    const key = `${queryKey}|${categoryKey}`;
+    void key;
+    if (!catalogTouched) {
+      catalogTouched = true;
+      // The loader reads catalog state synchronously; keep those reads out
+      // of this effect's dependency set so a result cannot re-trigger it.
+      untrack(() => {
+        void loadCatalog();
+      });
+      return;
+    }
+    if (catalogTimer) clearTimeout(catalogTimer);
+    catalogTimer = setTimeout(() => {
+      catalogTimer = null;
+      untrack(() => {
+        void loadCatalog();
+      });
+    }, 240);
+    return () => {
+      if (catalogTimer) {
+        clearTimeout(catalogTimer);
+        catalogTimer = null;
+      }
+    };
+  });
+  $effect(() => {
+    if (!open) {
+      expanded = null;
+      notice = null;
+      query = "";
+      selectedCategory = "All";
+      customUrl = "";
+      catalogQuery = "";
+      catalogCategory = "all";
+      catalogError = null;
+      catalogStale = false;
+      catalogRequestId += 1;
+      catalogLoading = false;
+      catalogRefreshing = false;
+      catalogTouched = false;
+      lastCatalogKey = "";
+    }
   });
 </script>
 
-<Dialog.Root {open} onOpenChange={(o) => !o && onClose()}>
-  <Dialog.Content showCloseButton={false} class="sm:max-w-4xl max-h-[88vh] flex flex-col bg-[var(--surface-1)] border border-[var(--brand)]/30  rounded-xl p-0 overflow-hidden text-[var(--text-primary)]">
-    <!-- Fixed Dialog Header -->
-    <div class="px-6 pt-5 pb-3.5 border-b border-[var(--hairline)] shrink-0">
-      <div class="flex items-center justify-between">
-        <div class="flex items-center gap-3">
-          <div class="size-10 rounded-2xl bg-[var(--brand-soft)] border border-[var(--brand)]/50 flex items-center justify-center text-[var(--brand-text)] shadow-md">
-            <Plug class="size-5" />
-          </div>
-          <div>
-            <Dialog.Title class="text-base font-bold flex items-center gap-2 text-[var(--text-primary)]">
-              {t("store.title", { name: bot?.name ?? "" })}
-            </Dialog.Title>
-            <Dialog.Description class="text-xs text-[var(--text-tertiary)] mt-0.5">
-              {t("store.desc", { name: bot?.name ?? "" })}
-            </Dialog.Description>
-          </div>
+<Dialog.Root {open} onOpenChange={(value) => !value && onClose()}>
+  <Dialog.Content showCloseButton={false} class="plugin-modal">
+    <header class="plugin-modal__header">
+      <div class="plugin-modal__identity">
+        <span class="plugin-modal__mark" aria-hidden="true">
+          <Plug class="size-5" strokeWidth={1.8} />
+        </span>
+        <div class="plugin-modal__heading">
+          <Dialog.Title class="plugin-modal__title">
+            {t("store.title", { name: bot?.name ?? "" })}
+          </Dialog.Title>
+          <Dialog.Description class="plugin-modal__subtitle">
+            {t("store.desc", { name: bot?.name ?? "" })}
+          </Dialog.Description>
         </div>
+      </div>
 
+      <div class="plugin-modal__header-actions">
         <Button
           size="sm"
           variant="outline"
-          class="h-8 gap-1.5 text-xs bg-[var(--surface-3)] border-[var(--brand)]/30 text-[var(--brand-text)] hover:bg-[var(--brand-soft)] hover:text-[var(--text-primary)] cursor-pointer"
-          onclick={sync}
+          class="plugin-button plugin-button--quiet"
+          onclick={() => void sync()}
           disabled={syncing}
+          title={t("store.verifyHint")}
         >
           <RefreshCw class="size-3.5 {syncing ? 'animate-spin' : ''}" />
-          {syncing ? t("store.syncing") : t("store.sync")}
+          {syncing ? t("store.syncing") : t("store.verify")}
         </Button>
-
         <button
           type="button"
-          aria-label="Close"
+          class="plugin-modal__close"
+          aria-label={t("ui.close")}
           onclick={onClose}
-          class="absolute top-2 right-2 size-8 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors cursor-pointer z-10"
         >
           <X class="size-4" />
         </button>
       </div>
+    </header>
 
-      <div class="mt-3 p-2.5 rounded-xl border bg-success/20 border-success/30 flex items-center gap-2 text-xs">
-        <span class="size-2 rounded-full bg-success animate-pulse"></span>
-        <span class="text-[var(--text-secondary)]"><span class="font-medium text-[var(--text-primary)]">{t("store.inapp1")}</span>{t("store.inapp2")}<code class="px-1 py-0.5 rounded bg-black/30 font-mono text-[11px]">plugin_search</code>{t("store.inapp3")}</span>
-      </div>
-
-      <!-- Search & Import Controls -->
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
-        <!-- Search Bar -->
-        <div class="relative">
-          <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none" />
-          <Input
-            bind:value={query}
-            aria-label={t("store.searchPh")}
-            placeholder={t("store.searchPh")}
-            class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] pl-9 text-[var(--text-secondary)] placeholder:text-[var(--text-muted)]"
-          />
-        </div>
-
-        <!-- Custom OpenAPI URL Import -->
-        <div class="flex gap-1.5">
-          <Input
-            bind:value={customUrl}
-            aria-label={t("store.urlPh")}
-            placeholder={t("store.urlPh")}
-            class="h-9 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] placeholder:text-[var(--text-muted)] flex-1"
-          />
-          <Button
-            size="sm"
-            class="h-9 gap-1.5 text-xs bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] shrink-0 cursor-pointer"
-            onclick={importOpenApi}
-            disabled={importing || !customUrl.trim()}
-          >
-            <Plus class="size-3.5" />
-            {importing ? t("store.adding") : t("store.addSpec")}
-          </Button>
-        </div>
-      </div>
-
-      <!-- Category Filter Chips -->
-      <div class="flex items-center gap-1.5 overflow-x-auto pt-3 pb-1 no-scrollbar">
-        {#each categories as cat}
-          {@const isSelected = selectedCategory === cat.id}
-          <button
-            type="button"
-            class="px-3 py-1 rounded-xl text-xs font-medium transition-all shrink-0 cursor-pointer {isSelected
-              ? 'bg-[var(--brand)] text-[var(--text-on-light)] shadow-sm'
-              : 'bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)]'}"
-            onclick={() => (selectedCategory = cat.id)}
-            aria-pressed={isSelected}
-          >
-            {t(cat.labelKey as TranslationKey)}
-          </button>
-        {/each}
-      </div>
+    <div class="plugin-statusbar" role="status">
+      <span class="plugin-statusbar__dot" data-tone={readyCount > 0 ? "success" : "muted"} aria-hidden="true"></span>
+      <span class="plugin-statusbar__item"><strong>{plugins.length}</strong> {t("store.apps")}</span>
+      <span class="plugin-statusbar__divider">·</span>
+      <span class="plugin-statusbar__item"><strong>{totalOperations}</strong> {t("store.operations")}</span>
+      <span class="plugin-statusbar__divider">·</span>
+      <span class="plugin-statusbar__item"><strong>{readyCount}</strong> {t("store.ready")}</span>
+      <span class="plugin-statusbar__divider">·</span>
+      <span class="plugin-statusbar__item"><strong>{botPlugins.size}</strong> {t("store.equipped")}</span>
     </div>
 
-    <!-- Scrollable Plugin Cards Grid (Fixed height prevents modal overflow) -->
-    <div class="flex-1 overflow-y-auto px-6 py-4">
-      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {#each filtered as [id, name, desc, logo] (id)}
-          {@const isEnabled = botPlugins.has(id)}
-          {@const isGlobal = globalPlugins.has(id)}
-          <div
-            class="p-3.5 rounded-2xl border transition-all flex flex-col justify-between group {isEnabled
-              ? 'border-[var(--brand)]/80 bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/40'
-              : 'border-[var(--hairline)] bg-[var(--surface-1)]/80 hover:border-[var(--brand)]/40 hover:bg-[var(--surface-2)]'}"
-          >
-            <div>
-              <div class="flex items-start justify-between gap-3">
-                <!-- Authentic Official Vector Brand Logo -->
-                <PluginLogo {id} {name} logoUrl={logo} size="md" />
+    <div class="plugin-toolbar">
+      <label class="plugin-search">
+        <Search class="size-3.5" strokeWidth={1.8} aria-hidden="true" />
+        <input
+          bind:value={query}
+          type="search"
+          aria-label={t("store.searchPh")}
+          placeholder={t("store.searchPh")}
+        />
+      </label>
 
-                <!-- Status Badge -->
-                <div class="flex items-center gap-1">
-                  {#if isEnabled}
-                    <span class="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/50 flex items-center gap-1">
-                      <CheckCircle2 class="size-3 text-[var(--brand-text)]" />
-                      {t("store.active")}
-                    </span>
-                  {:else}
-                    <span class="text-[11px] font-mono px-2 py-0.5 rounded-full bg-[var(--surface-2)] text-[var(--text-tertiary)] border border-[var(--hairline)]">
-                      {t("store.available")}
-                    </span>
-                  {/if}
+      <form
+        class="plugin-import"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void importPlugin();
+        }}
+      >
+        <input
+          bind:value={customUrl}
+          type="url"
+          aria-label={t("store.urlPh")}
+          placeholder={t("store.urlPh")}
+        />
+        <Button
+          type="submit"
+          size="sm"
+          class="plugin-button plugin-button--primary"
+          disabled={importing || !customUrl.trim()}
+        >
+          {#if importing}
+            <RefreshCw class="size-3.5 animate-spin" />
+            {t("store.adding")}
+          {:else}
+            <Plus class="size-3.5" />
+            {t("store.addSpec")}
+          {/if}
+        </Button>
+      </form>
+    </div>
+
+    <div class="plugin-categories" role="group" aria-label={t("store.categoryLabel")}>
+      {#each categories as category (category.id)}
+        <button
+          type="button"
+          class="plugin-category"
+          data-active={selectedCategory === category.id ? "true" : undefined}
+          aria-pressed={selectedCategory === category.id}
+          onclick={() => (selectedCategory = category.id)}
+        >
+          {t(category.labelKey as TranslationKey)}
+        </button>
+      {/each}
+    </div>
+
+    {#if notice}
+      <div class="plugin-notice" data-tone={notice.tone} role="status">
+        {#if notice.tone === "success"}
+          <CheckCircle2 class="size-3.5" strokeWidth={2} />
+        {:else}
+          <AlertTriangle class="size-3.5" strokeWidth={2} />
+        {/if}
+        <span>{notice.text}</span>
+        <button type="button" class="plugin-notice__close" onclick={() => (notice = null)} aria-label={t("ui.dismiss")}>
+          <X class="size-3" />
+        </button>
+      </div>
+    {/if}
+
+    <div class="plugin-scroll">
+      <div class="plugin-installed-heading">
+        <h3>{t("store.installedTitle")}</h3>
+        <span class="plugin-installed-heading__count">{filtered.length}</span>
+      </div>
+
+      {#if filtered.length === 0}
+        <div class="plugin-empty">
+          <span class="plugin-empty__mark" aria-hidden="true"><Plug class="size-5" strokeWidth={1.7} /></span>
+          <h3>{plugins.length === 0 ? t("store.emptyTitle") : t("store.noMatch")}</h3>
+          <p>{plugins.length === 0 ? t("store.emptyDesc") : t("store.noMatchHint")}</p>
+        </div>
+      {:else}
+        <div class="plugin-grid">
+          {#each filtered as plugin (plugin.id)}
+            {@const status = statusFor(plugin)}
+            {@const isEnabled = botPlugins.has(plugin.id)}
+            {@const isGlobal = globalPlugins.has(plugin.id)}
+            {@const isExpanded = expanded === plugin.id}
+            <article class="plugin-card" data-enabled={isEnabled ? "true" : undefined} data-expanded={isExpanded ? "true" : undefined}>
+              <div class="plugin-card__head">
+                <PluginLogo id={plugin.id} name={plugin.name} logoUrl={plugin.logo} size="md" />
+                <div class="plugin-card__identity">
+                  <h4 class="plugin-card__name">{plugin.name}</h4>
+                  <span class="plugin-card__id">{plugin.id}</span>
+                </div>
+                <span class="plugin-chip" data-tone={status.tone}>{status.label}</span>
+              </div>
+
+              <p class="plugin-card__description">
+                {plugin.description || t("store.noDesc")}
+              </p>
+
+              <div class="plugin-card__meta">
+                <span class="plugin-card__meta-item">
+                  <Plug class="size-3" strokeWidth={1.8} />
+                  {t("store.operationCount", { n: plugin.operations })}
+                </span>
+                <span class="plugin-card__meta-item" title={plugin.source_url ?? ""}>
+                  {sourceLabel(plugin)}
+                </span>
+                {#if plugin.requires_auth}
+                  <span class="plugin-card__meta-item" data-tone={plugin.has_credential ? "success" : "warning"}>
+                    <KeyRound class="size-3" strokeWidth={1.8} />
+                    {plugin.has_credential ? t("store.keyConfigured") : t("store.keyRequired")}
+                  </span>
+                {/if}
+              </div>
+
+              <div class="plugin-card__actions">
+                <button
+                  type="button"
+                  class="plugin-details-toggle"
+                  aria-expanded={isExpanded}
+                  onclick={() => void toggleDetails(plugin)}
+                >
+                  <ChevronDown class="size-3.5 {isExpanded ? 'rotate-180' : ''}" strokeWidth={1.9} />
+                  {isExpanded ? t("store.hideDetails") : t("store.details")}
+                </button>
+
+                <div class="plugin-card__controls">
+                  <button
+                    type="button"
+                    class="plugin-scope"
+                    aria-pressed={isGlobal}
+                    title={t("store.globalHint")}
+                    onclick={() => void toggleGlobal(plugin)}
+                  >
+                    <Globe class="size-3" strokeWidth={1.8} />
+                    {isGlobal ? t("store.globalOn") : t("store.global")}
+                  </button>
+
+                  <Button
+                    size="sm"
+                    variant={isEnabled ? "default" : "outline"}
+                    class="plugin-button plugin-button--enable"
+                    data-enabled={isEnabled ? "true" : undefined}
+                    aria-pressed={isEnabled}
+                    disabled={plugin.operations === 0}
+                    onclick={() => void toggle(plugin)}
+                  >
+                    {#if isEnabled}
+                      <Check class="size-3" strokeWidth={2.2} />
+                      {t("store.enabled")}
+                    {:else}
+                      <Plus class="size-3" strokeWidth={2.2} />
+                      {t("store.enable")}
+                    {/if}
+                  </Button>
                 </div>
               </div>
 
-              <!-- Tool Title & ID -->
-              <div class="mt-2.5">
-                <h4 class="font-bold text-xs text-[var(--text-primary)] truncate">{name}</h4>
-                <span class="font-mono text-[11px] text-[var(--brand-text)]/80 block truncate">{id}</span>
-                <p class="text-xs text-[var(--text-tertiary)] line-clamp-2 mt-1 leading-relaxed">
-                  {desc || t("store.noDesc")}
-                </p>
-              </div>
-            </div>
+              {#if isExpanded}
+                <div class="plugin-details">
+                  {#if loadingDetails === plugin.id}
+                    <div class="plugin-details__loading">
+                      <RefreshCw class="size-3.5 animate-spin" />
+                      {t("store.loadingDetails")}
+                    </div>
+                  {:else if details[plugin.id]}
+                    {@const loaded = details[plugin.id]}
+                    <section class="plugin-section">
+                      <div class="plugin-section__heading">
+                        <span>{t("store.operationList")}</span>
+                        <span class="plugin-section__count">{loaded.operations.length}</span>
+                      </div>
+                      <div class="plugin-operations">
+                        {#each loaded.operations.slice(0, 24) as operation (operation.id)}
+                          <div class="plugin-operation">
+                            <span class="plugin-method" data-method={operation.method}>{operation.method}</span>
+                            <span class="plugin-operation__name" title={operation.id}>{operation.id}</span>
+                            <span class="plugin-operation__path" title={operation.path}>{operation.path}</span>
+                            <span class="plugin-operation__params">
+                              {t("store.paramCount", { n: parameterCount(operation) })}
+                            </span>
+                          </div>
+                        {/each}
+                      </div>
+                      {#if loaded.operations.length > 24}
+                        <p class="plugin-section__more">
+                          {t("store.moreOperations", { n: loaded.operations.length - 24 })}
+                        </p>
+                      {/if}
+                    </section>
 
-            <!-- Card Bottom Row: Scope, Global toggle, Enable Button -->
-            <div class="flex items-center justify-between pt-3 mt-3 border-t border-[var(--hairline)] gap-2">
-              <span class="text-[11px] text-[var(--text-muted)] font-mono flex items-center gap-1 min-w-0">
-                <Shield class="size-3 text-[var(--text-tertiary)] shrink-0" />
-                {t("store.inappTool")}
-                {#if isEnabled}
-                  <span class="text-[11px] text-success">{t("store.ready")}</span>
-                {/if}
-              </span>
+                    <section class="plugin-section">
+                      <div class="plugin-section__heading">
+                        <span>{t("store.serverUrl")}</span>
+                        {#if loaded.summary.base_url_override}
+                          <span class="plugin-chip" data-tone="success">{t("store.serverOverridden")}</span>
+                        {/if}
+                      </div>
+                      <form
+                        class="plugin-credential"
+                        onsubmit={(event) => {
+                          event.preventDefault();
+                          void saveBaseUrl(plugin);
+                        }}
+                      >
+                        <label class="plugin-field plugin-field--grow">
+                          <span>{t("store.serverUrl")}</span>
+                          <Input
+                            bind:value={baseUrlDraft[plugin.id]}
+                            placeholder={t("store.serverUrlPlaceholder")}
+                            autocomplete="off"
+                          />
+                        </label>
+                        <Button
+                          type="submit"
+                          size="sm"
+                          class="plugin-button plugin-button--quiet plugin-credential__save"
+                          disabled={(baseUrlDraft[plugin.id] ?? "") === (loaded.summary.base_url_override ?? "")}
+                        >
+                          {t("store.saveServer")}
+                        </Button>
+                      </form>
+                      <p class="plugin-hint">{t("store.serverHint")}</p>
+                    </section>
 
-              <div class="flex items-center gap-1.5 shrink-0">
-                <button
-                  type="button"
-                  onclick={() => toggleGlobal(id)}
-                  aria-pressed={isGlobal}
-                  title={t("store.globalHint")}
-                  class="h-7 px-2 rounded-lg text-[11px] font-mono flex items-center gap-1 transition-all cursor-pointer {isGlobal
-                    ? 'bg-success/15 text-success border border-success/40'
-                    : 'bg-[var(--surface-2)] text-[var(--text-muted)] border border-[var(--hairline)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                >
-                  <Globe class="size-3" />
-                  {isGlobal ? t("store.globalOn") : t("store.global")}
-                </button>
+                    <section class="plugin-section">
+                      <div class="plugin-section__heading">
+                        <span>{t("store.authentication")}</span>
+                        {#if loaded.summary.has_credential}
+                          <span class="plugin-chip" data-tone="success">
+                            <CheckCircle2 class="size-3" strokeWidth={2} />
+                            {t("store.keyConfigured")}
+                          </span>
+                        {:else if loaded.summary.requires_auth}
+                          <span class="plugin-chip" data-tone="warning">{t("store.keyRequired")}</span>
+                        {:else}
+                          <span class="plugin-chip" data-tone="muted">{t("store.authNotDeclared")}</span>
+                        {/if}
+                      </div>
 
-                <Button
-                  size="sm"
-                  variant={isEnabled ? "default" : "outline"}
-                  aria-pressed={isEnabled}
-                  class="h-7 text-xs font-medium px-3 gap-1 cursor-pointer transition-all {isEnabled
-                    ? 'bg-[var(--brand)] text-[var(--text-on-light)] shadow-sm hover:bg-[var(--brand-hover)]'
-                    : 'bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--hairline)] hover:text-[var(--text-primary)]'}"
-                  onclick={() => toggle(id)}
-                >
-                  {#if isEnabled}
-                    <Check class="size-3" />
-                    {t("store.enabled")}
-                  {:else}
-                    <Plus class="size-3" />
-                    {t("store.enable")}
+                      {#if loaded.summary.credential_header_hint}
+                        <p class="plugin-hint plugin-hint--auth">
+                          {t("store.authHeaderHint", {
+                            header: loaded.summary.credential_header_hint,
+                          })}
+                        </p>
+                      {/if}
+                      {#if !loaded.summary.requires_auth && !loaded.summary.has_credential}
+                        <p class="plugin-hint">{t("store.authNotDeclaredHint")}</p>
+                      {/if}
+
+                      <form class="plugin-credential" onsubmit={(event) => onKeySubmit(event, plugin)}>
+                        <label class="plugin-field">
+                          <span>{t("store.headerName")}</span>
+                          <Input
+                            bind:value={headerDraft[plugin.id]}
+                            placeholder="Authorization"
+                            autocomplete="off"
+                          />
+                        </label>
+                        <label class="plugin-field plugin-field--grow">
+                          <span>{t("store.token")}</span>
+                          <Input
+                            bind:value={tokenDraft[plugin.id]}
+                            type="password"
+                            placeholder={t("store.tokenPlaceholder")}
+                            autocomplete="new-password"
+                          />
+                        </label>
+                        <Button
+                          type="submit"
+                          size="sm"
+                          class="plugin-button plugin-button--primary plugin-credential__save"
+                          disabled={savingKey === plugin.id || !(tokenDraft[plugin.id] ?? "").trim()}
+                        >
+                          {savingKey === plugin.id ? t("store.savingKey") : t("store.saveKey")}
+                        </Button>
+                        {#if loaded.summary.has_credential}
+                          <button
+                            type="button"
+                            class="plugin-credential__remove"
+                            onclick={() => void clearKey(plugin)}
+                          >
+                            <Trash2 class="size-3" strokeWidth={1.8} />
+                            {t("store.removeKey")}
+                          </button>
+                        {/if}
+                      </form>
+                      <p class="plugin-hint">
+                        {t("store.credentialHint", { host: sourceLabel(plugin) })}
+                      </p>
+                    </section>
                   {/if}
-                </Button>
-              </div>
+                </div>
+              {/if}
+            </article>
+          {/each}
+        </div>
+      {/if}
+
+      <section class="plugin-catalog" aria-label={t("store.catalogTitle")}>
+        <div class="plugin-catalog__heading">
+          <div class="plugin-catalog__intro">
+            <div class="plugin-catalog__title-row">
+              <h3>{t("store.catalogTitle")}</h3>
+              <span class="plugin-catalog__count" title={t("store.catalogTotalHint")}>
+                {catalogGrandTotal > 0 ? catalogGrandTotal.toLocaleString() : "…"}
+              </span>
             </div>
+            <p>{t("store.catalogDesc")}</p>
+          </div>
+          <div class="plugin-catalog__source">
+            <span
+              class="plugin-catalog__source-dot"
+              data-live={catalogSource === "live" ? "true" : undefined}
+              aria-hidden="true"
+            ></span>
+            <span>{catalogSource === "live" ? t("store.catalogLive") : t("store.catalogCached")}</span>
+            {#if catalogUpdatedLabel()}
+              <span class="plugin-catalog__source-date">· {catalogUpdatedLabel()}</span>
+            {/if}
+            <button
+              type="button"
+              class="plugin-catalog__refresh"
+              aria-label={t("store.catalogRefresh")}
+              title={t("store.catalogRefresh")}
+              disabled={catalogRefreshing}
+              onclick={() => void loadCatalog(true)}
+            >
+              <RefreshCw class="size-3 {catalogRefreshing ? 'animate-spin' : ''}" strokeWidth={1.9} />
+            </button>
+          </div>
+        </div>
+
+        <div class="plugin-catalog__toolbar">
+          <label class="plugin-search plugin-search--catalog">
+            <Search class="size-3.5" strokeWidth={1.8} aria-hidden="true" />
+            <input
+              bind:value={catalogQuery}
+              type="search"
+              aria-label={t("store.catalogSearchPh")}
+              placeholder={t("store.catalogSearchPh")}
+            />
+            {#if catalogQuery}
+              <button
+                type="button"
+                class="plugin-search__clear"
+                aria-label={t("store.catalogClear")}
+                onclick={() => (catalogQuery = "")}
+              >
+                <X class="size-3" />
+              </button>
+            {/if}
+          </label>
+
+          <label class="plugin-catalog__select">
+            <span class="sr-only">{t("store.catalogCategory")}</span>
+            <select bind:value={catalogCategory} aria-label={t("store.catalogCategory")}>
+              <option value="all">{t("store.catalogAllCategories")}</option>
+              {#each catalogCategories as category (category.id)}
+                <option value={category.id}>{category.label} ({category.count.toLocaleString()})</option>
+              {/each}
+            </select>
+            <ChevronDown class="size-3" strokeWidth={1.9} aria-hidden="true" />
+          </label>
+        </div>
+
+        {#if catalogWarning || catalogStale}
+          <div class="plugin-notice plugin-notice--compact" data-tone="warning" title={catalogWarning ?? ""}>
+            <AlertTriangle class="size-3.5" strokeWidth={2} />
+            <span>{t("store.catalogStaleWarning")}</span>
+          </div>
+        {/if}
+
+        {#if catalogError}
+          <div class="plugin-notice plugin-notice--compact" data-tone="error">
+            <AlertTriangle class="size-3.5" strokeWidth={2} />
+            <span>{t("store.catalogError")} <span class="plugin-notice__detail">{catalogError}</span></span>
+            <button
+              type="button"
+              class="plugin-notice__action"
+              onclick={() => void loadCatalog()}
+            >
+              {t("store.catalogRetry")}
+            </button>
+          </div>
+        {/if}
+
+        <div class="plugin-catalog__summary" role="status">
+          {#if catalogLoading}
+            <RefreshCw class="size-3 animate-spin" strokeWidth={2} />
+            {t("store.catalogLoading")}
+          {:else if catalogError}
+            {t("store.catalogError")}
+          {:else if catalogTotal > 0}
+            {t("store.catalogShowing", {
+              shown: catalog.length.toLocaleString(),
+              total: catalogTotal.toLocaleString(),
+            })}
+          {:else}
+            {t("store.catalogNoMatch")}
+          {/if}
+        </div>
+
+        {#if catalog.length === 0 && !catalogError && (catalogLoading || !catalogFetchedAt)}
+          <div class="plugin-catalog__grid" aria-hidden="true">
+            {#each [0, 1, 2, 3, 4, 5] as index (index)}
+              <div class="plugin-catalog__skeleton">
+                <span class="plugin-catalog__skeleton-mark"></span>
+                <span class="plugin-catalog__skeleton-copy">
+                  <span></span>
+                  <span></span>
+                  <span></span>
+                </span>
+              </div>
+            {/each}
+          </div>
+        {:else if catalog.length === 0 && !catalogError}
+          <div class="plugin-catalog__empty">
+            <span class="plugin-catalog__empty-mark" aria-hidden="true">
+              <Search class="size-4" strokeWidth={1.8} />
+            </span>
+            <h4>{t("store.catalogNoMatch")}</h4>
+            <p>{t("store.catalogNoMatchHint")}</p>
+            <Button
+              size="sm"
+              variant="outline"
+              class="plugin-button plugin-button--quiet"
+              onclick={() => {
+                catalogQuery = "";
+                catalogCategory = "all";
+              }}
+            >
+              {t("store.catalogBrowseAll")}
+            </Button>
           </div>
         {:else}
-          <div class="col-span-full py-16 text-center text-[var(--text-muted)]">
-            <Plug class="size-10 mx-auto mb-2 opacity-30 text-[var(--brand-text)]" />
-            <p class="text-sm font-semibold text-[var(--text-secondary)]">{t("store.empty")}</p>
-            <p class="text-xs text-[var(--text-muted)] mt-0.5">{t("store.emptyHint")}</p>
+          <div class="plugin-catalog__grid" aria-busy={catalogLoading}>
+            {#each catalog as entry (entry.id)}
+              {@const installed = installedSources.has(entry.spec_url.replace(/\/$/, ""))}
+              <article class="plugin-catalog__card" data-installed={installed ? "true" : undefined}>
+                <PluginLogo id={entry.id} name={entry.name} logoUrl={entry.logo} size="md" />
+                <div class="plugin-catalog__copy">
+                  <div class="plugin-catalog__title">
+                    <h4 title={entry.name}>{entry.name}</h4>
+                    <span class="plugin-category-tag">{catalogCategoryLabel(entry)}</span>
+                  </div>
+                  <p title={entry.description}>{entry.description}</p>
+                  <span class="plugin-catalog__meta">
+                    <span class="plugin-catalog__provider" title={entry.provider}>{entry.provider}</span>
+                    <span class="plugin-catalog__dot">·</span>
+                    <span>{entry.openapi_version === "2.0" ? "Swagger 2.0" : `OpenAPI ${entry.openapi_version}`}</span>
+                    <span class="plugin-catalog__dot">·</span>
+                    <span>{catalogAuthLabel(entry)}</span>
+                  </span>
+                </div>
+                <Button
+                  size="sm"
+                  class="plugin-button plugin-button--enable plugin-catalog__install"
+                  disabled={installingCatalog !== null || installed}
+                  onclick={() => void installCatalog(entry)}
+                >
+                  {#if installed}
+                    <Check class="size-3" strokeWidth={2.2} />
+                    {t("store.catalogInstalled")}
+                  {:else if installingCatalog === entry.id}
+                    <RefreshCw class="size-3.5 animate-spin" />
+                    {t("store.installing")}
+                  {:else}
+                    <Plus class="size-3.5" />
+                    {t("store.install")}
+                  {/if}
+                </Button>
+              </article>
+            {/each}
           </div>
-        {/each}
-      </div>
+
+          {#if catalogHasMore}
+            <div class="plugin-catalog__more">
+              <Button
+                size="sm"
+                variant="outline"
+                class="plugin-button plugin-button--quiet"
+                disabled={catalogLoading}
+                onclick={() => void loadCatalog(false, true)}
+              >
+                {#if catalogLoading}
+                  <RefreshCw class="size-3.5 animate-spin" />
+                {:else}
+                  <ChevronDown class="size-3.5" strokeWidth={1.9} />
+                {/if}
+                {t("store.catalogLoadMore")}
+              </Button>
+            </div>
+          {/if}
+        {/if}
+      </section>
     </div>
 
-    <!-- Fixed Pinned Footer -->
-    <div class="px-6 py-3.5 border-t border-[var(--hairline)] bg-[var(--surface-1)] flex items-center justify-between shrink-0">
-      <span class="text-xs text-[var(--text-tertiary)] font-mono">
-        <strong>{filtered.length}</strong> {t("store.countAvailable")} • <strong>{botPlugins.size}</strong> {t("store.countEquipped", { name: bot?.name ?? "" })}
+    <footer class="plugin-modal__footer">
+      <span class="plugin-footer__summary">
+        <strong>{filtered.length}</strong> {t("store.countAvailable")} · <strong>{botPlugins.size}</strong> {t("store.countEquipped", { name: bot?.name ?? "" })}
       </span>
-
-      <div class="flex items-center gap-2">
-        <Button size="sm" class="bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] font-medium text-xs px-5 h-8 rounded-xl shadow-md cursor-pointer" onclick={onClose}>
-          {t("ui.done")}
-        </Button>
-      </div>
-    </div>
+      <Button size="sm" class="plugin-button plugin-button--primary" onclick={onClose}>
+        {t("ui.done")}
+      </Button>
+    </footer>
   </Dialog.Content>
 </Dialog.Root>

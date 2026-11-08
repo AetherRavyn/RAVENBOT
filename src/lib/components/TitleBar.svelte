@@ -105,7 +105,7 @@
     {#if onToggleSidebar}
       <button
         type="button"
-        class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/[0.06] transition-colors cursor-pointer"
+        class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--hover-wash)] transition-colors cursor-pointer"
         onclick={onToggleSidebar}
         title={t("titlebar.toggleSidebar")}
         aria-label={t("titlebar.toggleSidebar")}
@@ -136,7 +136,7 @@
     -->
     <button
       type="button"
-      class="opacity-70 hover:opacity-100 transition-opacity flex items-center gap-1.5 cursor-pointer bg-transparent border-0 text-[11px] text-[var(--text-tertiary)] font-mono py-1.5 px-2 rounded hover:bg-white/[0.06] h-6"
+      class="opacity-70 hover:opacity-100 transition-opacity flex items-center gap-1.5 cursor-pointer bg-transparent border-0 text-[11px] text-[var(--text-tertiary)] font-mono py-1.5 px-2 rounded hover:bg-[var(--hover-wash)] h-6"
       onclick={() => (showThemeDropdown = !showThemeDropdown)}
       aria-haspopup="menu"
       aria-expanded={showThemeDropdown}
@@ -153,7 +153,7 @@
     <div class="relative">
       <button
         type="button"
-        class="h-6 px-2 rounded-md flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/[0.06] transition-colors cursor-pointer text-[11px]"
+        class="h-6 px-2 rounded-md flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--hover-wash)] transition-colors cursor-pointer text-[11px]"
         onclick={(e) => {
           e.stopPropagation();
           showThemeDropdown = !showThemeDropdown;
@@ -187,7 +187,7 @@
                 type="button"
                 class="w-full flex items-center justify-between p-2 rounded-xl text-left transition-all cursor-pointer {isSelected
                   ? 'border shadow-md'
-                  : 'hover:bg-white/[0.06] border border-transparent'}"
+                  : 'hover:bg-[var(--hover-wash)] border border-transparent'}"
                 style={isSelected ? `background-color: ${t.primaryColor}20; border-color: ${t.primaryColor}80;` : ""}
                 onclick={() => selectTheme(t)}
               >
@@ -217,7 +217,7 @@
     <!-- Window Minimize Button -->
     <button
       type="button"
-      class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/[0.06] active:scale-90 transition-all duration-150 cursor-pointer"
+      class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--hover-wash)] active:scale-90 transition-all duration-150 cursor-pointer"
       onclick={handleMinimize}
       title={t("titlebar.minimize")}
       aria-label={t("titlebar.minimize")}
@@ -228,7 +228,7 @@
     <!-- Window Maximize / Restore Button -->
     <button
       type="button"
-      class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-white/[0.06] active:scale-90 transition-all duration-150 cursor-pointer"
+      class="size-6 rounded-md flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--hover-wash)] active:scale-90 transition-all duration-150 cursor-pointer"
       onclick={handleToggleMaximize}
       title={isMaximized ? t("titlebar.restore") : t("titlebar.maximize")}
       aria-label={isMaximized ? t("titlebar.restore") : t("titlebar.maximize")}

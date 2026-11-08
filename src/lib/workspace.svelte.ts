@@ -5,7 +5,14 @@ import { announce } from "$lib/a11y";
 import { t } from "$lib/i18n";
 import { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
 
-export type RailDest = "home" | "agents" | "offices" | "projects" | "connectors" | "routines";
+export type RailDest =
+  | "home"
+  | "agents"
+  | "offices"
+  | "projects"
+  | "channels"
+  | "connectors"
+  | "routines";
 
 // OpenBot layout-constants (WorkspaceShell / layout-constants.ts): the sidebar
 // drags between 128–400px; below the 424px conversation minimum it auto-compact

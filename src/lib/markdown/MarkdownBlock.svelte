@@ -15,6 +15,9 @@
   import MarkdownTable from "./MarkdownTable.svelte";
   import MathBlock from "./MathBlock.svelte";
   import MermaidBlock from "./MermaidBlock.svelte";
+  import ChartBlock from "./ChartBlock.svelte";
+  import SlidesBlock from "./SlidesBlock.svelte";
+  import VisualBlock from "./VisualBlock.svelte";
   import { lexInline, closesFinalTable } from "$lib/markdown/lex";
   import { tailInside } from "$lib/chat/reveal";
   import { safeHref } from "$lib/markdown/safeUrl";
@@ -163,6 +166,12 @@
   {@const lang = (code.lang ?? "").trim().split(/\s+/)[0] ?? ""}
   {#if lang === "mermaid"}
     <MermaidBlock code={code.text} />
+  {:else if lang === "chart" || lang === "chart-json" || lang === "plot"}
+    <ChartBlock code={code.text} {streaming} />
+  {:else if lang === "slides" || lang === "slide-deck"}
+    <SlidesBlock code={code.text} {streaming} />
+  {:else if lang === "visual" || lang === "html-visual"}
+    <VisualBlock code={code.text} {streaming} />
   {:else}
     <MarkdownCode
       code={code.text}

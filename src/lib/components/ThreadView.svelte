@@ -8,6 +8,24 @@
   import { Button } from "$lib/components/ui/button";
   import AgentIntelligence from "$lib/components/AgentIntelligence.svelte";
   import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
+  import ChatEmptyState from "$lib/components/chat/ChatEmptyState.svelte";
+  import { matchingMessageIds, messageKey, stepMatchIndex } from "$lib/chat/search";
+  import { agentActivity } from "$lib/agentActivity.svelte";
+  import {
+    MESSAGE_FOCUS_EVENT,
+    takePendingMessageFocus,
+    type MessageFocusTarget,
+  } from "$lib/chat/messageFocus";
+  import { isPersistedMessageId, toggleReaction as nextReactions } from "$lib/chat/reactions";
+  import { replyQuoteFor } from "$lib/chat/replies";
+  import { isEditableTarget, navigateMessage } from "$lib/chat/navigation";
+  import { anchoredScrollTop, transcriptWindow } from "$lib/chat/messageWindow";
+  import ApprovalCard from "$lib/components/chat/ApprovalCard.svelte";
+  import QuestionCard from "$lib/components/chat/QuestionCard.svelte";
+  import ContextMeter from "$lib/components/chat/ContextMeter.svelte";
+  import ImageGallery from "$lib/components/chat/ImageGallery.svelte";
+  import FileAttachmentCard from "$lib/components/chat/FileAttachmentCard.svelte";
+  import { contextUsage } from "$lib/chat/contextUsage.svelte";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
   import ArtifactPanel from "$lib/components/ArtifactPanel.svelte";
   import RoutinesPanel from "$lib/components/RoutinesPanel.svelte";
@@ -17,6 +35,7 @@
   import TeamImport from "$lib/components/TeamImport.svelte";
   import type { Artifact } from "$lib/artifact";
   import { getDiceBearUrl, isUserMessage } from "$lib/utils";
+  import { notify } from "$lib/toast";
   import { cn } from "$lib/utils.js";
   import {
     recordUtterance,
@@ -29,6 +48,7 @@
   } from "$lib/voice";
   import {
     ACCEPTED_IMAGE_MIMES,
+    MAX_ATTACHMENT_BYTES,
     isTextFile,
     readAsDataUrl,
     readAsText,
@@ -63,6 +83,9 @@
     ArrowUp,
     ArrowDown,
     ChevronDown,
+    ChevronUp,
+    X,
+    Reply,
     Copy,
     Check,
     RotateCcw,
@@ -88,6 +111,244 @@
   let threads = $state<any[]>([]);
   let selectedThreadId = $state<string | null>(null);
   let messages = $state<any[]>([]);
+  /** The first thread load, so a focus request can wait for it instead of racing it. */
+  let initialLoad: Promise<void> | null = null;
+  let loadedBotId: string | null = null;
+  let loadSeq = 0;
+
+  // ── In-thread search ───────────────────────────────────────────────────
+  // The query filters over the text each row renders. Matches are message
+  // keys, not indices, so a hit survives a reload or a streaming append.
+  let threadSearchOpen = $state(false);
+  let threadSearchQuery = $state("");
+  let threadSearchIndex = $state(0);
+  let threadSearchInput = $state<HTMLInputElement | null>(null);
+  let threadSearchTimer: ReturnType<typeof setTimeout> | null = null;
+  const threadSearchMatches = $derived(matchingMessageIds(messages, threadSearchQuery));
+  const threadSearchMatchSet = $derived(new Set(threadSearchMatches));
+  const threadSearchPosition = $derived(
+    threadSearchMatches.length ? Math.min(threadSearchIndex, threadSearchMatches.length - 1) : -1,
+  );
+  const threadCurrentSearchKey = $derived(
+    threadSearchPosition >= 0 ? threadSearchMatches[threadSearchPosition] : "",
+  );
+
+  // Bounded transcript: mount a tail, not the whole history. See the same
+  // rule in ChatRoomView — a long conversation should not cost more to open
+  // than the part the reader can actually see.
+  const MESSAGE_WINDOW = 50;
+  const MESSAGE_WINDOW_STEP = 50;
+  let messageWindow = $state(MESSAGE_WINDOW);
+  let loadingEarlier = $state(false);
+  let windowEnd = $state(0);
+  const windowBounds = $derived(
+    transcriptWindow(messages.length, messageWindow, windowEnd),
+  );
+  const visibleStart = $derived(windowBounds.start);
+  const visibleEnd = $derived(windowBounds.end);
+  const visibleMessages = $derived(messages.slice(visibleStart, visibleEnd));
+  const hiddenBefore = $derived(visibleStart);
+
+  async function loadEarlier() {
+    if (loadingEarlier || hiddenBefore <= 0) return;
+    const el = messagesContainer;
+    const previousTop = el?.scrollTop ?? 0;
+    const previousHeight = el?.scrollHeight ?? 0;
+    loadingEarlier = true;
+    try {
+      messageWindow += MESSAGE_WINDOW_STEP;
+      await tick();
+      if (el) {
+        el.scrollTop = anchoredScrollTop(
+          previousTop,
+          previousHeight,
+          el.scrollHeight,
+        );
+      }
+    } finally {
+      loadingEarlier = false;
+    }
+  }
+
+  async function revealMessage(key: string) {
+    const index = messages.findIndex((message) => messageKey(message) === key);
+    if (index < 0) return;
+    if (index >= messages.length - 1) {
+      windowEnd = 0;
+    } else {
+      windowEnd = index + 1;
+      stickToLatest = false;
+    }
+    await tick();
+    document
+      .getElementById(`message-${key}`)
+      ?.scrollIntoView({
+        block: "center",
+        behavior: prefersReducedMotion() ? "auto" : "smooth",
+      });
+  }
+
+  async function scrollToSearchMatch(index: number) {
+    const key = threadSearchMatches[index];
+    if (key) await revealMessage(key);
+  }
+
+  function onSearchInput(event: Event) {
+    threadSearchQuery = (event.currentTarget as HTMLInputElement).value;
+    threadSearchIndex = 0;
+    if (threadSearchTimer) clearTimeout(threadSearchTimer);
+    // Snap to the first hit once typing settles, not on every keystroke.
+    threadSearchTimer = setTimeout(() => {
+      if (threadSearchQuery.trim()) void scrollToSearchMatch(0);
+    }, 160);
+  }
+
+  function stepSearch(delta: number) {
+    if (!threadSearchMatches.length) return;
+    const base = threadSearchPosition < 0 ? 0 : threadSearchPosition;
+    threadSearchIndex = stepMatchIndex(base, threadSearchMatches.length, delta);
+    void scrollToSearchMatch(threadSearchIndex);
+  }
+
+  function openSearch() {
+    threadSearchOpen = true;
+    void tick().then(() => threadSearchInput?.focus());
+  }
+
+  function closeSearch() {
+    threadSearchOpen = false;
+    threadSearchQuery = "";
+    threadSearchIndex = 0;
+    if (threadSearchTimer) clearTimeout(threadSearchTimer);
+  }
+
+  // ── Quoted replies ─────────────────────────────────────────────────────
+  // The quote is resolved from the loaded transcript rather than copied into
+  // the message, so an edited original stays current and a deleted one is
+  // reported honestly.
+  let replyingTo = $state<any | null>(null);
+  const activeReply = $derived(
+    replyQuoteFor(
+      messages,
+      replyingTo?.id,
+      replyAuthor,
+      t("thread.replyUnavailable"),
+    ),
+  );
+
+  function replyAuthor(message: any): string {
+    return isUserMessage(message) ? "You" : message.sender_name || bot?.name || "";
+  }
+
+  function startReply(message: any) {
+    if (!isPersistedMessageId(message?.id)) return;
+    editingMessage = null;
+    replyingTo = message;
+    void tick().then(() => textareaRef?.focus());
+  }
+
+  function cancelReply() {
+    replyingTo = null;
+  }
+
+  async function jumpToMessage(id: string) {
+    await revealMessage(id);
+  }
+
+  async function focusMessageTarget(target: MessageFocusTarget) {
+    if (target.botId !== bot.id) return;
+    if (target.threadId !== selectedThreadId) {
+      await loadMessages(target.threadId);
+    }
+    await tick();
+    await revealMessage(target.messageId);
+  }
+
+  async function handleMessageFocus(event: Event) {
+    const target = (event as CustomEvent<MessageFocusTarget>).detail;
+    if (!target || target.botId !== bot.id) return;
+    // Start (or join) this bot's load before claiming the hand-off, so the
+    // normal "open the latest thread" path cannot run after the focus and
+    // replace it.
+    ensureBotLoaded(bot.id);
+    if (initialLoad) await initialLoad;
+    // The first consumer wins; a conversation that was still mounting took it
+    // during its initial load.
+    if (!takePendingMessageFocus(bot.id)) return;
+    await focusMessageTarget(target);
+  }
+
+  /**
+   * Load a conversation exactly once per bot. Both the mount path and the
+   * bot-change effect call this, and the first caller owns the work.
+   */
+  function ensureBotLoaded(botId: string) {
+    if (!botId || loadedBotId === botId) return;
+    loadedBotId = botId;
+    threads = [];
+    selectedThreadId = null;
+    messages = [];
+    streamingText = "";
+    streamingSources = [];
+    streamingImages = [];
+    const seq = ++loadSeq;
+    invoke("get_session_usage", { botId })
+      .then((res: any) => {
+        if (seq === loadSeq) {
+          sessionTokens = res?.tokens || 0;
+          sessionCost = res?.cost || 0;
+        }
+      })
+      .catch(console.error);
+    initialLoad = (async () => {
+      try {
+        const result = (await invoke("list_threads", { botId })) as any[];
+        // A later bot switch owns the conversation now.
+        if (seq !== loadSeq) return;
+        threads = result;
+        const target = takePendingMessageFocus(botId);
+        if (target) {
+          await loadMessages(target.threadId);
+          if (seq !== loadSeq) return;
+          await tick();
+          await revealMessage(target.messageId);
+        } else if (threads.length > 0) {
+          await loadMessages(threads[0].id);
+        }
+      } catch (e) {
+        console.error("Failed to load threads:", e);
+      } finally {
+        if (seq === loadSeq) initialLoad = null;
+      }
+    })();
+  }
+
+  // Reactions are persisted before the UI settles, with an optimistic chip so
+  // the click feels immediate. A failed write restores the previous list.
+  async function reactToMessage(message: any, emoji: string) {
+    const id = String(message?.id || "");
+    if (!isPersistedMessageId(id)) return;
+    const current: string[] = Array.isArray(message.reactions) ? message.reactions : [];
+    const optimistic = nextReactions(current, emoji);
+    messages = messages.map((m) =>
+      String(m.id) === id ? { ...m, reactions: optimistic } : m,
+    );
+    try {
+      const confirmed = await invoke<string[]>("toggle_message_reaction", {
+        messageId: id,
+        emoji,
+      });
+      messages = messages.map((m) =>
+        String(m.id) === id ? { ...m, reactions: confirmed } : m,
+      );
+    } catch (e) {
+      messages = messages.map((m) =>
+        String(m.id) === id ? { ...m, reactions: current } : m,
+      );
+      notify(`Could not save reaction: ${String(e)}`, "error");
+    }
+  }
+
   let newMessage = $state("");
   let sending = $state(false);
   let showCostInfo = $state(false);
@@ -180,22 +441,7 @@
     }
   }
 
-  function approvalSummary(args: any): string {
-    try {
-      if (args == null) return "";
-      if (typeof args === "string") return args.slice(0, 280);
-      if (typeof args.command === "string") return String(args.command).slice(0, 280);
-      if (typeof args.path === "string" && typeof args.content === "string")
-        return `${args.path} (+${args.content.length} chars)`;
-      if (typeof args.path === "string") return String(args.path).slice(0, 280);
-      if (typeof args.instruction === "string") return String(args.instruction).slice(0, 280);
-      if (typeof args.query === "string") return String(args.query).slice(0, 280);
-      if (typeof args.url === "string") return String(args.url).slice(0, 280);
-      return JSON.stringify(args).slice(0, 280);
-    } catch {
-      return "";
-    }
-  }
+
   // ── Human-in-the-loop questions ("ask_user") ────────────────────────────
   // The agent asks a question mid-run; the run parks until the user answers.
   interface PendingQuestion {
@@ -205,7 +451,6 @@
   }
   let pendingQuestions = $state<PendingQuestion[]>([]);
   let answeringQuestion = $state<string | null>(null);
-  let questionDraft = $state<Record<string, string>>({});
 
   /** Bot-scoped for the same reason as `refreshApprovals` above. */
   async function refreshQuestions(botId: string) {
@@ -242,6 +487,10 @@
   // entrances animate only live appends (see $lib/chat/entrance).
   let stickToLatest = $state(true);
   let staticEntries = $state(true);
+  // How many messages arrived while the reader was away from the bottom.
+  // The jump pill carries the number so "new" has a size, not just a state.
+  let unseenMessages = $state(0);
+  let seenMessageCount = 0;
   import { StreamReveal } from "$lib/chat/streamReveal.svelte";
   import { isGhostContent } from "$lib/chat/grouping";
   import { prefersReducedMotion, announce } from "$lib/a11y";
@@ -317,7 +566,9 @@
     const q = searchQuery.trim();
     if (!q) return;
     try {
-      searchResults = await invoke("search_messages", { query: q, limit: 15 });
+      const hits = await invoke<any[]>("search_messages", { query: q, limit: 15 });
+      // The command is fleet-wide; this drawer only browses the current bot.
+      searchResults = hits.filter((hit) => !hit.bot_id || hit.bot_id === bot.id);
       searchPerformed = true;
     } catch (e) {
       console.error("Search failed:", e);
@@ -362,22 +613,18 @@
     }
   });
 
-  const samplePrompts = [
-    { title: "Analyze Codebase", desc: "Inspect repo structure & identify optimization points", icon: Terminal },
-    { title: "Task Graph Plan", desc: "Draft a parallel multi-agent execution strategy", icon: Brain },
-    { title: "Health Check", desc: "Summarize active agent status, memory & telemetry", icon: Sparkles },
-    { title: "Security Audit", desc: "Verify local sandbox isolation, eBPF & quotas", icon: Globe },
-  ];
+  function handleTryLocalSkill(event: Event) {
+    const prompt = (event as CustomEvent<{ prompt?: string }>).detail?.prompt;
+    if (!prompt) return;
+    newMessage = prompt;
+    void tick().then(() => textareaRef?.focus());
+  }
 
   onMount(async () => {
-    try {
-      threads = await invoke("list_threads", { botId: bot.id });
-      if (threads.length > 0) {
-        await loadMessages(threads[0].id);
-      }
-    } catch (e) {
-      console.error("Failed to load threads:", e);
-    }
+    window.addEventListener("local-skill-try", handleTryLocalSkill);
+    window.addEventListener(MESSAGE_FOCUS_EVENT, handleMessageFocus);
+    ensureBotLoaded(bot.id);
+    await initialLoad;
 
     // Live token streaming from the runtime
     try {
@@ -530,6 +777,9 @@
               sessionCost += payload.cost || 0;
             }
             break;
+          case "context":
+            contextUsage.ingest(payload);
+            break;
           case "approval_requested":
             // A tool parked for a decision: card appears, composer blocks.
             if (payload?.approval && !pendingApprovals.some((a) => a.id === payload.approval.id)) {
@@ -566,6 +816,9 @@
   onDestroy(() => {
     unlisten?.();
     unlisten = null;
+    window.removeEventListener("local-skill-try", handleTryLocalSkill);
+    window.removeEventListener(MESSAGE_FOCUS_EVENT, handleMessageFocus);
+    if (threadSearchTimer) clearTimeout(threadSearchTimer);
     reveal.stop();
     stopVoiceMode();
   });
@@ -577,35 +830,10 @@
   // Load the bot's threads only when we switch to a DIFFERENT bot — never on
   // a mere status/telemetry update. `selectedBot` is `$derived(bots.find(…))`,
   // so every status event hands us a brand-new object; without this guard the
-  // effect re-ran mid-run, reset `messages` and reloaded `threads[0]`, making
-  // the user's just-sent message vanish after the answer.
-  let loadedBotId: string | null = null;
+  // effect re-ran mid-run and reset the conversation.
   $effect(() => {
     const botId = bot?.id;
-    if (!botId || botId === loadedBotId) return;
-    loadedBotId = botId;
-    if (bot?.id) {
-      threads = [];
-      selectedThreadId = null;
-      messages = [];
-      streamingText = "";
-      streamingSources = []; streamingImages = [];
-      // Lifetime telemetry baseline (events keep it live afterwards)
-      invoke("get_session_usage", { botId: bot.id })
-        .then((res: any) => {
-          sessionTokens = res?.tokens || 0;
-          sessionCost = res?.cost || 0;
-        })
-        .catch(console.error);
-      invoke("list_threads", { botId: bot.id })
-        .then((result) => {
-          threads = result as any[];
-          if (threads.length > 0) {
-            loadMessages(threads[0].id);
-          }
-        })
-        .catch(console.error);
-    }
+    if (botId) ensureBotLoaded(botId);
   });
 
   // Play base64 audio (WAV) via the Web Audio API.
@@ -627,22 +855,71 @@
   function handleFeedScroll() {
     const el = messagesContainer;
     if (!el) return;
+    const nearTop = el.scrollTop <= 120;
+    if (windowEnd !== 0) {
+      // The bottom of a pinned window is not the bottom of the transcript.
+      stickToLatest = false;
+      if (nearTop && hiddenBefore > 0) void loadEarlier();
+      return;
+    }
     stickToLatest = el.scrollHeight - el.scrollTop - el.clientHeight <= 80;
+    if (stickToLatest) unseenMessages = 0;
+    if (nearTop && hiddenBefore > 0) void loadEarlier();
   }
 
   function jumpToLatest() {
     stickToLatest = true;
+    unseenMessages = 0;
+    windowEnd = 0;
+    messageWindow = MESSAGE_WINDOW;
     messagesContainer?.scrollTo({
       top: messagesContainer.scrollHeight,
       behavior: prefersReducedMotion() ? "auto" : "smooth",
     });
   }
 
+  function handleMessageNavKey(event: KeyboardEvent) {
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    if (isEditableTarget(event.target)) return;
+    event.preventDefault();
+    navigateMessage(
+      messagesContainer,
+      event.key === "ArrowUp" ? -1 : 1,
+      !prefersReducedMotion(),
+    );
+  }
+
+  // Count committed messages that arrive while the reader is scrolled away.
+  // Bulk history loads set `stickToLatest` first, so a thread opening does not
+  // report its whole transcript as new.
+  $effect(() => {
+    const count = messages.length;
+    if (count <= seenMessageCount) {
+      seenMessageCount = count;
+      return;
+    }
+    const added = count - seenMessageCount;
+    seenMessageCount = count;
+    if (!stickToLatest) unseenMessages += added;
+  });
+
   // Tokens follow the feed only while the reader is stuck to the bottom;
-  // explicit actions (send, thread open) force back to stuck.
+  // explicit actions (send, thread open) force back to stuck. The visible text
+  // is revealed on a timer, so following the raw delta alone scrolls before
+  // the words exist and the answer grows below the fold.
+  $effect(() => {
+    const shown = reveal.shown;
+    if (shown && stickToLatest) void scrollToBottom();
+  });
+
   async function scrollToBottom(force = false) {
     if (!force && !stickToLatest) return;
     stickToLatest = true;
+    windowEnd = 0;
+    // Returning to the live end also releases any earlier batches the reader
+    // loaded while paging through history.
+    messageWindow = MESSAGE_WINDOW;
     await tick();
     if (messagesContainer) {
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -650,6 +927,12 @@
   }
 
   async function loadMessages(threadId: string) {
+    if (threadId !== selectedThreadId) replyingTo = null;
+    stickToLatest = true;
+    unseenMessages = 0;
+    seenMessageCount = 0;
+    messageWindow = MESSAGE_WINDOW;
+    windowEnd = 0;
     selectedThreadId = threadId;
     showThreadDropdown = false;
     staticEntries = true;
@@ -684,6 +967,7 @@
       threads = [thread, ...threads];
       selectedThreadId = (thread as any).id;
       messages = [];
+      replyingTo = null;
       showThreadDropdown = false;
       await tick();
       textareaRef?.focus();
@@ -780,6 +1064,7 @@
     const hasAttachments = pendingAttachments.length > 0;
     if (sending || (!typed && !hasAttachments)) return;
     const rawText = typed || "(shared files)";
+    const replyToId = replyingTo?.id ?? null;
 
     // Apply DeepSearch or Think prefixes if toggled
     let text = rawText;
@@ -825,6 +1110,8 @@
         role: "user",
         content: text,
         attachments: tempAttachments,
+        reply_to_id: replyToId,
+        reactions: [],
         created_at: new Date().toISOString(),
       };
       messages = [...messages, tempUserMsg];
@@ -845,8 +1132,10 @@
           threadId: selectedThreadId,
           content: text,
           attachments: pendingAttachments.length ? pendingAttachments : undefined,
+          replyToId,
         });
       }
+      replyingTo = null;
       pendingAttachments = [];
 
       if (selectedThreadId) {
@@ -854,6 +1143,7 @@
       }
     } catch (e: any) {
       console.error("Failed to send message:", e);
+      notify(`Message not sent: ${String(e)}`, "error");
       if (selectedThreadId) {
         await loadMessages(selectedThreadId);
       }
@@ -896,6 +1186,7 @@
 
   function startEditing(id: string, text: string) {
     if (sending || regenerating) return;
+    replyingTo = null;
     editingMessage = { id, original: text };
     newMessage = text;
     textareaRef?.focus();
@@ -1068,6 +1359,10 @@
 
   async function attachFiles(files: FileList | File[]) {
     for (const file of Array.from(files)) {
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        notify(`Attachment is larger than ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MB.`, "error");
+        continue;
+      }
       const mime = (file.type || "").toLowerCase();
       const ext = (file.name?.split(".").pop() || "").toLowerCase();
 
@@ -1363,7 +1658,10 @@
   }
 </script>
 
-<svelte:window onclick={() => (showThreadDropdown = false, showModelSwitcher = false)} />
+<svelte:window
+  onclick={() => (showThreadDropdown = false, showModelSwitcher = false)}
+  onkeydown={handleMessageNavKey}
+/>
 
 {#snippet sourcesChips(sources: any[])}
   {#if sources && sources.length > 0}
@@ -1392,12 +1690,12 @@
 
 <div class="flex flex-col h-full overflow-hidden select-none bg-[var(--surface-0)] text-[var(--text-primary)] font-sans relative">
   <!-- Sleek Top Header Bar (Grok Style) -->
-  <header class="h-[46px] px-4 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between gap-3 overflow-hidden z-20 shrink-0">
+  <header class="h-[46px] px-4 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between gap-3 z-20 shrink-0">
     <!-- Left: Bot Avatar & Info + Thread Switcher Dropdown -->
     <div class="flex items-center gap-3 min-w-0 flex-1">
       <div class="relative size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] p-0.5 shrink-0 shadow-sm">
         <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} style={bot.avatar_style} />
-        <span class="absolute bottom-0 right-0 size-2 rounded-full ring-1 ring-black {botStatusTheme.dot}"></span>
+        <span class="absolute bottom-0 right-0 size-2 rounded-full ring-1 ring-[var(--surface-0)] {botStatusTheme.dot}"></span>
       </div>
 
       <div class="flex items-center gap-2 min-w-0">
@@ -1480,7 +1778,7 @@
                 />
                 <Button
                   size="sm"
-                  class="h-6 px-2 text-[11px] bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-white cursor-pointer shrink-0"
+                  class="h-6 px-2 text-[11px] bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-[var(--surface-light-hover)] cursor-pointer shrink-0"
                   onclick={applySwitcherModel}
                 >
                   Apply
@@ -1573,6 +1871,94 @@
 
     <!-- Right Header Controls -->
     <div class="flex items-center gap-2 shrink-0">
+      <!-- In-thread search -->
+      <div class="relative">
+        <button
+          type="button"
+          class="h-7 px-2 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-xs flex items-center gap-1.5 transition-colors cursor-pointer {threadSearchOpen
+            ? 'text-[var(--brand-text)] border-[var(--brand)]/40 bg-[var(--brand-soft)]'
+            : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
+          onclick={() => (threadSearchOpen ? closeSearch() : openSearch())}
+          aria-expanded={threadSearchOpen}
+          aria-label={t("thread.searchInThread")}
+          title={t("thread.searchInThread")}
+        >
+          <Search class="size-3.5" />
+          <span class="hidden lg:inline text-[11px]">{t("thread.searchShort")}</span>
+        </button>
+
+        {#if threadSearchOpen}
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+          <div
+            class="thread-search"
+            role="search"
+            onkeydown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                closeSearch();
+              }
+            }}
+          >
+            <Search class="thread-search__icon size-3.5" aria-hidden="true" />
+            <input
+              bind:this={threadSearchInput}
+              class="thread-search__input"
+              type="search"
+              value={threadSearchQuery}
+              placeholder={t("thread.searchMessages")}
+              aria-label={t("thread.searchMessages")}
+              oninput={onSearchInput}
+              onkeydown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  stepSearch(event.shiftKey ? -1 : 1);
+                }
+              }}
+            />
+            <span class="thread-search__count" aria-live="polite">
+              {#if threadSearchMatches.length}
+                {t("thread.searchCount", {
+                  current: threadSearchPosition + 1,
+                  total: threadSearchMatches.length,
+                })}
+              {:else if threadSearchQuery.trim()}
+                {t("thread.searchNoResults")}
+              {/if}
+            </span>
+            <button
+              type="button"
+              class="thread-search__button"
+              disabled={!threadSearchMatches.length}
+              onclick={() => stepSearch(-1)}
+              aria-label={t("thread.searchPrevious")}
+              title={t("thread.searchPrevious")}
+            >
+              <ChevronUp class="size-3.5" />
+            </button>
+            <button
+              type="button"
+              class="thread-search__button"
+              disabled={!threadSearchMatches.length}
+              onclick={() => stepSearch(1)}
+              aria-label={t("thread.searchNext")}
+              title={t("thread.searchNext")}
+            >
+              <ChevronDown class="size-3.5" />
+            </button>
+            <button
+              type="button"
+              class="thread-search__button"
+              onclick={closeSearch}
+              aria-label={t("thread.searchClose")}
+              title={t("thread.searchClose")}
+            >
+              <X class="size-3.5" />
+            </button>
+          </div>
+        {/if}
+      </div>
+
       <!-- Session Telemetry Pill -->
       <button
         type="button"
@@ -1611,13 +1997,16 @@
       <!-- Computer / Desktop Panel Button -->
       <button
         type="button"
-        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showComputer ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
+        class="relative size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showComputer ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
         onclick={() => (showComputer = true)}
         aria-pressed={showComputer}
         aria-label={t("thread.computer")}
-        title={t("thread.computer")}
+        title={agentActivity.computerPaused ? t("computer.takenOver") : t("thread.computer")}
       >
         <Monitor class="size-3.5" />
+        {#if agentActivity.computerPaused}
+          <span class="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-[var(--warning-text)] ring-2 ring-[var(--surface-2)]" aria-hidden="true"></span>
+        {/if}
       </button>
 
       <!-- Channel (context) picker for new threads -->
@@ -1804,26 +2193,109 @@
     <div class="flex flex-1 overflow-hidden bg-[var(--surface-0)]">
       <div class="flex flex-col overflow-hidden {openArtifact ? 'w-[54%] shrink-0' : 'flex-1'}">
       <div class="relative flex-1 min-h-0">
-      <div bind:this={messagesContainer} onscroll={handleFeedScroll} class="h-full overflow-y-auto px-3 pt-2 pb-6 {staticEntries ? 'entries-static' : ''}">
+      <div bind:this={messagesContainer} onscroll={handleFeedScroll} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" class="h-full overflow-y-auto px-3 pt-2 pb-6 {staticEntries ? 'entries-static' : ''}">
         <div class="max-w-[720px] mx-auto">
-          {#each messages as message, mi (message.id || message.created_at)}
+          {#if hiddenBefore > 0}
+            <div class="load-earlier-row">
+              <button
+                type="button"
+                class="load-earlier"
+                onclick={() => void loadEarlier()}
+              >
+                {t("thread.loadEarlier", { count: hiddenBefore })}
+              </button>
+            </div>
+          {/if}
+          {#if messages.length === 0 && !sending && !regenerating}
+            <ChatEmptyState
+              name={bot.name}
+              description={bot.description}
+              specialty={bot.specialty}
+              imageUrl={bot.avatar_url}
+              style={bot.avatar_style}
+              onPick={(prompt) => void sendMessage(prompt)}
+            />
+          {/if}
+          {#each visibleMessages as message, vi (message.id || message.created_at)}
+            {@const mi = visibleStart + vi}
             {@const isUser = isUserMessage(message)}
             {@const isModelError = typeof message.content === "string" && message.content.includes("⚠️ **Model Error:**")}
             {@const rawContent = typeof message.content === "string" ? message.content : message.content?.text || JSON.stringify(message.content)}
             {@const hasChecklist = message.content?.type === "Checklist" || (typeof message.content === "object" && message.content?.items)}
             {@const messageSources = Array.isArray(message.content?.sources) ? message.content.sources : []}
             {@const messageImages = Array.isArray(message.attachments) ? message.attachments.filter((a: any) => a?.is_image && a?.data) : []}
+            {@const messageMedia = Array.isArray(message.attachments) ? message.attachments.filter((a: any) => a?.data && !a?.is_image && /^(audio|video)\//i.test(a?.mime_type || "")) : []}
+            {@const messageDocs = Array.isArray(message.attachments) ? message.attachments.filter((a: any) => a?.data && !a?.is_image && !/^(audio|video)\//i.test(a?.mime_type || "")) : []}
             {@const toolAudioB64 = message.content?.type === "ToolResult" && message.content?.result?.audio_b64 ? message.content.result.audio_b64 : null}
             {@const grouped = mi > 0 && isUserMessage(messages[mi - 1]) === isUser}
             {@const continuesRun = mi < messages.length - 1 && isUserMessage(messages[mi + 1]) === isUser}
             {@const ghost = !isUser && !hasChecklist && isGhostContent(rawContent)}
 
+              {#snippet messageAttachmentsBlock()}
+                {#if messageImages.length}
+                  <ImageGallery
+                    images={messageImages.map((att: any) => ({
+                      src: `data:${att.mime_type};base64,${att.data}`,
+                      alt: att.name || "attached image",
+                    }))}
+                    label={`${messageImages.length} attached image${messageImages.length === 1 ? "" : "s"}`}
+                  />
+                {/if}
+                {#if messageMedia.length}
+                  <div class="message-media-list">
+                    {#each messageMedia as att}
+                      {#if /^video\//i.test(att.mime_type)}
+                        <!-- svelte-ignore a11y_media_has_caption -->
+                        <video
+                          class="message-media"
+                          src={`data:${att.mime_type};base64,${att.data}`}
+                          controls
+                          preload="metadata"
+                        ></video>
+                      {:else}
+                        <audio
+                          class="message-media message-media--audio"
+                          src={`data:${att.mime_type};base64,${att.data}`}
+                          controls
+                          preload="metadata"
+                        ></audio>
+                      {/if}
+                    {/each}
+                  </div>
+                {/if}
+                {#if messageDocs.length}
+                  <div class="file-attachment-list">
+                    {#each messageDocs as att (att.id || att.name)}
+                      <FileAttachmentCard {att} />
+                    {/each}
+                  </div>
+                {/if}
+              {/snippet}
+
             <ChatMessageRow
               {isUser}
               isError={isModelError}
+              rowId={`message-${messageKey(message)}`}
+              searchHit={threadSearchOpen && threadSearchMatchSet.has(messageKey(message))}
+              searchCurrent={threadSearchOpen && threadCurrentSearchKey === messageKey(message)}
+              replyTo={replyQuoteFor(
+                messages,
+                message.reply_to_id,
+                replyAuthor,
+                t("thread.replyUnavailable"),
+              )}
+              onReply={isPersistedMessageId(message.id)
+                ? () => startReply(message)
+                : undefined}
+              onJumpToReply={jumpToMessage}
+              reactions={Array.isArray(message.reactions) ? message.reactions : []}
+              onReact={isPersistedMessageId(message.id)
+                ? (emoji) => void reactToMessage(message, emoji)
+                : undefined}
               text={hasChecklist ? (message.content.text || "") : rawContent}
               reasoning={message.content.reasoning ?? null}
               tools={message.content.tools ?? []}
+              spans={message.content.spans ?? []}
               time={formatTime(message.created_at)}
               {grouped}
               showMeta={!continuesRun}
@@ -1833,8 +2305,8 @@
             >
               {#snippet errorCard()}
                 <!-- Model Configuration Required Card -->
-                <div class="rounded-2xl p-4 bg-red-950/30 border border-red-800/40 text-[var(--text-secondary)] space-y-3 shadow-xl">
-                  <div class="flex items-center gap-2 text-red-400 font-bold text-xs font-mono">
+                <div class="rounded-2xl p-4 bg-[var(--danger-soft)] border border-[var(--danger-border)] text-[var(--text-secondary)] space-y-3 shadow-xl">
+                  <div class="flex items-center gap-2 text-[var(--danger-text)] font-bold text-xs font-mono">
                     <AlertTriangle class="size-4 shrink-0" />
                     <span>{t("thread.modelNeeded")}</span>
                   </div>
@@ -1856,18 +2328,10 @@
                 </div>
               {/snippet}
 
+
+
               {#snippet userExtras()}
-                {#if messageImages.length}
-                  <div class="flex flex-wrap gap-1.5 pt-1.5 whitespace-normal">
-                    {#each messageImages as att}
-                      <img
-                        src={`data:${att.mime_type};base64,${att.data}`}
-                        alt={att.name || "attached image"}
-                        class="max-h-40 rounded-lg object-contain bg-[var(--surface-1)]"
-                      />
-                    {/each}
-                  </div>
-                {/if}
+                {@render messageAttachmentsBlock()}
               {/snippet}
 
               {#snippet aboveBubble()}
@@ -1906,6 +2370,7 @@
               {/snippet}
 
               {#snippet belowBubble()}
+                {@render messageAttachmentsBlock()}
                 {@render sourcesChips(messageSources)}
               {/snippet}
 
@@ -1961,44 +2426,6 @@
                 {/if}
               {/snippet}
             </ChatMessageRow>
-          {:else}
-            <!-- Empty Thread State (Grok Style) -->
-            <div class="my-10 text-center space-y-6 max-w-xl mx-auto animate-rise-in">
-              <!-- Bot Identity Emblem -->
-              <div class="relative inline-block">
-                <div class="relative size-16 rounded-2xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] mx-auto shadow-2xl p-0.5">
-                  <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} style={bot.avatar_style} />
-                </div>
-                <span class="absolute -bottom-1 -right-1 size-3.5 rounded-full ring-2 ring-black {botStatusTheme.dot}"></span>
-              </div>
-
-              <div class="space-y-1.5">
-                <h3 class="font-black text-xl text-[var(--text-primary)] tracking-tight">
-                  {t("thread.exploreTitle")}
-                </h3>
-                <p class="text-xs text-[var(--text-tertiary)] max-w-md mx-auto leading-relaxed">
-                  {bot.description || t("thread.defaultBotDesc")}
-                </p>
-              </div>
-
-              <!-- Prompt Suggestion Grid -->
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-left pt-2">
-                {#each samplePrompts as p}
-                  {@const Icon = p.icon}
-                  <button
-                    type="button"
-                    class="p-3.5 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:bg-[var(--surface-2)] hover:border-[var(--brand)] hover:bg-[var(--surface-3)] transition-all duration-200 cursor-pointer group flex flex-col justify-between"
-                    onclick={() => sendMessage(p.desc)}
-                  >
-                    <div class="flex items-center justify-between mb-1.5">
-                      <span class="font-bold text-xs text-[var(--text-primary)] group-hover:text-[var(--brand)] transition-colors">{p.title}</span>
-                      <Icon class="size-3.5 text-[var(--text-muted)] group-hover:text-[var(--brand)] transition-colors" />
-                    </div>
-                    <p class="text-[11px] text-[var(--text-tertiary)] leading-normal line-clamp-2">{p.desc}</p>
-                  </button>
-                {/each}
-              </div>
-            </div>
           {/each}
 
           {#snippet liveMarkers()}
@@ -2072,86 +2499,28 @@
 
           <!-- Approval cards: what the bot wants to do + Allow/Deny -->
           {#each pendingApprovals as ap (ap.id)}
-            {@const deciding = decidingApproval === ap.id}
-            <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border {ap.risk === 'high' ? 'border-warning/40' : 'border-[var(--hairline)]'} bg-[var(--surface-1)] p-4 space-y-2.5 shadow-xl">
-              <div class="flex items-baseline justify-between gap-3">
-                <div class="text-[13px] font-semibold text-[var(--text-primary)]">
-                  {bot.name} wants to {ap.tool_label || ap.tool_name}
-                </div>
-                <span class="shrink-0 font-mono text-[11px] text-[var(--text-muted)]">{ap.tool_name}</span>
-              </div>
-              {#if approvalSummary(ap.arguments)}
-                <pre class="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-black/50 border border-[var(--hairline)] px-3 py-2 font-mono text-[12px] leading-relaxed text-[var(--text-secondary)]">{approvalSummary(ap.arguments)}</pre>
-              {/if}
-              {#if ap.risk === 'high'}
-                <p class="text-[11px] text-warning/90">{t("thread.highStakes")}</p>
-              {/if}
-              <div class="flex items-center gap-2">
-                <button
-                  type="button"
-                  disabled={deciding}
-                  onclick={() => decideApproval(ap.id, true)}
-                  class="h-8 px-4 rounded-full bg-success text-[var(--text-primary)] text-xs font-bold hover:bg-success transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  {deciding ? 'Allowing…' : 'Allow'}
-                </button>
-                <button
-                  type="button"
-                  disabled={deciding}
-                  onclick={() => decideApproval(ap.id, false)}
-                  class="h-8 px-4 rounded-full border border-danger/40 text-danger text-xs font-bold hover:bg-danger/15 transition-colors cursor-pointer disabled:opacity-50"
-                >
-                  Deny
-                </button>
-                <span class="text-[11px] font-mono text-[var(--text-muted)] ml-1">the run resumes after you decide</span>
-              </div>
-            </div>
+            <ApprovalCard
+              botName={bot.name}
+              toolName={ap.tool_name}
+              toolLabel={ap.tool_label}
+              args={ap.arguments}
+              risk={ap.risk}
+              deciding={decidingApproval === ap.id}
+              onDecide={(allowed) => decideApproval(ap.id, allowed)}
+            />
           {/each}
 
           <!-- Question cards: the agent needs input to continue -->
           {#each pendingQuestions as q (q.id)}
-            {@const answering = answeringQuestion === q.id}
-            <div class="w-full max-w-[min(42rem,78%)] rounded-2xl border border-[var(--brand)]/40 bg-[var(--surface-1)] p-4 space-y-3 shadow-xl">
-              <div class="flex items-baseline justify-between gap-3">
-                <div class="text-[13px] font-semibold text-[var(--text-primary)]">{q.header || 'Question'}</div>
-                <span class="shrink-0 font-mono text-[11px] text-[var(--brand-text)]/80">ask_user</span>
-              </div>
-              <p class="text-[13px] leading-relaxed text-[var(--text-secondary)] whitespace-pre-wrap">{q.question}</p>
-              {#if q.options?.length}
-                <div class="flex flex-wrap gap-2">
-                  {#each q.options as opt}
-                    <button
-                      type="button"
-                      disabled={answering}
-                      onclick={() => answerQuestion(q.id, opt)}
-                      class="h-8 px-3.5 rounded-full border border-[var(--brand)]/40 text-[var(--brand-text)] text-xs font-semibold hover:bg-[var(--brand-soft)] transition-colors cursor-pointer disabled:opacity-50"
-                    >
-                      {opt}
-                    </button>
-                  {/each}
-                </div>
-              {/if}
-              {#if q.allow_custom !== false}
-                <div class="flex items-center gap-2">
-                  <input
-                    type="text"
-                    aria-label="Answer"
-                    bind:value={questionDraft[q.id]}
-                    onkeydown={(e) => { if (e.key === 'Enter') answerQuestion(q.id, questionDraft[q.id] ?? ''); }}
-                    placeholder={t("thread.answerPlaceholder")}
-                    class="flex-1 h-9 rounded-xl border border-[var(--hairline)] bg-black/50 px-3 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
-                  />
-                  <button
-                    type="button"
-                    disabled={answering || !(questionDraft[q.id] ?? '').trim()}
-                    onclick={() => answerQuestion(q.id, questionDraft[q.id] ?? '')}
-                    class="h-9 px-4 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] text-xs font-bold hover:bg-[var(--brand-hover)] transition-colors cursor-pointer disabled:opacity-50"
-                  >
-                    {answering ? 'Sending…' : 'Answer'}
-                  </button>
-                </div>
-              {/if}
-            </div>
+            <QuestionCard
+              botName={bot.name}
+              header={q.header}
+              question={q.question}
+              options={q.options || []}
+              allowCustom={q.allow_custom !== false}
+              answering={answeringQuestion === q.id}
+              onAnswer={(answer) => answerQuestion(q.id, answer)}
+            />
           {/each}
         </div>
         </div>
@@ -2160,10 +2529,21 @@
             type="button"
             class="jump-latest"
             onclick={jumpToLatest}
-            title={t("thread.jumpLatest")}
-            aria-label={t("thread.jumpLatest")}
+            title={unseenMessages > 0
+              ? t(unseenMessages === 1 ? "thread.newMessage" : "thread.newMessages", {
+                  count: unseenMessages,
+                })
+              : t("thread.jumpLatest")}
+            aria-label={unseenMessages > 0
+              ? t(unseenMessages === 1 ? "thread.newMessage" : "thread.newMessages", {
+                  count: unseenMessages,
+                })
+              : t("thread.jumpLatest")}
           >
             <ArrowDown class="size-3.5" />
+            {#if unseenMessages > 0}
+              <span class="jump-latest__count" aria-hidden="true">{unseenMessages}</span>
+            {/if}
             <span>{t("thread.jumpLatest")}</span>
           </button>
         {/if}
@@ -2176,6 +2556,30 @@
           ondragover={(e) => e.preventDefault()}
           ondrop={handleComposerDrop}
         >
+      {#if activeReply}
+        <div class="composer-reply">
+          <Reply class="composer-reply__icon size-3.5" strokeWidth={1.9} />
+          <div class="composer-reply__copy">
+            <span class="composer-reply__author">
+              {activeReply.author
+                ? t("thread.replyingTo", { name: activeReply.author })
+                : t("thread.replyingToMessage")}
+            </span>
+            {#if activeReply.text}
+              <span class="composer-reply__text">{activeReply.text}</span>
+            {/if}
+          </div>
+          <button
+            type="button"
+            class="composer-reply__close"
+            onclick={cancelReply}
+            aria-label={t("thread.cancelReply")}
+            title={t("thread.cancelReply")}
+          >
+            <X class="size-3.5" />
+          </button>
+        </div>
+      {/if}
       <!-- Pending attachments (images as thumbnails, docs as chips) -->
       {#if pendingAttachments.length}
         <div class="flex flex-wrap gap-1.5 pb-1.5">
@@ -2189,7 +2593,7 @@
                 />
                 <button
                   type="button"
-                  class="absolute top-0.5 right-0.5 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
+                  class="absolute top-0.5 right-0.5 size-4 rounded-full bg-[var(--scrim)] text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
                   onclick={() => removePendingAttachment(idx)}
                   aria-label={t("room.removeAttachment")}
                   title={t("room.removeAttachment")}
@@ -2206,7 +2610,7 @@
                 </div>
                 <button
                   type="button"
-                  class="absolute top-1 right-1 size-4 rounded-full bg-black/60 text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
+                  class="absolute top-1 right-1 size-4 rounded-full bg-[var(--scrim)] text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
                   onclick={() => removePendingAttachment(idx)}
                   aria-label={t("room.removeAttachment")}
                   title={t("room.removeAttachment")}
@@ -2248,6 +2652,9 @@
           } else if (e.key === "Escape" && editingMessage) {
             e.preventDefault();
             cancelEditing();
+          } else if (e.key === "Escape" && replyingTo) {
+            e.preventDefault();
+            cancelReply();
           }
         }}
       ></textarea>
@@ -2300,6 +2707,7 @@
                 <span>{t("home.thinkPill")}</span>
               </button>
 
+              <ContextMeter threadId={selectedThreadId} class="ml-1" />
               <button
                 type="button"
                 class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center transition-colors cursor-pointer"
@@ -2406,7 +2814,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 bg-black/60  flex items-center justify-center p-4 animate-in fade-in"
+    class="fixed inset-0 z-50 bg-[var(--scrim)]  flex items-center justify-center p-4 animate-in fade-in"
     onclick={() => (showIntelligence = false)}
   >
     <div
@@ -2436,7 +2844,12 @@
 
 <!-- Computer / Desktop Panel -->
 {#if showComputer}
-  <ComputerPanel botName={bot.name} botId={bot.id} onClose={() => (showComputer = false)} />
+  <ComputerPanel
+    botName={bot.name}
+    botId={bot.id}
+    hostControl={bot.config?.host_control === true}
+    onClose={() => (showComputer = false)}
+  />
 {/if}
 
 <!-- Channels manager -->
@@ -2460,7 +2873,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 bg-black/60  flex items-center justify-center p-4 animate-in fade-in"
+    class="fixed inset-0 z-50 bg-[var(--scrim)]  flex items-center justify-center p-4 animate-in fade-in"
     onclick={() => (showSync = false)}
   >
     <div
@@ -2487,7 +2900,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
-    class="fixed inset-0 z-50 bg-black/60  flex items-center justify-center p-4 animate-in fade-in"
+    class="fixed inset-0 z-50 bg-[var(--scrim)]  flex items-center justify-center p-4 animate-in fade-in"
     onclick={() => (showRoutines = false)}
   >
     <div

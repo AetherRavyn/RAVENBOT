@@ -4,6 +4,11 @@
 @import "./lib/styles/tokens.css";
 @import "./lib/styles/components.css";
 
+/* `dark:` follows the active theme rather than the operating system. Without
+ * this, a light theme on a dark desktop would still paint the shadcn
+ * primitives with their dark variants. */
+@custom-variant dark (&:where([data-color-scheme="dark"], [data-color-scheme="dark"] *));
+
 /* Map the design tokens into Tailwind's theme so utilities like `bg-card`,
  * `border-border`, `text-muted-foreground`, `ring-ring` resolve correctly. */
 @theme {
@@ -70,8 +75,8 @@
   }
 
   ::selection {
-    background: rgba(0, 124, 247, 0.32);
-    color: #fff;
+    background: color-mix(in srgb, var(--brand) 34%, transparent);
+    color: var(--text-primary);
   }
 
   button,
@@ -90,14 +95,14 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--scrollbar-thumb);
   border-radius: 999px;
   border: 3px solid transparent;
   background-clip: content-box;
   transition: background 0.2s ease;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--scrollbar-thumb-hover);
   background-clip: content-box;
 }
 ::-webkit-scrollbar-corner {

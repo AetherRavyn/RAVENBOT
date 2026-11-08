@@ -1,23 +1,42 @@
 //! API tester — test REST/GraphQL/gRPC endpoints with collections, assertions, and reporting
 
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 
 pub struct ApiTesterSkill {
     client: reqwest::Client,
 }
 
-impl ApiTesterSkill { pub fn new() -> Self { Self { client: reqwest::Client::builder().timeout(std::time::Duration::from_secs(30)).build().unwrap_or_default() } } }
+impl ApiTesterSkill {
+    pub fn new() -> Self {
+        Self {
+            client: reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(30))
+                .build()
+                .unwrap_or_default(),
+        }
+    }
+}
 
 #[async_trait]
 impl Skill for ApiTesterSkill {
-    fn id(&self) -> &str { "api_tester" }
-    fn name(&self) -> &str { "API Tester" }
-    fn description(&self) -> &str { "Test REST/GraphQL endpoints: send requests, assert responses, chain requests, run collections" }
-    fn version(&self) -> &str { "1.0.0" }
+    fn id(&self) -> &str {
+        "api_tester"
+    }
+    fn name(&self) -> &str {
+        "API Tester"
+    }
+    fn description(&self) -> &str {
+        "Test REST/GraphQL endpoints: send requests, assert responses, chain requests, run collections"
+    }
+    fn version(&self) -> &str {
+        "1.0.0"
+    }
     fn required_permissions(&self) -> Vec<Permission> {
-        vec![Permission::Network { domains: vec!["*".to_string()] }]
+        vec![Permission::Network {
+            domains: vec!["*".to_string()],
+        }]
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -63,8 +82,14 @@ impl Skill for ApiTesterSkill {
         })
     }
 
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let action = args.get("action").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        _ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'action'".into()))?;
 
         match action {
@@ -72,8 +97,13 @@ impl Skill for ApiTesterSkill {
             "collection" => self.run_collection(args).await,
             "graphql" => self.graphql_request(args).await,
             "health_check" => self.health_check(args).await,
-            "websocket_test" => Ok(SkillResult::failure("WebSocket testing not yet implemented".to_string())),
-            _ => Err(SkillError::InvalidArguments(format!("Unknown action: {}", action))),
+            "websocket_test" => Ok(SkillResult::failure(
+                "WebSocket testing not yet implemented".to_string(),
+            )),
+            _ => Err(SkillError::InvalidArguments(format!(
+                "Unknown action: {}",
+                action
+            ))),
         }
     }
 }
@@ -81,7 +111,9 @@ impl Skill for ApiTesterSkill {
 impl ApiTesterSkill {
     async fn single_request(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
         let method = args.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
-        let url = args.get("url").and_then(|v| v.as_str())
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'url'".into()))?;
 
         let mut req = match method {
@@ -106,7 +138,8 @@ impl ApiTesterSkill {
         }
 
         if let Some(q) = args.get("query").and_then(|v| v.as_object()) {
-            let params: Vec<(String, String)> = q.iter()
+            let params: Vec<(String, String)> = q
+                .iter()
                 .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
                 .collect();
             if !params.is_empty() {
@@ -115,11 +148,15 @@ impl ApiTesterSkill {
         }
 
         let start = std::time::Instant::now();
-        let resp = req.send().await.map_err(|e| SkillError::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| SkillError::Network(e.to_string()))?;
         let elapsed = start.elapsed();
 
         let status = resp.status().as_u16();
-        let headers: std::collections::HashMap<String, String> = resp.headers()
+        let headers: std::collections::HashMap<String, String> = resp
+            .headers()
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
@@ -129,7 +166,8 @@ impl ApiTesterSkill {
 
         // Run assertions
         let assertions = args.get("assertions");
-        let assertion_results = self.run_assertions(assertions, status, &body_text, &body_json, elapsed);
+        let assertion_results =
+            self.run_assertions(assertions, status, &body_text, &body_json, elapsed);
 
         Ok(SkillResult::success(serde_json::json!({
             "status": status,
@@ -142,9 +180,15 @@ impl ApiTesterSkill {
     }
 
     async fn run_collection(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let collection = args.get("collection").and_then(|v| v.as_array())
+        let collection = args
+            .get("collection")
+            .and_then(|v| v.as_array())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'collection'".into()))?;
-        let iterations = args.get("iterations").and_then(|v| v.as_u64()).unwrap_or(1).min(100) as usize;
+        let iterations = args
+            .get("iterations")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(1)
+            .min(100) as usize;
         let delay_ms = args.get("delay_ms").and_then(|v| v.as_u64()).unwrap_or(0);
 
         let mut results = Vec::new();
@@ -161,7 +205,11 @@ impl ApiTesterSkill {
                 match self.single_request(req_args).await {
                     Ok(result) => {
                         let passed = result.output["all_passed"].as_bool().unwrap_or(false);
-                        if passed { total_passed += 1; } else { total_failed += 1; }
+                        if passed {
+                            total_passed += 1;
+                        } else {
+                            total_failed += 1;
+                        }
                         results.push(serde_json::json!({
                             "iteration": iter + 1,
                             "step": i + 1,
@@ -196,12 +244,20 @@ impl ApiTesterSkill {
     }
 
     async fn graphql_request(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let url = args.get("url").and_then(|v| v.as_str())
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'url'".into()))?;
-        let query = args.get("body").and_then(|v| v.get("query")).and_then(|v| v.as_str())
+        let query = args
+            .get("body")
+            .and_then(|v| v.get("query"))
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing query in body".into()))?;
 
-        let mut req = self.client.post(url).json(&serde_json::json!({ "query": query }));
+        let mut req = self
+            .client
+            .post(url)
+            .json(&serde_json::json!({ "query": query }));
 
         if let Some(h) = args.get("headers").and_then(|v| v.as_object()) {
             for (k, v) in h {
@@ -212,7 +268,10 @@ impl ApiTesterSkill {
         }
 
         let start = std::time::Instant::now();
-        let resp = req.send().await.map_err(|e| SkillError::Network(e.to_string()))?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| SkillError::Network(e.to_string()))?;
         let elapsed = start.elapsed();
 
         let status = resp.status().as_u16();
@@ -229,9 +288,15 @@ impl ApiTesterSkill {
     }
 
     async fn health_check(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let url = args.get("url").and_then(|v| v.as_str())
+        let url = args
+            .get("url")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'url'".into()))?;
-        let iterations = args.get("iterations").and_then(|v| v.as_u64()).unwrap_or(3).min(20);
+        let iterations = args
+            .get("iterations")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(3)
+            .min(20);
 
         let mut results = Vec::new();
         for _ in 0..iterations {
@@ -255,7 +320,10 @@ impl ApiTesterSkill {
             }
         }
 
-        let healthy_count = results.iter().filter(|r| r["healthy"].as_bool().unwrap_or(false)).count();
+        let healthy_count = results
+            .iter()
+            .filter(|r| r["healthy"].as_bool().unwrap_or(false))
+            .count();
         Ok(SkillResult::success(serde_json::json!({
             "url": url,
             "iterations": iterations,
@@ -307,7 +375,10 @@ impl ApiTesterSkill {
             }));
         }
 
-        if let Some(max_ms) = assertions.get("max_response_time_ms").and_then(|v| v.as_u64()) {
+        if let Some(max_ms) = assertions
+            .get("max_response_time_ms")
+            .and_then(|v| v.as_u64())
+        {
             let passed = elapsed.as_millis() as u64 <= max_ms;
             results.push(serde_json::json!({
                 "type": "max_response_time_ms",
@@ -322,5 +393,7 @@ impl ApiTesterSkill {
 }
 
 impl Default for ApiTesterSkill {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

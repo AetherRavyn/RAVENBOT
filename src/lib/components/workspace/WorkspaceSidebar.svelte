@@ -111,6 +111,7 @@
           openSettings={() => workspace.openSettings()}
           onNewChat={() => workspace.newChat()}
           onReorder={(ids) => workspace.reorderBots(ids)}
+          onOpenSearch={() => (workspace.showPalette = true)}
         />
       {/if}
     </div>

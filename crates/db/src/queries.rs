@@ -1,10 +1,10 @@
 //! Database query functions
 
-use sqlx::SqlitePool;
 use chrono::Utc;
+use sqlx::SqlitePool;
 use uuid::Uuid;
 
-use crate::models::{BotRow, ThreadRow, MessageRow, RunRow};
+use crate::models::{BotRow, MessageRow, RunRow, ThreadRow};
 
 /// Bot-related queries
 pub struct BotQueries;
@@ -21,20 +21,19 @@ impl BotQueries {
     }
 
     async fn has_column(pool: &SqlitePool, name: &str) -> bool {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pragma_table_info('bots') WHERE name = ?")
-            .bind(name)
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0)
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('bots') WHERE name = ?",
+        )
+        .bind(name)
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
             > 0
     }
 
     /// Overlay junction-table skills onto bots loaded without the column
     /// (pre-009 databases).
-    async fn backfill_skills_from_junction(
-        pool: &SqlitePool,
-        bots: &mut [ravenbot_core::Bot],
-    ) {
+    async fn backfill_skills_from_junction(pool: &SqlitePool, bots: &mut [ravenbot_core::Bot]) {
         for bot in bots.iter_mut() {
             let ids: Vec<(String,)> =
                 sqlx::query_as("SELECT skill_id FROM bot_skills WHERE bot_id = ?")
@@ -55,20 +54,22 @@ impl BotQueries {
             .execute(pool)
             .await;
         for skill_id in &bot.skills {
-            let _ = sqlx::query(
-                "INSERT OR IGNORE INTO bot_skills (bot_id, skill_id) VALUES (?, ?)",
-            )
-            .bind(bot.id.to_string())
-            .bind(skill_id)
-            .execute(pool)
-            .await;
+            let _ =
+                sqlx::query("INSERT OR IGNORE INTO bot_skills (bot_id, skill_id) VALUES (?, ?)")
+                    .bind(bot.id.to_string())
+                    .bind(skill_id)
+                    .execute(pool)
+                    .await;
         }
     }
 
     /// Insert a new bot
     pub async fn insert(pool: &SqlitePool, bot: &ravenbot_core::Bot) -> Result<(), sqlx::Error> {
         let row = BotRow::from_domain(bot).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-        let approval = row.approval_mode.clone().unwrap_or_else(|| "ask".to_string());
+        let approval = row
+            .approval_mode
+            .clone()
+            .unwrap_or_else(|| "ask".to_string());
 
         if Self::has_skills_column(pool).await && Self::has_approval_column(pool).await {
             sqlx::query(
@@ -149,7 +150,10 @@ impl BotQueries {
     }
 
     /// Get a bot by ID
-    pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<ravenbot_core::Bot>, sqlx::Error> {
+    pub async fn get(
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<ravenbot_core::Bot>, sqlx::Error> {
         // `SELECT *` maps onto BotRow.skills as Option — missing columns on
         // old DBs decode as None, so this is safe pre- and post-009.
         let row: Option<BotRow> = sqlx::query_as("SELECT * FROM bots WHERE id = ?")
@@ -159,11 +163,11 @@ impl BotQueries {
 
         match row {
             Some(row) => {
-                let mut bot =
-                    row.to_domain().map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+                let mut bot = row
+                    .to_domain()
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
                 if row.skills.is_none() {
-                    Self::backfill_skills_from_junction(pool, std::slice::from_mut(&mut bot))
-                        .await;
+                    Self::backfill_skills_from_junction(pool, std::slice::from_mut(&mut bot)).await;
                 }
                 Ok(Some(bot))
             }
@@ -181,7 +185,10 @@ impl BotQueries {
         let needs_backfill = rows.iter().any(|r| r.skills.is_none());
         let mut bots = Vec::new();
         for row in rows {
-            bots.push(row.to_domain().map_err(|e| sqlx::Error::Decode(Box::new(e)))?);
+            bots.push(
+                row.to_domain()
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))?,
+            );
         }
         if needs_backfill {
             Self::backfill_skills_from_junction(pool, &mut bots).await;
@@ -205,7 +212,10 @@ impl BotQueries {
     /// Update a bot
     pub async fn update(pool: &SqlitePool, bot: &ravenbot_core::Bot) -> Result<(), sqlx::Error> {
         let row = BotRow::from_domain(bot).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-        let approval = row.approval_mode.clone().unwrap_or_else(|| "ask".to_string());
+        let approval = row
+            .approval_mode
+            .clone()
+            .unwrap_or_else(|| "ask".to_string());
 
         if Self::has_skills_column(pool).await && Self::has_approval_column(pool).await {
             sqlx::query(
@@ -285,10 +295,25 @@ impl BotQueries {
 
     /// Delete a bot
     pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
+        // Threads and messages cascade from the bot, but reactions have no
+        // foreign key (see migration 029), so they are cleared first.
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM message_reactions
+             WHERE message_id IN (
+                 SELECT m.id FROM messages m
+                 JOIN threads t ON t.id = m.thread_id
+                 WHERE t.bot_id = ?
+             )",
+        )
+        .bind(id.to_string())
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM bots WHERE id = ?")
             .bind(id.to_string())
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -309,15 +334,13 @@ impl BotQueries {
         id: Uuid,
         status: ravenbot_core::BotStatus,
     ) -> Result<(), sqlx::Error> {
-        sqlx::query(
-            "UPDATE bots SET status = ?, last_active_at = ?, updated_at = ? WHERE id = ?",
-        )
-        .bind(crate::models::bot_status_to_db(status))
-        .bind(Utc::now().to_rfc3339())
-        .bind(Utc::now().to_rfc3339())
-        .bind(id.to_string())
-        .execute(pool)
-        .await?;
+        sqlx::query("UPDATE bots SET status = ?, last_active_at = ?, updated_at = ? WHERE id = ?")
+            .bind(crate::models::bot_status_to_db(status))
+            .bind(Utc::now().to_rfc3339())
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
@@ -338,7 +361,10 @@ pub struct ThreadQueries;
 
 impl ThreadQueries {
     /// Create a new thread
-    pub async fn create(pool: &SqlitePool, thread: &ravenbot_core::Thread) -> Result<(), sqlx::Error> {
+    pub async fn create(
+        pool: &SqlitePool,
+        thread: &ravenbot_core::Thread,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO threads (id, bot_id, title, is_active, ephemeral, channel_id, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
@@ -357,7 +383,10 @@ impl ThreadQueries {
     }
 
     /// Get a thread by ID
-    pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<ravenbot_core::Thread>, sqlx::Error> {
+    pub async fn get(
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<ravenbot_core::Thread>, sqlx::Error> {
         let row: Option<ThreadRow> = sqlx::query_as("SELECT * FROM threads WHERE id = ?")
             .bind(id.to_string())
             .fetch_optional(pool)
@@ -371,14 +400,17 @@ impl ThreadQueries {
                 let updated_at = chrono::DateTime::parse_from_rfc3339(&row.updated_at)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now());
-                
+
                 Ok(Some(ravenbot_core::Thread {
                     id: Uuid::parse_str(&row.id).unwrap_or_default(),
                     bot_id: Uuid::parse_str(&row.bot_id).unwrap_or_default(),
                     title: row.title,
                     is_active: row.is_active,
                     ephemeral: row.ephemeral,
-                    channel_id: row.channel_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+                    channel_id: row
+                        .channel_id
+                        .as_deref()
+                        .and_then(|s| Uuid::parse_str(s).ok()),
                     created_at,
                     updated_at,
                 }))
@@ -388,33 +420,41 @@ impl ThreadQueries {
     }
 
     /// Get threads for a bot
-    pub async fn list_by_bot(pool: &SqlitePool, bot_id: Uuid) -> Result<Vec<ravenbot_core::Thread>, sqlx::Error> {
-        let rows: Vec<ThreadRow> = sqlx::query_as(
-            "SELECT * FROM threads WHERE bot_id = ? ORDER BY updated_at DESC"
-        )
-        .bind(bot_id.to_string())
-        .fetch_all(pool)
-        .await?;
+    pub async fn list_by_bot(
+        pool: &SqlitePool,
+        bot_id: Uuid,
+    ) -> Result<Vec<ravenbot_core::Thread>, sqlx::Error> {
+        let rows: Vec<ThreadRow> =
+            sqlx::query_as("SELECT * FROM threads WHERE bot_id = ? ORDER BY updated_at DESC")
+                .bind(bot_id.to_string())
+                .fetch_all(pool)
+                .await?;
 
-        let threads = rows.into_iter().map(|row| {
-            let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-            let updated_at = chrono::DateTime::parse_from_rfc3339(&row.updated_at)
-                .map(|dt| dt.with_timezone(&chrono::Utc))
-                .unwrap_or_else(|_| chrono::Utc::now());
-            
-            ravenbot_core::Thread {
-                id: Uuid::parse_str(&row.id).unwrap_or_default(),
-                bot_id: Uuid::parse_str(&row.bot_id).unwrap_or_default(),
-                title: row.title,
-                is_active: row.is_active,
-                ephemeral: row.ephemeral,
-                channel_id: row.channel_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
-                created_at,
-                updated_at,
-            }
-        }).collect();
+        let threads = rows
+            .into_iter()
+            .map(|row| {
+                let created_at = chrono::DateTime::parse_from_rfc3339(&row.created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+                let updated_at = chrono::DateTime::parse_from_rfc3339(&row.updated_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now());
+
+                ravenbot_core::Thread {
+                    id: Uuid::parse_str(&row.id).unwrap_or_default(),
+                    bot_id: Uuid::parse_str(&row.bot_id).unwrap_or_default(),
+                    title: row.title,
+                    is_active: row.is_active,
+                    ephemeral: row.ephemeral,
+                    channel_id: row
+                        .channel_id
+                        .as_deref()
+                        .and_then(|s| Uuid::parse_str(s).ok()),
+                    created_at,
+                    updated_at,
+                }
+            })
+            .collect();
 
         Ok(threads)
     }
@@ -425,15 +465,20 @@ pub struct MessageQueries;
 
 impl MessageQueries {
     async fn has_message_sender_columns(pool: &SqlitePool) -> bool {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'sender_bot_id'")
-            .fetch_one(pool)
-            .await
-            .unwrap_or(0)
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name = 'sender_bot_id'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0)
             > 0
     }
 
     /// Insert a message
-    pub async fn insert(pool: &SqlitePool, message: &ravenbot_core::Message) -> Result<(), sqlx::Error> {
+    pub async fn insert(
+        pool: &SqlitePool,
+        message: &ravenbot_core::Message,
+    ) -> Result<(), sqlx::Error> {
         let content = serde_json::to_string(&message.content)
             .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
         let attachments = serde_json::to_string(&message.attachments)
@@ -464,7 +509,7 @@ impl MessageQueries {
         } else {
             sqlx::query(
                 "INSERT INTO messages (id, thread_id, role, content, attachments, created_at)
-                 VALUES (?, ?, ?, ?, ?, ?)"
+                 VALUES (?, ?, ?, ?, ?, ?)",
             )
             .bind(message.id.to_string())
             .bind(message.thread_id.to_string())
@@ -481,28 +526,62 @@ impl MessageQueries {
 
     /// Delete a message by id (used by regenerate)
     pub async fn delete(pool: &SqlitePool, message_id: Uuid) -> Result<(), sqlx::Error> {
+        // Reactions are keyed by message id without a foreign key (see
+        // migration 029), so they are removed in the same transaction as the
+        // message. Without this, re-using or regenerating a turn would leave
+        // orphan rows that a future message could inherit.
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM message_reactions WHERE message_id = ?")
+            .bind(message_id.to_string())
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM messages WHERE id = ?")
             .bind(message_id.to_string())
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 
     /// Get messages for a thread
-    pub async fn list_by_thread(pool: &SqlitePool, thread_id: Uuid) -> Result<Vec<ravenbot_core::Message>, sqlx::Error> {
-        let rows: Vec<MessageRow> = sqlx::query_as(
-            "SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC"
+    pub async fn list_by_thread(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+    ) -> Result<Vec<ravenbot_core::Message>, sqlx::Error> {
+        let rows: Vec<MessageRow> =
+            sqlx::query_as("SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC")
+                .bind(thread_id.to_string())
+                .fetch_all(pool)
+                .await?;
+
+        // One query for the whole thread. A reaction lookup per message would
+        // be N+1 on the most frequently opened screen in the app.
+        let reaction_rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT r.message_id, r.emoji
+             FROM message_reactions r
+             JOIN messages m ON m.id = r.message_id
+             WHERE m.thread_id = ?
+             ORDER BY r.created_at ASC, r.rowid ASC",
         )
         .bind(thread_id.to_string())
         .fetch_all(pool)
         .await?;
+        let mut reactions_by_message: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for (message_id, emoji) in reaction_rows {
+            reactions_by_message
+                .entry(message_id)
+                .or_default()
+                .push(emoji);
+        }
 
         let mut messages = Vec::new();
         for row in rows {
-            let content: ravenbot_core::MessageContent = serde_json::from_str(&row.content)
-                .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
-            let attachments: Vec<ravenbot_core::Attachment> = serde_json::from_str(&row.attachments)
-                .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+            let content: ravenbot_core::MessageContent =
+                serde_json::from_str(&row.content).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+            let attachments: Vec<ravenbot_core::Attachment> =
+                serde_json::from_str(&row.attachments)
+                    .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
             let role = match row.role.as_str() {
                 "user" => ravenbot_core::MessageRole::User,
                 "assistant" => ravenbot_core::MessageRole::Assistant,
@@ -517,9 +596,16 @@ impl MessageQueries {
                 role,
                 content,
                 attachments,
-                sender_bot_id: row.sender_bot_id.as_deref().and_then(|v| Uuid::parse_str(v).ok()),
+                sender_bot_id: row
+                    .sender_bot_id
+                    .as_deref()
+                    .and_then(|v| Uuid::parse_str(v).ok()),
                 sender_name: row.sender_name.clone(),
-                reply_to_id: row.reply_to_id.as_deref().and_then(|v| Uuid::parse_str(v).ok()),
+                reply_to_id: row
+                    .reply_to_id
+                    .as_deref()
+                    .and_then(|v| Uuid::parse_str(v).ok()),
+                reactions: reactions_by_message.remove(&row.id).unwrap_or_default(),
                 created_at: chrono::DateTime::parse_from_rfc3339(&row.created_at)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),
@@ -548,9 +634,13 @@ impl RunQueries {
             ravenbot_core::RunState::Cancelled => "cancelled",
         };
 
-        let checkpoint = run.checkpoint.as_ref()
+        let checkpoint = run
+            .checkpoint
+            .as_ref()
             .map(|c| serde_json::to_string(c).unwrap_or_default());
-        let outcome = run.outcome.as_ref()
+        let outcome = run
+            .outcome
+            .as_ref()
             .map(|o| serde_json::to_string(o).unwrap_or_default());
 
         sqlx::query(
@@ -576,7 +666,10 @@ impl RunQueries {
     }
 
     /// Get a run by ID
-    pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<ravenbot_core::Run>, sqlx::Error> {
+    pub async fn get(
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<ravenbot_core::Run>, sqlx::Error> {
         let row: Option<RunRow> = sqlx::query_as("SELECT * FROM runs WHERE id = ?")
             .bind(id.to_string())
             .fetch_optional(pool)
@@ -602,10 +695,19 @@ impl RunQueries {
                     id: Uuid::parse_str(&row.id).unwrap_or_default(),
                     bot_id: Uuid::parse_str(&row.bot_id).unwrap_or_default(),
                     thread_id: Uuid::parse_str(&row.thread_id).unwrap_or_default(),
-                    parent_run_id: row.parent_run_id.as_ref().and_then(|s| Uuid::parse_str(s).ok()),
+                    parent_run_id: row
+                        .parent_run_id
+                        .as_ref()
+                        .and_then(|s| Uuid::parse_str(s).ok()),
                     state,
-                    checkpoint: row.checkpoint.as_ref().and_then(|s| serde_json::from_str(s).ok()),
-                    outcome: row.outcome.as_ref().and_then(|s| serde_json::from_str(s).ok()),
+                    checkpoint: row
+                        .checkpoint
+                        .as_ref()
+                        .and_then(|s| serde_json::from_str(s).ok()),
+                    outcome: row
+                        .outcome
+                        .as_ref()
+                        .and_then(|s| serde_json::from_str(s).ok()),
                     tokens_consumed: row.tokens_consumed as u64,
                     cost_estimate: row.cost_estimate,
                     created_at: chrono::DateTime::parse_from_rfc3339(&row.created_at)
@@ -639,9 +741,13 @@ impl RunQueries {
             ravenbot_core::RunState::Cancelled => "cancelled",
         };
 
-        let checkpoint = run.checkpoint.as_ref()
+        let checkpoint = run
+            .checkpoint
+            .as_ref()
             .map(|c| serde_json::to_string(c).unwrap_or_default());
-        let outcome = run.outcome.as_ref()
+        let outcome = run
+            .outcome
+            .as_ref()
             .map(|o| serde_json::to_string(o).unwrap_or_default());
 
         sqlx::query(
@@ -667,7 +773,10 @@ impl RunQueries {
 pub struct ChatRoomQueries;
 
 impl ChatRoomQueries {
-    pub async fn create(pool: &SqlitePool, room: &ravenbot_core::ChatRoom) -> Result<(), sqlx::Error> {
+    pub async fn create(
+        pool: &SqlitePool,
+        room: &ravenbot_core::ChatRoom,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO chatrooms (id, name, description, office_template, avatar_url, avatar_style, goal, policy, terms, budget, budget_distribution, project_folders, created_at, updated_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -691,7 +800,10 @@ impl ChatRoomQueries {
         Ok(())
     }
 
-    pub async fn update(pool: &SqlitePool, room: &ravenbot_core::ChatRoom) -> Result<(), sqlx::Error> {
+    pub async fn update(
+        pool: &SqlitePool,
+        room: &ravenbot_core::ChatRoom,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "UPDATE chatrooms SET name = ?, description = ?, office_template = ?, avatar_url = ?, avatar_style = ?, goal = ?, policy = ?, terms = ?, budget = ?, budget_distribution = ?, project_folders = ?, updated_at = ? WHERE id = ?"
         )
@@ -714,34 +826,53 @@ impl ChatRoomQueries {
     }
 
     pub async fn list(pool: &SqlitePool) -> Result<Vec<ravenbot_core::ChatRoom>, sqlx::Error> {
-        let rows: Vec<crate::models::ChatRoomRow> = sqlx::query_as("SELECT * FROM chatrooms ORDER BY updated_at DESC")
-            .fetch_all(pool)
-            .await?;
-        Ok(rows.into_iter().filter_map(|r| {
-            Some(ravenbot_core::ChatRoom {
-                id: uuid::Uuid::parse_str(&r.id).ok()?,
-                name: r.name,
-                description: r.description,
-                office_template: r.office_template,
-                avatar_url: r.avatar_url,
-                avatar_style: r.avatar_style,
-                goal: r.goal,
-                policy: r.policy,
-                terms: r.terms,
-                budget: r.budget,
-                budget_distribution: r.budget_distribution.as_deref().and_then(|s| serde_json::from_str(s).ok()),
-                project_folders: r.project_folders.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default(),
-                created_at: chrono::DateTime::parse_from_rfc3339(&r.created_at).map(|dt| dt.with_timezone(&chrono::Utc)).unwrap_or_else(|_| chrono::Utc::now()),
-                updated_at: chrono::DateTime::parse_from_rfc3339(&r.updated_at).map(|dt| dt.with_timezone(&chrono::Utc)).unwrap_or_else(|_| chrono::Utc::now()),
+        let rows: Vec<crate::models::ChatRoomRow> =
+            sqlx::query_as("SELECT * FROM chatrooms ORDER BY updated_at DESC")
+                .fetch_all(pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(ravenbot_core::ChatRoom {
+                    id: uuid::Uuid::parse_str(&r.id).ok()?,
+                    name: r.name,
+                    description: r.description,
+                    office_template: r.office_template,
+                    avatar_url: r.avatar_url,
+                    avatar_style: r.avatar_style,
+                    goal: r.goal,
+                    policy: r.policy,
+                    terms: r.terms,
+                    budget: r.budget,
+                    budget_distribution: r
+                        .budget_distribution
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok()),
+                    project_folders: r
+                        .project_folders
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default(),
+                    created_at: chrono::DateTime::parse_from_rfc3339(&r.created_at)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&r.updated_at)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                })
             })
-        }).collect())
+            .collect())
     }
 
-    pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<ravenbot_core::ChatRoom>, sqlx::Error> {
-        let row: Option<crate::models::ChatRoomRow> = sqlx::query_as("SELECT * FROM chatrooms WHERE id = ?")
-            .bind(id.to_string())
-            .fetch_optional(pool)
-            .await?;
+    pub async fn get(
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<ravenbot_core::ChatRoom>, sqlx::Error> {
+        let row: Option<crate::models::ChatRoomRow> =
+            sqlx::query_as("SELECT * FROM chatrooms WHERE id = ?")
+                .bind(id.to_string())
+                .fetch_optional(pool)
+                .await?;
         Ok(row.and_then(|r| {
             Some(ravenbot_core::ChatRoom {
                 id: uuid::Uuid::parse_str(&r.id).ok()?,
@@ -754,15 +885,29 @@ impl ChatRoomQueries {
                 policy: r.policy,
                 terms: r.terms,
                 budget: r.budget,
-                budget_distribution: r.budget_distribution.as_deref().and_then(|s| serde_json::from_str(s).ok()),
-                project_folders: r.project_folders.as_deref().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default(),
-                created_at: chrono::DateTime::parse_from_rfc3339(&r.created_at).map(|dt| dt.with_timezone(&chrono::Utc)).unwrap_or_else(|_| chrono::Utc::now()),
-                updated_at: chrono::DateTime::parse_from_rfc3339(&r.updated_at).map(|dt| dt.with_timezone(&chrono::Utc)).unwrap_or_else(|_| chrono::Utc::now()),
+                budget_distribution: r
+                    .budget_distribution
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok()),
+                project_folders: r
+                    .project_folders
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
+                created_at: chrono::DateTime::parse_from_rfc3339(&r.created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+                updated_at: chrono::DateTime::parse_from_rfc3339(&r.updated_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
             })
         }))
     }
 
-    pub async fn add_member(pool: &SqlitePool, member: &ravenbot_core::ChatRoomMember) -> Result<(), sqlx::Error> {
+    pub async fn add_member(
+        pool: &SqlitePool,
+        member: &ravenbot_core::ChatRoomMember,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query("INSERT OR REPLACE INTO chatroom_members (chatroom_id, bot_id, rank, specialty, joined_at) VALUES (?, ?, ?, ?, ?)")
             .bind(member.chatroom_id.to_string())
             .bind(member.bot_id.to_string())
@@ -774,46 +919,77 @@ impl ChatRoomQueries {
         Ok(())
     }
 
-    pub async fn list_members(pool: &SqlitePool, chatroom_id: Uuid) -> Result<Vec<ravenbot_core::ChatRoomMember>, sqlx::Error> {
-        let rows: Vec<crate::models::ChatRoomMemberRow> = sqlx::query_as("SELECT * FROM chatroom_members WHERE chatroom_id = ?")
-            .bind(chatroom_id.to_string())
-            .fetch_all(pool)
-            .await?;
-        Ok(rows.into_iter().filter_map(|r| {
-            Some(ravenbot_core::ChatRoomMember {
-                chatroom_id: uuid::Uuid::parse_str(&r.chatroom_id).ok()?,
-                bot_id: uuid::Uuid::parse_str(&r.bot_id).ok()?,
-                rank: r.rank,
-                specialty: r.specialty,
-                joined_at: chrono::DateTime::parse_from_rfc3339(&r.joined_at).map(|dt| dt.with_timezone(&chrono::Utc)).unwrap_or_else(|_| chrono::Utc::now()),
+    pub async fn list_members(
+        pool: &SqlitePool,
+        chatroom_id: Uuid,
+    ) -> Result<Vec<ravenbot_core::ChatRoomMember>, sqlx::Error> {
+        let rows: Vec<crate::models::ChatRoomMemberRow> =
+            sqlx::query_as("SELECT * FROM chatroom_members WHERE chatroom_id = ?")
+                .bind(chatroom_id.to_string())
+                .fetch_all(pool)
+                .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(ravenbot_core::ChatRoomMember {
+                    chatroom_id: uuid::Uuid::parse_str(&r.chatroom_id).ok()?,
+                    bot_id: uuid::Uuid::parse_str(&r.bot_id).ok()?,
+                    rank: r.rank,
+                    specialty: r.specialty,
+                    joined_at: chrono::DateTime::parse_from_rfc3339(&r.joined_at)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
+                })
             })
-        }).collect())
+            .collect())
     }
 
-    pub async fn remove_member(pool: &SqlitePool, chatroom_id: Uuid, bot_id: Uuid) -> Result<(), sqlx::Error> {
+    pub async fn remove_member(
+        pool: &SqlitePool,
+        chatroom_id: Uuid,
+        bot_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query("DELETE FROM chatroom_members WHERE chatroom_id = ? AND bot_id = ?")
-            .bind(chatroom_id.to_string()).bind(bot_id.to_string()).execute(pool).await?;
+            .bind(chatroom_id.to_string())
+            .bind(bot_id.to_string())
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
-    pub async fn update_member(pool: &SqlitePool, chatroom_id: Uuid, bot_id: Uuid, rank: &str, specialty: &str) -> Result<(), sqlx::Error> {
+    pub async fn update_member(
+        pool: &SqlitePool,
+        chatroom_id: Uuid,
+        bot_id: Uuid,
+        rank: &str,
+        specialty: &str,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query("UPDATE chatroom_members SET rank = ?, specialty = ? WHERE chatroom_id = ? AND bot_id = ?")
             .bind(rank).bind(specialty).bind(chatroom_id.to_string()).bind(bot_id.to_string()).execute(pool).await?;
         Ok(())
     }
 
     pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
-        sqlx::query("DELETE FROM chatrooms WHERE id = ?").bind(id.to_string()).execute(pool).await?;
+        sqlx::query("DELETE FROM chatrooms WHERE id = ?")
+            .bind(id.to_string())
+            .execute(pool)
+            .await?;
         Ok(())
     }
 }
 
 impl ThreadQueries {
     /// Rename a thread
-    pub async fn rename(pool: &SqlitePool, thread_id: Uuid, title: &str) -> Result<(), sqlx::Error> {
+    pub async fn rename(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+        title: &str,
+    ) -> Result<(), sqlx::Error> {
         let title = title.trim();
         if title.is_empty() {
-            return Err(sqlx::Error::Decode("Title cannot be empty".to_string().into()));
+            return Err(sqlx::Error::Decode(
+                "Title cannot be empty".to_string().into(),
+            ));
         }
         sqlx::query("UPDATE threads SET title = ?, updated_at = ? WHERE id = ?")
             .bind(title)
@@ -824,12 +1000,21 @@ impl ThreadQueries {
         Ok(())
     }
 
-    /// Delete a thread (messages cascade via FK)
+    /// Delete a thread (messages cascade via FK; reactions are cleared first)
     pub async fn delete(pool: &SqlitePool, thread_id: Uuid) -> Result<(), sqlx::Error> {
+        let mut tx = pool.begin().await?;
+        sqlx::query(
+            "DELETE FROM message_reactions
+             WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)",
+        )
+        .bind(thread_id.to_string())
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM threads WHERE id = ?")
             .bind(thread_id.to_string())
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
+        tx.commit().await?;
         Ok(())
     }
 }
@@ -838,18 +1023,27 @@ impl ThreadQueries {
 pub struct SearchQueries;
 
 impl SearchQueries {
-    pub async fn messages(
+    /// Cross-thread hits with the thread title and owning agent. The extra
+    /// fields are what let the picker open the exact conversation and message.
+    async fn hits(
         pool: &SqlitePool,
         query: &str,
         limit: u32,
-    ) -> Result<Vec<(ravenbot_core::Message, String)>, sqlx::Error> {
-        let pattern = format!("%{}%", query.replace('%', r"\%").replace('_', r"\_"));
-        let rows: Vec<(String, String, String, String, String, String)> = sqlx::query_as(
+    ) -> Result<Vec<(ravenbot_core::Message, String, String)>, sqlx::Error> {
+        let pattern = format!(
+            "%{}%",
+            query
+                .replace('\\', r"\\")
+                .replace('%', r"\%")
+                .replace('_', r"\_")
+        );
+        let rows: Vec<(String, String, String, String, String, String, String)> = sqlx::query_as(
             r#"SELECT m.id, m.thread_id, m.role, m.content, m.created_at,
-                      t.title
+                      t.title, t.bot_id
                FROM messages m
                JOIN threads t ON t.id = m.thread_id
                WHERE m.content LIKE ? ESCAPE '\'
+                 AND m.role IN ('user', 'assistant')
                ORDER BY m.created_at DESC
                LIMIT ?"#,
         )
@@ -860,12 +1054,13 @@ impl SearchQueries {
 
         let mut results = Vec::new();
         for row in rows {
-            let content: ravenbot_core::MessageContent = serde_json::from_str(&row.3)
-                .unwrap_or(ravenbot_core::MessageContent::Text {
+            let content: ravenbot_core::MessageContent =
+                serde_json::from_str(&row.3).unwrap_or(ravenbot_core::MessageContent::Text {
                     text: String::new(),
                     sources: Vec::new(),
                     reasoning: None,
                     tools: Vec::new(),
+                    spans: Vec::new(),
                 });
             let role = match row.2.as_str() {
                 "user" => ravenbot_core::MessageRole::User,
@@ -882,13 +1077,72 @@ impl SearchQueries {
                 sender_bot_id: None,
                 sender_name: None,
                 reply_to_id: None,
+                reactions: Vec::new(),
                 created_at: chrono::DateTime::parse_from_rfc3339(&row.4)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
                     .unwrap_or_else(|_| chrono::Utc::now()),
             };
-            results.push((message, row.5.clone()));
+            results.push((message, row.5, row.6));
         }
         Ok(results)
+    }
+
+    pub async fn messages(
+        pool: &SqlitePool,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<(ravenbot_core::Message, String)>, sqlx::Error> {
+        Ok(Self::hits(pool, query, limit)
+            .await?
+            .into_iter()
+            .map(|(message, title, _)| (message, title))
+            .collect())
+    }
+
+    pub async fn messages_with_bot(
+        pool: &SqlitePool,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<(ravenbot_core::Message, String, String)>, sqlx::Error> {
+        Self::hits(pool, query, limit).await
+    }
+}
+
+/// Fleet usage grouped by agent. This is the same aggregate the Usage screen
+/// shows, so the numbers come from the run ledger rather than a UI estimate.
+pub struct UsageQueries;
+
+impl UsageQueries {
+    pub async fn summary(
+        pool: &SqlitePool,
+        days: u32,
+    ) -> Result<Vec<(String, i64, i64, f64, i64, i64)>, sqlx::Error> {
+        let modifier = (days > 0).then(|| format!("-{days} days"));
+        if let Some(modifier) = modifier {
+            sqlx::query_as(
+                "SELECT bot_id, COUNT(*), CAST(COALESCE(SUM(tokens_consumed), 0) AS INTEGER),
+                        CAST(COALESCE(SUM(cost_estimate), 0) AS REAL),
+                        CAST(SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS INTEGER),
+                        CAST(SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END) AS INTEGER)
+                 FROM runs
+                 WHERE datetime(created_at) >= datetime('now', ?)
+                 GROUP BY bot_id",
+            )
+            .bind(modifier)
+            .fetch_all(pool)
+            .await
+        } else {
+            sqlx::query_as(
+                "SELECT bot_id, COUNT(*), CAST(COALESCE(SUM(tokens_consumed), 0) AS INTEGER),
+                        CAST(COALESCE(SUM(cost_estimate), 0) AS REAL),
+                        CAST(SUM(CASE WHEN state = 'failed' THEN 1 ELSE 0 END) AS INTEGER),
+                        CAST(SUM(CASE WHEN state = 'completed' THEN 1 ELSE 0 END) AS INTEGER)
+                 FROM runs
+                 GROUP BY bot_id",
+            )
+            .fetch_all(pool)
+            .await
+        }
     }
 }
 
@@ -937,7 +1191,10 @@ impl ApprovalQueries {
     }
 
     /// Insert a new pending request
-    pub async fn create(pool: &SqlitePool, req: &ravenbot_core::ApprovalRequest) -> Result<(), sqlx::Error> {
+    pub async fn create(
+        pool: &SqlitePool,
+        req: &ravenbot_core::ApprovalRequest,
+    ) -> Result<(), sqlx::Error> {
         let status = match req.status {
             ravenbot_core::ApprovalStatus::Pending => "pending",
             ravenbot_core::ApprovalStatus::Allowed => "allowed",
@@ -966,8 +1223,24 @@ impl ApprovalQueries {
     }
 
     /// Get one request by id
-    pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<ravenbot_core::ApprovalRequest>, sqlx::Error> {
-        type Row = (String, String, String, String, String, String, String, String, String, Option<String>, String, Option<String>);
+    pub async fn get(
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<ravenbot_core::ApprovalRequest>, sqlx::Error> {
+        type Row = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        );
         let row: Option<Row> = sqlx::query_as(
             "SELECT id, bot_id, thread_id, run_id, tool_name, tool_label, arguments, risk, status, note, created_at, decided_at
              FROM approvals WHERE id = ?",
@@ -975,7 +1248,9 @@ impl ApprovalQueries {
         .bind(id.to_string())
         .fetch_optional(pool)
         .await?;
-        Ok(row.map(|r| Self::row_to_domain(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11)))
+        Ok(row.map(|r| {
+            Self::row_to_domain(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11)
+        }))
     }
 
     /// Pending requests for a thread (composer block + inline cards)
@@ -983,7 +1258,20 @@ impl ApprovalQueries {
         pool: &SqlitePool,
         thread_id: Uuid,
     ) -> Result<Vec<ravenbot_core::ApprovalRequest>, sqlx::Error> {
-        type Row = (String, String, String, String, String, String, String, String, String, Option<String>, String, Option<String>);
+        type Row = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        );
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT id, bot_id, thread_id, run_id, tool_name, tool_label, arguments, risk, status, note, created_at, decided_at
              FROM approvals WHERE thread_id = ? AND status = 'pending' ORDER BY created_at ASC",
@@ -993,7 +1281,9 @@ impl ApprovalQueries {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|r| Self::row_to_domain(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11))
+            .map(|r| {
+                Self::row_to_domain(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11)
+            })
             .collect())
     }
 
@@ -1008,7 +1298,20 @@ impl ApprovalQueries {
         pool: &SqlitePool,
         bot_id: Uuid,
     ) -> Result<Vec<ravenbot_core::ApprovalRequest>, sqlx::Error> {
-        type Row = (String, String, String, String, String, String, String, String, String, Option<String>, String, Option<String>);
+        type Row = (
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+        );
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT id, bot_id, thread_id, run_id, tool_name, tool_label, arguments, risk, status, note, created_at, decided_at
              FROM approvals
@@ -1021,7 +1324,9 @@ impl ApprovalQueries {
         .await?;
         Ok(rows
             .into_iter()
-            .map(|r| Self::row_to_domain(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11))
+            .map(|r| {
+                Self::row_to_domain(r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10, r.11)
+            })
             .collect())
     }
 
@@ -1048,10 +1353,12 @@ impl ApprovalQueries {
 
     /// Expire all pending requests for a run (run finished without them)
     pub async fn expire_for_run(pool: &SqlitePool, run_id: Uuid) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE approvals SET status = 'expired' WHERE run_id = ? AND status = 'pending'")
-            .bind(run_id.to_string())
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "UPDATE approvals SET status = 'expired' WHERE run_id = ? AND status = 'pending'",
+        )
+        .bind(run_id.to_string())
+        .execute(pool)
+        .await?;
         Ok(())
     }
 }
@@ -1130,8 +1437,18 @@ impl QuestionQueries {
         id: Uuid,
     ) -> Result<Option<ravenbot_core::QuestionRequest>, sqlx::Error> {
         type Row = (
-            String, String, String, String, String, String, String, i64, String,
-            Option<String>, String, Option<String>,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
         );
         let row: Option<Row> = sqlx::query_as(
             "SELECT id, bot_id, thread_id, run_id, header, question, options, allow_custom, status, answer, created_at, answered_at
@@ -1150,8 +1467,18 @@ impl QuestionQueries {
         thread_id: Uuid,
     ) -> Result<Vec<ravenbot_core::QuestionRequest>, sqlx::Error> {
         type Row = (
-            String, String, String, String, String, String, String, i64, String,
-            Option<String>, String, Option<String>,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
         );
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT id, bot_id, thread_id, run_id, header, question, options, allow_custom, status, answer, created_at, answered_at
@@ -1177,8 +1504,18 @@ impl QuestionQueries {
         bot_id: Uuid,
     ) -> Result<Vec<ravenbot_core::QuestionRequest>, sqlx::Error> {
         type Row = (
-            String, String, String, String, String, String, String, i64, String,
-            Option<String>, String, Option<String>,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            i64,
+            String,
+            Option<String>,
+            String,
+            Option<String>,
         );
         let rows: Vec<Row> = sqlx::query_as(
             "SELECT id, bot_id, thread_id, run_id, header, question, options, allow_custom, status, answer, created_at, answered_at
@@ -1199,11 +1536,7 @@ impl QuestionQueries {
     }
 
     /// Record the user's answer. Returns false if it wasn't pending.
-    pub async fn answer(
-        pool: &SqlitePool,
-        id: Uuid,
-        answer: &str,
-    ) -> Result<bool, sqlx::Error> {
+    pub async fn answer(pool: &SqlitePool, id: Uuid, answer: &str) -> Result<bool, sqlx::Error> {
         let res = sqlx::query(
             "UPDATE questions SET status = 'answered', answer = ?, answered_at = ?
              WHERE id = ? AND status = 'pending'",
@@ -1227,10 +1560,12 @@ impl QuestionQueries {
 
     /// Expire all pending questions for a run.
     pub async fn expire_for_run(pool: &SqlitePool, run_id: Uuid) -> Result<(), sqlx::Error> {
-        sqlx::query("UPDATE questions SET status = 'expired' WHERE run_id = ? AND status = 'pending'")
-            .bind(run_id.to_string())
-            .execute(pool)
-            .await?;
+        sqlx::query(
+            "UPDATE questions SET status = 'expired' WHERE run_id = ? AND status = 'pending'",
+        )
+        .bind(run_id.to_string())
+        .execute(pool)
+        .await?;
         Ok(())
     }
 }
@@ -1240,9 +1575,11 @@ pub struct ProviderKeyQueries;
 
 impl ProviderKeyQueries {
     /// List all configured provider API keys
-    pub async fn list(pool: &SqlitePool) -> Result<std::collections::HashMap<String, String>, sqlx::Error> {
+    pub async fn list(
+        pool: &SqlitePool,
+    ) -> Result<std::collections::HashMap<String, String>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT provider, api_key FROM provider_keys WHERE api_key != ''"
+            "SELECT provider, api_key FROM provider_keys WHERE api_key != ''",
         )
         .fetch_all(pool)
         .await?;
@@ -1251,12 +1588,11 @@ impl ProviderKeyQueries {
 
     /// Get API key for a specific provider
     pub async fn get(pool: &SqlitePool, provider: &str) -> Result<Option<String>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String,)>(
-            "SELECT api_key FROM provider_keys WHERE provider = ?"
-        )
-        .bind(provider)
-        .fetch_optional(pool)
-        .await?;
+        let row =
+            sqlx::query_as::<_, (String,)>("SELECT api_key FROM provider_keys WHERE provider = ?")
+                .bind(provider)
+                .fetch_optional(pool)
+                .await?;
         Ok(row.map(|r| r.0))
     }
 
@@ -1296,23 +1632,59 @@ impl ProviderKeyQueries {
 pub struct CustomProviderQueries;
 
 impl CustomProviderQueries {
-    pub async fn list(pool: &SqlitePool) -> Result<Vec<(String, String, String, String, String, bool, bool, Option<String>)>, sqlx::Error> {
+    pub async fn list(
+        pool: &SqlitePool,
+    ) -> Result<
+        Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            bool,
+            bool,
+            Option<String>,
+        )>,
+        sqlx::Error,
+    > {
         let rows = sqlx::query_as::<_, (String, String, String, String, String, i64, i64, Option<String>)>(
             "SELECT id, display_name, kind, base_url, default_model, supports_tools, enabled, headers_json FROM custom_providers ORDER BY display_name"
         )
         .fetch_all(pool)
         .await?;
-        Ok(rows.into_iter().map(|(id, dn, kind, base, dm, tools, en, hdrs)| (id, dn, kind, base, dm, tools != 0, en != 0, hdrs)).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(id, dn, kind, base, dm, tools, en, hdrs)| {
+                (id, dn, kind, base, dm, tools != 0, en != 0, hdrs)
+            })
+            .collect())
     }
 
-    pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<(String, String, String, String, String, bool, bool, Option<String>)>, sqlx::Error> {
+    pub async fn get(
+        pool: &SqlitePool,
+        id: &str,
+    ) -> Result<
+        Option<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            bool,
+            bool,
+            Option<String>,
+        )>,
+        sqlx::Error,
+    > {
         let row = sqlx::query_as::<_, (String, String, String, String, String, i64, i64, Option<String>)>(
             "SELECT id, display_name, kind, base_url, default_model, supports_tools, enabled, headers_json FROM custom_providers WHERE id = ?"
         )
         .bind(id)
         .fetch_optional(pool)
         .await?;
-        Ok(row.map(|(id, dn, kind, base, dm, tools, en, hdrs)| (id, dn, kind, base, dm, tools != 0, en != 0, hdrs)))
+        Ok(row.map(|(id, dn, kind, base, dm, tools, en, hdrs)| {
+            (id, dn, kind, base, dm, tools != 0, en != 0, hdrs)
+        }))
     }
 
     pub async fn upsert(
@@ -1363,7 +1735,7 @@ pub struct ProviderBaseUrlQueries;
 impl ProviderBaseUrlQueries {
     pub async fn list(pool: &SqlitePool) -> Result<Vec<(String, String)>, sqlx::Error> {
         let rows = sqlx::query_as::<_, (String, String)>(
-            "SELECT provider, base_url FROM provider_base_urls"
+            "SELECT provider, base_url FROM provider_base_urls",
         )
         .fetch_all(pool)
         .await?;
@@ -1372,7 +1744,7 @@ impl ProviderBaseUrlQueries {
 
     pub async fn get(pool: &SqlitePool, provider: &str) -> Result<Option<String>, sqlx::Error> {
         let row = sqlx::query_as::<_, (String,)>(
-            "SELECT base_url FROM provider_base_urls WHERE provider = ?"
+            "SELECT base_url FROM provider_base_urls WHERE provider = ?",
         )
         .bind(provider)
         .fetch_optional(pool)
@@ -1408,12 +1780,10 @@ pub struct AppSettingsQueries;
 impl AppSettingsQueries {
     /// Get an app setting value
     pub async fn get(pool: &SqlitePool, key: &str) -> Result<Option<String>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (String,)>(
-            "SELECT value FROM app_settings WHERE key = ?"
-        )
-        .bind(key)
-        .fetch_optional(pool)
-        .await?;
+        let row = sqlx::query_as::<_, (String,)>("SELECT value FROM app_settings WHERE key = ?")
+            .bind(key)
+            .fetch_optional(pool)
+            .await?;
         Ok(row.map(|r| r.0))
     }
 
@@ -1431,13 +1801,21 @@ impl AppSettingsQueries {
     }
 }
 
-
 /// Channel (context) queries — Work/Personal/project scoping
 pub struct ChannelQueries;
 
 /// Column tuple for a `channels` row.
 type ChannelRow = (
-    String, String, String, String, Option<String>, Option<String>, i64, Option<String>, String, String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    i64,
+    Option<String>,
+    String,
+    String,
 );
 
 impl ChannelQueries {
@@ -1478,13 +1856,11 @@ impl ChannelQueries {
         pool: &SqlitePool,
         id: Uuid,
     ) -> Result<Option<ravenbot_core::Channel>, sqlx::Error> {
-        let row: Option<ChannelRow> = sqlx::query_as(&format!(
-            "SELECT {} FROM channels WHERE id = ?",
-            Self::COLS
-        ))
-        .bind(id.to_string())
-        .fetch_optional(pool)
-        .await?;
+        let row: Option<ChannelRow> =
+            sqlx::query_as(&format!("SELECT {} FROM channels WHERE id = ?", Self::COLS))
+                .bind(id.to_string())
+                .fetch_optional(pool)
+                .await?;
         Ok(row.map(Self::row_to_domain))
     }
 
@@ -1596,12 +1972,11 @@ impl WebhookQueries {
         pool: &SqlitePool,
         routine_id: Uuid,
     ) -> Result<Option<String>, sqlx::Error> {
-        let row: Option<(Option<String>, i64)> = sqlx::query_as(
-            "SELECT webhook_secret, webhook_enabled FROM routines WHERE id = ?",
-        )
-        .bind(routine_id.to_string())
-        .fetch_optional(pool)
-        .await?;
+        let row: Option<(Option<String>, i64)> =
+            sqlx::query_as("SELECT webhook_secret, webhook_enabled FROM routines WHERE id = ?")
+                .bind(routine_id.to_string())
+                .fetch_optional(pool)
+                .await?;
         Ok(row.and_then(|(s, enabled)| if enabled != 0 { s } else { None }))
     }
 
@@ -1746,7 +2121,10 @@ type FileChangeRow = (
 );
 
 impl FileChangeQueries {
-    pub async fn insert(pool: &SqlitePool, change: &ravenbot_core::FileChange) -> Result<(), sqlx::Error> {
+    pub async fn insert(
+        pool: &SqlitePool,
+        change: &ravenbot_core::FileChange,
+    ) -> Result<(), sqlx::Error> {
         sqlx::query(
             "INSERT INTO file_changes (id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted, diff, created_at)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -1795,10 +2173,7 @@ impl FileChangeQueries {
         .bind(limit)
         .fetch_all(pool)
         .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(Self::row_to_domain)
-            .collect())
+        Ok(rows.into_iter().filter_map(Self::row_to_domain).collect())
     }
 
     /// The lines behind one ledger row.
@@ -1807,10 +2182,7 @@ impl FileChangeQueries {
     /// could not be lined up (binary, past the diff cap) or one recorded
     /// before this column existed. Both are honest absences, and the UI shows
     /// a sentence rather than opening onto a blank pane.
-    pub async fn diff_for(
-        pool: &SqlitePool,
-        id: Uuid,
-    ) -> Result<Option<String>, sqlx::Error> {
+    pub async fn diff_for(pool: &SqlitePool, id: Uuid) -> Result<Option<String>, sqlx::Error> {
         sqlx::query_scalar::<_, Option<String>>("SELECT diff FROM file_changes WHERE id = ?")
             .bind(id.to_string())
             .fetch_optional(pool)
@@ -1826,7 +2198,9 @@ impl FileChangeQueries {
     /// change. Agents with no changes are absent rather than zeroed — the
     /// caller decides whether a missing agent means "nothing yet" or "not
     /// started", which is context this table does not have.
-    pub async fn totals(pool: &SqlitePool) -> Result<Vec<(Uuid, ravenbot_core::FileChangeTotals)>, sqlx::Error> {
+    pub async fn totals(
+        pool: &SqlitePool,
+    ) -> Result<Vec<(Uuid, ravenbot_core::FileChangeTotals)>, sqlx::Error> {
         let rows: Vec<(String, i64, i64, i64, i64)> = sqlx::query_as(
             "SELECT bot_id,
                     COUNT(DISTINCT path),
@@ -1845,7 +2219,12 @@ impl FileChangeQueries {
                 Uuid::parse_str(&bot_id).ok().map(|id| {
                     (
                         id,
-                        ravenbot_core::FileChangeTotals { files, writes, lines_added: added, lines_deleted: deleted },
+                        ravenbot_core::FileChangeTotals {
+                            files,
+                            writes,
+                            lines_added: added,
+                            lines_deleted: deleted,
+                        },
                     )
                 })
             })
@@ -1895,7 +2274,13 @@ mod file_change_tests {
         pool
     }
 
-    fn change(bot: Uuid, path: &str, added: i64, deleted: i64, diff: Option<&str>) -> ravenbot_core::FileChange {
+    fn change(
+        bot: Uuid,
+        path: &str,
+        added: i64,
+        deleted: i64,
+        diff: Option<&str>,
+    ) -> ravenbot_core::FileChange {
         ravenbot_core::FileChange::new(bot, None, None, path, "file_write", added, deleted)
             .with_diff(diff.map(str::to_string))
     }
@@ -1904,13 +2289,25 @@ mod file_change_tests {
     async fn a_list_carries_counts_but_not_lines() {
         let pool = db().await;
         let bot = Uuid::new_v4();
-        let with_diff = change(bot, "src/lib.rs", 3, 1, Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n"));
+        let with_diff = change(
+            bot,
+            "src/lib.rs",
+            3,
+            1,
+            Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n"),
+        );
         let without = change(bot, "README.md", 1, 0, None);
 
-        FileChangeQueries::insert(&pool, &with_diff).await.expect("insert 1");
-        FileChangeQueries::insert(&pool, &without).await.expect("insert 2");
+        FileChangeQueries::insert(&pool, &with_diff)
+            .await
+            .expect("insert 1");
+        FileChangeQueries::insert(&pool, &without)
+            .await
+            .expect("insert 2");
 
-        let listed = FileChangeQueries::recent_for_bot(&pool, bot, 10).await.expect("list");
+        let listed = FileChangeQueries::recent_for_bot(&pool, bot, 10)
+            .await
+            .expect("list");
         assert_eq!(listed.len(), 2);
         // The rule the view depends on: asking for "Sam's changes" must not
         // also hand over two hundred megabytes of lines nobody opened.
@@ -1919,7 +2316,10 @@ mod file_change_tests {
             "the list must not carry diffs: {listed:?}"
         );
         // …but nothing else is lost on the way through.
-        let first = listed.iter().find(|c| c.id == with_diff.id).expect("row survived");
+        let first = listed
+            .iter()
+            .find(|c| c.id == with_diff.id)
+            .expect("row survived");
         assert_eq!(first.path, "src/lib.rs");
         assert_eq!((first.lines_added, first.lines_deleted), (3, 1));
 
@@ -1927,12 +2327,21 @@ mod file_change_tests {
         let diff = FileChangeQueries::diff_for(&pool, with_diff.id)
             .await
             .expect("diff_for");
-        assert_eq!(diff.as_deref(), Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n"));
+        assert_eq!(
+            diff.as_deref(),
+            Some("--- a/src/lib.rs\n+++ b/src/lib.rs\n")
+        );
 
         // And "no diff" reads as absence, not as an empty string the UI would
         // render as an expandable row that opens onto nothing.
-        assert!(FileChangeQueries::diff_for(&pool, without.id).await.expect("diff_for").is_none());
-        assert!(FileChangeQueries::diff_for(&pool, Uuid::new_v4()).await.expect("diff_for").is_none());
+        assert!(FileChangeQueries::diff_for(&pool, without.id)
+            .await
+            .expect("diff_for")
+            .is_none());
+        assert!(FileChangeQueries::diff_for(&pool, Uuid::new_v4())
+            .await
+            .expect("diff_for")
+            .is_none());
     }
 
     #[tokio::test]
@@ -1963,5 +2372,898 @@ mod file_change_tests {
                 "totals for {got_id}"
             );
         }
+    }
+}
+
+/// Persisted emoji reactions.
+///
+/// A reaction is a toggle, not a counter: the composite primary key
+/// `(message_id, emoji)` means adding twice is impossible and removing is the
+/// same row lookup. The local-first UI has one human, so there is no per-user
+/// dimension to store.
+pub struct ReactionQueries;
+
+impl ReactionQueries {
+    /// Every reaction on the messages in one conversation thread, oldest first.
+    pub async fn list_for_thread(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+    ) -> Result<Vec<ravenbot_core::MessageReaction>, sqlx::Error> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT r.message_id, r.emoji, r.created_at
+             FROM message_reactions r
+             JOIN messages m ON m.id = r.message_id
+             WHERE m.thread_id = ?
+             ORDER BY r.created_at ASC, r.rowid ASC",
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(pool)
+        .await?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(message_id, emoji, created_at)| ravenbot_core::MessageReaction {
+                message_id: Uuid::parse_str(&message_id).unwrap_or_default(),
+                emoji,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_at)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+            })
+            .collect())
+    }
+
+    /// Add the reaction if it is absent, remove it if it is present, and return
+    /// the message's reactions in stable order.
+    pub async fn toggle(
+        pool: &SqlitePool,
+        message_id: Uuid,
+        emoji: &str,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        let removed = sqlx::query(
+            "DELETE FROM message_reactions WHERE message_id = ? AND emoji = ?",
+        )
+        .bind(message_id.to_string())
+        .bind(emoji)
+        .execute(pool)
+        .await?
+        .rows_affected();
+
+        if removed == 0 {
+            sqlx::query(
+                "INSERT INTO message_reactions (message_id, emoji) VALUES (?, ?)",
+            )
+            .bind(message_id.to_string())
+            .bind(emoji)
+            .execute(pool)
+            .await?;
+        }
+
+        sqlx::query_scalar(
+            "SELECT emoji FROM message_reactions
+             WHERE message_id = ?
+             ORDER BY created_at ASC, rowid ASC",
+        )
+        .bind(message_id.to_string())
+        .fetch_all(pool)
+        .await
+    }
+}
+
+/// Shared channel timeline messages.
+pub struct ChannelMessageQueries;
+
+type ChannelMessageRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+    String,
+);
+
+impl ChannelMessageQueries {
+    fn row_to_domain(row: ChannelMessageRow) -> ravenbot_core::ChannelMessage {
+        ravenbot_core::ChannelMessage {
+            id: Uuid::parse_str(&row.0).unwrap_or_default(),
+            channel_id: Uuid::parse_str(&row.1).unwrap_or_default(),
+            author_kind: ravenbot_core::ChannelAuthorKind::parse(&row.2),
+            author_id: row
+                .3
+                .as_deref()
+                .and_then(|value| Uuid::parse_str(value).ok()),
+            author_name: row.4,
+            content: row.5,
+            reply_to_id: row
+                .6
+                .as_deref()
+                .and_then(|value| Uuid::parse_str(value).ok()),
+            created_at: chrono::DateTime::parse_from_rfc3339(&row.7)
+                .map(|value| value.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now()),
+        }
+    }
+
+    const COLS: &'static str =
+        "id, channel_id, author_kind, author_id, author_name, content, reply_to_id, created_at";
+
+    /// The newest `limit` messages, returned oldest-first so a timeline can
+    /// append without reversing in the renderer.
+    pub async fn list_recent(
+        pool: &SqlitePool,
+        channel_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<ravenbot_core::ChannelMessage>, sqlx::Error> {
+        let limit = limit.clamp(1, 500);
+        let rows: Vec<ChannelMessageRow> = sqlx::query_as(&format!(
+            "SELECT {} FROM channel_messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
+            Self::COLS
+        ))
+        .bind(channel_id.to_string())
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        let mut messages: Vec<_> = rows.into_iter().map(Self::row_to_domain).collect();
+        messages.reverse();
+        Ok(messages)
+    }
+
+    pub async fn insert(
+        pool: &SqlitePool,
+        message: &ravenbot_core::ChannelMessage,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO channel_messages (id, channel_id, author_kind, author_id, author_name, content, reply_to_id, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(message.id.to_string())
+        .bind(message.channel_id.to_string())
+        .bind(message.author_kind.as_str())
+        .bind(message.author_id.map(|value| value.to_string()))
+        .bind(&message.author_name)
+        .bind(&message.content)
+        .bind(message.reply_to_id.map(|value| value.to_string()))
+        .bind(message.created_at.to_rfc3339())
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}
+
+/// Channel tasks and their ownership transitions.
+pub struct ChannelTaskQueries;
+
+type ChannelTaskRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+);
+
+impl ChannelTaskQueries {
+    fn row_to_domain(row: ChannelTaskRow) -> ravenbot_core::ChannelTask {
+        let parse_dt = |value: &str| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .map(|date| date.with_timezone(&chrono::Utc))
+                .unwrap_or_else(|_| chrono::Utc::now())
+        };
+        ravenbot_core::ChannelTask {
+            id: Uuid::parse_str(&row.0).unwrap_or_default(),
+            channel_id: Uuid::parse_str(&row.1).unwrap_or_default(),
+            title: row.2,
+            description: row.3,
+            owner_bot_id: Uuid::parse_str(&row.4).unwrap_or_default(),
+            state: ravenbot_core::ChannelTaskState::parse(&row.5),
+            created_by: row.6,
+            source_thread_id: row
+                .7
+                .as_deref()
+                .and_then(|value| Uuid::parse_str(value).ok()),
+            result: row.8,
+            created_at: parse_dt(&row.9),
+            updated_at: parse_dt(&row.10),
+            archived_at: row.11.as_deref().map(parse_dt),
+        }
+    }
+
+    const COLS: &'static str = "id, channel_id, title, description, owner_bot_id, state, created_by, source_thread_id, result, created_at, updated_at, archived_at";
+
+    pub async fn list(
+        pool: &SqlitePool,
+        channel_id: Uuid,
+        include_archived: bool,
+    ) -> Result<Vec<ravenbot_core::ChannelTask>, sqlx::Error> {
+        let sql = if include_archived {
+            format!(
+                "SELECT {} FROM channel_tasks WHERE channel_id = ? ORDER BY created_at DESC",
+                Self::COLS
+            )
+        } else {
+            format!(
+                "SELECT {} FROM channel_tasks WHERE channel_id = ? AND state != 'archived' ORDER BY created_at DESC",
+                Self::COLS
+            )
+        };
+        let rows: Vec<ChannelTaskRow> = sqlx::query_as(&sql)
+            .bind(channel_id.to_string())
+            .fetch_all(pool)
+            .await?;
+        Ok(rows.into_iter().map(Self::row_to_domain).collect())
+    }
+
+    pub async fn get(
+        pool: &SqlitePool,
+        task_id: Uuid,
+    ) -> Result<Option<ravenbot_core::ChannelTask>, sqlx::Error> {
+        let row: Option<ChannelTaskRow> = sqlx::query_as(&format!(
+            "SELECT {} FROM channel_tasks WHERE id = ?",
+            Self::COLS
+        ))
+        .bind(task_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(Self::row_to_domain))
+    }
+
+    pub async fn create(
+        pool: &SqlitePool,
+        task: &ravenbot_core::ChannelTask,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO channel_tasks (id, channel_id, title, description, owner_bot_id, state, created_by, source_thread_id, result, created_at, updated_at, archived_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(task.id.to_string())
+        .bind(task.channel_id.to_string())
+        .bind(&task.title)
+        .bind(&task.description)
+        .bind(task.owner_bot_id.to_string())
+        .bind(task.state.as_str())
+        .bind(&task.created_by)
+        .bind(task.source_thread_id.map(|value| value.to_string()))
+        .bind(&task.result)
+        .bind(task.created_at.to_rfc3339())
+        .bind(task.updated_at.to_rfc3339())
+        .bind(task.archived_at.map(|value| value.to_rfc3339()))
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Atomically claim a task for execution. The `WHERE state IN (...)` is the
+    /// one-owner rule: two workers can call this at once and only one update
+    /// changes a row.
+    pub async fn claim(pool: &SqlitePool, task_id: Uuid) -> Result<bool, sqlx::Error> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE channel_tasks SET state = 'running', updated_at = ? WHERE id = ? AND state IN ('pending', 'paused')",
+        )
+        .bind(&now)
+        .bind(task_id.to_string())
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn set_thread(
+        pool: &SqlitePool,
+        task_id: Uuid,
+        thread_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE channel_tasks SET source_thread_id = ?, updated_at = ? WHERE id = ?")
+            .bind(thread_id.to_string())
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(task_id.to_string())
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Finish a running task. A task that is not running cannot be finished:
+    /// that would turn a paused/archived row into a result without a run.
+    pub async fn finish(
+        pool: &SqlitePool,
+        task_id: Uuid,
+        success: bool,
+        result: Option<&str>,
+    ) -> Result<bool, sqlx::Error> {
+        let state = if success { "done" } else { "failed" };
+        let outcome = sqlx::query(
+            "UPDATE channel_tasks SET state = ?, result = ?, updated_at = ? WHERE id = ? AND state = 'running'",
+        )
+        .bind(state)
+        .bind(result)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(task_id.to_string())
+        .execute(pool)
+        .await?;
+        Ok(outcome.rows_affected() == 1)
+    }
+
+    /// Apply a user-visible transition and record it. Each branch has a state
+    /// guard in its `UPDATE`, so a task cannot be started from archived, paused
+    /// from pending, or reassigned while it is running.
+    pub async fn apply(
+        pool: &SqlitePool,
+        task_id: Uuid,
+        action: &str,
+        actor: &str,
+        new_owner: Option<Uuid>,
+        note: Option<String>,
+    ) -> Result<ravenbot_core::ChannelTask, String> {
+        let task = Self::get(pool, task_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Channel task not found.".to_string())?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let (changed, to_owner) = match action {
+            "start" => {
+                if task.state == ravenbot_core::ChannelTaskState::Archived {
+                    return Err("Archived tasks must be restored before they can run.".to_string());
+                }
+                let changed = Self::claim(pool, task_id)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                (changed, Some(task.owner_bot_id))
+            }
+            "pause" | "stop" => {
+                let outcome = sqlx::query(
+                    "UPDATE channel_tasks SET state = 'paused', updated_at = ? WHERE id = ? AND state = 'running'",
+                )
+                .bind(&now)
+                .bind(task_id.to_string())
+                .execute(pool)
+                .await
+                .map_err(|error| error.to_string())?;
+                (outcome.rows_affected() == 1, Some(task.owner_bot_id))
+            }
+            "resume" => {
+                let outcome = sqlx::query(
+                    "UPDATE channel_tasks SET state = 'pending', updated_at = ? WHERE id = ? AND state = 'paused'",
+                )
+                .bind(&now)
+                .bind(task_id.to_string())
+                .execute(pool)
+                .await
+                .map_err(|error| error.to_string())?;
+                (outcome.rows_affected() == 1, Some(task.owner_bot_id))
+            }
+            "reassign" => {
+                let owner = new_owner.ok_or_else(|| "A new owner is required.".to_string())?;
+                if task.state == ravenbot_core::ChannelTaskState::Running {
+                    return Err(
+                        "Stop the task before reassigning it, so two agents never own one run."
+                            .to_string(),
+                    );
+                }
+                let outcome = sqlx::query(
+                    "UPDATE channel_tasks SET owner_bot_id = ?, updated_at = ? WHERE id = ? AND state IN ('pending', 'paused')",
+                )
+                .bind(owner.to_string())
+                .bind(&now)
+                .bind(task_id.to_string())
+                .execute(pool)
+                .await
+                .map_err(|error| error.to_string())?;
+                (outcome.rows_affected() == 1, Some(owner))
+            }
+            "archive" => {
+                if task.state == ravenbot_core::ChannelTaskState::Running {
+                    return Err("Stop the task before archiving it.".to_string());
+                }
+                let outcome = sqlx::query(
+                    "UPDATE channel_tasks SET state = 'archived', archived_at = ?, updated_at = ? WHERE id = ? AND state != 'archived'",
+                )
+                .bind(&now)
+                .bind(&now)
+                .bind(task_id.to_string())
+                .execute(pool)
+                .await
+                .map_err(|error| error.to_string())?;
+                (outcome.rows_affected() == 1, Some(task.owner_bot_id))
+            }
+            "restore" => {
+                let outcome = sqlx::query(
+                    "UPDATE channel_tasks SET state = 'paused', archived_at = NULL, updated_at = ? WHERE id = ? AND state = 'archived'",
+                )
+                .bind(&now)
+                .bind(task_id.to_string())
+                .execute(pool)
+                .await
+                .map_err(|error| error.to_string())?;
+                (outcome.rows_affected() == 1, Some(task.owner_bot_id))
+            }
+            "finish" | "fail" => {
+                let success = action == "finish";
+                let changed = Self::finish(pool, task_id, success, note.as_deref())
+                    .await
+                    .map_err(|error| error.to_string())?;
+                (changed, Some(task.owner_bot_id))
+            }
+            other => return Err(format!("Unknown channel task action: {other}")),
+        };
+        if !changed {
+            return Err(format!(
+                "The task is {} and cannot '{}' from there.",
+                task.state.as_str(),
+                action
+            ));
+        }
+        Self::insert_event(
+            pool,
+            &ravenbot_core::ChannelTaskEvent {
+                id: Uuid::new_v4(),
+                task_id,
+                kind: action.to_string(),
+                actor: actor.to_string(),
+                from_owner: Some(task.owner_bot_id),
+                to_owner,
+                note,
+                created_at: chrono::Utc::now(),
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        Self::get(pool, task_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "Channel task disappeared after its transition.".to_string())
+    }
+
+    pub async fn insert_event(
+        pool: &SqlitePool,
+        event: &ravenbot_core::ChannelTaskEvent,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO channel_task_events (id, task_id, kind, actor, from_owner, to_owner, note, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(event.id.to_string())
+        .bind(event.task_id.to_string())
+        .bind(&event.kind)
+        .bind(&event.actor)
+        .bind(event.from_owner.map(|value| value.to_string()))
+        .bind(event.to_owner.map(|value| value.to_string()))
+        .bind(&event.note)
+        .bind(event.created_at.to_rfc3339())
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn events(
+        pool: &SqlitePool,
+        task_id: Uuid,
+    ) -> Result<Vec<ravenbot_core::ChannelTaskEvent>, sqlx::Error> {
+        type EventRow = (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        );
+        let rows: Vec<EventRow> = sqlx::query_as(
+            "SELECT id, task_id, kind, actor, from_owner, to_owner, note, created_at FROM channel_task_events WHERE task_id = ? ORDER BY created_at ASC",
+        )
+        .bind(task_id.to_string())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| ravenbot_core::ChannelTaskEvent {
+                id: Uuid::parse_str(&row.0).unwrap_or_default(),
+                task_id: Uuid::parse_str(&row.1).unwrap_or_default(),
+                kind: row.2,
+                actor: row.3,
+                from_owner: row
+                    .4
+                    .as_deref()
+                    .and_then(|value| Uuid::parse_str(value).ok()),
+                to_owner: row
+                    .5
+                    .as_deref()
+                    .and_then(|value| Uuid::parse_str(value).ok()),
+                note: row.6,
+                created_at: chrono::DateTime::parse_from_rfc3339(&row.7)
+                    .map(|value| value.with_timezone(&chrono::Utc))
+                    .unwrap_or_else(|_| chrono::Utc::now()),
+            })
+            .collect())
+    }
+}
+
+#[cfg(test)]
+mod channel_task_tests {
+    use super::*;
+    use crate::migrations;
+
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    async fn seed(
+        pool: &SqlitePool,
+    ) -> (
+        ravenbot_core::Channel,
+        ravenbot_core::Bot,
+        ravenbot_core::Bot,
+    ) {
+        let channel = ravenbot_core::Channel::new("Platform");
+        ChannelQueries::create(pool, &channel)
+            .await
+            .expect("channel");
+        let lead = ravenbot_core::Bot::new("Lead", "owns the channel");
+        let other = ravenbot_core::Bot::new("Other", "second owner");
+        BotQueries::insert(pool, &lead).await.expect("lead");
+        BotQueries::insert(pool, &other).await.expect("other");
+        ChannelQueries::set_bots(pool, channel.id, &[lead.id, other.id])
+            .await
+            .expect("roster");
+        (channel, lead, other)
+    }
+
+    #[tokio::test]
+    async fn messages_round_trip_oldest_first() {
+        let pool = db().await;
+        let (channel, lead, _) = seed(&pool).await;
+        let first = ravenbot_core::ChannelMessage::human(channel.id, "You", "first");
+        let second = ravenbot_core::ChannelMessage::agent(channel.id, lead.id, "Lead", "second");
+        ChannelMessageQueries::insert(&pool, &first)
+            .await
+            .expect("first");
+        ChannelMessageQueries::insert(&pool, &second)
+            .await
+            .expect("second");
+        let messages = ChannelMessageQueries::list_recent(&pool, channel.id, 10)
+            .await
+            .expect("list");
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "first");
+        assert_eq!(
+            messages[1].author_kind,
+            ravenbot_core::ChannelAuthorKind::Agent
+        );
+        assert_eq!(messages[1].author_name, "Lead");
+    }
+
+    #[tokio::test]
+    async fn claim_allows_exactly_one_owner_to_start() {
+        let pool = db().await;
+        let (channel, lead, _) = seed(&pool).await;
+        let task = ravenbot_core::ChannelTask::new(
+            channel.id,
+            "Ship the audit",
+            "Check the schema",
+            lead.id,
+            "You",
+        );
+        ChannelTaskQueries::create(&pool, &task)
+            .await
+            .expect("task");
+
+        assert!(ChannelTaskQueries::claim(&pool, task.id)
+            .await
+            .expect("claim"));
+        assert!(!ChannelTaskQueries::claim(&pool, task.id)
+            .await
+            .expect("second claim"));
+        let loaded = ChannelTaskQueries::get(&pool, task.id)
+            .await
+            .expect("get")
+            .expect("exists");
+        assert_eq!(loaded.state, ravenbot_core::ChannelTaskState::Running);
+    }
+
+    #[tokio::test]
+    async fn reassign_changes_the_owner_without_creating_a_second_task() {
+        let pool = db().await;
+        let (channel, lead, other) = seed(&pool).await;
+        let task =
+            ravenbot_core::ChannelTask::new(channel.id, "Review the migration", "", lead.id, "You");
+        ChannelTaskQueries::create(&pool, &task)
+            .await
+            .expect("task");
+
+        let changed = ChannelTaskQueries::apply(
+            &pool,
+            task.id,
+            "reassign",
+            "You",
+            Some(other.id),
+            Some("Lead is blocked".to_string()),
+        )
+        .await
+        .expect("reassign");
+        assert_eq!(changed.owner_bot_id, other.id);
+        assert_eq!(changed.state, ravenbot_core::ChannelTaskState::Pending);
+
+        let tasks = ChannelTaskQueries::list(&pool, channel.id, true)
+            .await
+            .expect("list");
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].owner_bot_id, other.id);
+        let events = ChannelTaskQueries::events(&pool, task.id)
+            .await
+            .expect("events");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "reassign");
+        assert_eq!(events[0].from_owner, Some(lead.id));
+        assert_eq!(events[0].to_owner, Some(other.id));
+        assert_eq!(events[0].note.as_deref(), Some("Lead is blocked"));
+    }
+
+    #[tokio::test]
+    async fn archived_tasks_are_readable_but_cannot_start_without_restore() {
+        let pool = db().await;
+        let (channel, lead, other) = seed(&pool).await;
+        let task = ravenbot_core::ChannelTask::new(channel.id, "Old work", "", lead.id, "You");
+        ChannelTaskQueries::create(&pool, &task)
+            .await
+            .expect("task");
+        let archived = ChannelTaskQueries::apply(&pool, task.id, "archive", "You", None, None)
+            .await
+            .expect("archive");
+        assert_eq!(archived.state, ravenbot_core::ChannelTaskState::Archived);
+        assert!(archived.archived_at.is_some());
+        assert!(!ChannelTaskQueries::claim(&pool, task.id)
+            .await
+            .expect("claim archived"));
+        let refused = ChannelTaskQueries::apply(&pool, task.id, "start", "You", None, None)
+            .await
+            .expect_err("archived start");
+        assert!(refused.contains("restored"));
+        let reassigned =
+            ChannelTaskQueries::apply(&pool, task.id, "reassign", "You", Some(other.id), None)
+                .await
+                .expect_err("archived reassign");
+        assert!(reassigned.contains("archived"));
+
+        let hidden = ChannelTaskQueries::list(&pool, channel.id, false)
+            .await
+            .expect("visible");
+        assert!(hidden.is_empty());
+        let visible = ChannelTaskQueries::list(&pool, channel.id, true)
+            .await
+            .expect("all");
+        assert_eq!(visible.len(), 1);
+
+        let restored = ChannelTaskQueries::apply(&pool, task.id, "restore", "You", None, None)
+            .await
+            .expect("restore");
+        assert_eq!(restored.state, ravenbot_core::ChannelTaskState::Paused);
+        assert!(restored.archived_at.is_none());
+        assert!(ChannelTaskQueries::claim(&pool, task.id)
+            .await
+            .expect("claim restored"));
+    }
+
+    #[tokio::test]
+    async fn running_tasks_cannot_be_reassigned_or_archived() {
+        let pool = db().await;
+        let (channel, lead, other) = seed(&pool).await;
+        let task = ravenbot_core::ChannelTask::new(channel.id, "Do work", "", lead.id, "You");
+        ChannelTaskQueries::create(&pool, &task)
+            .await
+            .expect("task");
+        assert!(ChannelTaskQueries::claim(&pool, task.id)
+            .await
+            .expect("claim"));
+
+        let reassign =
+            ChannelTaskQueries::apply(&pool, task.id, "reassign", "You", Some(other.id), None)
+                .await
+                .expect_err("running reassign");
+        assert!(reassign.contains("Stop the task"));
+        let archive = ChannelTaskQueries::apply(&pool, task.id, "archive", "You", None, None)
+            .await
+            .expect_err("running archive");
+        assert!(archive.contains("Stop the task"));
+
+        let paused = ChannelTaskQueries::apply(&pool, task.id, "pause", "You", None, None)
+            .await
+            .expect("pause");
+        assert_eq!(paused.state, ravenbot_core::ChannelTaskState::Paused);
+    }
+}
+
+#[cfg(test)]
+mod reaction_tests {
+    use super::*;
+    use crate::migrations;
+
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    /// A reaction is a toggle that survives a reload, and it leaves with the
+    /// message it was placed on.
+    #[tokio::test]
+    async fn reactions_persist_toggle_and_are_deleted_with_their_message() {
+        let pool = db().await;
+        // A thread needs its bot and a message needs its thread: the migrations
+        // enable foreign keys, so the fixture has to be a real chain rather
+        // than three unrelated UUIDs.
+        let bot = ravenbot_core::Bot::new("Reaction Tester", "test bot");
+        BotQueries::insert(&pool, &bot).await.expect("insert bot");
+        let thread = ravenbot_core::Thread::new(bot.id, "reactions");
+        ThreadQueries::create(&pool, &thread).await.expect("insert thread");
+        let thread_id = thread.id;
+        let message = ravenbot_core::Message::user(thread_id, "ship it");
+        MessageQueries::insert(&pool, &message)
+            .await
+            .expect("insert message");
+
+        let added = ReactionQueries::toggle(&pool, message.id, "👍")
+            .await
+            .expect("add reaction");
+        assert_eq!(added, vec!["👍".to_string()]);
+
+        // The same read path the UI uses after a reload.
+        let loaded = MessageQueries::list_by_thread(&pool, thread_id)
+            .await
+            .expect("list messages");
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].reactions, vec!["👍".to_string()]);
+
+        let listed = ReactionQueries::list_for_thread(&pool, thread_id)
+            .await
+            .expect("list reactions");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].message_id, message.id);
+        assert_eq!(listed[0].emoji, "👍");
+
+        let removed = ReactionQueries::toggle(&pool, message.id, "👍")
+            .await
+            .expect("remove reaction");
+        assert!(removed.is_empty());
+        let loaded = MessageQueries::list_by_thread(&pool, thread_id)
+            .await
+            .expect("list messages after removal");
+        assert!(loaded[0].reactions.is_empty());
+
+        ReactionQueries::toggle(&pool, message.id, "🎉")
+            .await
+            .expect("re-add");
+        MessageQueries::delete(&pool, message.id)
+            .await
+            .expect("delete message");
+        let leftovers: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM message_reactions WHERE message_id = ?",
+        )
+        .bind(message.id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count leftovers");
+        assert_eq!(leftovers, 0, "reactions must not outlive their message");
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+    use crate::migrations;
+
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    #[tokio::test]
+    async fn message_hits_carry_the_owning_agent() {
+        let pool = db().await;
+        let bot = ravenbot_core::Bot::new("Ledger", "billing");
+        BotQueries::insert(&pool, &bot).await.expect("bot");
+        let thread = ravenbot_core::Thread::new(bot.id, "Invoice review");
+        ThreadQueries::create(&pool, &thread).await.expect("thread");
+        let message = ravenbot_core::Message::user(thread.id, "The invoice is overdue");
+        MessageQueries::insert(&pool, &message)
+            .await
+            .expect("message");
+
+        let hits = SearchQueries::messages_with_bot(&pool, "invoice", 10)
+            .await
+            .expect("search");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].1, "Invoice review");
+        assert_eq!(hits[0].2, bot.id.to_string());
+        assert_eq!(hits[0].0.id, message.id);
+
+        // The older shape remains for callers that only need the title.
+        let simple = SearchQueries::messages(&pool, "invoice", 10)
+            .await
+            .expect("search");
+        assert_eq!(simple.len(), 1);
+        assert_eq!(simple[0].1, "Invoice review");
+    }
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use crate::migrations;
+
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    #[tokio::test]
+    async fn usage_aggregates_runs_by_agent() {
+        let pool = db().await;
+        let first = ravenbot_core::Bot::new("Billing", "ledger");
+        let second = ravenbot_core::Bot::new("Research", "sources");
+        BotQueries::insert(&pool, &first).await.expect("bot 1");
+        BotQueries::insert(&pool, &second).await.expect("bot 2");
+
+        let thread = ravenbot_core::Thread::new(first.id, "Month close");
+        ThreadQueries::create(&pool, &thread).await.expect("thread");
+
+        for (bot_id, tokens, cost, state) in [
+            (first.id, 100_i64, 0.25_f64, "completed"),
+            (first.id, 50, 0.5, "failed"),
+            (second.id, 20, 0.1, "completed"),
+        ] {
+            let run = ravenbot_core::Run::new(bot_id, thread.id);
+            RunQueries::insert(&pool, &run).await.expect("run");
+            sqlx::query("UPDATE runs SET tokens_consumed = ?, cost_estimate = ?, state = ? WHERE id = ?")
+                .bind(tokens)
+                .bind(cost)
+                .bind(state)
+                .bind(run.id.to_string())
+                .execute(&pool)
+                .await
+                .expect("set usage");
+        }
+
+        let rows = UsageQueries::summary(&pool, 0).await.expect("summary");
+        assert_eq!(rows.len(), 2);
+        let billing = rows
+            .iter()
+            .find(|(id, ..)| id == &first.id.to_string())
+            .expect("billing");
+        assert_eq!((billing.1, billing.2, billing.3, billing.4, billing.5), (2, 150, 0.75, 1, 1));
+        let research = rows
+            .iter()
+            .find(|(id, ..)| id == &second.id.to_string())
+            .expect("research");
+        assert_eq!((research.1, research.2, research.3, research.4, research.5), (1, 20, 0.1, 0, 1));
+
+        // The 7-day window contains runs created now.
+        let recent = UsageQueries::summary(&pool, 7).await.expect("recent");
+        assert_eq!(recent.len(), 2);
     }
 }

@@ -5,19 +5,37 @@ use ravenbot_core::Permission;
 
 pub struct FileTreeSkill;
 
-impl FileTreeSkill { pub fn new() -> Self { Self } }
+impl FileTreeSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for FileTreeSkill {
-    fn id(&self) -> &str { "file_tree" }
-    fn name(&self) -> &str { "File Tree" }
-    fn description(&self) -> &str { "List directory tree, files and sizes — offline workspace explorer" }
-    fn version(&self) -> &str { "1.1.0" }
-    fn required_permissions(&self) -> Vec<Permission> { vec![Permission::FileSystem { paths: vec![".".into()] }] }
+    fn id(&self) -> &str {
+        "file_tree"
+    }
+    fn name(&self) -> &str {
+        "File Tree"
+    }
+    fn description(&self) -> &str {
+        "List files and directories inside the workspace. Use this first to discover paths; prefer it over shell find or ls -R."
+    }
+    fn version(&self) -> &str {
+        "1.1.0"
+    }
+    fn required_permissions(&self) -> Vec<Permission> {
+        vec![Permission::FileSystem {
+            paths: vec![".".into()],
+        }]
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{"path":{"type":"string","description":"Root path inside the office, default ."},"depth":{"type":"integer","minimum":1,"maximum":6}},"required":[]})
     }
-    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::ReadOnly
+    }
 
     /// `find` is given an argv, and the predicate is grouped.
     ///
@@ -30,7 +48,11 @@ impl Skill for FileTreeSkill {
     ///
     /// `find` defaults to `-P`, so a symlink in the office is listed but not
     /// walked into.
-    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let raw = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let root = ctx.resolve_path(raw)?;
         let path = root.to_string_lossy().to_string();
@@ -44,7 +66,15 @@ impl Skill for FileTreeSkill {
         let out = exec::run(
             ctx,
             "find",
-            &[&path, "-maxdepth", &depth, "-mindepth", "1", "-printf", "%y %s %p\n"],
+            &[
+                &path,
+                "-maxdepth",
+                &depth,
+                "-mindepth",
+                "1",
+                "-printf",
+                "%y %s %p\n",
+            ],
             None,
         )
         .await?;
@@ -54,7 +84,10 @@ impl Skill for FileTreeSkill {
         for line in stdout.lines().take(400) {
             let mut parts = line.splitn(3, ' ');
             let kind = parts.next().unwrap_or("");
-            let size = parts.next().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            let size = parts
+                .next()
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
             let full = parts.next().unwrap_or("").to_string();
             entries.push(serde_json::json!({
                 "type": match kind { "d" => "dir", "l" => "symlink", _ => "file" },
@@ -78,4 +111,8 @@ impl Skill for FileTreeSkill {
     }
 }
 
-impl Default for FileTreeSkill { fn default() -> Self { Self::new() } }
+impl Default for FileTreeSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}

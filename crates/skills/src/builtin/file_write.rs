@@ -24,7 +24,7 @@ impl Skill for FileWriteSkill {
     }
 
     fn description(&self) -> &str {
-        "Write content to a file"
+        "Create or replace a text file in the workspace. Read an existing file before overwriting it; prefer code_edit for targeted changes."
     }
 
     fn version(&self) -> &str {
@@ -155,7 +155,11 @@ impl Skill for FileWriteSkill {
         //    line up. Counts and diff both stay out rather than guessing.
         let display = path.display().to_string();
         let (lines_added, lines_deleted, diff) = if let Some(old) = &before {
-            let after = if mode == "append" { format!("{old}{content}") } else { content.to_string() };
+            let after = if mode == "append" {
+                format!("{old}{content}")
+            } else {
+                content.to_string()
+            };
             let (a, d) = crate::diff::line_changes(old, &after);
             (a, d, crate::diff::unified(old, &after, &display))
         } else if !existed_before {
@@ -206,7 +210,9 @@ mod tests {
     /// path would be testing the one branch nobody uses in the app.
     async fn workspace() -> (SkillContext, std::path::PathBuf) {
         let dir = std::env::temp_dir().join(format!("raven_fw_{}", Uuid::new_v4()));
-        tokio::fs::create_dir_all(&dir).await.expect("mk temp workspace");
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .expect("mk temp workspace");
         let ctx = SkillContext::with_default_tier(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
             .with_working_dirs(vec![dir.clone()]);
         (ctx, dir)
@@ -288,14 +294,19 @@ mod tests {
         write(&ctx, "log.txt", "first\n").await;
 
         let result = FileWriteSkill::new()
-            .execute(&ctx, serde_json::json!({ "path": "log.txt", "content": "second\n", "mode": "append" }))
+            .execute(
+                &ctx,
+                serde_json::json!({ "path": "log.txt", "content": "second\n", "mode": "append" }),
+            )
             .await
             .expect("execute file_write");
         assert!(result.success);
         assert_eq!(result.output["lines_added"].as_i64(), Some(1));
         assert_eq!(result.output["lines_deleted"].as_i64(), Some(0));
 
-        let diff = result.output["file_changes"][0]["diff"].as_str().expect("diff");
+        let diff = result.output["file_changes"][0]["diff"]
+            .as_str()
+            .expect("diff");
         assert!(diff.contains("+second"), "{diff}");
 
         let _ = tokio::fs::remove_dir_all(&dir).await;

@@ -27,6 +27,9 @@ pub struct DiscoveredModel {
     pub supports_vision: bool,
     /// Supports tool/function calling
     pub supports_tools: bool,
+    /// Emits chain-of-thought / extended thinking
+    #[serde(default)]
+    pub reasoning: bool,
     /// Whether this model is free
     pub is_free: bool,
 }
@@ -136,26 +139,66 @@ pub fn provider_endpoints() -> HashMap<String, ProviderEndpoint> {
 
     // OpenAI-compatible providers
     for (name, base, key) in &[
-        ("openrouter", "https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
+        (
+            "openrouter",
+            "https://openrouter.ai/api/v1",
+            "OPENROUTER_API_KEY",
+        ),
         ("openai", "https://api.openai.com/v1", "OPENAI_API_KEY"),
-        ("deepseek", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
+        (
+            "deepseek",
+            "https://api.deepseek.com/v1",
+            "DEEPSEEK_API_KEY",
+        ),
         ("groq", "https://api.groq.com/openai/v1", "GROQ_API_KEY"),
-        ("gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "GEMINI_API_KEY"),
+        (
+            "gemini",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            "GEMINI_API_KEY",
+        ),
         ("mistral", "https://api.mistral.ai/v1", "MISTRAL_API_KEY"),
-        ("together", "https://api.together.xyz/v1", "TOGETHER_API_KEY"),
-        ("perplexity", "https://api.perplexity.ai", "PERPLEXITY_API_KEY"),
-        ("cohere", "https://api.cohere.com/compatibility/v1", "COHERE_API_KEY"),
+        (
+            "together",
+            "https://api.together.xyz/v1",
+            "TOGETHER_API_KEY",
+        ),
+        (
+            "perplexity",
+            "https://api.perplexity.ai",
+            "PERPLEXITY_API_KEY",
+        ),
+        (
+            "cohere",
+            "https://api.cohere.com/compatibility/v1",
+            "COHERE_API_KEY",
+        ),
         ("mimo", "https://api.mimo.mi.com/v1", "MIMO_API_KEY"),
         ("xai", "https://api.x.ai/v1", "XAI_API_KEY"),
         ("opencode", "https://opencode.ai/zen/v1", "OPENCODE_API_KEY"),
+        // OpenCode Go's model list lives on the subscription host, not on the
+        // OpenAI-compatible chat base (`…/go/openai/v1/models` is a 404).
+        (
+            "opencode-go",
+            "https://opencode.ai/inference/go/v1",
+            "OPENCODE_GO_API_KEY",
+        ),
         ("cline", "https://api.cline.bot/api/v1", "CLINE_API_KEY"),
-        ("tokenrouter", "https://api.tokenrouter.com/v1", "TOKENROUTER_API_KEY"),
+        (
+            "tokenrouter",
+            "https://api.tokenrouter.com/v1",
+            "TOKENROUTER_API_KEY",
+        ),
     ] {
         map.insert(name.to_string(), ProviderEndpoint::openai(base, key));
     }
     // Gemini accepts both auth shapes on its OpenAI-compat surface.
     if let Some(gemini) = map.get_mut("gemini") {
         gemini.auth_style = AuthStyle::BearerAndGoogleKey;
+    }
+    // Go's /models response carries no pricing. Only an explicitly free-shaped
+    // id is free until models.dev metadata is merged in.
+    if let Some(go) = map.get_mut("opencode-go") {
+        go.free_by_id_only = true;
     }
 
     // Anthropic direct (also aliased to "claude")
@@ -221,11 +264,179 @@ struct CacheEntry {
     fetched_at: Instant,
 }
 
+// ── OpenCode Go metadata ────────────────────────────────────────────────────
+
+/// One model's facts from `models.dev/api.json`.
+///
+/// The live Go `/models` endpoint returns ids only. models.dev is the registry
+/// OpenCode itself uses, and it carries the name, context window, price,
+/// capability flags — and, crucially, which wire protocol the model is served
+/// over — for every Go model. Using it is what makes the list self-updating
+/// without a hardcoded table in this repository.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct GoModelMeta {
+    name: String,
+    context_window: u32,
+    input_cost_micros: u64,
+    output_cost_micros: u64,
+    supports_vision: bool,
+    supports_tools: bool,
+    reasoning: bool,
+    /// "openai" | "anthropic" | "responses" | "google" | ""
+    protocol: String,
+}
+
+fn protocol_from_npm(npm: &str) -> &'static str {
+    match npm {
+        "@ai-sdk/openai-compatible" => "openai",
+        "@ai-sdk/anthropic" => "anthropic",
+        "@ai-sdk/openai" => "responses",
+        "@ai-sdk/google" => "google",
+        _ => "",
+    }
+}
+
+/// Parse the `opencode-go` slice of models.dev. Pure so it is testable without
+/// a network call.
+fn parse_go_meta(json: &serde_json::Value) -> HashMap<String, GoModelMeta> {
+    let Some(models) = json
+        .get("opencode-go")
+        .and_then(|p| p.get("models"))
+        .and_then(|m| m.as_object())
+    else {
+        return HashMap::new();
+    };
+
+    let mut out = HashMap::with_capacity(models.len());
+    for (id, m) in models {
+        let cost = m.get("cost");
+        let limit = m.get("limit");
+        let micros = |v: Option<&serde_json::Value>| -> u64 {
+            v.and_then(|n| n.as_f64())
+                .filter(|n| n.is_finite() && *n >= 0.0)
+                .map(|n| (n * 1_000_000.0).round() as u64)
+                .unwrap_or(0)
+        };
+        let vision = m
+            .get("attachment")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || m.pointer("/modalities/input")
+                .and_then(|v| v.as_array())
+                .map(|a| a.iter().any(|x| x.as_str() == Some("image")))
+                .unwrap_or(false);
+        out.insert(
+            id.clone(),
+            GoModelMeta {
+                name: m
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(id)
+                    .to_string(),
+                context_window: limit
+                    .and_then(|l| l.get("context"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32,
+                input_cost_micros: micros(cost.and_then(|c| c.get("input"))),
+                output_cost_micros: micros(cost.and_then(|c| c.get("output"))),
+                supports_vision: vision,
+                supports_tools: m.get("tool_call").and_then(|v| v.as_bool()).unwrap_or(true),
+                reasoning: m
+                    .get("reasoning")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                protocol: m
+                    .pointer("/provider/npm")
+                    .and_then(|v| v.as_str())
+                    .map(protocol_from_npm)
+                    .unwrap_or("")
+                    .to_string(),
+            },
+        );
+    }
+    out
+}
+
+/// Wire protocol for a live model id.
+///
+/// Exact metadata wins. When a model is newer than the models.dev snapshot, its
+/// family gives the answer: `grok-4.6` has no entry yet, but every `grok-*`
+/// sibling is served over `/responses`, and `glm-5.1` belongs to an
+/// OpenAI-compatible family. This is metadata-derived, not a vendored list:
+/// adding a new Grok to models.dev changes the answer automatically.
+fn protocol_for<'a>(id: &str, meta: &'a HashMap<String, GoModelMeta>) -> Option<&'a str> {
+    if let Some(m) = meta.get(id) {
+        if !m.protocol.is_empty() {
+            return Some(m.protocol.as_str());
+        }
+    }
+    let family = id.split('-').next().unwrap_or(id);
+    meta.iter()
+        .find(|(key, value)| key.split('-').next() == Some(family) && !value.protocol.is_empty())
+        .map(|(_, value)| value.protocol.as_str())
+}
+
+/// Apply models.dev facts to the live id list and remove models this client
+/// cannot speak to.
+///
+/// `/responses` (GPT/Grok/Muse) and Google's native protocol have no adapter in
+/// RAVENBOT yet. Offering them would produce a `ModelProtocolUnsupported` error
+/// after the user picked one; hiding them is the honest option. Claude is kept
+/// because [`crate::opencode_go::OpenCodeGoProvider`] routes it to the Anthropic
+/// endpoint.
+fn apply_go_meta(
+    mut models: Vec<DiscoveredModel>,
+    meta: &HashMap<String, GoModelMeta>,
+) -> Vec<DiscoveredModel> {
+    if meta.is_empty() {
+        // Metadata unreachable. The live ids still work for the majority
+        // (everything except `/responses` and Google models); return them with
+        // honest "unknown" pricing rather than an empty list.
+        for m in &mut models {
+            m.input_cost_per_1m = 0.0;
+            m.output_cost_per_1m = 0.0;
+        }
+        return models;
+    }
+
+    models.retain(|m| {
+        !matches!(
+            protocol_for(&m.id, meta),
+            Some("responses") | Some("google")
+        )
+    });
+
+    for m in &mut models {
+        let Some(x) = meta.get(&m.id) else { continue };
+        if !x.name.is_empty() {
+            m.name = x.name.clone();
+        }
+        if x.context_window > 0 {
+            m.context_window = x.context_window;
+        }
+        m.input_cost_per_1m = x.input_cost_micros as f64 / 1_000_000.0;
+        m.output_cost_per_1m = x.output_cost_micros as f64 / 1_000_000.0;
+        m.supports_tools = x.supports_tools;
+        m.supports_vision = x.supports_vision;
+        m.reasoning = x.reasoning;
+        m.is_free = x.input_cost_micros == 0 && x.output_cost_micros == 0;
+    }
+
+    models.sort_by(|a, b| b.is_free.cmp(&a.is_free).then_with(|| a.name.cmp(&b.name)));
+    models
+}
+
+/// `(fetched_at, metadata)` held behind one lock.
+type GoMetaCache = Arc<Mutex<Option<(Instant, HashMap<String, GoModelMeta>)>>>;
+
 /// Model discovery service with TTL caching.
 pub struct ModelDiscovery {
     cache: Arc<Mutex<HashMap<String, CacheEntry>>>,
     ttl: Duration,
     client: reqwest::Client,
+    /// models.dev's OpenCode Go slice, cached separately: it changes far less
+    /// often than a provider's live id list and the document is several MB.
+    go_meta: GoMetaCache,
 }
 
 impl ModelDiscovery {
@@ -239,6 +450,7 @@ impl ModelDiscovery {
                 .timeout(Duration::from_secs(15))
                 .build()
                 .unwrap_or_default(),
+            go_meta: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -270,10 +482,13 @@ impl ModelDiscovery {
 
         // Update cache
         let mut cache = self.cache.lock().await;
-        cache.insert(provider.to_string(), CacheEntry {
-            models: models.clone(),
-            fetched_at: Instant::now(),
-        });
+        cache.insert(
+            provider.to_string(),
+            CacheEntry {
+                models: models.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
 
         Ok(models)
     }
@@ -323,12 +538,17 @@ impl ModelDiscovery {
         kind: &str,
     ) -> Result<Vec<DiscoveredModel>, ModelError> {
         let endpoint = ProviderEndpoint::for_kind(kind, base_url)?;
-        let models = self.fetch_with_endpoint(provider, api_key, &endpoint).await?;
+        let models = self
+            .fetch_with_endpoint(provider, api_key, &endpoint)
+            .await?;
         let mut cache = self.cache.lock().await;
-        cache.insert(provider.to_string(), CacheEntry {
-            models: models.clone(),
-            fetched_at: Instant::now(),
-        });
+        cache.insert(
+            provider.to_string(),
+            CacheEntry {
+                models: models.clone(),
+                fetched_at: Instant::now(),
+            },
+        );
         Ok(models)
     }
 
@@ -338,10 +558,49 @@ impl ModelDiscovery {
         api_key: Option<&str>,
     ) -> Result<Vec<DiscoveredModel>, ModelError> {
         let endpoints = provider_endpoints();
-        let endpoint = endpoints
-            .get(provider)
-            .ok_or_else(|| ModelError::Provider(format!("No discovery endpoint for: {}", provider)))?;
-        self.fetch_with_endpoint(provider, api_key, endpoint).await
+        let endpoint = endpoints.get(provider).ok_or_else(|| {
+            ModelError::Provider(format!("No discovery endpoint for: {}", provider))
+        })?;
+        let models = self
+            .fetch_with_endpoint(provider, api_key, endpoint)
+            .await?;
+        if provider == "opencode-go" {
+            let meta = self.opencode_go_meta().await;
+            return Ok(apply_go_meta(models, &meta));
+        }
+        Ok(models)
+    }
+
+    /// Load and cache models.dev's OpenCode Go metadata (6 hour TTL).
+    ///
+    /// Failure is not fatal: the caller falls back to the live id list. The
+    /// cache is only populated on success, so a transient network error does
+    /// not pin an empty table for six hours.
+    async fn opencode_go_meta(&self) -> HashMap<String, GoModelMeta> {
+        {
+            let guard = self.go_meta.lock().await;
+            if let Some((fetched, meta)) = &*guard {
+                if fetched.elapsed() < Duration::from_secs(6 * 3600) {
+                    return meta.clone();
+                }
+            }
+        }
+
+        let response = match self.client.get("https://models.dev/api.json").send().await {
+            Ok(r) if r.status().is_success() => r,
+            _ => return HashMap::new(),
+        };
+        let json: serde_json::Value = match response.json().await {
+            Ok(j) => j,
+            Err(_) => return HashMap::new(),
+        };
+        let meta = parse_go_meta(&json);
+        if meta.is_empty() {
+            return meta;
+        }
+        let mut guard = self.go_meta.lock().await;
+        *guard = Some((Instant::now(), meta.clone()));
+        meta
     }
 
     async fn fetch_with_endpoint(
@@ -350,7 +609,10 @@ impl ModelDiscovery {
         api_key: Option<&str>,
         endpoint: &ProviderEndpoint,
     ) -> Result<Vec<DiscoveredModel>, ModelError> {
-        let api_key = if matches!(endpoint.auth_style, AuthStyle::Keyless | AuthStyle::BearerOptional) {
+        let api_key = if matches!(
+            endpoint.auth_style,
+            AuthStyle::Keyless | AuthStyle::BearerOptional
+        ) {
             api_key.map(|k| k.to_string())
         } else {
             Some(
@@ -414,10 +676,9 @@ impl ModelDiscovery {
         provider: &str,
         free_by_id_only: bool,
     ) -> Result<Vec<DiscoveredModel>, ModelError> {
-        let data = json
-            .get("data")
-            .and_then(|d| d.as_array())
-            .ok_or_else(|| ModelError::Provider(format!("Unexpected response format from {}", provider)))?;
+        let data = json.get("data").and_then(|d| d.as_array()).ok_or_else(|| {
+            ModelError::Provider(format!("Unexpected response format from {}", provider))
+        })?;
 
         let mut models = Vec::new();
         for item in data {
@@ -443,7 +704,10 @@ impl ModelDiscovery {
                 .or_else(|| item.get("context_window"))
                 .or_else(|| item.get("max_context_length"))
                 .or_else(|| item.get("contextLength"))
-                .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok())))
+                .and_then(|v| {
+                    v.as_u64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+                })
                 .unwrap_or(8192) as u32;
 
             // Extract pricing if available (string or numeric shapes).
@@ -486,9 +750,8 @@ impl ModelDiscovery {
 
             // Free-shaped ids are the OpenRouter/CommandCode convention:
             // "…:free", "…-free", and transient "stealth/…" previews.
-            let free_by_id = id.ends_with(":free")
-                || id.ends_with("-free")
-                || id.starts_with("stealth/");
+            let free_by_id =
+                id.ends_with(":free") || id.ends_with("-free") || id.starts_with("stealth/");
             let is_free = if free_by_id_only {
                 free_by_id
             } else {
@@ -522,15 +785,16 @@ impl ModelDiscovery {
                 output_cost_per_1m: output_cost,
                 supports_vision,
                 supports_tools,
+                reasoning: item
+                    .get("reasoning")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
                 is_free,
             });
         }
 
         // Sort: free models first, then by name
-        models.sort_by(|a, b| {
-            b.is_free.cmp(&a.is_free)
-                .then_with(|| a.name.cmp(&b.name))
-        });
+        models.sort_by(|a, b| b.is_free.cmp(&a.is_free).then_with(|| a.name.cmp(&b.name)));
 
         Ok(models)
     }
@@ -539,10 +803,9 @@ impl ModelDiscovery {
         json: &serde_json::Value,
         provider: &str,
     ) -> Result<Vec<DiscoveredModel>, ModelError> {
-        let data = json
-            .get("data")
-            .and_then(|d| d.as_array())
-            .ok_or_else(|| ModelError::Provider(format!("Unexpected response format from {}", provider)))?;
+        let data = json.get("data").and_then(|d| d.as_array()).ok_or_else(|| {
+            ModelError::Provider(format!("Unexpected response format from {}", provider))
+        })?;
 
         let mut models = Vec::new();
         for item in data {
@@ -569,6 +832,7 @@ impl ModelDiscovery {
                 output_cost_per_1m: 0.0,
                 supports_vision: true,
                 supports_tools: true,
+                reasoning: true,
                 is_free: false,
             });
         }
@@ -584,7 +848,9 @@ impl ModelDiscovery {
         let list = json
             .get("models")
             .and_then(|m| m.as_array())
-            .ok_or_else(|| ModelError::Provider(format!("Unexpected response format from {}", provider)))?;
+            .ok_or_else(|| {
+                ModelError::Provider(format!("Unexpected response format from {}", provider))
+            })?;
 
         let mut models = Vec::new();
         for item in list {
@@ -624,6 +890,7 @@ impl ModelDiscovery {
                 output_cost_per_1m: 0.0,
                 supports_vision,
                 supports_tools: true,
+                reasoning: false,
                 is_free: true,
             });
         }
@@ -650,23 +917,41 @@ mod tests {
     #[test]
     fn test_provider_endpoints_have_correct_opencode_and_cline_urls() {
         let endpoints = provider_endpoints();
-        let opencode = endpoints.get("opencode").expect("opencode endpoint must exist");
+        let opencode = endpoints
+            .get("opencode")
+            .expect("opencode endpoint must exist");
         assert_eq!(opencode.base_url, "https://opencode.ai/zen/v1");
         assert_eq!(opencode.path, "/models");
+
+        // Go's chat base is `…/go/openai/v1`, but its model list is served from
+        // `…/go/v1/models` (the chat-shaped path is a 404).
+        let go = endpoints
+            .get("opencode-go")
+            .expect("opencode-go endpoint must exist");
+        assert_eq!(go.base_url, "https://opencode.ai/inference/go/v1");
+        assert_eq!(go.path, "/models");
+        assert!(go.free_by_id_only);
 
         let cline = endpoints.get("cline").expect("cline endpoint must exist");
         assert_eq!(cline.base_url, "https://api.cline.bot/api/v1");
         assert_eq!(cline.path, "/models");
 
-        let tr = endpoints.get("tokenrouter").expect("tokenrouter endpoint must exist");
+        let tr = endpoints
+            .get("tokenrouter")
+            .expect("tokenrouter endpoint must exist");
         assert_eq!(tr.base_url, "https://api.tokenrouter.com/v1");
         assert_eq!(tr.path, "/models");
 
-        let cc = endpoints.get("commandcode").expect("commandcode endpoint must exist");
+        let cc = endpoints
+            .get("commandcode")
+            .expect("commandcode endpoint must exist");
         assert_eq!(cc.base_url, "https://api.commandcode.ai/provider/v1");
         assert_eq!(cc.path, "/models");
         assert_eq!(cc.auth_style, AuthStyle::BearerOptional);
-        assert!(cc.free_by_id_only, "commandcode omits pricing — id decides free");
+        assert!(
+            cc.free_by_id_only,
+            "commandcode omits pricing — id decides free"
+        );
     }
 
     #[test]
@@ -681,8 +966,10 @@ mod tests {
             ]
         });
 
-        let models = ModelDiscovery::extract_openai_format(&json, "commandcode", true).expect("must extract");
-        let by_id: std::collections::HashMap<_, _> = models.iter().map(|m| (m.id.as_str(), m.is_free)).collect();
+        let models = ModelDiscovery::extract_openai_format(&json, "commandcode", true)
+            .expect("must extract");
+        let by_id: std::collections::HashMap<_, _> =
+            models.iter().map(|m| (m.id.as_str(), m.is_free)).collect();
         assert!(!by_id["claude-sonnet-5"], "no pricing must not imply free");
         assert!(by_id["poolside/laguna-s-2.1-free"]);
         assert!(by_id["inclusionai/ling-3.0-flash-sante:free"]);
@@ -709,12 +996,271 @@ mod tests {
             ]
         });
 
-        let models = ModelDiscovery::extract_openai_format(&json, "opencode", false).expect("must extract models");
+        let models = ModelDiscovery::extract_openai_format(&json, "opencode", false)
+            .expect("must extract models");
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "claude-sonnet-4-5");
         assert_eq!(models[1].id, "gpt-5");
     }
+
+    #[test]
+    fn go_metadata_is_read_from_models_dev_shape() {
+        let json = serde_json::json!({
+            "opencode-go": {
+                "id": "opencode-go",
+                "models": {
+                    "deepseek-v4.1-flash": {
+                        "id": "deepseek-v4.1-flash",
+                        "name": "DeepSeek V4.1 Flash",
+                        "reasoning": true,
+                        "tool_call": true,
+                        "attachment": false,
+                        "provider": { "npm": "@ai-sdk/openai-compatible" },
+                        "limit": { "context": 1000000, "output": 131072 },
+                        "cost": { "input": 0.15, "output": 0.6 }
+                    },
+                    "claude-haiku-5-5": {
+                        "id": "claude-haiku-5-5",
+                        "name": "Claude Haiku 5.5",
+                        "provider": { "npm": "@ai-sdk/anthropic" },
+                        "cost": { "input": 0.1, "output": 0.5 }
+                    },
+                    "gpt-6-luna": {
+                        "id": "gpt-6-luna",
+                        "name": "GPT 6 Luna",
+                        "provider": { "npm": "@ai-sdk/openai" },
+                        "cost": { "input": 0.1, "output": 0.5 }
+                    },
+                    "gemini-4-argon": {
+                        "id": "gemini-4-argon",
+                        "name": "Gemini 4 Argon",
+                        "provider": { "npm": "@ai-sdk/google" }
+                    }
+                }
+            }
+        });
+
+        let meta = parse_go_meta(&json);
+        assert_eq!(meta.len(), 4);
+        assert_eq!(meta["deepseek-v4.1-flash"].protocol, "openai");
+        assert_eq!(meta["deepseek-v4.1-flash"].context_window, 1_000_000);
+        assert_eq!(meta["deepseek-v4.1-flash"].input_cost_micros, 150_000);
+        assert!(meta["deepseek-v4.1-flash"].reasoning);
+        assert_eq!(meta["claude-haiku-5-5"].protocol, "anthropic");
+        assert_eq!(meta["gpt-6-luna"].protocol, "responses");
+        assert_eq!(meta["gemini-4-argon"].protocol, "google");
+    }
+
+    #[test]
+    fn go_discovery_keeps_supported_protocols_and_drops_the_rest() {
+        let live = vec![
+            DiscoveredModel {
+                id: "deepseek-v4.1-flash".into(),
+                name: "deepseek-v4.1-flash".into(),
+                context_window: 8192,
+                input_cost_per_1m: 0.0,
+                output_cost_per_1m: 0.0,
+                supports_vision: false,
+                supports_tools: false,
+                reasoning: false,
+                is_free: false,
+            },
+            DiscoveredModel {
+                id: "claude-haiku-5-5".into(),
+                name: "claude-haiku-5-5".into(),
+                context_window: 8192,
+                input_cost_per_1m: 0.0,
+                output_cost_per_1m: 0.0,
+                supports_vision: false,
+                supports_tools: false,
+                reasoning: false,
+                is_free: false,
+            },
+            DiscoveredModel {
+                id: "gpt-6-luna".into(),
+                name: "gpt-6-luna".into(),
+                context_window: 8192,
+                input_cost_per_1m: 0.0,
+                output_cost_per_1m: 0.0,
+                supports_vision: false,
+                supports_tools: false,
+                reasoning: false,
+                is_free: false,
+            },
+            DiscoveredModel {
+                id: "gemini-4-argon".into(),
+                name: "gemini-4-argon".into(),
+                context_window: 8192,
+                input_cost_per_1m: 0.0,
+                output_cost_per_1m: 0.0,
+                supports_vision: false,
+                supports_tools: false,
+                reasoning: false,
+                is_free: false,
+            },
+            // Newer than models.dev: no exact entry, but its family is
+            // Responses-only, so it must be dropped.
+            DiscoveredModel {
+                id: "grok-4.6".into(),
+                name: "grok-4.6".into(),
+                context_window: 8192,
+                input_cost_per_1m: 0.0,
+                output_cost_per_1m: 0.0,
+                supports_vision: false,
+                supports_tools: true,
+                reasoning: false,
+                is_free: false,
+            },
+            // Also newer than models.dev, but its family is OpenAI-compatible.
+            DiscoveredModel {
+                id: "glm-5.1".into(),
+                name: "glm-5.1".into(),
+                context_window: 8192,
+                input_cost_per_1m: 0.0,
+                output_cost_per_1m: 0.0,
+                supports_vision: false,
+                supports_tools: true,
+                reasoning: false,
+                is_free: false,
+            },
+        ];
+        let mut meta = HashMap::new();
+        meta.insert(
+            "deepseek-v4.1-flash".into(),
+            GoModelMeta {
+                name: "DeepSeek V4.1 Flash".into(),
+                context_window: 1_000_000,
+                input_cost_micros: 300_000,
+                output_cost_micros: 1_200_000,
+                supports_tools: true,
+                reasoning: true,
+                protocol: "openai".into(),
+                ..Default::default()
+            },
+        );
+        meta.insert(
+            "claude-haiku-5-5".into(),
+            GoModelMeta {
+                name: "Claude Haiku 5.5".into(),
+                protocol: "anthropic".into(),
+                supports_tools: true,
+                ..Default::default()
+            },
+        );
+        meta.insert(
+            "gpt-6-luna".into(),
+            GoModelMeta {
+                protocol: "responses".into(),
+                ..Default::default()
+            },
+        );
+        meta.insert(
+            "gemini-4-argon".into(),
+            GoModelMeta {
+                protocol: "google".into(),
+                ..Default::default()
+            },
+        );
+        meta.insert(
+            "grok-4.7".into(),
+            GoModelMeta {
+                protocol: "responses".into(),
+                ..Default::default()
+            },
+        );
+        meta.insert(
+            "glm-5.3".into(),
+            GoModelMeta {
+                protocol: "openai".into(),
+                ..Default::default()
+            },
+        );
+
+        let out = apply_go_meta(live, &meta);
+        let ids: Vec<&str> = out.iter().map(|m| m.id.as_str()).collect();
+        assert!(ids.contains(&"deepseek-v4.1-flash"));
+        assert!(ids.contains(&"claude-haiku-5-5"));
+        assert!(!ids.contains(&"gpt-6-luna"), "responses is not implemented");
+        assert!(
+            !ids.contains(&"gemini-4-argon"),
+            "google is not implemented"
+        );
+        assert!(
+            !ids.contains(&"grok-4.6"),
+            "a new Grok inherits its family's protocol"
+        );
+        assert!(
+            ids.contains(&"glm-5.1"),
+            "a new GLM inherits the OpenAI-compatible family"
+        );
+
+        let ds = out.iter().find(|m| m.id == "deepseek-v4.1-flash").unwrap();
+        assert_eq!(ds.name, "DeepSeek V4.1 Flash");
+        assert_eq!(ds.context_window, 1_000_000);
+        assert_eq!(ds.input_cost_per_1m, 0.3);
+        assert_eq!(ds.output_cost_per_1m, 1.2);
+        assert!(ds.supports_tools);
+        assert!(ds.reasoning);
+        assert!(!ds.is_free);
+    }
+
+    #[test]
+    fn go_metadata_unavailable_does_not_empty_the_list() {
+        let live = vec![DiscoveredModel {
+            id: "deepseek-v4.1-flash".into(),
+            name: "deepseek-v4.1-flash".into(),
+            context_window: 8192,
+            input_cost_per_1m: 0.0,
+            output_cost_per_1m: 0.0,
+            supports_vision: false,
+            supports_tools: true,
+            reasoning: false,
+            is_free: false,
+        }];
+        let out = apply_go_meta(live, &HashMap::new());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "deepseek-v4.1-flash");
+    }
+
+    /// Live end-to-end check of the self-updating Go catalog.
+    ///
+    /// Ignored by default because it needs the network and a real key. Run:
+    /// `OPENCODE_GO_API_KEY=… cargo test -p ravenbot-models -- --ignored live_opencode_go_discovery`
+    #[tokio::test]
+    #[ignore = "network + real OpenCode Go key"]
+    async fn live_opencode_go_discovery_enriches_from_models_dev() {
+        let key =
+            std::env::var("OPENCODE_GO_API_KEY").expect("set OPENCODE_GO_API_KEY to run this test");
+        let discovery = ModelDiscovery::new(Duration::from_secs(1));
+        let models = discovery
+            .fetch_models("opencode-go", Some(&key), true)
+            .await
+            .expect("discovery must succeed");
+
+        assert!(!models.is_empty(), "the live Go list must not be empty");
+        assert!(
+            models.iter().any(|m| m.id == "deepseek-v4.1-flash"),
+            "a known chat-completions model must survive filtering"
+        );
+        assert!(
+            models.iter().any(|m| m.id.starts_with("claude")),
+            "Claude models are kept and routed through the Anthropic provider"
+        );
+        assert!(
+            !models.iter().any(|m| m.id == "gpt-6-luna"),
+            "Responses-only models are filtered until an adapter exists"
+        );
+
+        let ds = models
+            .iter()
+            .find(|m| m.id == "deepseek-v4.1-flash")
+            .expect("deepseek-v4.1-flash");
+        assert!(
+            ds.context_window > 100_000,
+            "models.dev metadata must replace the 8192 fallback (got {})",
+            ds.context_window
+        );
+        assert!(ds.supports_tools);
+        assert!(ds.input_cost_per_1m > 0.0, "pricing must be enriched");
+    }
 }
-
-
-

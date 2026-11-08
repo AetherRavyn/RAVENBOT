@@ -1,21 +1,39 @@
 //! Browser automation — real navigation (beats Browserbase paywall, local)
 
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 
 pub struct BrowserSkill;
 
-impl BrowserSkill { pub fn new() -> Self { Self } }
+impl BrowserSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for BrowserSkill {
-    fn id(&self) -> &str { "browser_navigate" }
-    fn name(&self) -> &str { "Browser Navigate" }
-    fn description(&self) -> &str { "Navigate browser, click, fill, screenshot — local computer control" }
-    fn version(&self) -> &str { "1.0.0" }
+    fn id(&self) -> &str {
+        "browser_navigate"
+    }
+    fn name(&self) -> &str {
+        "Browser Navigate"
+    }
+    fn description(&self) -> &str {
+        "Navigate browser, click, fill, screenshot — local computer control"
+    }
+    fn version(&self) -> &str {
+        "1.0.0"
+    }
     fn required_permissions(&self) -> Vec<Permission> {
-        vec![Permission::Screenshot, Permission::InputControl, Permission::Network { domains: vec!["*".into()] }]
+        vec![
+            Permission::Screenshot,
+            Permission::InputControl,
+            Permission::Network {
+                domains: vec!["*".into()],
+            },
+        ]
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -29,12 +47,22 @@ impl Skill for BrowserSkill {
             },"required":["action"]
         })
     }
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        _ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let client = reqwest::Client::new();
-        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("screenshot");
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
+            .unwrap_or("screenshot");
         match action {
             "navigate" => {
-                let url = args.get("url").and_then(|v| v.as_str()).ok_or_else(|| SkillError::InvalidArguments("Missing url".into()))?;
+                let url = args
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| SkillError::InvalidArguments("Missing url".into()))?;
                 if !url.starts_with("http://") && !url.starts_with("https://") {
                     return Err(SkillError::InvalidArguments("URL must be http(s)".into()));
                 }
@@ -46,7 +74,10 @@ impl Skill for BrowserSkill {
                     .await
                     .map_err(|e| SkillError::Network(e.to_string()))?;
                 let status = res.status().as_u16();
-                let html = res.text().await.map_err(|e| SkillError::Network(e.to_string()))?;
+                let html = res
+                    .text()
+                    .await
+                    .map_err(|e| SkillError::Network(e.to_string()))?;
                 let (title, text) = extract_readable(&html, 8000);
                 Ok(SkillResult::success(serde_json::json!({
                     "action": "navigate",
@@ -55,7 +86,7 @@ impl Skill for BrowserSkill {
                     "title": title,
                     "text": text
                 })))
-            },
+            }
             "click" => {
                 let sel = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 // Coordinate clicks are real (desktop input injection); a
@@ -83,11 +114,11 @@ impl Skill for BrowserSkill {
                     })))
                 } else {
                     Ok(SkillResult::failure(format!(
-                        "A selector-based click ({:?}) needs a live browser DOM, which is unavailable. Take a screenshot, then click by x/y coordinates, or use the `computer_control` skill.",
+                        "A selector-based click ({:?}) needs a live browser DOM. Open the page with `browser_open`, then use `browser_dom` with action=click to drive it. Otherwise take a screenshot and click by x/y coordinates.",
                         sel
                     )))
                 }
-            },
+            }
             "fill" => {
                 let sel = args.get("selector").and_then(|v| v.as_str()).unwrap_or("");
                 // Typing is real; targeting a selector is not.
@@ -99,7 +130,10 @@ impl Skill for BrowserSkill {
                                 "No desktop input backend available for typing. Install xdotool/ydotool/wtype.",
                             ));
                         }
-                        injector.type_text(text).await.map_err(SkillError::Execution)?;
+                        injector
+                            .type_text(text)
+                            .await
+                            .map_err(SkillError::Execution)?;
                         return Ok(SkillResult::success(serde_json::json!({
                             "action": "fill",
                             "typed": true,
@@ -108,34 +142,53 @@ impl Skill for BrowserSkill {
                     }
                 }
                 Ok(SkillResult::failure(format!(
-                    "Filling the selector {:?} needs a live browser DOM. Click the field by coordinates, then use action=fill with no selector to type into it.",
+                    "Filling the selector {:?} needs a live browser DOM. Open the page with `browser_open`, then use `browser_dom` with action=fill. Otherwise click the field by coordinates and use action=fill with no selector.",
                     sel
                 )))
-            },
+            }
             "screenshot" => {
                 let cap = ravenbot_vision::ScreenshotCapture::new();
-                let shot = cap.capture().await.map_err(|e| SkillError::Execution(e.to_string()))?;
-                Ok(SkillResult::success(serde_json::json!({"action":"screenshot","format":shot.format,"width":shot.width,"height":shot.height,"data_url": shot.to_data_url()})))
-            },
+                let shot = cap
+                    .capture()
+                    .await
+                    .map_err(|e| SkillError::Execution(e.to_string()))?;
+                Ok(SkillResult::success(
+                    serde_json::json!({"action":"screenshot","format":shot.format,"width":shot.width,"height":shot.height,"data_url": shot.to_data_url()}),
+                ))
+            }
             "scroll" => {
                 let injector = ravenbot_vision::InputInjector::detect();
                 if !injector.is_available() {
-                    return Ok(SkillResult::failure("No desktop input backend available for scrolling."));
+                    return Ok(SkillResult::failure(
+                        "No desktop input backend available for scrolling.",
+                    ));
                 }
                 let x = args.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                 let y = args.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
                 let dy = args.get("delta_y").and_then(|v| v.as_i64()).unwrap_or(3) as i32;
-                injector.scroll(x, y, 0, dy).await.map_err(SkillError::Execution)?;
+                injector
+                    .scroll(x, y, 0, dy)
+                    .await
+                    .map_err(SkillError::Execution)?;
                 Ok(SkillResult::success(serde_json::json!({
                     "action": "scroll", "x": x, "y": y, "delta_y": dy, "via": "desktop-input",
                 })))
-            },
+            }
             "wait" => {
-                let ms = args.get("milliseconds").and_then(|v| v.as_u64()).unwrap_or(1000).min(30_000);
+                let ms = args
+                    .get("milliseconds")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(1000)
+                    .min(30_000);
                 tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-                Ok(SkillResult::success(serde_json::json!({"action":"wait","milliseconds":ms})))
-            },
-            _ => Err(SkillError::InvalidArguments(format!("Unknown browser action: {} (navigate, click, fill, screenshot, scroll, wait)", action)))
+                Ok(SkillResult::success(
+                    serde_json::json!({"action":"wait","milliseconds":ms}),
+                ))
+            }
+            _ => Err(SkillError::InvalidArguments(format!(
+                "Unknown browser action: {} (navigate, click, fill, screenshot, scroll, wait)",
+                action
+            ))),
         }
     }
 }
@@ -183,10 +236,7 @@ fn extract_readable(html: &str, max_chars: usize) -> (String, String) {
     }
 
     // Collapse whitespace
-    let collapsed: String = text
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
+    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
 
     (title, collapsed.chars().take(max_chars).collect())
 }
@@ -225,7 +275,10 @@ mod tests {
         );
         // No coordinates, only a selector → must NOT report a fabricated success.
         let result = skill
-            .execute(&ctx, serde_json::json!({"action": "click", "selector": "#submit"}))
+            .execute(
+                &ctx,
+                serde_json::json!({"action": "click", "selector": "#submit"}),
+            )
             .await
             .expect("execute");
         assert!(!result.success);
@@ -242,7 +295,10 @@ mod tests {
             Uuid::new_v4(),
         );
         let result = skill
-            .execute(&ctx, serde_json::json!({"action": "click", "x": 10, "y": 20}))
+            .execute(
+                &ctx,
+                serde_json::json!({"action": "click", "x": 10, "y": 20}),
+            )
             .await
             .expect("execute");
         // Either it really clicked or it honestly reports no backend — never a
@@ -252,7 +308,10 @@ mod tests {
             assert!(result.success);
         } else {
             assert!(!result.success);
-            assert!(result.error.unwrap_or_default().contains("No desktop input backend"));
+            assert!(result
+                .error
+                .unwrap_or_default()
+                .contains("No desktop input backend"));
         }
     }
 }

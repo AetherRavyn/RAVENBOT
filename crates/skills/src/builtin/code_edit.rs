@@ -5,15 +5,34 @@ use ravenbot_core::Permission;
 
 pub struct CodeEditSkill;
 
-impl CodeEditSkill { pub fn new() -> Self { Self } }
+impl CodeEditSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for CodeEditSkill {
-    fn id(&self) -> &str { "code_edit" }
-    fn name(&self) -> &str { "Code Edit" }
-    fn description(&self) -> &str { "Apply unified diff patch to files — reviewable, git-aware" }
-    fn version(&self) -> &str { "1.1.0" }
-    fn required_permissions(&self) -> Vec<Permission> { vec![Permission::FileSystem { paths: vec![".".into()] }, Permission::Shell] }
+    fn id(&self) -> &str {
+        "code_edit"
+    }
+    fn name(&self) -> &str {
+        "Code Edit"
+    }
+    fn description(&self) -> &str {
+        "Apply a unified diff to files in the workspace. Prefer this over file_write for targeted changes; read the file first."
+    }
+    fn version(&self) -> &str {
+        "1.1.0"
+    }
+    fn required_permissions(&self) -> Vec<Permission> {
+        vec![
+            Permission::FileSystem {
+                paths: vec![".".into()],
+            },
+            Permission::Shell,
+        ]
+    }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({"type":"object","properties":{
             "patch":{"type":"string","description":"Unified diff"},
@@ -29,13 +48,20 @@ impl Skill for CodeEditSkill {
     /// started in — the cwd check alone proves nothing about where a patch
     /// lands. Every `---`/`+++` target goes through the confinement check
     /// first.
-    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn execute(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let patch = args
             .get("patch")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing patch".into()))?;
         let path = args.get("path").and_then(|v| v.as_str());
-        let dry = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(false);
+        let dry = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         exec::validate_patch_targets(ctx, patch)?;
 
@@ -43,8 +69,7 @@ impl Skill for CodeEditSkill {
         // a predictable `/tmp` name, so a symlink planted there cannot make
         // the patch overwrite something else. Under bubblewrap `/tmp` is a
         // private tmpfs, which is why the sandbox binds it separately.
-        let tmp = std::env::temp_dir()
-            .join(format!("raven_patch_{}.diff", uuid::Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!("raven_patch_{}.diff", uuid::Uuid::new_v4()));
         tokio::fs::write(&tmp, patch)
             .await
             .map_err(|e| SkillError::Io(e.to_string()))?;
@@ -138,7 +163,11 @@ fn combined(out: &std::process::Output) -> String {
     s
 }
 
-impl Default for CodeEditSkill { fn default() -> Self { Self::new() } }
+impl Default for CodeEditSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -167,7 +196,10 @@ mod tests {
             .unwrap()
             .block_on(skill.execute(&ctx(&root), serde_json::json!({"patch": patch})))
             .unwrap_err();
-        assert!(err.to_string().contains("not a path inside the office"), "{err}");
+        assert!(
+            err.to_string().contains("not a path inside the office"),
+            "{err}"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -185,7 +217,10 @@ mod tests {
             .expect("dry run should succeed");
         assert_eq!(result.output["dry_run"], true);
         // Untouched.
-        assert_eq!(std::fs::read_to_string(root.join("a.txt")).unwrap(), "one\n");
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "one\n"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -522,7 +522,7 @@
       isOrchestrator = Boolean(bot.is_orchestrator);
       approvalMode = (bot.approval_mode === "auto" || bot.approval_mode === "full") ? bot.approval_mode : "ask";
       fallbackProvider = bot.config?.fallback_provider || "";
-      maxToolRounds = bot.config?.max_tool_rounds || 12;
+      maxToolRounds = bot.config?.max_tool_rounds || 20;
       sandboxTier = bot.config?.sandbox_tier || "OsLevel";
       voiceId = bot.config?.voice_id || "default";
       autoRead = Boolean(bot.config?.auto_read);

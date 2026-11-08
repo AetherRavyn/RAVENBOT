@@ -302,6 +302,16 @@ export const CURATED: Record<string, CuratedProvider> = {
       mm("inclusionai/ling-3.0-flash-sante:free", "Ling 3.0 Flash Sante (Free)", { context_window: 262144, is_free: true }),
     ],
   },
+  // Live discovery is the source of truth for Go: `/inference/go/v1/models`
+  // supplies the ids and models.dev supplies the metadata. Only a bootstrap
+  // default lives here, so a model picker is not empty before the first fetch.
+  "opencode-go": {
+    description: "Go subscription — models auto-synced from OpenCode (Claude via Anthropic)",
+    default_model: "deepseek-v4.1-flash",
+    models: [
+      mm("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", { context_window: 1000000, supports_tools: true, reasoning: true }),
+    ],
+  },
   anthropic: {
     description: "Claude Fable 5, Opus 5, Sonnet 5 & Haiku 4.5 — 1M-context frontier models",
     default_model: "claude-sonnet-5",
@@ -462,6 +472,7 @@ export function minimalCatalog(): CatalogProvider[] {
       m("deepseek-v4-pro", "DeepSeek V4 Pro"),
       m("gemini-3-flash", "Gemini 3 Flash"),
     ]),
+    provider("opencode-go", "OpenCode Go", "🟢", CURATED["opencode-go"].description, "oc_sk_...", "https://opencode.ai/console", "OPENCODE_GO_API_KEY", CURATED["opencode-go"].default_model, CURATED["opencode-go"].models),
     provider("anthropic", "Anthropic Claude", "🧠", CURATED.anthropic.description, "sk-ant-...", "https://console.anthropic.com", "ANTHROPIC_API_KEY", CURATED.anthropic.default_model, CURATED.anthropic.models),
     provider("cline", "Cline", "🤖", "Autonomous coding agent gateway & multi-model routing", "sk-...", "https://cline.bot", "CLINE_API_KEY", "claude-sonnet-4-5", [
       mv("claude-sonnet-4-5", "Claude Sonnet 4.5"),

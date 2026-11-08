@@ -76,6 +76,59 @@ pub struct ChecklistItem {
     pub bot_id: Option<Uuid>,
 }
 
+/// One span of a turn's trace, persisted with the answer.
+///
+/// Offsets are relative to the start of the turn, so a trace stays meaningful
+/// after reload and can be drawn as a waterfall without the wall clock of the
+/// machine that produced it. `kind` is `model`, `tool`, `memory`, `context`, or
+/// `delegation`; unknown kinds render neutrally.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TraceSpan {
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+    /// Milliseconds from the start of the turn to the start of this span.
+    pub started_ms: u64,
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub failed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+impl TraceSpan {
+    pub fn new(
+        id: impl Into<String>,
+        kind: impl Into<String>,
+        label: impl Into<String>,
+        started_ms: u64,
+        duration_ms: u64,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind: kind.into(),
+            label: label.into(),
+            started_ms,
+            duration_ms,
+            failed: false,
+            detail: None,
+        }
+    }
+
+    pub fn failed(mut self) -> Self {
+        self.failed = true;
+        self
+    }
+
+    pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+}
+
+/// The most spans kept on one message.
+pub const MAX_MESSAGE_TRACE_SPANS: usize = 256;
+
 /// A message in a thread
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
@@ -98,10 +151,33 @@ pub struct Message {
     /// time). Denormalized so history survives renames/deletes.
     #[serde(default)]
     pub sender_name: Option<String>,
-    /// Which message this replies to (office agent-to-agent discussion).
+    /// Which message this quotes (a user reply, or office agent-to-agent discussion).
     #[serde(default)]
     pub reply_to_id: Option<Uuid>,
+    /// Emoji reactions placed on this message, oldest first.
+    ///
+    /// Stored in `message_reactions` rather than in the message row because a
+    /// reaction has its own lifecycle: it can be added and removed without
+    /// rewriting the message, and the message text stays byte-for-byte the
+    /// thing the model produced.
+    #[serde(default)]
+    pub reactions: Vec<String>,
     /// Timestamp
+    pub created_at: DateTime<Utc>,
+}
+
+/// One persisted emoji reaction on a message.
+///
+/// The app has a single human at the keyboard, so a reaction is identified by
+/// the message and the emoji; the composite primary key in the database makes
+/// "add" and "remove" a toggle rather than a count that can drift.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MessageReaction {
+    /// Message the reaction belongs to.
+    pub message_id: Uuid,
+    /// The emoji itself (a short grapheme sequence, not an asset name).
+    pub emoji: String,
+    /// When it was first placed. Used for stable chip ordering.
     pub created_at: DateTime<Utc>,
 }
 
@@ -244,6 +320,9 @@ pub enum MessageContent {
          */
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         tools: Vec<ToolTrace>,
+        /// The turn's model/tool/memory spans, for the trace waterfall.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        spans: Vec<TraceSpan>,
     },
     /// Structured checklist message
     Checklist {
@@ -270,11 +349,18 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::User,
-            content: MessageContent::Text { text: text.into(), sources: Vec::new(), reasoning: None, tools: Vec::new() },
+            content: MessageContent::Text {
+                text: text.into(),
+                sources: Vec::new(),
+                reasoning: None,
+                tools: Vec::new(),
+                spans: Vec::new(),
+            },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: Some("You".to_string()),
             reply_to_id: None,
+            reactions: Vec::new(),
             created_at: Utc::now(),
         }
     }
@@ -285,11 +371,18 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::Assistant,
-            content: MessageContent::Text { text: text.into(), sources: Vec::new(), reasoning: None, tools: Vec::new() },
+            content: MessageContent::Text {
+                text: text.into(),
+                sources: Vec::new(),
+                reasoning: None,
+                tools: Vec::new(),
+                spans: Vec::new(),
+            },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: None,
             reply_to_id: None,
+            reactions: Vec::new(),
             created_at: Utc::now(),
         }
     }
@@ -308,16 +401,27 @@ impl Message {
     }
 
     /// Create a new assistant message with web sources/citations
-    pub fn assistant_with_sources(thread_id: Uuid, text: impl Into<String>, sources: Vec<Source>) -> Self {
+    pub fn assistant_with_sources(
+        thread_id: Uuid,
+        text: impl Into<String>,
+        sources: Vec<Source>,
+    ) -> Self {
         Self {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::Assistant,
-            content: MessageContent::Text { text: text.into(), sources, reasoning: None, tools: Vec::new() },
+            content: MessageContent::Text {
+                text: text.into(),
+                sources,
+                reasoning: None,
+                tools: Vec::new(),
+                spans: Vec::new(),
+            },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: None,
             reply_to_id: None,
+            reactions: Vec::new(),
             created_at: Utc::now(),
         }
     }
@@ -335,7 +439,11 @@ impl Message {
         sources: Vec<Source>,
     ) -> Self {
         let reasoning = reasoning.into();
-        let reasoning = if reasoning.trim().is_empty() { None } else { Some(reasoning) };
+        let reasoning = if reasoning.trim().is_empty() {
+            None
+        } else {
+            Some(reasoning)
+        };
         Self {
             id: Uuid::new_v4(),
             thread_id,
@@ -345,11 +453,13 @@ impl Message {
                 sources,
                 reasoning,
                 tools: Vec::new(),
+                spans: Vec::new(),
             },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: None,
             reply_to_id: None,
+            reactions: Vec::new(),
             created_at: Utc::now(),
         }
     }
@@ -398,7 +508,11 @@ impl Message {
             }
         }
         body.push_str(rest);
-        let joined = if thinking.is_empty() { None } else { Some(thinking.join("\n\n")) };
+        let joined = if thinking.is_empty() {
+            None
+        } else {
+            Some(thinking.join("\n\n"))
+        };
         (body.trim().to_string(), joined)
     }
 
@@ -408,14 +522,12 @@ impl Message {
             id: Uuid::new_v4(),
             thread_id,
             role: MessageRole::Assistant,
-            content: MessageContent::Checklist {
-                text: None,
-                items,
-            },
+            content: MessageContent::Checklist { text: None, items },
             attachments: Vec::new(),
             sender_bot_id: None,
             sender_name: None,
             reply_to_id: None,
+            reactions: Vec::new(),
             created_at: Utc::now(),
         }
     }
@@ -454,8 +566,45 @@ mod tests {
             MessageRole::User
         );
         assert_eq!(
-            serde_json::from_value::<MessageRole>(json!("Assistant")).expect("deserialize Assistant"),
+            serde_json::from_value::<MessageRole>(json!("Assistant"))
+                .expect("deserialize Assistant"),
             MessageRole::Assistant
         );
+    }
+}
+
+#[cfg(test)]
+mod trace_span_tests {
+    use super::*;
+
+    #[test]
+    fn old_messages_decode_with_no_spans() {
+        let msg: Message = serde_json::from_value(serde_json::json!({
+            "id": Uuid::new_v4(),
+            "thread_id": Uuid::new_v4(),
+            "role": "assistant",
+            "content": { "type": "Text", "text": "old" },
+            "attachments": [],
+            "created_at": "2026-01-01T00:00:00Z"
+        }))
+        .expect("legacy message decodes");
+        match msg.content {
+            MessageContent::Text { spans, .. } => assert!(spans.is_empty()),
+            _ => panic!("expected text content"),
+        }
+    }
+
+    #[test]
+    fn spans_round_trip_and_keep_failure_detail() {
+        let span = TraceSpan::new("s1", "memory", "Memory saved", 120, 40)
+            .failed()
+            .with_detail("updated preference");
+        let value = serde_json::to_value(&span).expect("serialize span");
+        let back: TraceSpan = serde_json::from_value(value).expect("deserialize span");
+        assert_eq!(back.id, "s1");
+        assert_eq!(back.kind, "memory");
+        assert_eq!(back.started_ms, 120);
+        assert!(back.failed);
+        assert_eq!(back.detail.as_deref(), Some("updated preference"));
     }
 }

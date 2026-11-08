@@ -7,7 +7,10 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{StreamChunk, ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
+use super::{
+    streaming, DeltaCallback, Message, ModelError, ModelProviderTrait, ModelResponse,
+    StreamAccumulator, StreamChunk, ToolDefinition, Usage,
+};
 
 pub struct OpenAiCompatibleProvider {
     api_key: Option<String>,
@@ -63,30 +66,40 @@ impl OpenAiCompatibleProvider {
         // Shared OpenAI-compat path (DeepSeek/Groq/Gemini/Mistral/Together/
         // Perplexity/Cohere): clamp to 0..=2 so strict gateways 400 less.
         let temperature = temperature.clamp(0.0, 2.0);
-        let api_key = self.api_key.as_ref()
-            .ok_or_else(|| ModelError::Auth(format!("{} API key not configured", self.provider.display_name())))?;
+        let api_key = self.api_key.as_ref().ok_or_else(|| {
+            ModelError::Auth(format!(
+                "{} API key not configured",
+                self.provider.display_name()
+            ))
+        })?;
 
-        let chat_messages: Vec<ChatMessage> = messages.iter().map(|m| {
-            ChatMessage {
+        let chat_messages: Vec<ChatMessage> = messages
+            .iter()
+            .map(|m| ChatMessage {
                 role: m.role.clone(),
                 content: m.openai_content(),
                 tool_calls: m.openai_tool_calls(),
                 tool_call_id: m.tool_call_id.clone(),
                 name: m.name.clone(),
-            }
-        }).collect();
+            })
+            .collect();
 
         let tools_param = if tools.is_empty() {
             None
         } else {
-            Some(tools.iter().map(|t| ToolParam {
-                tool_type: "function".to_string(),
-                function: FunctionParam {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.parameters.clone(),
-                },
-            }).collect())
+            Some(
+                tools
+                    .iter()
+                    .map(|t| ToolParam {
+                        tool_type: "function".to_string(),
+                        function: FunctionParam {
+                            name: t.name.clone(),
+                            description: t.description.clone(),
+                            parameters: t.parameters.clone(),
+                        },
+                    })
+                    .collect(),
+            )
         };
 
         let request = ChatRequest {
@@ -97,13 +110,16 @@ impl OpenAiCompatibleProvider {
             max_tokens,
             stream,
             stream_options: if stream {
-                Some(StreamOptions { include_usage: true })
+                Some(StreamOptions {
+                    include_usage: true,
+                })
             } else {
                 None
             },
         };
 
-        let mut req_builder = self.client()
+        let mut req_builder = self
+            .client()
             .post(format!("{}/chat/completions", self.base_url))
             .header("Authorization", format!("Bearer {}", api_key))
             .json(&request);
@@ -112,8 +128,25 @@ impl OpenAiCompatibleProvider {
             req_builder = req_builder.header("HTTP-Referer", r);
         }
 
-        // Apply custom headers (e.g. x-opencode-session for OpenCode Go)
-        for (k, v) in &self.headers {
+        // Apply custom headers (e.g. x-opencode-session for OpenCode Go).
+        //
+        // OpenCode Go asks every harness to send a stable session id so it can
+        // route and cache a conversation. A custom provider can supply its own
+        // header; the built-in Go provider gets one automatically, once per
+        // process, rather than once per request (a fresh id on every model call
+        // would defeat the caching the header exists for).
+        let mut applied_headers = self.headers.clone();
+        if self.provider == ModelProvider::OpenCodeGo
+            && !applied_headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("x-opencode-session"))
+        {
+            applied_headers.insert(
+                "x-opencode-session".to_string(),
+                opencode_session_id().to_string(),
+            );
+        }
+        for (k, v) in &applied_headers {
             req_builder = req_builder.header(k, v);
         }
 
@@ -122,15 +155,24 @@ impl OpenAiCompatibleProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(ModelError::Provider(format!("API error {}: {}", status, body)));
+            return Err(ModelError::Provider(format!(
+                "API error {}: {}",
+                status, body
+            )));
         }
 
         if let Some(on_delta) = on_delta {
             let mut acc = StreamAccumulator::new();
             streaming::consume_sse(response, |json| {
                 if let Some(usage) = json.get("usage") {
-                    let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let input = usage
+                        .get("prompt_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output = usage
+                        .get("completion_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     if input > 0 || output > 0 {
                         acc.set_usage(input, output);
                     }
@@ -155,24 +197,34 @@ impl OpenAiCompatibleProvider {
                             for chunk in tc {
                                 let func = chunk.get("function");
                                 acc.push_tool_call_delta(
-                                    chunk.get("index").and_then(|v| v.as_u64()).map(|v| v as usize),
+                                    chunk
+                                        .get("index")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as usize),
                                     chunk.get("id").and_then(|v| v.as_str()),
                                     func.and_then(|f| f.get("name")).and_then(|v| v.as_str()),
-                                    func.and_then(|f| f.get("arguments")).and_then(|v| v.as_str()),
+                                    func.and_then(|f| f.get("arguments"))
+                                        .and_then(|v| v.as_str()),
                                 );
                             }
                         }
                     }
                 }
                 Ok(())
-            }).await?;
+            })
+            .await?;
             Ok(acc.finish())
         } else {
             let chat_response: ChatResponse = response.json().await.map_err(ModelError::Http)?;
-            let choice = chat_response.choices.first()
+            let choice = chat_response
+                .choices
+                .first()
                 .ok_or_else(|| ModelError::Provider("No response choices".to_string()))?;
 
-            let tool_calls = choice.message.tool_calls.as_ref()
+            let tool_calls = choice
+                .message
+                .tool_calls
+                .as_ref()
                 .unwrap_or(&vec![])
                 .iter()
                 .filter_map(|tc| {
@@ -185,10 +237,17 @@ impl OpenAiCompatibleProvider {
                 })
                 .collect();
 
-            let usage = chat_response.usage.as_ref().map(|u| Usage {
-                input_tokens: u.prompt_tokens,
-                output_tokens: u.completion_tokens,
-            }).unwrap_or(Usage { input_tokens: 0, output_tokens: 0 });
+            let usage = chat_response
+                .usage
+                .as_ref()
+                .map(|u| Usage {
+                    input_tokens: u.prompt_tokens,
+                    output_tokens: u.completion_tokens,
+                })
+                .unwrap_or(Usage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                });
 
             Ok(ModelResponse {
                 content: choice.message.content.clone(),
@@ -209,14 +268,40 @@ impl OpenAiCompatibleProvider {
 
 #[async_trait]
 impl ModelProviderTrait for OpenAiCompatibleProvider {
-    fn provider_type(&self) -> ModelProvider { self.provider.clone() }
-
-    async fn complete(&self, messages: &[Message], tools: &[ToolDefinition], temperature: f32, max_tokens: u32) -> Result<ModelResponse, ModelError> {
-        self.send_chat(messages, tools, temperature, max_tokens, false, None, false).await
+    fn provider_type(&self) -> ModelProvider {
+        self.provider.clone()
     }
 
-    async fn complete_stream(&self, messages: &[Message], tools: &[ToolDefinition], temperature: f32, max_tokens: u32, on_delta: DeltaCallback, enable_reasoning: bool) -> Result<ModelResponse, ModelError> {
-        self.send_chat(messages, tools, temperature, max_tokens, true, Some(&on_delta), enable_reasoning).await
+    async fn complete(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        temperature: f32,
+        max_tokens: u32,
+    ) -> Result<ModelResponse, ModelError> {
+        self.send_chat(messages, tools, temperature, max_tokens, false, None, false)
+            .await
+    }
+
+    async fn complete_stream(
+        &self,
+        messages: &[Message],
+        tools: &[ToolDefinition],
+        temperature: f32,
+        max_tokens: u32,
+        on_delta: DeltaCallback,
+        enable_reasoning: bool,
+    ) -> Result<ModelResponse, ModelError> {
+        self.send_chat(
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            true,
+            Some(&on_delta),
+            enable_reasoning,
+        )
+        .await
     }
 
     fn with_model(mut self: Box<Self>, model_id: String) -> Box<dyn ModelProviderTrait> {
@@ -229,14 +314,40 @@ impl ModelProviderTrait for OpenAiCompatibleProvider {
             Some(key) => key,
             None => return Ok(false),
         };
-        let mut req = self.client()
-            .get(format!("{}/models", self.base_url))
+
+        // Go's chat base (`…/go/openai/v1`) does not serve `/models`; the
+        // unified model list lives one level up at `…/go/v1`. A health check
+        // that 404s on a working key would report the provider as down.
+        let base = if self.provider == ModelProvider::OpenCodeGo {
+            "https://opencode.ai/inference/go/v1"
+        } else {
+            self.base_url.as_str()
+        };
+
+        let mut req = self
+            .client()
+            .get(format!("{}/models", base))
             .header("Authorization", format!("Bearer {}", api_key));
+
+        if self.provider == ModelProvider::OpenCodeGo
+            && !self
+                .headers
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case("x-opencode-session"))
+        {
+            req = req.header("x-opencode-session", opencode_session_id());
+        }
         for (k, v) in &self.headers {
             req = req.header(k, v);
         }
-        let response = req.send().await;
-        Ok(response.is_ok())
+
+        // A 401/403 is not "healthy", and a 404 on the wrong path is not
+        // either. The old `response.is_ok()` reported a server that answered
+        // anything as connected, which made a revoked key look fine.
+        match req.send().await {
+            Ok(response) => Ok(response.status().is_success()),
+            Err(_) => Ok(false),
+        }
     }
 }
 
@@ -257,7 +368,9 @@ struct ChatRequest {
 }
 
 #[derive(Debug, Serialize)]
-struct StreamOptions { include_usage: bool }
+struct StreamOptions {
+    include_usage: bool,
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ChatMessage {
@@ -292,7 +405,9 @@ struct ChatResponse {
 }
 
 #[derive(Debug, Deserialize)]
-struct Choice { message: ResponseMessage }
+struct Choice {
+    message: ResponseMessage,
+}
 
 #[derive(Debug, Deserialize)]
 struct ResponseMessage {
@@ -321,46 +436,140 @@ struct UsageResponse {
 // ── Public constructors for each provider ─────────────────────────────────────
 
 pub fn deepseek_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
-    OpenAiCompatibleProvider::new(api_key, "https://api.deepseek.com/v1", "deepseek-chat", ModelProvider::DeepSeek)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://api.deepseek.com/v1",
+        "deepseek-chat",
+        ModelProvider::DeepSeek,
+    )
 }
 
 pub fn groq_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
-    OpenAiCompatibleProvider::new(api_key, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile", ModelProvider::Groq)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://api.groq.com/openai/v1",
+        "llama-3.3-70b-versatile",
+        ModelProvider::Groq,
+    )
 }
 
 pub fn gemini_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
-    OpenAiCompatibleProvider::new(api_key, "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.0-flash", ModelProvider::Gemini)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://generativelanguage.googleapis.com/v1beta/openai",
+        "gemini-2.0-flash",
+        ModelProvider::Gemini,
+    )
 }
 
 pub fn mistral_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
-    OpenAiCompatibleProvider::new(api_key, "https://api.mistral.ai/v1", "mistral-large-latest", ModelProvider::Mistral)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://api.mistral.ai/v1",
+        "mistral-large-latest",
+        ModelProvider::Mistral,
+    )
 }
 
 pub fn together_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
-    OpenAiCompatibleProvider::new(api_key, "https://api.together.xyz/v1", "meta-llama/Llama-3.3-70B-Instruct-Turbo", ModelProvider::Together)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://api.together.xyz/v1",
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        ModelProvider::Together,
+    )
 }
 
 pub fn perplexity_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
-    OpenAiCompatibleProvider::new(api_key, "https://api.perplexity.ai", "llama-3.1-sonar-large-128k-online", ModelProvider::Perplexity)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://api.perplexity.ai",
+        "llama-3.1-sonar-large-128k-online",
+        ModelProvider::Perplexity,
+    )
 }
 
 pub fn cohere_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
     // Cohere's OpenAI-compatible surface lives under /compatibility/v1, so
     // `{base}/chat/completions` resolves correctly (the old /v2/chat base
     // produced /v2/chat/chat/completions → 404 on every call).
-    OpenAiCompatibleProvider::new(api_key, "https://api.cohere.com/compatibility/v1", "command-r-plus", ModelProvider::Cohere)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://api.cohere.com/compatibility/v1",
+        "command-r-plus",
+        ModelProvider::Cohere,
+    )
 }
 
 pub fn opencode_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
-    OpenAiCompatibleProvider::new(api_key, "https://opencode.ai/zen/v1", "claude-sonnet-4-5", ModelProvider::OpenCode)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://opencode.ai/zen/v1",
+        "claude-sonnet-4-5",
+        ModelProvider::OpenCode,
+    )
+}
+
+/// OpenCode Go subscription endpoint.
+///
+/// Distinct from Zen (`opencode.ai/zen/v1`): Go is a paid plan with its own
+/// inference host, its own key, and its own model ids. The chat-completions
+/// models (Beam Free, GLM, Kimi, DeepSeek, MiMo, MiniMax, LongCat, Step, Hy)
+/// speak the OpenAI wire format; the few models served only through
+/// `/responses`, `/anthropic` or `/google` are deliberately not listed in the
+/// desktop catalog until an adapter exists for them.
+pub fn opencode_go_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://opencode.ai/inference/go/openai/v1",
+        "deepseek-v4.1-flash",
+        ModelProvider::OpenCodeGo,
+    )
+}
+
+/// Stable session id for OpenCode Go, created once per process.
+///
+/// Go's documentation asks harnesses to send an `x-opencode-session` header so
+/// requests from one conversation are routed and cached together. A random id
+/// per request would be worse than none, and the provider is constructed fresh
+/// for every model round, so the value cannot live on the instance.
+fn opencode_session_id() -> &'static str {
+    static SESSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    SESSION.get_or_init(|| {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("ravenbot-{}-{:x}", std::process::id(), nanos)
+    })
+}
+
+/// The headers every OpenCode Go request must carry.
+pub(crate) fn opencode_session_headers() -> std::collections::HashMap<String, String> {
+    let mut headers = std::collections::HashMap::new();
+    headers.insert(
+        "x-opencode-session".to_string(),
+        opencode_session_id().to_string(),
+    );
+    headers
 }
 
 pub fn cline_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
-    OpenAiCompatibleProvider::new(api_key, "https://api.cline.bot/api/v1", "claude-sonnet-4-5", ModelProvider::Cline)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://api.cline.bot/api/v1",
+        "claude-sonnet-4-5",
+        ModelProvider::Cline,
+    )
 }
 
 pub fn xai_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
-    OpenAiCompatibleProvider::new(api_key, "https://api.x.ai/v1", "grok-2-latest", ModelProvider::XAI)
+    OpenAiCompatibleProvider::new(
+        api_key,
+        "https://api.x.ai/v1",
+        "grok-2-latest",
+        ModelProvider::XAI,
+    )
 }
 
 pub fn tokenrouter_provider(api_key: Option<String>) -> OpenAiCompatibleProvider {
@@ -402,6 +611,7 @@ pub fn openai_compat_with_base(
         ModelProvider::Cohere => "command-r-plus",
         ModelProvider::MiMo => "mimo-7b",
         ModelProvider::OpenCode => "claude-sonnet-4-5",
+        ModelProvider::OpenCodeGo => "deepseek-v4.1-flash",
         ModelProvider::Cline => "claude-sonnet-4-5",
         ModelProvider::XAI => "grok-2-latest",
         ModelProvider::TokenRouter => "deepseek/deepseek-v4.1-flash",
@@ -409,4 +619,3 @@ pub fn openai_compat_with_base(
     };
     OpenAiCompatibleProvider::new(api_key, base_url, default_model, provider)
 }
-

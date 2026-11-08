@@ -1,7 +1,7 @@
 //! Skill registry for managing available skills
 
-use crate::traits::Skill;
 use crate::builtin::*;
+use crate::traits::Skill;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -30,6 +30,13 @@ impl SkillRegistry {
         registry.register(Arc::new(CodeSearchSkill::new()));
         registry.register(Arc::new(GitSkill::new()));
         registry.register(Arc::new(BrowserSkill::new()));
+        registry.register(Arc::new(BrowserOpenSkill::new()));
+        registry.register(Arc::new(BrowserDomSkill::new()));
+        registry.register(Arc::new(CreateSkillSkill::new()));
+        registry.register(Arc::new(ReviseSkillSkill::new()));
+        registry.register(Arc::new(ListLocalSkillsSkill::new()));
+        registry.register(Arc::new(ReadLocalSkillSkill::new()));
+        registry.register(Arc::new(InstallLocalSkillSkill::new()));
         registry.register(Arc::new(DbQuerySkill::new()));
         registry.register(Arc::new(TavilySearchSkill::new()));
         registry.register(Arc::new(MemorySaveSkill::new()));
@@ -44,6 +51,8 @@ impl SkillRegistry {
         registry.register(Arc::new(ArxivSkill::new()));
         registry.register(Arc::new(CalendarSkill::new()));
         registry.register(Arc::new(DockerSkill::new()));
+        registry.register(Arc::new(MakeDocumentSkill::new()));
+        registry.register(Arc::new(MakeSlidesSkill::new()));
         registry.register(Arc::new(ImageGenSkill::new()));
 
         // ── mattpocock/skills: Engineering (prompt-based) ─────────────────
@@ -75,6 +84,11 @@ impl SkillRegistry {
         registry.register(Arc::new(prompt_skill::grill_me_skill()));
         registry.register(Arc::new(prompt_skill::wizard_skill()));
 
+        // ── Visual production ────────────────────────────────────────────
+        registry.register(Arc::new(prompt_skill::visuals_skill()));
+        registry.register(Arc::new(prompt_skill::slides_skill()));
+        registry.register(Arc::new(prompt_skill::fframes_skill()));
+
         // ── New tool skills ──────────────────────────────────────────────
         registry.register(Arc::new(SystemMonitorSkill::new()));
         registry.register(Arc::new(PackageManagerSkill::new()));
@@ -84,7 +98,8 @@ impl SkillRegistry {
         registry.register(Arc::new(NoteManagerSkill::new()));
         registry.register(Arc::new(TaskRunnerSkill::new()));
 
-        // ── Awesome: 1497 curated skills ─────────────────────────────────
+        // ── Awesome: flagship starter catalog; the rest of the 1,497+
+        // VoltAgent skills load by id through the `awesome_fetch` meta-skill.
         for meta in crate::awesome::catalog() {
             registry.register(Arc::new(crate::awesome::AwesomeSkill::new(meta)));
         }
@@ -95,8 +110,7 @@ impl SkillRegistry {
 
     /// Register a new skill
     pub fn register(&mut self, skill: Arc<dyn Skill>) {
-        self.skills
-            .insert(skill.id().to_string(), skill);
+        self.skills.insert(skill.id().to_string(), skill);
     }
 
     /// Get a skill by ID
@@ -133,11 +147,9 @@ impl SkillRegistry {
         context: &crate::traits::SkillContext,
         arguments: serde_json::Value,
     ) -> Result<crate::traits::SkillResult, crate::traits::SkillError> {
-        let skill = self
-            .get(skill_id)
-            .ok_or_else(|| crate::traits::SkillError::Execution(
-                format!("Skill not found: {}", skill_id)
-            ))?;
+        let skill = self.get(skill_id).ok_or_else(|| {
+            crate::traits::SkillError::Execution(format!("Skill not found: {}", skill_id))
+        })?;
 
         // Validate arguments
         skill.validate_arguments(&arguments)?;

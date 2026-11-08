@@ -24,6 +24,10 @@
     Wand2,
     Layers,
     FolderOpen,
+    Loader2,
+    RefreshCw,
+    Brain,
+    AlertTriangle,
   } from "@lucide/svelte";
 
   interface Props {
@@ -46,6 +50,17 @@
   // Provision the template's full org (CEO + specialists) automatically. This
   // is what turns a new office into a real team without hand-creating bots.
   let autoStaff = $state(true);
+
+  // The AI-designed charter + roster. Loading it before the office exists means
+  // the user sees who is about to be hired, and the create call has something
+  // better than the template to provision.
+  let blueprint = $state<any | null>(null);
+  let blueprintLoading = $state(false);
+  let blueprintError = $state<string | null>(null);
+  let createError = $state<string | null>(null);
+  let lastBlueprintKey = "";
+  const blueprintKey = () =>
+    `${name.trim()}|${description.trim()}|${officeTemplate}|${goal.trim()}`;
 
   // The office's folder, its mission, and its rules. All three are handed to
   // every agent in the room: an agent told only its job title works in the
@@ -89,6 +104,106 @@
     if (!open) step = 0;
   });
 
+  let blueprintSignature = $derived(
+    `${name.trim()}|${description.trim()}|${officeTemplate}|${goal.trim()}`,
+  );
+  let blueprintSeq = 0;
+  let blueprintElapsed = $state(0);
+  let blueprintTimer: ReturnType<typeof setInterval> | null = null;
+
+  async function loadBlueprint(sig: string) {
+    const seq = ++blueprintSeq;
+    blueprintLoading = true;
+    blueprintError = null;
+    blueprintElapsed = 0;
+    if (blueprintTimer) clearInterval(blueprintTimer);
+    blueprintTimer = setInterval(() => {
+      blueprintElapsed += 1;
+    }, 1000);
+
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    try {
+      // A model call can hang (unreachable provider, a hosted gateway that
+      // accepts the connection and never answers). The backend has its own
+      // per-candidate timeout; this is the UI's guarantee that the dialog can
+      // always recover even if the IPC call itself never settles.
+      const timeout = new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(
+          () =>
+            reject(
+              new Error(
+                "Office design timed out after 150 seconds. The model may be slow or unreachable — use the template team or retry.",
+              ),
+            ),
+          150_000,
+        );
+      });
+      const res = await Promise.race([
+        invoke<any>("draft_office_blueprint", {
+          name: name.trim(),
+          mission: description.trim(),
+          officeTemplate,
+          brief: goal.trim(),
+        }),
+        timeout,
+      ]);
+      if (seq !== blueprintSeq) return;
+      blueprint = res;
+      if (res?.error) blueprintError = String(res.error);
+      lastBlueprintKey = sig;
+    } catch (e) {
+      if (seq !== blueprintSeq) return;
+      blueprint = null;
+      blueprintError = String(e);
+      // A rejected design must not re-trigger the effect forever. Mark this
+      // signature as attempted; the user can press Redesign to try again.
+      lastBlueprintKey = sig;
+    } finally {
+      if (blueprintTimer) {
+        clearInterval(blueprintTimer);
+        blueprintTimer = null;
+      }
+      if (timeoutId) clearTimeout(timeoutId);
+      if (seq === blueprintSeq) blueprintLoading = false;
+    }
+  }
+
+  function regenerateBlueprint() {
+    if (blueprintLoading || !name.trim()) return;
+    lastBlueprintKey = "";
+    void loadBlueprint(blueprintSignature);
+  }
+
+  /**
+   * Stop waiting and let the create button use the template roster.
+   *
+   * The IPC call is not cancellable, so invalidate its sequence and ignore the
+   * result if it arrives later. This is the difference between "the model is
+   * slow" and "the dialog is stuck".
+   */
+  function useTemplateNow() {
+    blueprintSeq++;
+    if (blueprintTimer) {
+      clearInterval(blueprintTimer);
+      blueprintTimer = null;
+    }
+    blueprintLoading = false;
+    blueprint = null;
+    blueprintError = "AI design skipped — the template team will be used.";
+    lastBlueprintKey = blueprintSignature;
+  }
+
+  // Load the blueprint when the staffing step opens, and again if the name,
+  // mission, template or goal changed while it was open. Debouncing is not
+  // needed: the inputs are not a stream, and each change is one deliberate
+  // action from the user.
+  $effect(() => {
+    const sig = blueprintSignature;
+    if (!open || step !== 2 || !autoStaff || !name.trim()) return;
+    if (blueprintLoading || sig === lastBlueprintKey) return;
+    void loadBlueprint(sig);
+  });
+
   const templateIcons: Record<string, any> = {
  "it-office": Laptop,
  "marketing": TrendingUp,
@@ -121,8 +236,14 @@
   async function create() {
     if (!name.trim()) return;
     isCreating = true;
+    createError = null;
     try {
       const url = roomAvatarUrl || getDiceBearUrl(name, roomAvatarStyle);
+      // Prefer what the user typed; fall back to the charter the model wrote
+      // from the name and mission. An office created from a name alone still
+      // gets a real goal and binding policy.
+      const chosenGoal = goal.trim() || blueprint?.goal?.trim() || null;
+      const chosenPolicy = policy.trim() || blueprint?.policy?.trim() || null;
       const room = await invoke<any>("create_chatroom", {
         name,
         description,
@@ -133,20 +254,28 @@
         // user picks becomes the office instead, and the charter is written
         // there rather than into a second, unused directory.
         projectFolder: workspaceChoice === "custom" ? customFolder.trim() || null : null,
-        goal: goal.trim() || null,
-        policy: policy.trim() || null,
+        goal: chosenGoal,
+        policy: chosenPolicy,
       });
       const roomId = room.id;
       const workspace = room.project_folders?.[0] ?? null;
 
       if (autoStaff) {
-        // Build the full org (CEO + role specialists) from the blueprint.
+        // The AI roster when it produced one; the template blueprint otherwise.
         // Existing fleet agents that match a role are reused, not duplicated.
-        const roles = await invoke<any[]>("default_office_org", {
-          officeTemplate,
-        });
+        const roles =
+          Array.isArray(blueprint?.roles) && blueprint.roles.length > 0
+            ? blueprint.roles
+            : await invoke<any[]>("default_office_org", { officeTemplate });
         if (roles.length > 0) {
-          await invoke("provision_office_org", { chatroomId: roomId, roles });
+          await invoke("provision_office_org", {
+            chatroomId: roomId,
+            roles,
+            // The model that just designed the office is the one we know
+            // answered a real request; make the agents run on it.
+            provider: blueprint?.provider ?? null,
+            model: blueprint?.model ?? null,
+          });
           window.dispatchEvent(new CustomEvent("bots-changed"));
         }
       } else {
@@ -169,8 +298,12 @@
       customFolder = "";
       workspaceChoice = "default";
       selectedMembers = [];
+      blueprint = null;
+      blueprintError = null;
+      lastBlueprintKey = "";
       step = 0;
     } catch (e) {
+      createError = String(e);
       console.error("Failed to create office:", e);
     } finally {
       isCreating = false;
@@ -449,10 +582,103 @@
           <span class="space-y-0.5">
             <span class="text-xs font-bold text-[var(--text-primary)] block">{t("office.autoStaff")}</span>
             <span class="text-[11px] text-[var(--text-tertiary)] block">
-              {t("office.autoStaffDesc", { name: officeTemplateName(officeTemplate) })}
+              The team and charter are designed from the office name and mission. Agents run
+              autonomously inside the workspace; machine-destructive commands are blocked.
             </span>
           </span>
         </label>
+
+        {#if autoStaff}
+          <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]/80 p-3 space-y-2" aria-live="polite">
+            <div class="flex items-center justify-between gap-2">
+              <div class="flex items-center gap-2 min-w-0">
+                <span class="size-7 rounded-lg bg-[var(--brand-soft)] border border-[var(--brand)]/30 flex items-center justify-center text-[var(--brand-text)] shrink-0">
+                  {#if blueprintLoading}<Loader2 class="size-3.5 animate-spin" />{:else}<Brain class="size-3.5" />{/if}
+                </span>
+                <div class="min-w-0">
+                  <div class="text-xs font-bold text-[var(--text-primary)] truncate">
+                    {blueprintLoading ? "Designing this office…" : "The office it will create"}
+                  </div>
+                  <div class="text-[11px] text-[var(--text-muted)]">
+                    {#if blueprint?.source === "ai"}
+                      Designed by {blueprint.designer_id ? blueprint.designer : "your default model"}
+                    {:else if blueprint}
+                      Template team (AI design unavailable)
+                    {:else if blueprintError}
+                      Template team (AI design failed)
+                    {:else}
+                      Reading the name and mission · {blueprintElapsed}s
+                    {/if}
+                  </div>
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="xs"
+                class="h-7 gap-1 text-[11px] text-[var(--text-tertiary)] shrink-0"
+                onclick={regenerateBlueprint}
+                disabled={blueprintLoading || !name.trim()}
+              >
+                <RefreshCw class="size-3" />
+                Redesign
+              </Button>
+            </div>
+
+            {#if blueprintLoading}
+              <div class="space-y-1.5 pt-1">
+                <div class="h-2.5 rounded bg-[var(--surface-3)] animate-pulse w-11/12"></div>
+                <div class="h-2.5 rounded bg-[var(--surface-3)] animate-pulse w-9/12"></div>
+                <div class="h-2.5 rounded bg-[var(--surface-3)] animate-pulse w-10/12"></div>
+              </div>
+              <div class="flex items-center justify-between gap-2 pt-1">
+                <span class="text-[11px] text-[var(--text-muted)] leading-snug">
+                  Usually 20–60s. A slow model falls through to the next provider.
+                </span>
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  class="h-7 text-[11px] text-[var(--text-tertiary)] shrink-0"
+                  onclick={useTemplateNow}
+                >
+                  Use template now
+                </Button>
+              </div>
+            {:else if blueprint}
+              {#if blueprint.capabilities}
+                <div class="text-[11px] font-mono text-[var(--text-muted)]">
+                  {blueprint.capabilities.skills} skills · {blueprint.capabilities.connectors} connectors · {blueprint.capabilities.plugins} plugins available
+                </div>
+              {/if}
+              {#if blueprint.goal}
+                <p class="text-[11px] leading-relaxed text-[var(--text-secondary)] border-l-2 border-[var(--brand)]/40 pl-2 line-clamp-3">
+                  {blueprint.goal}
+                </p>
+              {/if}
+              {#if blueprint.question}
+                <p class="text-[11px] text-warning leading-snug flex items-start gap-1.5">
+                  <AlertTriangle class="size-3 mt-0.5 shrink-0" />
+                  <span>{blueprint.question}</span>
+                </p>
+              {/if}
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-0.5">
+                {#each blueprint.roles as role}
+                  <div class="flex items-center gap-2 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] px-2.5 py-1.5 min-w-0">
+                    <span class="size-1.5 rounded-full shrink-0" style="background-color: {role.is_lead ? '#8b5cf6' : '#79b8ff'}"></span>
+                    <span class="text-[11px] font-bold text-[var(--text-primary)] truncate">{role.name}</span>
+                    <span class="text-[11px] text-[var(--text-tertiary)] truncate">— {role.rank}</span>
+                    <span class="ml-auto text-[11px] font-mono text-[var(--text-muted)] shrink-0 text-right">
+                      {role.skills?.length ?? 0} skills{#if role.mcp_servers?.length} · {role.mcp_servers.length} MCP{/if}{#if role.plugins?.length} · {role.plugins.length} plugin{/if}
+                    </span>
+                  </div>
+                {/each}
+              </div>
+            {:else if blueprintError}
+              <p class="text-[11px] text-[var(--text-muted)] leading-snug">
+                Could not reach the model ({blueprintError}). The template team will be hired instead — you can change it after creation.
+              </p>
+            {/if}
+          </div>
+        {/if}
       </div>
 
       {#if !autoStaff}
@@ -543,6 +769,10 @@
       {/if}
     </div>
 
+    {#if createError}
+      <p class="text-[11px] text-danger leading-snug break-words px-1" role="alert">{createError}</p>
+    {/if}
+
     <div class="flex items-center justify-between gap-2 pt-3 border-t border-[var(--hairline)]">
       <Button variant="outline" size="sm" class="bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--surface-3)]" onclick={onClose} disabled={isCreating}>
         {t("ui.cancel")}
@@ -568,10 +798,15 @@
             size="sm"
             class="h-9 gap-1.5 bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] font-medium shadow-md cursor-pointer"
             onclick={create}
-            disabled={isCreating}
+            disabled={isCreating || blueprintLoading}
           >
-            <Building2 class="size-3.5" />
-            {isCreating ? t("office.establishing") : t("office.createBtn", { name: name || t("office.fallbackName") })}
+            {#if blueprintLoading}
+              <Loader2 class="size-3.5 animate-spin" />
+              Designing…
+            {:else}
+              <Building2 class="size-3.5" />
+              {isCreating ? t("office.establishing") : t("office.createBtn", { name: name || t("office.fallbackName") })}
+            {/if}
           </Button>
         {/if}
       </div>

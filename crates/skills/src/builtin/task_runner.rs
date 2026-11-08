@@ -1,22 +1,39 @@
 //! Task runner — run project tasks, scripts, and build commands with output capture
 
+use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 use std::path::Path;
 
 pub struct TaskRunnerSkill;
 
-impl TaskRunnerSkill { pub fn new() -> Self { Self } }
+impl TaskRunnerSkill {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
 #[async_trait]
 impl Skill for TaskRunnerSkill {
-    fn id(&self) -> &str { "task_runner" }
-    fn name(&self) -> &str { "Task Runner" }
-    fn description(&self) -> &str { "Run project tasks, scripts, and build commands: npm scripts, Makefile targets, cargo tasks, custom commands" }
-    fn version(&self) -> &str { "1.0.0" }
+    fn id(&self) -> &str {
+        "task_runner"
+    }
+    fn name(&self) -> &str {
+        "Task Runner"
+    }
+    fn description(&self) -> &str {
+        "Run project tasks, scripts, and build commands: npm scripts, Makefile targets, cargo tasks, custom commands"
+    }
+    fn version(&self) -> &str {
+        "1.0.0"
+    }
     fn required_permissions(&self) -> Vec<Permission> {
-        vec![Permission::Shell, Permission::FileSystem { paths: vec![".".to_string()] }]
+        vec![
+            Permission::Shell,
+            Permission::FileSystem {
+                paths: vec![".".to_string()],
+            },
+        ]
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -39,27 +56,52 @@ impl Skill for TaskRunnerSkill {
         })
     }
 
-    async fn execute(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let action = args.get("action").and_then(|v| v.as_str())
+    async fn execute(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let action = args
+            .get("action")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'action'".into()))?;
 
         match action {
             "run" => self.run_task(ctx, args).await,
             "list" => self.list_tasks(ctx, args).await,
-            "watch" => Ok(SkillResult::failure("Watch mode not yet implemented".to_string())),
-            "stop" => Ok(SkillResult::failure("Stop requires background task tracking".to_string())),
-            "schedule" => Ok(SkillResult::failure("Use the scheduler skill for cron scheduling".to_string())),
-            _ => Err(SkillError::InvalidArguments(format!("Unknown action: {}", action))),
+            "watch" => Ok(SkillResult::failure(
+                "Watch mode not yet implemented".to_string(),
+            )),
+            "stop" => Ok(SkillResult::failure(
+                "Stop requires background task tracking".to_string(),
+            )),
+            "schedule" => Ok(SkillResult::failure(
+                "Use the scheduler skill for cron scheduling".to_string(),
+            )),
+            _ => Err(SkillError::InvalidArguments(format!(
+                "Unknown action: {}",
+                action
+            ))),
         }
     }
 }
 
 impl TaskRunnerSkill {
-    async fn run_task(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
-        let task = args.get("task").and_then(|v| v.as_str())
+    async fn run_task(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let task = args
+            .get("task")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'task'".into()))?;
         let raw_cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
-        let timeout = args.get("timeout").and_then(|v| v.as_u64()).unwrap_or(60).min(600);
+        let timeout = args
+            .get("timeout")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(60)
+            .min(600);
 
         // Confine the directory first: it decides where the task runs, and
         // `resolve_task` probes for a manifest underneath it. It used to be
@@ -70,6 +112,14 @@ impl TaskRunnerSkill {
 
         // Resolve the task from package.json, a Makefile, or a known runner.
         let command = self.resolve_task(task, &cwd).await;
+
+        // A project task can be a shell line. It gets the same hard denylist as
+        // shell_exec; "it came from package.json" is not a safety boundary.
+        if let Some(reason) = crate::safety::dangerous_command_reason(&command, &ctx.working_dirs) {
+            return Ok(SkillResult::failure(format!(
+                "Blocked by RAVENBOT's safety denylist: {reason}. The task was not executed."
+            )));
+        }
 
         let runner = crate::exec::runner_for(ctx);
         let mut cmd = if cfg!(target_os = "windows") {
@@ -111,12 +161,10 @@ impl TaskRunnerSkill {
         }
 
         let start = std::time::Instant::now();
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(timeout),
-            cmd.output(),
-        ).await
-        .map_err(|_| SkillError::Execution(format!("Task timed out after {}s", timeout)))?
-        .map_err(|e| SkillError::Execution(e.to_string()))?;
+        let output = tokio::time::timeout(std::time::Duration::from_secs(timeout), cmd.output())
+            .await
+            .map_err(|_| SkillError::Execution(format!("Task timed out after {}s", timeout)))?
+            .map_err(|e| SkillError::Execution(e.to_string()))?;
 
         let elapsed = start.elapsed();
         let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -143,7 +191,9 @@ impl TaskRunnerSkill {
                         if scripts.contains_key(task) {
                             if content.contains("pnpm") {
                                 return format!("pnpm run {}", task);
-                            } else if content.contains("yarn") || Path::new(&format!("{}/yarn.lock", cwd)).exists() {
+                            } else if content.contains("yarn")
+                                || Path::new(&format!("{}/yarn.lock", cwd)).exists()
+                            {
                                 return format!("yarn {}", task);
                             } else {
                                 return format!("npm run {}", task);
@@ -183,7 +233,9 @@ impl TaskRunnerSkill {
         }
 
         // Check pyproject.toml / setup.py
-        if Path::new(&format!("{}/pyproject.toml", cwd)).exists() || Path::new(&format!("{}/setup.py", cwd)).exists() {
+        if Path::new(&format!("{}/pyproject.toml", cwd)).exists()
+            || Path::new(&format!("{}/setup.py", cwd)).exists()
+        {
             match task {
                 "test" => return "pytest".to_string(),
                 "lint" => return "ruff check .".to_string(),
@@ -197,7 +249,11 @@ impl TaskRunnerSkill {
         task.to_string()
     }
 
-    async fn list_tasks(&self, ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn list_tasks(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         // Confined for the same reason as `run_task`: this reads manifests off
         // disk, so the directory is not just a label.
         let dir = crate::exec::resolve_cwd(ctx, args.get("cwd").and_then(|v| v.as_str()))?;
@@ -243,7 +299,9 @@ impl TaskRunnerSkill {
 
         // Cargo tasks
         if Path::new(&format!("{}/Cargo.toml", cwd)).exists() {
-            for task in &["build", "test", "check", "run", "fmt", "clippy", "doc", "bench", "clean"] {
+            for task in &[
+                "build", "test", "check", "run", "fmt", "clippy", "doc", "bench", "clean",
+            ] {
                 tasks.push(serde_json::json!({
                     "name": task,
                     "command": format!("cargo {}", task),
@@ -260,5 +318,7 @@ impl TaskRunnerSkill {
 }
 
 impl Default for TaskRunnerSkill {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

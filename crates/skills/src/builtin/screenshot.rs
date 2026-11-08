@@ -53,7 +53,9 @@ impl Skill for ScreenshotSkill {
         })
     }
 
-    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::ReadOnly
+    }
 
     async fn execute(
         &self,
@@ -61,13 +63,17 @@ impl Skill for ScreenshotSkill {
         _arguments: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let capture = ravenbot_vision::ScreenshotCapture::new();
-        let screenshot = capture.capture().await
+        let screenshot = capture
+            .capture()
+            .await
             .map_err(|e| SkillError::Execution(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({
             "format": screenshot.format,
             "width": screenshot.width,
             "height": screenshot.height,
+            "origin_x": screenshot.origin_x,
+            "origin_y": screenshot.origin_y,
             "data_url": screenshot.to_data_url(),
             "timestamp": screenshot.timestamp.to_rfc3339()
         })))

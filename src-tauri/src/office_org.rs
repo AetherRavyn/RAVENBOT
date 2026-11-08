@@ -24,8 +24,11 @@ use serde::{Deserialize, Serialize};
 /// One role in an office.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RoleSpec {
+    #[serde(default)]
     pub name: String,
+    #[serde(default)]
     pub rank: String,
+    #[serde(default)]
     pub specialty: String,
     /// The role's operating instructions. Set by [`compose_system_prompt`]
     /// before it reaches a bot, so a stored `custom_prompt` is a full brief
@@ -36,14 +39,91 @@ pub struct RoleSpec {
     pub is_lead: bool,
     #[serde(default)]
     pub skills: Vec<String>,
+    /// MCP connectors this role needs, by server id. Empty means "inherit the
+    /// globally enabled connectors" rather than "none".
+    #[serde(default)]
+    pub mcp_servers: Vec<String>,
+    /// Installed plugin toolkits this role needs, by plugin id.
+    #[serde(default)]
+    pub plugins: Vec<String>,
     #[serde(default)]
     pub avatar_style: Option<String>,
 }
 
+/// One assignable capability: a built-in skill, an MCP connector, or a plugin.
+///
+/// The designer is given this list (built from the live registries) and is
+/// told to choose only ids that appear in it. That is the difference between a
+/// team that sounds right and a team whose tools actually exist on this
+/// machine.
+#[derive(Debug, Clone, Default)]
+pub struct Capability {
+    pub id: String,
+    pub name: String,
+    /// "tool" | "workflow" | connector category | "plugin"
+    pub group: String,
+    pub description: String,
+    /// Extra context for connectors (tool count, verified state).
+    pub extra: String,
+}
+
+/// Everything the office designer is allowed to assign.
+#[derive(Debug, Clone, Default)]
+pub struct CapabilityCatalog {
+    pub skills: Vec<Capability>,
+    pub connectors: Vec<Capability>,
+    pub plugins: Vec<Capability>,
+}
+
+impl CapabilityCatalog {
+    /// Fallback catalog used when no live registries are available (tests and
+    /// the static prompt). It contains the known built-in ids and no
+    /// connectors/plugins, so a role can never be assigned a connector that
+    /// was not enumerated.
+    pub fn builtin_default() -> Self {
+        Self {
+            skills: ALLOWED_SKILLS
+                .iter()
+                .map(|id| Capability {
+                    id: (*id).to_string(),
+                    name: (*id).to_string(),
+                    group: "tool".to_string(),
+                    description: String::new(),
+                    extra: String::new(),
+                })
+                .collect(),
+            connectors: Vec::new(),
+            plugins: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.skills.is_empty() && self.connectors.is_empty() && self.plugins.is_empty()
+    }
+}
 /// A team proposed for an office, either by a template or by the lead agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProposedOrg {
     pub roles: Vec<RoleSpec>,
+    pub question: Option<String>,
+}
+
+/// A complete office proposal: the charter the user did not write, plus the
+/// team that will execute it.
+///
+/// This exists because "create an office" used to require the user to supply a
+/// goal, a policy, a template, and a roster before anything happened. Most
+/// people type a name and a sentence. The model fills the rest in, and the
+/// template remains the fallback when it cannot.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct OfficeBlueprint {
+    #[serde(default)]
+    pub goal: String,
+    #[serde(default)]
+    pub policy: String,
+    #[serde(default)]
+    pub roles: Vec<RoleSpec>,
+    #[serde(default)]
     pub question: Option<String>,
 }
 
@@ -113,7 +193,6 @@ impl OfficeContext {
         self.roster = roster;
         self
     }
-
 }
 
 // ── skill allowlist ─────────────────────────────────────────────────────────
@@ -150,6 +229,15 @@ pub const ALLOWED_SKILLS: &[&str] = &[
     "http_request",
     "api_tester",
     "browser_navigate",
+    "browser_open",
+    "browser_dom",
+    "make_document",
+    "make_slides",
+    "create_skill",
+    "revise_skill",
+    "list_local_skills",
+    "read_local_skill",
+    "install_local_skill",
     "arxiv_search",
     "youtube_transcript",
     "research",
@@ -197,6 +285,10 @@ pub const ALLOWED_SKILLS: &[&str] = &[
     "to_questionnaire",
     "ask_matt",
     "wizard",
+    // ── visual production ──
+    "visuals",
+    "slides",
+    "fframes",
 ];
 
 /// Skills every office member gets, whatever the role.
@@ -204,7 +296,15 @@ pub const ALLOWED_SKILLS: &[&str] = &[
 /// `memory_recall` and `todo` are here rather than left to the role because
 /// an agent that cannot remember what the office already decided, or track
 /// its own work, repeats itself across turns.
-pub const COMMON_SKILLS: &[&str] = &["memory_recall", "memory_save", "todo", "ask_user"];
+pub const COMMON_SKILLS: &[&str] = &[
+    "memory_recall",
+    "memory_save",
+    "todo",
+    "ask_user",
+    // The live catalog gateway: an office agent can load any of the 1,497+
+    // VoltAgent skills by id without that skill being baked into the role.
+    "awesome_fetch",
+];
 
 // ── office policy ───────────────────────────────────────────────────────────
 
@@ -215,7 +315,8 @@ pub const COMMON_SKILLS: &[&str] = &["memory_recall", "memory_save", "todo", "as
 /// agent can follow and a human can check, not as values to admire.
 pub fn template_policy(template: &str) -> &'static str {
     match template {
-        "marketing" => "\
+        "marketing" => {
+            "\
 ## How this office works
 
 - One claim per deliverable, and it must be checkable. \"Customers love it\" is
@@ -231,8 +332,10 @@ pub fn template_policy(template: &str) -> &'static str {
   finished-looking one that overpromises.
 - Campaign work lands in `deliverables/` named by channel and date; research
   behind it lands in `notes/` with its sources.
-",
-        "sales" => "\
+"
+        }
+        "sales" => {
+            "\
 ## How this office works
 
 - Qualify before you pitch. An account with no named problem, no budget signal,
@@ -246,8 +349,10 @@ pub fn template_policy(template: &str) -> &'static str {
 - The deliverable is a plan the rep can act on: named accounts, the reason each
   one now, the angle, and the next step. It lands in `deliverables/`; the
   research behind it goes in `notes/` with its sources.
-",
-        "design" => "\
+"
+        }
+        "design" => {
+            "\
 ## How this office works
 
 - Deliver a real artifact, not a description of one. An HTML mockup or an SVG
@@ -261,8 +366,10 @@ pub fn template_policy(template: &str) -> &'static str {
 - State what you did not do and why, so the next person does not redo it.
 - Every file you produce lands in `deliverables/`, openable on its own; the
   reasoning behind it goes in `notes/`.
-",
-        "rot-archive" => "\
+"
+        }
+        "rot-archive" => {
+            "\
 ## How this office works
 
 - Cite the source for every claim, precisely enough that a reader can find the
@@ -275,8 +382,27 @@ pub fn template_policy(template: &str) -> &'static str {
   unavailable, and say so.
 - A finding lands in `deliverables/` once it is verified; the trail of what was
   read and rejected goes in `notes/` so the next reader can retrace it.
-",
-        _ => "\
+"
+        }
+        "custom" => {
+            "\
+## How this office works
+
+- Every deliverable names the question it answers and the person it is for.
+  Work that cannot be checked by its reader is not finished.
+- A claim ships with its evidence: the file, the command output, the source, or
+  the number it came from. \"Looks right\" is not evidence.
+- Do not invent a fact, a figure, a quote, or a customer outcome. Mark an
+  assumption as an assumption in the same sentence.
+- Finished work lands in `deliverables/`, named so a human can find it. Working
+  notes and sources go in `notes/`; handoffs go in `Shared/`.
+- Change only what the task asks for, and say what you deliberately left out.
+- If you were blocked, say what you tried, what happened, and what you need.
+  Never report an unverified step as done.
+"
+        }
+        _ => {
+            "\
 ## How this office works
 
 - Read before you change. Open the file, the existing test, and the
@@ -293,7 +419,8 @@ pub fn template_policy(template: &str) -> &'static str {
   the output.
 - Warn before a destructive operation, and prefer the reversible version:
   a branch over a reset, a new file over an overwrite.
-",
+"
+        }
     }
 }
 
@@ -315,6 +442,8 @@ fn role(
         system_prompt: Some(mandate.trim().to_string()),
         is_lead,
         skills: skills.iter().map(|s| s.to_string()).collect(),
+        mcp_servers: Vec::new(),
+        plugins: Vec::new(),
         avatar_style: None,
     }
 }
@@ -349,7 +478,13 @@ You own the outcome. The client's goal arrives here first and your answer is wha
 Every claim in your answer traces to a specialist's output or a file in the
 office. If a task failed, say so and say what you would do about it. If nothing
 was verified, say that too.",
-            &["delegate", "research", "code_search", "file_read", "memory_recall"],
+            &[
+                "delegate",
+                "research",
+                "code_search",
+                "file_read",
+                "memory_recall",
+            ],
         ),
         role(
             "Planner",
@@ -375,7 +510,13 @@ a short version in `Shared/` for the CEO to dispatch from.
 Every plan item names a file that exists or a requirement the client stated.
 You do not write production code; if you find yourself editing source, you have
 been asked to implement and should say so.",
-            &["research", "codebase_design", "code_search", "file_read", "file_tree"],
+            &[
+                "research",
+                "codebase_design",
+                "code_search",
+                "file_read",
+                "file_tree",
+            ],
         ),
         role(
             "Architect",
@@ -400,7 +541,14 @@ a schema file the implementer can build against.
 The design covers every requirement in the plan you were given, and every
 component has a stated responsibility and a stated way it talks to its
 neighbours. Flag the risks rather than designing around them silently.",
-            &["codebase_design", "improve_architecture", "code_search", "file_read", "file_write", "domain_modeling"],
+            &[
+                "codebase_design",
+                "improve_architecture",
+                "code_search",
+                "file_read",
+                "file_write",
+                "domain_modeling",
+            ],
         ),
         role(
             "Coder",
@@ -430,7 +578,16 @@ anything, say that plainly.
 
 Never leave a placeholder, a stub, or a `TODO` in delivered work. If part of
 the task is out of your hands, implement the rest and say which part and why.",
-            &["code_edit", "code_search", "file_read", "file_write", "file_tree", "shell_exec", "git", "tdd"],
+            &[
+                "code_edit",
+                "code_search",
+                "file_read",
+                "file_write",
+                "file_tree",
+                "shell_exec",
+                "git",
+                "tdd",
+            ],
         ),
         role(
             "Tester",
@@ -456,7 +613,15 @@ You have run the suite and you are reporting what it printed. A test you did
 not run is labelled as unrun. A failure is reported as a failure, with the
 assertion message — never softened, never retried until it passes, and never
 fixed by weakening the assertion.",
-            &["tdd", "code_edit", "code_search", "file_read", "file_write", "shell_exec", "file_tree"],
+            &[
+                "tdd",
+                "code_edit",
+                "code_search",
+                "file_read",
+                "file_write",
+                "shell_exec",
+                "file_tree",
+            ],
         ),
         role(
             "QA",
@@ -483,7 +648,15 @@ Every pass is backed by a command and its output. Every failure comes with
 steps someone else can follow to see it themselves. If you could not test
 something, it appears in the report as untested — an untested area reported as
 a pass is the worst outcome available to you.",
-            &["code_review", "diagnosing_bugs", "code_search", "file_read", "shell_exec", "browser_navigate", "todo"],
+            &[
+                "code_review",
+                "diagnosing_bugs",
+                "code_search",
+                "file_read",
+                "shell_exec",
+                "browser_navigate",
+                "todo",
+            ],
         ),
         role(
             "DevOps",
@@ -508,7 +681,16 @@ the commands to build, test, and run — each one one you have executed.
 You ran the build and it passed, and you paste the output. Secrets come from
 the environment or `env_manager`, never hardcoded and never committed. A step
 you could not run is reported as untested rather than assumed to work.",
-            &["shell_exec", "docker", "git", "file_read", "file_write", "env_manager", "task_runner", "package_manager"],
+            &[
+                "shell_exec",
+                "docker",
+                "git",
+                "file_read",
+                "file_write",
+                "env_manager",
+                "task_runner",
+                "package_manager",
+            ],
         ),
     ]
 }
@@ -618,7 +800,13 @@ type scale, and spacing you used so the next piece matches.
 You have opened the file you produced and looked at it. Where the design
 serves a purpose — contrast, hierarchy, emphasis — you can state which, and
 what a user would fail to do without it.",
-            &["image_gen", "screenshot", "analyze_image", "file_write", "browser_navigate"],
+            &[
+                "image_gen",
+                "screenshot",
+                "analyze_image",
+                "file_write",
+                "browser_navigate",
+            ],
         ),
         role(
             "SEO Analyst",
@@ -759,7 +947,13 @@ produced and what is still missing.
 Every value in the system has a reason tied to a user problem. Contrast and
 focus are checked, not assumed. If the studio's pieces disagree, you resolve it
 in the system rather than shipping both.",
-            &["delegate", "research", "browser_navigate", "file_write", "memory_recall"],
+            &[
+                "delegate",
+                "research",
+                "browser_navigate",
+                "file_write",
+                "memory_recall",
+            ],
         ),
         role(
             "UX Researcher",
@@ -811,7 +1005,14 @@ submit.
 You have opened the file in a browser and looked at it, at the size it will be
 used. Anything you could not build is named as such with the reason, rather
 than left implied by its absence.",
-            &["image_gen", "screenshot", "analyze_image", "file_write", "prototype", "browser_navigate"],
+            &[
+                "image_gen",
+                "screenshot",
+                "analyze_image",
+                "file_write",
+                "prototype",
+                "browser_navigate",
+            ],
         ),
     ]
 }
@@ -842,7 +1043,13 @@ supports it, and an explicit list of what remains unresolved.
 Each statement is traceable to a cited source the Archive actually read. If
 the specialists conflict, you report the conflict and say which is better
 supported. You do not present an inference as a quotation.",
-            &["delegate", "research", "web_search", "file_read", "memory_recall"],
+            &[
+                "delegate",
+                "research",
+                "web_search",
+                "file_read",
+                "memory_recall",
+            ],
         ),
         role(
             "Hermetic Alchemist",
@@ -895,7 +1102,13 @@ You opened every source you are confirming. A claim you could not check is
 reported as unverified, which is a useful result; a claim you did not check
 being reported as confirmed is the one outcome that makes this office
 dangerous.",
-            &["code_review", "research", "file_read", "shell_exec", "web_search"],
+            &[
+                "code_review",
+                "research",
+                "file_read",
+                "shell_exec",
+                "web_search",
+            ],
         ),
     ]
 }
@@ -956,14 +1169,24 @@ pub fn compose_system_prompt(office: &OfficeContext, role: &RoleSpec) -> String 
     s.push_str(&mandate);
     s.push_str("\n\n# This office\n\n");
 
-    if let Some(goal) = office.goal.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+    if let Some(goal) = office
+        .goal
+        .as_deref()
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+    {
         s.push_str("**Mission:** ");
         s.push_str(goal);
         s.push_str("\n\n");
     }
 
     s.push_str("## Your workspace\n\n");
-    match office.workspace_root.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+    match office
+        .workspace_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         Some(root) => {
             s.push_str(&format!(
                 "You work in `{root}`. You have full read and write access inside \
@@ -986,14 +1209,21 @@ pub fn compose_system_prompt(office: &OfficeContext, role: &RoleSpec) -> String 
         }
     }
 
-    if let Some(policy) = office.policy.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+    if let Some(policy) = office
+        .policy
+        .as_deref()
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+    {
         // Quoted rather than inlined as headings: the policy is the operator's
         // document, and it should read as the rules it is.
         s.push_str("## Office policy (binding)\n\n");
         s.push_str("> ");
         s.push_str(&policy.replace("\n", "\n> "));
-        s.push_str("\n\nThe same text is in `POLICY.md` in your workspace. It outranks your \
-                   own preferences.\n\n");
+        s.push_str(
+            "\n\nThe same text is in `POLICY.md` in your workspace. It outranks your \
+                   own preferences.\n\n",
+        );
     }
 
     if !office.roster.is_empty() {
@@ -1021,23 +1251,172 @@ pub fn compose_system_prompt(office: &OfficeContext, role: &RoleSpec) -> String 
         s.push('\n');
     }
 
+    let mut assigned: Vec<String> = Vec::new();
+    if !role.skills.is_empty() {
+        assigned.push(format!("**Skills:** {}", role.skills.join(", ")));
+    }
+    if !role.mcp_servers.is_empty() {
+        assigned.push(format!(
+            "**MCP connectors:** {}",
+            role.mcp_servers.join(", ")
+        ));
+    }
+    if !role.plugins.is_empty() {
+        assigned.push(format!("**Plugin toolkits:** {}", role.plugins.join(", ")));
+    }
+    if !assigned.is_empty() {
+        s.push_str("## Your assigned tools\n\n");
+        for line in assigned {
+            s.push_str("- ");
+            s.push_str(&line);
+            s.push('\n');
+        }
+        s.push_str(
+            "\nThese are the tools enabled for this role. Callable function names are \
+             the sanitized names in your tool list; a `/` in a skill id becomes `_` \
+             plus a short suffix. If a task needs something that is not here, say so \
+             rather than pretending it ran.\n\n",
+        );
+    }
+
     s.push_str("## How to report\n\n");
     s.push_str(
         "Your report is read by someone who cannot see your screen and does not have \
          your conversation. State what you changed or produced, the files involved, \
          and the command output that proves it. If something failed, say so and paste \
          the failure. If you were blocked, name what you need. Never report work as \
-         done that you did not verify.\n",
+         done that you did not verify.\n\n\
+         - If a tool fails, read the error and change the command or report the \
+         blocker. Never rerun the same call unchanged; it will fail the same way.\n\
+         - Start from your workspace. Do not search the entire filesystem; if \
+         something is not in the workspace or your tool list, say so.\n\
+         - Before you start, read `Shared/STATUS.md`. Before you finish, update it \
+         with what you produced and where it lives.\n",
     );
 
     s
 }
 
-/// Attach the common skills a role did not already have.
+/// Attach the common skills a role did not already have, plus the baseline
+/// tools its job cannot be done without.
+///
+/// The model-authored roster is told to choose skills, and it mostly does. When
+/// it does not, the failure is ugly: a "Coder" with `memory_recall` and no
+/// `file_write` talks about code it cannot save. The baseline is deliberately
+/// keyword-based and conservative — it only ever *adds* allowlisted tools, so a
+/// role the model gave a better toolkit keeps it.
 pub fn with_common_skills(mut role: RoleSpec) -> RoleSpec {
-    for s in COMMON_SKILLS {
-        if !role.skills.iter().any(|existing| existing == s) {
-            role.skills.push((*s).to_string());
+    let hay = format!("{} {} {}", role.name, role.rank, role.specialty).to_lowercase();
+    let has = |role: &RoleSpec, id: &str| role.skills.iter().any(|s| s == id);
+
+    let mut needed: Vec<&str> = COMMON_SKILLS.to_vec();
+
+    let is_lead = role.is_lead
+        || hay.contains("ceo")
+        || hay.contains("lead")
+        || hay.contains("director")
+        || hay.contains("chief");
+    if is_lead {
+        needed.extend(["delegate", "research", "file_read", "file_write"]);
+    }
+    if [
+        "engineer",
+        "developer",
+        "coder",
+        "programmer",
+        "architect",
+        "implementation",
+    ]
+    .iter()
+    .any(|k| hay.contains(k))
+    {
+        needed.extend([
+            "file_read",
+            "file_write",
+            "file_tree",
+            "code_search",
+            "code_edit",
+            "shell_exec",
+            "git",
+            // Engineers need the vendor docs, the API reference, and the
+            // issue thread as much as they need the local tree.
+            "web_search",
+            "browser_navigate",
+        ]);
+    }
+    if [
+        "qa",
+        "tester",
+        "test",
+        "quality",
+        "verification",
+        "verifier",
+    ]
+    .iter()
+    .any(|k| hay.contains(k))
+    {
+        needed.extend([
+            "shell_exec",
+            "file_read",
+            "code_search",
+            "browser_navigate",
+            "screenshot",
+        ]);
+    }
+    if ["design", "ux", "ui", "visual", "brand"]
+        .iter()
+        .any(|k| hay.contains(k))
+    {
+        needed.extend([
+            "image_gen",
+            "screenshot",
+            "file_write",
+            "browser_navigate",
+            "visuals",
+            "slides",
+            "make_slides",
+            "fframes",
+        ]);
+    }
+    if ["marketing", "content", "seo", "writer", "copy", "growth"]
+        .iter()
+        .any(|k| hay.contains(k))
+    {
+        needed.extend([
+            "web_search",
+            "research",
+            "file_write",
+            "note_manager",
+            "visuals",
+            "slides",
+            "make_slides",
+            "fframes",
+        ]);
+    }
+    if ["sales", "sdr", "account", "revenue"]
+        .iter()
+        .any(|k| hay.contains(k))
+    {
+        needed.extend(["research", "web_search", "file_write", "note_manager"]);
+    }
+    if ["devops", "infrastructure", "release", "platform", "sre"]
+        .iter()
+        .any(|k| hay.contains(k))
+    {
+        needed.extend([
+            "shell_exec",
+            "docker",
+            "git",
+            "env_manager",
+            "task_runner",
+            "web_search",
+            "browser_navigate",
+        ]);
+    }
+
+    for id in needed {
+        if ALLOWED_SKILLS.contains(&id) && !has(&role, id) {
+            role.skills.push(id.to_string());
         }
     }
     role
@@ -1094,7 +1473,11 @@ pub fn org_prompt(
     s.push_str(&format!("  {}\n", ALLOWED_SKILLS.join(", ")));
     s.push_str(&format!(
         "- The lead must have `delegate`{}.\n",
-        if ALLOWED_SKILLS.contains(&"research") { " and `research`" } else { "" }
+        if ALLOWED_SKILLS.contains(&"research") {
+            " and `research`"
+        } else {
+            ""
+        }
     ));
     s.push_str("- If the brief is too vague to build a team from, return {\"roles\":[],\"question\":\"<the one question you need answered>\"} instead.\n");
     s
@@ -1117,11 +1500,437 @@ pub fn parse_org(text: &str) -> Option<ProposedOrg> {
         }
     }
 
-    if org.roles.is_empty() && org.question.as_deref().map(str::trim).unwrap_or("").is_empty() {
+    if org.roles.is_empty()
+        && org
+            .question
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .is_empty()
+    {
         return None;
     }
     org.roles.truncate(8);
     Some(org)
+}
+
+/// The prompt that asks the default model to design a whole office.
+///
+/// Unlike [`org_prompt`], this one is allowed to proceed on a name alone. The
+/// user explicitly asked for an office that creates itself when the form is
+/// half-empty, so "too vague, ask a question" is not an acceptable outcome; the
+/// model writes the best charter it can and puts the one question it would ask
+/// in `question`, alongside a usable team.
+/// Static fallback prompt used by tests and by callers that do not have a
+/// live registry (the app command uses [`blueprint_prompt_with_catalog`]).
+#[allow(dead_code)]
+pub fn blueprint_prompt(
+    office_name: &str,
+    mission: Option<&str>,
+    template: &str,
+    brief: &str,
+) -> String {
+    blueprint_prompt_with_catalog(
+        office_name,
+        mission,
+        template,
+        brief,
+        &CapabilityCatalog::builtin_default(),
+    )
+}
+
+/// The prompt that asks the default agent to design a whole office using the
+/// tools that actually exist on this machine.
+///
+/// The catalog is the boundary: the model may only choose ids that appear in
+/// it, and [`parse_blueprint_with_catalog`] enforces that afterwards. This is
+/// what keeps an AI-designed team from being assigned a connector nobody
+/// installed or a skill that was renamed.
+pub fn blueprint_prompt_with_catalog(
+    office_name: &str,
+    mission: Option<&str>,
+    template: &str,
+    brief: &str,
+    catalog: &CapabilityCatalog,
+) -> String {
+    let mut s = String::new();
+    s.push_str(
+        "You are the founder and CEO of an AI office. The user may have supplied \
+         only a name, or a name and a partial mission. Make the office real: infer \
+         the missing charter and hire the smallest team that can deliver it, using \
+         only the tools that exist on this machine.\n\n",
+    );
+    s.push_str(&format!("Office name: {}\n", office_name.trim()));
+    match mission.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(m) => s.push_str(&format!("User-supplied mission: {m}\n")),
+        None => s.push_str("User-supplied mission: (not supplied — infer it from the name)\n"),
+    }
+    s.push_str(&format!(
+        "Template hint (a starting point only — ignore it if the name and mission point somewhere else): {template}\n"
+    ));
+    if !brief.trim().is_empty() {
+        s.push_str(&format!(
+            "\nExtra context from the user:\n{}\n",
+            brief.trim()
+        ));
+    }
+
+    s.push_str(
+        "\nProduce three things.\n\n\
+         1. `goal` — 2-4 sentences. What this office must deliver, for whom, and \
+         what \"done\" looks like. Concrete and checkable. If the mission was not \
+         supplied, infer a credible one from the name and template; do not answer \
+         with a question instead of a goal.\n\
+         2. `policy` — 5-10 binding rules for how this office works. Cover evidence \
+         (what counts as proof), where finished work lands, how handoffs are \
+         written, and honesty about failure. Make it specific to this office; no \
+         generic values and no filler.\n\
+         3. `roles` — 3-6 agents, one of them the lead. Fewer is better than padded.\n\n",
+    );
+
+    s.push_str(
+        "Each role needs working instructions, not a job title. For each one state:\n\
+         - what it owns,\n\
+         - what artifact it must produce, and in what form,\n\
+         - how it proves the work was done (a command, a file, a source),\n\
+         - what it hands to the next person.\n\n\
+         Write `system_prompt` as 120-260 words of plain prose or light markdown with \
+         those four parts under their own headings. The policy is written once, in \
+         `policy`; do not repeat it in every mandate. Do not use 'You are a helpful \
+         assistant'. Do not repeat the same paragraph across roles — if two roles read \
+         the same, one of them is wrong.\n\n",
+    );
+
+    // ── The machine's real capability catalog ───────────────────────────────
+    s.push_str("## What this installation can give an agent\n\n");
+    s.push_str(
+        "Assign only ids from the lists below. An id that is not here does not \
+         exist on this machine; inventing one produces an agent that cannot act.\n\n",
+    );
+
+    s.push_str("### Built-in skills\n\n");
+    if catalog.skills.is_empty() {
+        s.push_str("- (none reported; use only the standard file, web, and shell tools)\n");
+    } else {
+        for kind in ["tool", "workflow"] {
+            let group: Vec<&Capability> = catalog
+                .skills
+                .iter()
+                .filter(|c| c.group.eq_ignore_ascii_case(kind))
+                .collect();
+            if group.is_empty() {
+                continue;
+            }
+            s.push_str(if kind == "tool" {
+                "**Tools** (function calls)\n"
+            } else {
+                "**Workflows** (instructions injected into the agent's prompt)\n"
+            });
+            for c in group {
+                push_capability_line(&mut s, c);
+            }
+            s.push('\n');
+        }
+    }
+
+    s.push_str("### MCP connectors (optional, only enabled/configured ones)\n\n");
+    if catalog.connectors.is_empty() {
+        s.push_str(
+            "- (none enabled). Use `[]` for every role's `mcp_servers`; do not invent a connector id.\n\n",
+        );
+    } else {
+        for c in &catalog.connectors {
+            push_capability_line(&mut s, c);
+        }
+        s.push('\n');
+    }
+
+    s.push_str("### Installed plugin toolkits (optional)\n\n");
+    if catalog.plugins.is_empty() {
+        s.push_str("- (none installed). Use `[]` for every role's `plugins`.\n\n");
+    } else {
+        for c in &catalog.plugins {
+            push_capability_line(&mut s, c);
+        }
+        s.push('\n');
+    }
+
+    s.push_str(
+        "Output exactly this shape and nothing else:\n\n\
+         {\"goal\":\"<the office goal>\",\"policy\":\"<the binding rules>\",\
+         \"roles\":[{\"name\":\"<agent name>\",\"rank\":\"<short rank>\",\
+         \"specialty\":\"<one line>\",\"system_prompt\":\"<its working instructions>\",\
+         \"is_lead\":false,\"skills\":[\"<skill ids>\"],\
+         \"mcp_servers\":[\"<connector ids>\"],\"plugins\":[\"<plugin ids>\"]}],\
+         \"question\":null}\n\n",
+    );
+
+    s.push_str("Rules:\n");
+    s.push_str("- Exactly one role has \"is_lead\": true. The lead plans, dispatches, and gives the client the final answer. The lead does not do specialist work.\n");
+    s.push_str("- 3-6 roles. Do not invent a role just to fill a template.\n");
+    s.push_str("- `skills` must be ids from the built-in skills list. The lead must have `delegate` and `memory_recall`.\n");
+    s.push_str("- `mcp_servers` must be ids from the connector list; at most 4 per role. Empty means the agent inherits the installation's globally enabled connectors.\n");
+    s.push_str("- `plugins` must be ids from the installed plugin list; at most 2 per role. Empty means none.\n");
+    s.push_str("- Give a role a connector or plugin only when its job needs it. A generic \"nice to have\" assignment is a tool the agent will waste turns on.\n");
+    s.push_str("- If one detail would materially change the work, put it in \"question\" as one sentence; still return the goal, policy, and team. Never return an empty roster.\n");
+    s
+}
+
+/// One catalog row, compact enough that a 60-connector list still fits in a
+/// normal context window.
+fn push_capability_line(out: &mut String, c: &Capability) {
+    let description = c
+        .description
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let description = if description.chars().count() > 140 {
+        format!("{}…", description.chars().take(140).collect::<String>())
+    } else {
+        description
+    };
+    out.push_str(&format!("- `{}` — {}", c.id, c.name));
+    if !c.group.is_empty() && !c.group.eq_ignore_ascii_case("tool") {
+        out.push_str(&format!(" ({})", c.group));
+    }
+    if !description.is_empty() {
+        out.push_str(&format!(": {description}"));
+    }
+    if !c.extra.is_empty() {
+        out.push_str(&format!(" [{}]", c.extra));
+    }
+    out.push('\n');
+}
+
+/// Parse a blueprinted office out of a model response.
+///
+/// Tolerant on purpose: models wrap JSON in fences, omit optional fields, and
+/// occasionally return two leads. A structurally valid roster is worth keeping
+/// even when the prose is imperfect — the alternative is discarding a good team
+/// because one field was missing.
+/// Parse with the static allowlist. The app command uses
+/// [`parse_blueprint_with_catalog`]; this exists for tests and for callers with
+/// no registry.
+#[allow(dead_code)]
+pub fn parse_blueprint(text: &str) -> Option<OfficeBlueprint> {
+    parse_blueprint_with_catalog(text, None)
+}
+
+/// Parse a blueprint and filter every assignment against the live capability
+/// catalog. A model that invents `mcp_servers: ["github"]` when GitHub is not
+/// configured gets an empty list, not a broken agent.
+pub fn parse_blueprint_with_catalog(
+    text: &str,
+    catalog: Option<&CapabilityCatalog>,
+) -> Option<OfficeBlueprint> {
+    if let Some(json) = extract_json_object(text) {
+        if let Ok(bp) = serde_json::from_str::<OfficeBlueprint>(&json) {
+            return normalize_blueprint(bp, catalog);
+        }
+    }
+    // A long roster can hit the output-token cap mid-object. The goal, the
+    // policy, and the roles completed before the cut are still usable; throwing
+    // them away and hiring the template team is the worse outcome.
+    parse_blueprint_truncated(text, catalog)
+}
+
+/// Normalise a parsed blueprint: trim, filter assignments, enforce one lead,
+/// and reject a document with nothing in it.
+fn normalize_blueprint(
+    mut bp: OfficeBlueprint,
+    catalog: Option<&CapabilityCatalog>,
+) -> Option<OfficeBlueprint> {
+    let allowed_skills: std::collections::HashSet<&str> = match catalog {
+        Some(c) => c.skills.iter().map(|s| s.id.as_str()).collect(),
+        None => ALLOWED_SKILLS.iter().copied().collect(),
+    };
+    let allowed_mcp: std::collections::HashSet<&str> = catalog
+        .map(|c| c.connectors.iter().map(|s| s.id.as_str()).collect())
+        .unwrap_or_default();
+    let allowed_plugins: std::collections::HashSet<&str> = catalog
+        .map(|c| c.plugins.iter().map(|s| s.id.as_str()).collect())
+        .unwrap_or_default();
+
+    for r in bp.roles.iter_mut() {
+        r.name = r.name.trim().to_string();
+        r.rank = r.rank.trim().to_string();
+        r.specialty = r.specialty.trim().to_string();
+        // A model will invent plausible ids. Filtering is the boundary.
+        r.skills.retain(|s| allowed_skills.contains(s.as_str()));
+        r.mcp_servers.retain(|s| allowed_mcp.contains(s.as_str()));
+        r.plugins.retain(|s| allowed_plugins.contains(s.as_str()));
+        r.mcp_servers.truncate(4);
+        r.plugins.truncate(2);
+    }
+    bp.roles.retain(|r| !r.name.is_empty());
+    // Two agents with the same name are indistinguishable in the roster, the
+    // dispatch, and the transcript. The first one wins.
+    let mut seen_names = std::collections::HashSet::new();
+    bp.roles
+        .retain(|r| seen_names.insert(r.name.to_lowercase()));
+
+    // One lead, exactly. If the model returned none, the first role is the
+    // natural lead; if it returned several, the first wins and the rest become
+    // specialists, because two people giving the client an answer is worse
+    // than one.
+    if !bp.roles.is_empty() {
+        let lead = bp.roles.iter().position(|r| r.is_lead).unwrap_or(0);
+        for (i, r) in bp.roles.iter_mut().enumerate() {
+            r.is_lead = i == lead;
+            r.rank = if r.rank.is_empty() {
+                if r.is_lead {
+                    "Lead".to_string()
+                } else {
+                    "Specialist".to_string()
+                }
+            } else {
+                r.rank.clone()
+            };
+            r.specialty = if r.specialty.is_empty() {
+                "Generalist".to_string()
+            } else {
+                r.specialty.clone()
+            };
+        }
+        for needed in ["delegate", "memory_recall"] {
+            if !bp.roles[lead].skills.iter().any(|s| s == needed) {
+                bp.roles[lead].skills.push(needed.to_string());
+            }
+        }
+    }
+    bp.roles.truncate(7);
+    bp.goal = bp.goal.trim().to_string();
+    bp.policy = bp.policy.trim().to_string();
+
+    if bp.roles.is_empty() && bp.goal.is_empty() && bp.policy.is_empty() {
+        return None;
+    }
+    Some(bp)
+}
+
+/// Read a JSON string field without requiring the object around it to close.
+///
+/// Used only for the truncation path. Returns `None` for an unterminated string,
+/// because half a sentence is not a goal.
+fn json_string_field(text: &str, key: &str) -> Option<String> {
+    let pattern = format!("\"{key}\"");
+    let start = text.find(&pattern)?;
+    let after_key = &text[start + pattern.len()..];
+    let colon = after_key.find(':')?;
+    let rest = after_key[colon + 1..].trim_start();
+    let rest = rest.strip_prefix('"')?;
+    let mut out = String::new();
+    let mut escaped = false;
+    for c in rest.chars() {
+        if escaped {
+            out.push(match c {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                'b' => '\u{0008}',
+                'f' => '\u{000c}',
+                other => other,
+            });
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '"' {
+            return Some(out);
+        } else {
+            out.push(c);
+        }
+    }
+    None
+}
+
+/// Collect every complete role object from a possibly truncated `roles` array.
+fn role_objects_from_truncated(text: &str) -> Vec<RoleSpec> {
+    let Some(key) = text.find("\"roles\"") else {
+        return Vec::new();
+    };
+    let Some(open) = text[key..].find('[') else {
+        return Vec::new();
+    };
+    let rest = &text[key + open + 1..];
+
+    let mut roles = Vec::new();
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut obj_start: Option<usize> = None;
+
+    for (i, c) in rest.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => in_string = true,
+            '{' => {
+                if depth == 0 {
+                    obj_start = Some(i);
+                }
+                depth += 1;
+            }
+            '}' => {
+                if depth == 0 {
+                    continue;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(start) = obj_start.take() {
+                        if let Ok(role) = serde_json::from_str::<RoleSpec>(&rest[start..=i]) {
+                            roles.push(role);
+                        }
+                    }
+                }
+            }
+            ']' if depth == 0 => break,
+            _ => {}
+        }
+    }
+    roles
+}
+
+fn parse_blueprint_truncated(
+    text: &str,
+    catalog: Option<&CapabilityCatalog>,
+) -> Option<OfficeBlueprint> {
+    let bp = OfficeBlueprint {
+        goal: json_string_field(text, "goal").unwrap_or_default(),
+        policy: json_string_field(text, "policy").unwrap_or_default(),
+        roles: role_objects_from_truncated(text),
+        question: json_string_field(text, "question"),
+    };
+    normalize_blueprint(bp, catalog)
+}
+
+/// Whether a proposed team is specific enough to provision.
+///
+/// A roster of titles with one-line personas is worse than the template: it
+/// looks custom while giving every agent the same vague instructions. The
+/// command falls back to the template unless the team carries real mandates.
+pub fn blueprint_roles_are_usable(roles: &[RoleSpec]) -> bool {
+    if roles.len() < 2 {
+        return false;
+    }
+    let leads = roles.iter().filter(|r| r.is_lead).count();
+    let substantive = roles
+        .iter()
+        .filter(|r| {
+            r.system_prompt
+                .as_deref()
+                .map(mandate_is_substantive)
+                .unwrap_or(false)
+        })
+        .count();
+    leads == 1 && substantive >= roles.len().div_ceil(2)
 }
 
 /// The first balanced `{…}` object in `text`, ignoring braces inside strings.
@@ -1180,8 +1989,15 @@ pub fn mandate_is_substantive(prompt: &str) -> bool {
         return false;
     }
     // A mandate that only says "you are a …" is a persona, not instructions.
+    // Structure can be bold labels, markdown headings, or the older
+    // "What you do" prose — the point is that the four parts are separated.
     let lower = text.to_lowercase();
-    if !lower.contains("you do") && !lower.contains("what you") && !lower.contains("**") {
+    let structured = lower.contains("you do")
+        || lower.contains("what you")
+        || lower.contains("**")
+        || lower.contains("\n## ")
+        || lower.starts_with("## ");
+    if !structured {
         return false;
     }
     // And it has to say how the work is evidenced.
@@ -1191,13 +2007,23 @@ pub fn mandate_is_substantive(prompt: &str) -> bool {
         || lower.contains("source")
         || lower.contains("output")
         || lower.contains("test")
+        || lower.contains("proof")
+        || lower.contains("reproduce")
+        || lower.contains("trace")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const TEMPLATES: &[&str] = &["it-office", "custom", "marketing", "sales", "design", "rot-archive"];
+    const TEMPLATES: &[&str] = &[
+        "it-office",
+        "custom",
+        "marketing",
+        "sales",
+        "design",
+        "rot-archive",
+    ];
 
     #[test]
     fn every_template_teams_a_substantive_office() {
@@ -1209,21 +2035,14 @@ mod tests {
             assert_eq!(leads.len(), 1, "{template}: {} leads", leads.len());
 
             for r in &org {
-                let mandate = r
-                    .system_prompt
-                    .as_deref()
-                    .unwrap_or_default();
+                let mandate = r.system_prompt.as_deref().unwrap_or_default();
                 assert!(
                     mandate_is_substantive(mandate),
                     "{template}/{}: mandate is not substantive ({} words)",
                     r.name,
                     mandate.split_whitespace().count()
                 );
-                assert!(
-                    !r.skills.is_empty(),
-                    "{template}/{}: no skills",
-                    r.name
-                );
+                assert!(!r.skills.is_empty(), "{template}/{}: no skills", r.name);
             }
         }
     }
@@ -1256,6 +2075,31 @@ mod tests {
             assert!(
                 registry.get(id).is_some(),
                 "ALLOWED_SKILLS lists {id}, which is not in the registry"
+            );
+        }
+    }
+
+    #[test]
+    fn every_tool_name_is_provider_safe_and_unique() {
+        // OpenAI-shaped gateways reject `tools[].function.name` unless it
+        // matches ^[a-zA-Z0-9_-]+$. Awesome/plugin ids contain `/` and `.`, and
+        // one of them in the tools array used to fail the whole request with a
+        // 400 before the model saw it.
+        let registry = ravenbot_skills::SkillRegistry::new_builtin();
+        let mut seen = std::collections::HashSet::new();
+        for skill in registry.list() {
+            let name = skill.tool_name();
+            assert!(
+                !name.is_empty()
+                    && name
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'),
+                "skill {} produced unsafe callable name {name}",
+                skill.id()
+            );
+            assert!(
+                seen.insert(name.clone()),
+                "two skills share the callable name {name}"
             );
         }
     }
@@ -1298,6 +2142,21 @@ mod tests {
     }
 
     #[test]
+    fn the_brief_names_the_role_assigned_tools() {
+        let office = OfficeContext::new("Acme");
+        let mut role = default_org("it-office")
+            .into_iter()
+            .find(|r| r.name == "Coder")
+            .unwrap();
+        role.mcp_servers = vec!["github".into()];
+        role.plugins = vec!["notion".into()];
+        let prompt = compose_system_prompt(&office, &role);
+        assert!(prompt.contains("**MCP connectors:** github"));
+        assert!(prompt.contains("**Plugin toolkits:** notion"));
+        assert!(prompt.contains("## Your assigned tools"));
+    }
+
+    #[test]
     fn composing_gives_the_agent_its_workspace_and_team() {
         let office = OfficeContext::new("Acme")
             .with_goal(Some("Ship v1 on Friday".into()))
@@ -1318,10 +2177,16 @@ mod tests {
         assert!(prompt.contains("You are Coder — Developer on the Acme office team"));
         // The mandate body survives composition.
         assert!(prompt.contains("Read the surrounding code"), "mandate lost");
-        assert!(prompt.contains("/home/u/RAVENBOT/projects/acme"), "no workspace path");
+        assert!(
+            prompt.contains("/home/u/RAVENBOT/projects/acme"),
+            "no workspace path"
+        );
         assert!(prompt.contains("deliverables/"), "no layout");
         assert!(prompt.contains("Ship v1 on Friday"), "no mission");
-        assert!(prompt.contains("Office policy (binding)"), "no policy section");
+        assert!(
+            prompt.contains("Office policy (binding)"),
+            "no policy section"
+        );
         assert!(prompt.contains("leads this office"), "no lead marked");
         assert!(
             prompt.contains("**Coder** (Developer — Implementation) — that is you"),
@@ -1352,6 +2217,8 @@ mod tests {
             system_prompt: None,
             is_lead: false,
             skills: vec![],
+            mcp_servers: vec![],
+            plugins: vec![],
             avatar_style: None,
         };
         let prompt = compose_system_prompt(&office, &bare);
@@ -1372,7 +2239,10 @@ mod tests {
         for template in TEMPLATES {
             let p = template_policy(template);
             assert!(p.len() > 200, "{template}: policy is a stub");
-            assert!(p.contains("deliverables/"), "{template}: no file convention");
+            assert!(
+                p.contains("deliverables/"),
+                "{template}: no file convention"
+            );
             // A policy with no negatives is a values statement, not a rule set.
             assert!(
                 p.contains("never") || p.contains("not ") || p.contains("Do not"),
@@ -1388,7 +2258,6 @@ mod tests {
         assert!(p.contains("paste"), "no evidence requirement");
         assert!(p.contains("placeholder"), "placeholder ban missing");
     }
-
 
     #[test]
     fn parses_a_proposed_org_and_filters_bad_skills() {
@@ -1452,10 +2321,16 @@ mod tests {
     #[test]
     fn the_org_prompt_demands_an_artifact_and_evidence() {
         let p = org_prompt("Acme", Some("Ship v1"), "We need a website", &[]);
-        assert!(p.contains("what artifact it must produce"), "no artifact requirement");
+        assert!(
+            p.contains("what artifact it must produce"),
+            "no artifact requirement"
+        );
         assert!(p.contains("how it proves"), "no evidence requirement");
         assert!(p.contains("150-400 words"), "no length guidance");
-        assert!(p.contains("You are a helpful assistant"), "no anti-generic guard");
+        assert!(
+            p.contains("You are a helpful assistant"),
+            "no anti-generic guard"
+        );
         // The allowlist must actually be in the prompt the model reads.
         for s in ["note_manager", "env_manager", "shell_exec"] {
             assert!(p.contains(s), "{s} missing from the prompt");
@@ -1475,7 +2350,9 @@ mod tests {
         assert!(!mandate_is_substantive("You are a helpful assistant."));
         assert!(!mandate_is_substantive("You are the Coder. Write code."));
         // Long enough, but still a persona with no instruction and no evidence.
-        assert!(!mandate_is_substantive(&"You are a careful engineer. ".repeat(6)));
+        assert!(!mandate_is_substantive(
+            &"You are a careful engineer. ".repeat(6)
+        ));
 
         // A real template mandate passes, which is the point of the check.
         for template in TEMPLATES {
@@ -1487,5 +2364,211 @@ mod tests {
                 );
             }
         }
+
+        // A model-authored mandate with markdown headings and no "What you do"
+        // phrase is still a mandate; the live blueprint uses this shape.
+        let markdown = "## Ownership\nOwn the engagement and the client relationship. \
+            ## Artifact\nProduce the plan and the final report, both linked from the \
+            office index. ## Proof\nEvery claim traces to a file in the office, and the \
+            report is checked against the acceptance criteria before delivery. \
+            ## Handoff\nGive the reviewer the draft and the list of open risks, with the \
+            exact artifact paths and the date of the next review.";
+        assert!(mandate_is_substantive(markdown));
+    }
+
+    #[test]
+    fn a_blueprint_can_be_made_from_a_name_alone() {
+        let prompt = blueprint_prompt("Nightwatch", None, "custom", "");
+        assert!(prompt.contains("Nightwatch"));
+        assert!(prompt.contains("infer it from the name"));
+        assert!(prompt.contains("Never return an empty roster"));
+        assert!(prompt.contains("\"goal\""));
+        assert!(prompt.contains("\"policy\""));
+        assert!(
+            prompt.contains("shell_exec"),
+            "allowlist must reach the model"
+        );
+    }
+
+    #[test]
+    fn a_blueprint_parses_charter_and_team_together() {
+        let text = r#"
+Here is the office.
+```json
+{
+  "goal": "Ship a reviewed security assessment for one authorized web app.",
+  "policy": "Evidence over adjectives. Every finding cites a request and response.",
+  "roles": [
+    {"name":"Lead","rank":"Director","specialty":"Delivery","system_prompt":"You own the outcome for this office and the client reads your answer. What you produce: the brief before work starts, and the final report after. You decide who does what and dispatch it; a specialist cannot see this conversation, so every task must stand on its own. How you verify: every claim in your answer traces to a specialist's output or a file in the office, and you paste the command or quote the source that proves it. What you hand to the next person: a clear statement of what is done, what is not, and why.","is_lead":true,"skills":["delegate","research"]},
+    {"name":"Tester","rank":"QA","specialty":"Verification","system_prompt":"You find out whether the work actually works, and you prove it either way. What you produce: tests that fail for the right reason, and a results summary in the shared folder. You cover the edges: empty input, the boundary, the value that should be rejected, and two things happening at once. How you verify: you run the suite yourself and paste the real output. A test you did not run is labelled unrun, and a failure is reported with its assertion message rather than softened. What you hand to the next person: the exact reproduction for every failure, so nobody has to guess.","is_lead":false,"skills":["shell_exec","file_read"]}
+  ],
+  "question": "Which domain is authorized?"
+}
+```
+"#;
+        let bp = parse_blueprint(text).expect("must parse");
+        assert!(bp.goal.contains("reviewed security assessment"));
+        assert!(bp.policy.contains("Evidence over adjectives"));
+        assert_eq!(bp.roles.len(), 2);
+        assert_eq!(bp.roles[0].name, "Lead");
+        assert!(bp.roles[0].skills.contains(&"memory_recall".to_string()));
+        assert_eq!(bp.question.as_deref(), Some("Which domain is authorized?"));
+        assert!(blueprint_roles_are_usable(&bp.roles));
+    }
+
+    #[test]
+    fn a_blueprint_with_several_leads_keeps_exactly_one() {
+        let text = r#"{"goal":"g","policy":"p","roles":[
+            {"name":"A","rank":"CEO","specialty":"x","system_prompt":"What you produce: x. How you verify: y.","is_lead":true,"skills":[]},
+            {"name":"B","rank":"CTO","specialty":"y","system_prompt":"What you produce: x. How you verify: y.","is_lead":true,"skills":[]}
+        ]}"#;
+        let bp = parse_blueprint(text).unwrap();
+        assert_eq!(bp.roles.iter().filter(|r| r.is_lead).count(), 1);
+        assert!(bp.roles[0].is_lead);
+        assert!(!bp.roles[1].is_lead);
+    }
+
+    #[test]
+    fn a_blueprint_with_only_a_charter_is_still_kept() {
+        // The team can come from the template; throwing away a usable goal
+        // because the roster failed would be the wrong trade.
+        let bp = parse_blueprint(r#"{"goal":"Do the thing","policy":"Be honest","roles":[]}"#)
+            .expect("charter-only blueprint");
+        assert_eq!(bp.goal, "Do the thing");
+        assert!(bp.roles.is_empty());
+        assert!(!blueprint_roles_are_usable(&bp.roles));
+    }
+
+    fn cap(id: &str, group: &str) -> Capability {
+        Capability {
+            id: id.to_string(),
+            name: id.to_string(),
+            group: group.to_string(),
+            description: format!("{id} description"),
+            extra: String::new(),
+        }
+    }
+
+    #[test]
+    fn the_prompt_lists_the_live_capability_catalog() {
+        let catalog = CapabilityCatalog {
+            skills: vec![cap("file_write", "tool"), cap("code_review", "workflow")],
+            connectors: vec![cap("github", "Development & Coding")],
+            plugins: vec![cap("notion", "plugin")],
+        };
+        let p = blueprint_prompt_with_catalog("Acme", Some("Ship it"), "custom", "", &catalog);
+        assert!(p.contains("`file_write`"), "tool missing from prompt");
+        assert!(p.contains("`code_review`"), "workflow missing from prompt");
+        assert!(p.contains("`github`"), "connector missing from prompt");
+        assert!(p.contains("`notion`"), "plugin missing from prompt");
+        assert!(p.contains("\"mcp_servers\""), "connector field in shape");
+        assert!(p.contains("\"plugins\""), "plugin field in shape");
+    }
+
+    #[test]
+    fn catalog_assignments_are_filtered_to_real_ids() {
+        let catalog = CapabilityCatalog {
+            skills: vec![cap("delegate", "tool"), cap("file_write", "tool")],
+            connectors: vec![cap("github", "Development & Coding")],
+            plugins: vec![cap("notion", "plugin")],
+        };
+        let text = r#"{"goal":"g","policy":"p","roles":[
+            {"name":"Lead","rank":"CEO","specialty":"x","system_prompt":"Own the outcome. What you produce: the report. How you verify: evidence.","is_lead":true,"skills":["delegate","invented"],"mcp_servers":["github","invented"],"plugins":["notion","invented"]}
+        ]}"#;
+        let bp = parse_blueprint_with_catalog(text, Some(&catalog)).expect("parse");
+        let role = &bp.roles[0];
+        assert!(role.skills.iter().any(|s| s == "delegate"));
+        assert!(!role.skills.iter().any(|s| s == "invented"));
+        assert_eq!(role.mcp_servers, vec!["github"]);
+        assert_eq!(role.plugins, vec!["notion"]);
+        // The lead still gets the mandatory memory tool even though the model
+        // did not list it.
+        assert!(role.skills.iter().any(|s| s == "memory_recall"));
+    }
+
+    #[test]
+    fn with_no_catalog_connector_assignments_are_cleared() {
+        // Legacy callers have no registry to validate against, so they must not
+        // silently create agents with unverified connector ids.
+        let text = r#"{"goal":"g","policy":"p","roles":[
+            {"name":"Lead","rank":"CEO","specialty":"x","system_prompt":"Own the outcome. What you produce: the report. How you verify: evidence.","is_lead":true,"skills":["delegate"],"mcp_servers":["github"],"plugins":["notion"]}
+        ]}"#;
+        let bp = parse_blueprint(text).expect("parse");
+        assert!(bp.roles[0].mcp_servers.is_empty());
+        assert!(bp.roles[0].plugins.is_empty());
+    }
+
+    #[test]
+    fn a_truncated_blueprint_keeps_the_completed_roles() {
+        // The live model wrote a strong charter and four roles, then hit the
+        // output-token cap in the middle of the fourth. Falling back to the
+        // template would have thrown all of it away.
+        let text = r#"{"goal":"Assess authorized web apps and report verified findings.","policy":"Evidence over adjectives.","roles":[
+            {"name":"Lead","rank":"Principal","specialty":"Delivery","system_prompt":"Own the outcome.","is_lead":true,"skills":["delegate"]},
+            {"name":"Tester","rank":"QA","specialty":"Verification","system_prompt":"Test it.","is_lead":false,"skills":["shell_exec"]},
+            {"name":"Reviewer","rank":"Reviewer","specialty":"Evidence","system_prompt":"This one is cut off mid"#;
+        let bp = parse_blueprint(text).expect("truncated but usable");
+        assert_eq!(
+            bp.goal,
+            "Assess authorized web apps and report verified findings."
+        );
+        assert_eq!(bp.policy, "Evidence over adjectives.");
+        assert_eq!(bp.roles.len(), 2, "only complete role objects survive");
+        assert!(bp.roles[0].is_lead);
+        assert!(!bp.roles[1].is_lead);
+    }
+
+    #[test]
+    fn a_persona_roster_is_not_usable() {
+        let mut roles = default_org("it-office");
+        for r in &mut roles {
+            r.system_prompt = Some("You are a helpful assistant.".to_string());
+        }
+        assert!(!blueprint_roles_are_usable(&roles));
+
+        let real = default_org("it-office");
+        assert!(blueprint_roles_are_usable(&real));
+    }
+
+    #[test]
+    fn a_coder_without_tools_gets_the_ones_the_job_needs() {
+        let role = RoleSpec {
+            name: "Coder".into(),
+            rank: "Developer".into(),
+            specialty: "Implementation".into(),
+            system_prompt: None,
+            is_lead: false,
+            skills: vec!["memory_recall".into()],
+            mcp_servers: vec![],
+            plugins: vec![],
+            avatar_style: None,
+        };
+        let role = with_common_skills(role);
+        for id in ["file_read", "file_write", "code_edit", "shell_exec", "git"] {
+            assert!(role.skills.iter().any(|s| s == id), "coder missing {id}");
+        }
+        // No duplicate of a skill the model already chose.
+        assert_eq!(
+            role.skills.iter().filter(|s| *s == "memory_recall").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_lead_can_always_delegate() {
+        let role = RoleSpec {
+            name: "Nova".into(),
+            rank: "Delivery Lead".into(),
+            specialty: "Outcomes".into(),
+            system_prompt: None,
+            is_lead: true,
+            skills: vec![],
+            mcp_servers: vec![],
+            plugins: vec![],
+            avatar_style: None,
+        };
+        let role = with_common_skills(role);
+        assert!(role.skills.iter().any(|s| s == "delegate"));
+        assert!(role.skills.iter().any(|s| s == "research"));
     }
 }

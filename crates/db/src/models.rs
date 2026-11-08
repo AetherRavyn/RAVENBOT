@@ -131,7 +131,7 @@ pub struct MessageRow {
     pub sender_bot_id: Option<String>,
     /// Denormalized sender label
     pub sender_name: Option<String>,
-    /// Message this replies to (office discussion)
+    /// Message this quotes (user reply or office discussion)
     pub reply_to_id: Option<String>,
     pub created_at: String,
 }

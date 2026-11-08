@@ -2,11 +2,14 @@ use crate::client::McpTool;
 use crate::servers::{all_servers, McpServerConfig, McpServerSummary, McpTestResult};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
-use ravenbot_skills::{Skill, SkillContext, SkillError, SkillResult};
+use ravenbot_skills::{Skill, SkillContext, SkillError, SkillResult, SkillRisk};
 use std::collections::HashMap;
 use std::sync::Arc;
 
 struct McpSkill {
+    /// Name the model calls. It is the raw tool name unless two servers expose
+    /// the same name, in which case it is prefixed with the server id.
+    call_name: String,
     tool: McpTool,
     config: McpServerConfig,
     env: HashMap<String, String>,
@@ -14,22 +17,49 @@ struct McpSkill {
 
 #[async_trait]
 impl Skill for McpSkill {
-    fn id(&self) -> &str { &self.tool.name }
-    fn name(&self) -> &str { &self.tool.name }
-    fn description(&self) -> &str { &self.tool.description }
-    fn version(&self) -> &str { "1.0.0-mcp" }
+    fn id(&self) -> &str {
+        &self.call_name
+    }
+    fn name(&self) -> &str {
+        &self.call_name
+    }
+    fn description(&self) -> &str {
+        &self.tool.description
+    }
+    fn version(&self) -> &str {
+        "1.0.0-mcp"
+    }
     fn required_permissions(&self) -> Vec<Permission> {
         // Map MCP server to permission
         if self.config.id == "filesystem" || self.config.id == "git" {
-            vec![Permission::FileSystem { paths: vec![".".into()] }]
-        } else if ["postgres","mysql","sqlite","mongodb","redis","supabase"].contains(&self.config.id.as_str()) {
-            vec![Permission::FileSystem { paths: vec![".".into()] }]
+            vec![Permission::FileSystem {
+                paths: vec![".".into()],
+            }]
+        } else if [
+            "postgres", "mysql", "sqlite", "mongodb", "redis", "supabase",
+        ]
+        .contains(&self.config.id.as_str())
+        {
+            vec![Permission::FileSystem {
+                paths: vec![".".into()],
+            }]
         } else {
-            vec![Permission::Network { domains: vec!["*".into()] }]
+            vec![Permission::Network {
+                domains: vec!["*".into()],
+            }]
         }
     }
-    fn input_schema(&self) -> serde_json::Value { self.tool.input_schema.clone() }
-    async fn execute(&self, _ctx: &SkillContext, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    fn input_schema(&self) -> serde_json::Value {
+        self.tool.input_schema.clone()
+    }
+    fn risk(&self) -> SkillRisk {
+        mcp_tool_risk(&self.tool.name)
+    }
+    async fn execute(
+        &self,
+        _ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let client = crate::client::McpClient::with_env(self.config.clone(), self.env.clone());
         match client.call_tool(&self.tool.name, args).await {
             Ok(v) => Ok(SkillResult::success(v)),
@@ -41,23 +71,70 @@ impl Skill for McpSkill {
 /// How long a server's discovered tools stay cached before a re-discovery
 const TOOLS_CACHE_TTL_SECS: u64 = 600;
 
+/// Approval risk for an MCP tool based on what its name says it does.
+///
+/// MCP tools used to default to `High`, so `list_directory` and
+/// `list_allowed_directories` produced an Allow/Deny card for a read. A tool
+/// that only reads should never gate, and a tool that writes inside the
+/// workspace is a low-risk mutation; only delete/execute/unknown tools are
+/// high.
+fn mcp_tool_risk(name: &str) -> SkillRisk {
+    let n = name.trim().to_ascii_lowercase();
+    const READ: &[&str] = &[
+        "list", "read", "get", "search", "find", "stat", "head", "tail", "describe", "show",
+        "inspect", "browse", "fetch",
+    ];
+    const WRITE: &[&str] = &[
+        "write", "create", "edit", "update", "append", "mkdir", "move", "copy", "upload",
+        "download", "send", "post", "put", "patch", "rename",
+    ];
+    if READ.iter().any(|p| n.starts_with(p)) {
+        SkillRisk::ReadOnly
+    } else if WRITE.iter().any(|p| n.starts_with(p)) {
+        SkillRisk::Low
+    } else {
+        SkillRisk::High
+    }
+}
+
 /// Name rules (OpenMausBot parity): 1-32 lowercase letters/digits/_/-,
 /// starting with a letter; harness-owned and reserved names rejected.
 fn mcp_name_error(name: &str) -> Option<String> {
     if name.len() > 32 || name.is_empty() {
-        return Some("Use 1-32 lowercase letters, numbers, underscores, or hyphens, starting with a letter.".to_string());
+        return Some(
+            "Use 1-32 lowercase letters, numbers, underscores, or hyphens, starting with a letter."
+                .to_string(),
+        );
     }
     let mut chars = name.chars();
     match chars.next() {
         Some(c) if c.is_ascii_lowercase() => {}
-        _ => return Some("Use 1-32 lowercase letters, numbers, underscores, or hyphens, starting with a letter.".to_string()),
+        _ => return Some(
+            "Use 1-32 lowercase letters, numbers, underscores, or hyphens, starting with a letter."
+                .to_string(),
+        ),
     }
-    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
-        return Some("Use 1-32 lowercase letters, numbers, underscores, or hyphens, starting with a letter.".to_string());
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Some(
+            "Use 1-32 lowercase letters, numbers, underscores, or hyphens, starting with a letter."
+                .to_string(),
+        );
     }
     const RESERVED: &[&str] = &[
-        "ogb", "computer", "agents", "composio", "browser", "phone", "dweb",
-        "openmausbot_connectors", "openmausbot_phone", "ravenbot", "builtin",
+        "ogb",
+        "computer",
+        "agents",
+        "composio",
+        "browser",
+        "phone",
+        "dweb",
+        "openmausbot_connectors",
+        "openmausbot_phone",
+        "ravenbot",
+        "builtin",
     ];
     if RESERVED.contains(&name) {
         return Some("That name is reserved.".to_string());
@@ -130,7 +207,9 @@ fn validate_server_for_save(
     match &url {
         Some(u) => {
             if !command.is_empty() {
-                return Err("Provide either a command (stdio) or a URL (HTTP), not both.".to_string());
+                return Err(
+                    "Provide either a command (stdio) or a URL (HTTP), not both.".to_string(),
+                );
             }
             if !(u.starts_with("http://") || u.starts_with("https://")) || u.len() > 2048 {
                 return Err("URL must start with http:// or https:// (max 2048 chars).".to_string());
@@ -139,21 +218,28 @@ fn validate_server_for_save(
                 return Err("Use at most 32 headers.".to_string());
             }
             for (k, v) in headers {
-                if k.is_empty()
-                    || k.len() > 128
-                    || k.chars().any(|c| c.is_control() || c == ':')
-                {
+                if k.is_empty() || k.len() > 128 || k.chars().any(|c| c.is_control() || c == ':') {
                     return Err(format!("Header name \"{}\" is not valid.", k));
                 }
                 if v.len() > 2048 {
-                    return Err(format!("Header \"{}\" value must be at most 2048 chars.", k));
+                    return Err(format!(
+                        "Header \"{}\" value must be at most 2048 chars.",
+                        k
+                    ));
                 }
             }
-            Ok((crate::servers::McpTransport::Http, String::new(), Some(u.clone())))
+            Ok((
+                crate::servers::McpTransport::Http,
+                String::new(),
+                Some(u.clone()),
+            ))
         }
         None => {
             if command.is_empty() || command.len() > 1024 {
-                return Err("Command must be 1-1024 chars (or provide a URL for an HTTP server).".to_string());
+                return Err(
+                    "Command must be 1-1024 chars (or provide a URL for an HTTP server)."
+                        .to_string(),
+                );
             }
             Ok((crate::servers::McpTransport::Stdio, command, None))
         }
@@ -164,8 +250,20 @@ fn validate_server_for_save(
 /// command, args, env_keys, enabled, is_custom, created_at, url, transport,
 /// headers_json.
 type ServerRow = (
-    String, String, String, String, String, String, String, String,
-    i64, i64, String, Option<String>, String, Option<String>,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
 );
 
 pub struct McpRegistry {
@@ -218,28 +316,44 @@ impl McpRegistry {
 
         // Migration safety: ensure is_custom column exists
         let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN is_custom INTEGER DEFAULT 0")
-            .execute(&self.pool).await;
+            .execute(&self.pool)
+            .await;
 
         // Migration safety (P8): remote-server columns (mirrors migration 019)
         let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN url TEXT")
-            .execute(&self.pool).await;
-        let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN transport TEXT NOT NULL DEFAULT 'stdio'")
-            .execute(&self.pool).await;
+            .execute(&self.pool)
+            .await;
+        let _ = sqlx::query(
+            "ALTER TABLE mcp_servers ADD COLUMN transport TEXT NOT NULL DEFAULT 'stdio'",
+        )
+        .execute(&self.pool)
+        .await;
         let _ = sqlx::query("ALTER TABLE mcp_servers ADD COLUMN headers_json TEXT")
-            .execute(&self.pool).await;
+            .execute(&self.pool)
+            .await;
 
-        sqlx::query(r#"CREATE TABLE IF NOT EXISTS mcp_bot_servers (
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS mcp_bot_servers (
             bot_id TEXT NOT NULL, server_id TEXT NOT NULL, enabled INTEGER DEFAULT 1,
             PRIMARY KEY (bot_id, server_id)
-        )"#).execute(&self.pool).await.map_err(|e| e.to_string())?;
+        )"#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
-        sqlx::query(r#"CREATE TABLE IF NOT EXISTS mcp_server_env (
+        sqlx::query(
+            r#"CREATE TABLE IF NOT EXISTS mcp_server_env (
             server_id TEXT NOT NULL,
             key TEXT NOT NULL,
             value TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             PRIMARY KEY (server_id, key)
-        )"#).execute(&self.pool).await.map_err(|e| e.to_string())?;
+        )"#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
 
         // Seed & Sync all 75+ built-in servers
         for s in all_servers() {
@@ -273,7 +387,10 @@ impl McpRegistry {
         Ok(())
     }
 
-    pub async fn list_servers(&self, category: Option<&str>) -> Result<Vec<McpServerConfig>, String> {
+    pub async fn list_servers(
+        &self,
+        category: Option<&str>,
+    ) -> Result<Vec<McpServerConfig>, String> {
         let rows: Vec<ServerRow> = if let Some(cat) = category {
             sqlx::query_as("SELECT id, name, description, category, icon, command, args, env_keys, enabled, is_custom, created_at, url, transport, headers_json FROM mcp_servers WHERE category = ? ORDER BY is_custom DESC, name")
                 .bind(cat).fetch_all(&self.pool).await.map_err(|e| e.to_string())?
@@ -281,38 +398,58 @@ impl McpRegistry {
             sqlx::query_as("SELECT id, name, description, category, icon, command, args, env_keys, enabled, is_custom, created_at, url, transport, headers_json FROM mcp_servers ORDER BY is_custom DESC, category, name")
                 .fetch_all(&self.pool).await.map_err(|e| e.to_string())?
         };
-        Ok(rows.into_iter().map(|r| {
-            let verified = crate::servers::is_verified(&r.0);
-            McpServerConfig {
-            id: r.0, name: r.1, description: r.2, category: r.3, icon: r.4, command: r.5,
-            args: serde_json::from_str(&r.6).unwrap_or_default(),
-            env_keys: serde_json::from_str(&r.7).unwrap_or_default(),
-            env_fields: Vec::new(),
-            url: r.11,
-            headers: r.13
-                .as_deref()
-                .and_then(|s| serde_json::from_str(s).ok())
-                .unwrap_or_default(),
-            auth: None,
-            transport: parse_transport(&r.12),
-            mcp_type: None,
-            enabled_by_default: r.8 != 0,
-            is_custom: r.9 != 0,
-            verified,
-            source: None,
-        }}).collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                let verified = crate::servers::is_verified(&r.0);
+                McpServerConfig {
+                    id: r.0,
+                    name: r.1,
+                    description: r.2,
+                    category: r.3,
+                    icon: r.4,
+                    command: r.5,
+                    args: serde_json::from_str(&r.6).unwrap_or_default(),
+                    env_keys: serde_json::from_str(&r.7).unwrap_or_default(),
+                    env_fields: Vec::new(),
+                    url: r.11,
+                    headers: r
+                        .13
+                        .as_deref()
+                        .and_then(|s| serde_json::from_str(s).ok())
+                        .unwrap_or_default(),
+                    auth: None,
+                    transport: parse_transport(&r.12),
+                    mcp_type: None,
+                    enabled_by_default: r.8 != 0,
+                    is_custom: r.9 != 0,
+                    verified,
+                    source: None,
+                }
+            })
+            .collect())
     }
 
-    pub async fn list_server_summaries(&self, category: Option<&str>) -> Result<Vec<McpServerSummary>, String> {
+    pub async fn list_server_summaries(
+        &self,
+        category: Option<&str>,
+    ) -> Result<Vec<McpServerSummary>, String> {
         let configs = self.list_servers(category).await?;
-        
+
         // Fetch all assignments
-        let assignments: Vec<(String, String)> = sqlx::query_as("SELECT server_id, bot_id FROM mcp_bot_servers WHERE enabled = 1")
-            .fetch_all(&self.pool).await.unwrap_or_default();
-        
+        let assignments: Vec<(String, String)> =
+            sqlx::query_as("SELECT server_id, bot_id FROM mcp_bot_servers WHERE enabled = 1")
+                .fetch_all(&self.pool)
+                .await
+                .unwrap_or_default();
+
         // Fetch all configured keys
-        let configured_keys: Vec<(String, String)> = sqlx::query_as("SELECT server_id, key FROM mcp_server_env WHERE LENGTH(TRIM(value)) > 0")
-            .fetch_all(&self.pool).await.unwrap_or_default();
+        let configured_keys: Vec<(String, String)> = sqlx::query_as(
+            "SELECT server_id, key FROM mcp_server_env WHERE LENGTH(TRIM(value)) > 0",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .unwrap_or_default();
 
         let mut map_assigned: HashMap<String, Vec<String>> = HashMap::new();
         for (sid, bid) in assignments {
@@ -370,12 +507,18 @@ impl McpRegistry {
         if let Some(r) = row {
             let verified = crate::servers::is_verified(&r.0);
             Ok(Some(McpServerConfig {
-                id: r.0, name: r.1, description: r.2, category: r.3, icon: r.4, command: r.5,
+                id: r.0,
+                name: r.1,
+                description: r.2,
+                category: r.3,
+                icon: r.4,
+                command: r.5,
                 args: serde_json::from_str(&r.6).unwrap_or_default(),
                 env_keys: serde_json::from_str(&r.7).unwrap_or_default(),
                 env_fields: Vec::new(),
                 url: r.11,
-                headers: r.13
+                headers: r
+                    .13
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default(),
@@ -405,7 +548,11 @@ impl McpRegistry {
             &config.env_keys,
             &config.headers,
         )?;
-        let transport_str = if transport == crate::servers::McpTransport::Http { "http" } else { "stdio" };
+        let transport_str = if transport == crate::servers::McpTransport::Http {
+            "http"
+        } else {
+            "stdio"
+        };
         let headers_json = serde_json::to_string(&config.headers).unwrap_or_else(|_| "{}".into());
 
         sqlx::query(
@@ -434,22 +581,43 @@ impl McpRegistry {
     }
 
     pub async fn delete_server(&self, id: &str) -> Result<(), String> {
-        sqlx::query("DELETE FROM mcp_servers WHERE id = ?").bind(id).execute(&self.pool).await.map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM mcp_bot_servers WHERE server_id = ?").bind(id).execute(&self.pool).await.map_err(|e| e.to_string())?;
-        sqlx::query("DELETE FROM mcp_server_env WHERE server_id = ?").bind(id).execute(&self.pool).await.map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM mcp_servers WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM mcp_bot_servers WHERE server_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+        sqlx::query("DELETE FROM mcp_server_env WHERE server_id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub async fn set_server_enabled(&self, id: &str, enabled: bool) -> Result<(), String> {
-        sqlx::query("UPDATE mcp_servers SET enabled = ? WHERE id = ?").bind(if enabled {1} else {0}).bind(id).execute(&self.pool).await.map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE mcp_servers SET enabled = ? WHERE id = ?")
+            .bind(if enabled { 1 } else { 0 })
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 
     pub async fn get_server_env(&self, server_id: &str) -> Result<HashMap<String, String>, String> {
         // Values live here because process spawn needs them; API callers that
         // render to the UI must use `get_server_env_keys` (write-only).
-        let rows: Vec<(String, String)> = sqlx::query_as("SELECT key, value FROM mcp_server_env WHERE server_id = ?")
-            .bind(server_id).fetch_all(&self.pool).await.map_err(|e| e.to_string())?;
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT key, value FROM mcp_server_env WHERE server_id = ?")
+                .bind(server_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
 
         let mut map = HashMap::new();
         for (k, v) in rows {
@@ -460,8 +628,12 @@ impl McpRegistry {
 
     /// Write-only key names for UI rendering (never the values).
     pub async fn get_server_env_keys(&self, server_id: &str) -> Result<Vec<String>, String> {
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT key FROM mcp_server_env WHERE server_id = ?")
-            .bind(server_id).fetch_all(&self.pool).await.map_err(|e| e.to_string())?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT key FROM mcp_server_env WHERE server_id = ?")
+                .bind(server_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
         Ok(rows.into_iter().map(|(k,)| k).collect())
     }
 
@@ -469,7 +641,11 @@ impl McpRegistry {
     /// - non-empty value  -> overwrite stored secret
     /// - empty value + key already stored -> KEEP (UI placeholder round-trip)
     /// - empty value + key unknown -> delete (explicit clear of a new row)
-    pub async fn save_server_env(&self, server_id: &str, env: HashMap<String, String>) -> Result<(), String> {
+    pub async fn save_server_env(
+        &self,
+        server_id: &str,
+        env: HashMap<String, String>,
+    ) -> Result<(), String> {
         // Validate key names before touching the DB.
         for k in env.keys() {
             if let Some(err) = env_name_error(k) {
@@ -479,11 +655,21 @@ impl McpRegistry {
         let now = chrono::Utc::now().to_rfc3339();
         for (k, v) in env {
             if v.trim().is_empty() {
-                let exists: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM mcp_server_env WHERE server_id = ? AND key = ?")
-                    .bind(server_id).bind(&k).fetch_one(&self.pool).await.map_err(|e| e.to_string())?;
+                let exists: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM mcp_server_env WHERE server_id = ? AND key = ?",
+                )
+                .bind(server_id)
+                .bind(&k)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
                 if exists == 0 {
                     sqlx::query("DELETE FROM mcp_server_env WHERE server_id = ? AND key = ?")
-                        .bind(server_id).bind(&k).execute(&self.pool).await.map_err(|e| e.to_string())?;
+                        .bind(server_id)
+                        .bind(&k)
+                        .execute(&self.pool)
+                        .await
+                        .map_err(|e| e.to_string())?;
                 }
                 // else: keep saved value (write-only placeholder)
             } else {
@@ -497,7 +683,9 @@ impl McpRegistry {
     }
 
     pub async fn test_server(&self, server_id: &str) -> Result<McpTestResult, String> {
-        let config = self.get_server_config(server_id).await?
+        let config = self
+            .get_server_config(server_id)
+            .await?
             .ok_or_else(|| format!("MCP server '{}' not found", server_id))?;
         let env = self.get_server_env(server_id).await.unwrap_or_default();
         let client = crate::client::McpClient::with_env(config, env);
@@ -514,11 +702,18 @@ impl McpRegistry {
         Ok(result)
     }
 
-    pub async fn batch_assign_bot_servers(&self, server_id: &str, bot_ids: Vec<uuid::Uuid>) -> Result<(), String> {
+    pub async fn batch_assign_bot_servers(
+        &self,
+        server_id: &str,
+        bot_ids: Vec<uuid::Uuid>,
+    ) -> Result<(), String> {
         // Remove all previous for this server
         sqlx::query("DELETE FROM mcp_bot_servers WHERE server_id = ?")
-            .bind(server_id).execute(&self.pool).await.map_err(|e| e.to_string())?;
-        
+            .bind(server_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
         for bid in bot_ids {
             sqlx::query("INSERT OR REPLACE INTO mcp_bot_servers (bot_id, server_id, enabled) VALUES (?, ?, 1)")
                 .bind(bid.to_string()).bind(server_id).execute(&self.pool).await.map_err(|e| e.to_string())?;
@@ -526,7 +721,11 @@ impl McpRegistry {
         Ok(())
     }
 
-    pub async fn batch_set_bot_servers(&self, bot_id: uuid::Uuid, server_ids: Vec<String>) -> Result<(), String> {
+    pub async fn batch_set_bot_servers(
+        &self,
+        bot_id: uuid::Uuid,
+        server_ids: Vec<String>,
+    ) -> Result<(), String> {
         sqlx::query("DELETE FROM mcp_bot_servers WHERE bot_id = ?")
             .bind(bot_id.to_string())
             .execute(&self.pool)
@@ -545,8 +744,12 @@ impl McpRegistry {
     }
 
     pub async fn list_bot_servers(&self, bot_id: uuid::Uuid) -> Result<Vec<String>, String> {
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT server_id FROM mcp_bot_servers WHERE bot_id = ? AND enabled=1")
-            .bind(bot_id.to_string()).fetch_all(&self.pool).await.map_err(|e| e.to_string())?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT server_id FROM mcp_bot_servers WHERE bot_id = ? AND enabled=1")
+                .bind(bot_id.to_string())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
         Ok(rows.into_iter().map(|r| r.0).collect())
     }
 
@@ -554,18 +757,29 @@ impl McpRegistry {
     /// globally enabled server when the bot has none (INSERT-or-DELETE
     /// semantics make "zero enabled rows" identical to "no rows at all").
     pub async fn enabled_server_ids(&self, bot_id: uuid::Uuid) -> Result<Vec<String>, String> {
-        let rows: Vec<(String,)> = sqlx::query_as("SELECT server_id FROM mcp_bot_servers WHERE bot_id = ? AND enabled=1").bind(bot_id.to_string()).fetch_all(&self.pool).await.map_err(|e| e.to_string())?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT server_id FROM mcp_bot_servers WHERE bot_id = ? AND enabled=1")
+                .bind(bot_id.to_string())
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
         if !rows.is_empty() {
             return Ok(rows.into_iter().map(|r| r.0).collect());
         }
-        let global: Vec<(String,)> = sqlx::query_as("SELECT id FROM mcp_servers WHERE enabled=1").fetch_all(&self.pool).await.map_err(|e| e.to_string())?;
+        let global: Vec<(String,)> = sqlx::query_as("SELECT id FROM mcp_servers WHERE enabled=1")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(global.into_iter().map(|r| r.0).collect())
     }
 
     /// Config + resolved env for one server (DB env values win, then OS env
     /// for declared keys). One resolution path shared by the native loop and
     /// the external-engine forwarder.
-    pub async fn server_config_with_env(&self, server_id: &str) -> Result<Option<(McpServerConfig, HashMap<String, String>)>, String> {
+    pub async fn server_config_with_env(
+        &self,
+        server_id: &str,
+    ) -> Result<Option<(McpServerConfig, HashMap<String, String>)>, String> {
         let Some(cfg) = self.get_server_config(server_id).await? else {
             return Ok(None);
         };
@@ -582,7 +796,10 @@ impl McpRegistry {
         Ok(Some((cfg, env)))
     }
 
-    pub async fn skills_for_bot(self: &Arc<Self>, bot_id: uuid::Uuid) -> Result<Vec<Arc<dyn Skill>>, String> {
+    pub async fn skills_for_bot(
+        self: &Arc<Self>,
+        bot_id: uuid::Uuid,
+    ) -> Result<Vec<Arc<dyn Skill>>, String> {
         // Enabled servers for this bot, or globally enabled if none set per-bot
         let server_ids = self.enabled_server_ids(bot_id).await?;
 
@@ -599,7 +816,7 @@ impl McpRegistry {
         // everything else gets its instant synthesized descriptors now, and the
         // real tools are discovered in the background for the next run. (Spawning
         // `npx -y …`/`uvx …` for 8 servers used to add ~50s to the first reply.)
-        let mut skills: Vec<Arc<dyn Skill>> = Vec::new();
+        let mut discovered: Vec<(McpServerConfig, HashMap<String, String>, McpTool)> = Vec::new();
         let mut to_warm: Vec<(String, McpServerConfig, HashMap<String, String>)> = Vec::new();
         for (sid, cfg, env) in resolved {
             let client = crate::client::McpClient::with_env(cfg.clone(), env.clone());
@@ -611,17 +828,53 @@ impl McpRegistry {
                 }
             };
             for tool in tools {
-                skills.push(Arc::new(McpSkill {
-                    tool,
-                    config: cfg.clone(),
-                    env: env.clone(),
-                }));
+                discovered.push((cfg.clone(), env.clone(), tool));
             }
         }
         self.spawn_discovery(to_warm);
 
-        // Cap per-bot MCP tools; the runtime's overall cap (32) still applies
-        if skills.len() > 24 { skills.truncate(24); }
+        // Two servers can expose the same neutral tool name (`browser_navigate`
+        // is synthesized by browserbase, puppeteer, and playwright). The model
+        // only sees a flat tool list, so a duplicate id used to silently drop
+        // the second server's tool. Prefix only the collisions; the common case
+        // keeps the server's own names.
+        let mut name_counts: HashMap<String, usize> = HashMap::new();
+        for (_, _, tool) in &discovered {
+            *name_counts.entry(tool.name.clone()).or_default() += 1;
+        }
+        let mut used_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut skills: Vec<Arc<dyn Skill>> = Vec::new();
+        for (cfg, env, tool) in discovered {
+            let mut call_name = if name_counts.get(&tool.name).copied().unwrap_or(0) > 1 {
+                format!("{}__{}", cfg.id, tool.name)
+            } else {
+                tool.name.clone()
+            };
+            if !used_names.insert(call_name.clone()) {
+                let mut suffix = 2usize;
+                loop {
+                    let candidate = format!("{call_name}_{suffix}");
+                    if used_names.insert(candidate.clone()) {
+                        call_name = candidate;
+                        break;
+                    }
+                    suffix += 1;
+                }
+            }
+            skills.push(Arc::new(McpSkill {
+                call_name,
+                tool,
+                config: cfg,
+                env,
+            }));
+        }
+
+        // Cap per-bot MCP tools. The runtime cap is 64; keeping the MCP
+        // ceiling below it means a multi-server bot does not lose a whole
+        // server because another one was listed first.
+        if skills.len() > 48 {
+            skills.truncate(48);
+        }
         Ok(skills)
     }
 
@@ -702,7 +955,11 @@ impl McpRegistry {
         if let Ok(servers) = self.list_servers(None).await {
             for server in &servers {
                 let client = crate::client::McpClient::new(server.clone());
-                if client.synthesized_tools().iter().any(|t| t.name == tool_name) {
+                if client
+                    .synthesized_tools()
+                    .iter()
+                    .any(|t| t.name == tool_name)
+                {
                     return self.load_resolved(&server.id).await;
                 }
             }
@@ -731,21 +988,69 @@ impl McpRegistry {
         Ok(Some((cfg, env)))
     }
 
-    pub async fn merged_for_bot(self: &Arc<Self>, bot_id: uuid::Uuid, builtin: &ravenbot_skills::SkillRegistry) -> Vec<Arc<dyn Skill>> {
+    pub async fn merged_for_bot(
+        self: &Arc<Self>,
+        bot_id: uuid::Uuid,
+        builtin: &ravenbot_skills::SkillRegistry,
+    ) -> Vec<Arc<dyn Skill>> {
         let mut all = builtin.list();
-        if let Ok(mcp_skills) = self.skills_for_bot(bot_id).await { all.extend(mcp_skills); }
+        if let Ok(mcp_skills) = self.skills_for_bot(bot_id).await {
+            all.extend(mcp_skills);
+        }
         all
     }
 
-    pub async fn set_bot_server(&self, bot_id: uuid::Uuid, server_id: &str, enabled: bool) -> Result<(), String> {
+    pub async fn set_bot_server(
+        &self,
+        bot_id: uuid::Uuid,
+        server_id: &str,
+        enabled: bool,
+    ) -> Result<(), String> {
         if enabled {
             sqlx::query("INSERT OR REPLACE INTO mcp_bot_servers (bot_id, server_id, enabled) VALUES (?, ?, 1)")
                 .bind(bot_id.to_string()).bind(server_id).execute(&self.pool).await.map_err(|e| e.to_string())?;
         } else {
             sqlx::query("DELETE FROM mcp_bot_servers WHERE bot_id = ? AND server_id = ?")
-                .bind(bot_id.to_string()).bind(server_id).execute(&self.pool).await.map_err(|e| e.to_string())?;
+                .bind(bot_id.to_string())
+                .bind(server_id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod mcp_risk_tests {
+    use super::*;
+
+    #[test]
+    fn read_only_mcp_tools_do_not_gate() {
+        for name in [
+            "list_directory",
+            "list_allowed_directories",
+            "read_file",
+            "search_files",
+            "get_file_info",
+            "fetch_url",
+        ] {
+            assert_eq!(
+                mcp_tool_risk(name),
+                SkillRisk::ReadOnly,
+                "{name} should be read-only"
+            );
+        }
+    }
+
+    #[test]
+    fn mutations_are_low_and_delete_or_execute_are_high() {
+        assert_eq!(mcp_tool_risk("write_file"), SkillRisk::Low);
+        assert_eq!(mcp_tool_risk("create_directory"), SkillRisk::Low);
+        assert_eq!(mcp_tool_risk("move_file"), SkillRisk::Low);
+        assert_eq!(mcp_tool_risk("delete_file"), SkillRisk::High);
+        assert_eq!(mcp_tool_risk("execute_command"), SkillRisk::High);
+        assert_eq!(mcp_tool_risk("query"), SkillRisk::High);
     }
 }
 
@@ -794,8 +1099,10 @@ mod resolution_tests {
         let mut cfg = base_config("remotetest");
         cfg.url = Some("https://mcp.example.com/api/".to_string());
         cfg.transport = crate::servers::McpTransport::Http;
-        cfg.headers =
-            HashMap::from([("Authorization".to_string(), "Bearer ${MY_MCP_TOKEN}".to_string())]);
+        cfg.headers = HashMap::from([(
+            "Authorization".to_string(),
+            "Bearer ${MY_MCP_TOKEN}".to_string(),
+        )]);
         reg.save_custom_server(cfg).await.unwrap();
 
         let got = reg
@@ -813,7 +1120,10 @@ mod resolution_tests {
 
         // Summaries must stop nulling url/transport for remote servers.
         let summaries = reg.list_server_summaries(None).await.unwrap();
-        let s = summaries.iter().find(|s| s.id == "remotetest").expect("summary present");
+        let s = summaries
+            .iter()
+            .find(|s| s.id == "remotetest")
+            .expect("summary present");
         assert_eq!(s.url.as_deref(), Some("https://mcp.example.com/api"));
         assert_eq!(s.transport, crate::servers::McpTransport::Http);
     }
@@ -887,7 +1197,10 @@ mod resolution_tests {
         // populates the tool cache
         reg.set_server_enabled("github", true).await.unwrap();
         let skills = reg.skills_for_bot(uuid::Uuid::new_v4()).await.unwrap();
-        assert!(!skills.is_empty(), "globally enabled fallback should yield tools");
+        assert!(
+            !skills.is_empty(),
+            "globally enabled fallback should yield tools"
+        );
 
         // A dynamically-called tool from that listing must resolve to github
         let tool_name = skills[0].id().to_string();
@@ -895,6 +1208,25 @@ mod resolution_tests {
         assert!(resolved.is_some());
         let (cfg, _env) = resolved.unwrap();
         assert_eq!(cfg.id, "github");
+    }
+
+    #[tokio::test]
+    async fn colliding_mcp_tool_names_are_server_prefixed() {
+        let reg = temp_registry().await;
+        // browserbase and puppeteer both synthesize browser_navigate / click /
+        // screenshot. A flat tool list must keep both, not silently drop one.
+        reg.set_server_enabled("browserbase", true).await.unwrap();
+        reg.set_server_enabled("puppeteer", true).await.unwrap();
+        let skills = reg.skills_for_bot(uuid::Uuid::new_v4()).await.unwrap();
+        let ids: Vec<String> = skills.iter().map(|s| s.id().to_string()).collect();
+        assert!(
+            ids.contains(&"browserbase__browser_navigate".to_string()),
+            "got: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"puppeteer__browser_navigate".to_string()),
+            "got: {ids:?}"
+        );
     }
 
     #[tokio::test]
@@ -912,7 +1244,10 @@ mod resolution_tests {
         // git's synthesized tools (or live ones) — none should come from notion
         assert!(!skills.is_empty());
         let listed: Vec<String> = skills.iter().map(|s| s.id().to_string()).collect();
-        assert!(listed.iter().all(|n| n.starts_with("git")), "got: {listed:?}");
+        assert!(
+            listed.iter().all(|n| n.starts_with("git")),
+            "got: {listed:?}"
+        );
     }
 
     #[tokio::test]
@@ -929,8 +1264,14 @@ mod resolution_tests {
         reg.set_server_enabled("git", true).await.unwrap();
         reg.set_server_enabled("notion", false).await.unwrap();
         let global_ids = reg.enabled_server_ids(bot.id).await.unwrap();
-        assert!(global_ids.iter().any(|id| id == "git"), "got: {global_ids:?}");
-        assert!(!global_ids.iter().any(|id| id == "notion"), "disabled server leaked");
+        assert!(
+            global_ids.iter().any(|id| id == "git"),
+            "got: {global_ids:?}"
+        );
+        assert!(
+            !global_ids.iter().any(|id| id == "notion"),
+            "disabled server leaked"
+        );
 
         // Per-bot assignment wins over the global listing.
         reg.set_bot_server(bot.id, "notion", true).await.unwrap();
@@ -945,7 +1286,9 @@ mod resolution_tests {
             .map(|s| s.id().split('_').next().unwrap_or("").to_string())
             .collect();
         assert!(
-            owners.iter().all(|o| bot_ids.iter().any(|b| b.starts_with(o.as_str()))),
+            owners
+                .iter()
+                .all(|o| bot_ids.iter().any(|b| b.starts_with(o.as_str()))),
             "skills {owners:?} outside listing {bot_ids:?}"
         );
     }

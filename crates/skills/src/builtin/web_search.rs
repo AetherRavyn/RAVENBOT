@@ -79,7 +79,9 @@ impl Skill for WebSearchSkill {
         })
     }
 
-    fn risk(&self) -> SkillRisk { SkillRisk::ReadOnly }
+    fn risk(&self) -> SkillRisk {
+        SkillRisk::ReadOnly
+    }
 
     async fn execute(
         &self,
@@ -127,44 +129,46 @@ impl Skill for WebSearchSkill {
 
 fn parse_ddg_results(html: &str, max_results: usize) -> Vec<serde_json::Value> {
     let mut results = Vec::new();
-    
+
     // Simple parsing - in production, use a proper HTML parser
     let lines: Vec<&str> = html.lines().collect();
     let mut i = 0;
-    
+
     while i < lines.len() && results.len() < max_results {
         let line = lines[i].trim();
-        
+
         // Look for result links
         if line.starts_with("<a rel=\"nofollow\" class=\"result-link\"") {
             if let Some(start) = line.find("href=\"") {
                 let start = start + 6;
                 if let Some(end) = line[start..].find("\"") {
                     let url = &line[start..start + end];
-                    
+
                     // Get title from next line
                     if let Some(title_start) = line.find(">") {
                         let title = line[title_start + 1..]
                             .replace("</a>", "")
                             .trim()
                             .to_string();
-                        
+
                         // Get snippet if available
                         let snippet = if i + 1 < lines.len() {
                             let snippet_line = lines[i + 1].trim();
                             if snippet_line.starts_with("<td class=\"result-snippet\">") {
-                                Some(snippet_line
-                                    .replace("<td class=\"result-snippet\">", "")
-                                    .replace("</td>", "")
-                                    .trim()
-                                    .to_string())
+                                Some(
+                                    snippet_line
+                                        .replace("<td class=\"result-snippet\">", "")
+                                        .replace("</td>", "")
+                                        .trim()
+                                        .to_string(),
+                                )
                             } else {
                                 None
                             }
                         } else {
                             None
                         };
-                        
+
                         results.push(serde_json::json!({
                             "title": title,
                             "url": url,
@@ -174,10 +178,10 @@ fn parse_ddg_results(html: &str, max_results: usize) -> Vec<serde_json::Value> {
                 }
             }
         }
-        
+
         i += 1;
     }
-    
+
     results
 }
 

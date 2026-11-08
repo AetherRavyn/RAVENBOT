@@ -76,6 +76,12 @@
   --surface-4: #333333; /* active / stronger divider */
   --surface-elevated: #242424;
   --rail-selected: #f0f0f0; /* white pill on the selected rail/sidebar row */
+  /* Modal / lightbox scrim. Always dark enough to separate a dialog from the
+   * page; a light theme uses a softer navy rather than a white wash. */
+  --scrim: rgba(0, 0, 0, 0.55);
+  /* Hover fill for the light primary button. Themes that use a dark button
+   * (Paper Light) redefine this brighter; dark themes keep the current white. */
+  --surface-light-hover: #ffffff;
 
   /* ── Text (neutral ramp — every step stays readable on #141414) ─────── */
   --text-primary: #ffffff;
@@ -175,6 +181,8 @@
   --text-readable: rgba(255, 255, 255, 0.52);
   --text-dim-on-light: rgba(20, 20, 20, 0.36);
   --scroll-edge-overlay: rgba(0, 0, 0, 0.72);
+  --scrollbar-thumb: rgba(255, 255, 255, 0.09);
+  --scrollbar-thumb-hover: rgba(255, 255, 255, 0.2);
 
   /* File-kind accents (attachments, tree, artifacts) */
   --file-blue: #74b9ff;

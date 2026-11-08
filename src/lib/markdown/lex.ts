@@ -49,11 +49,14 @@ marked.use({
       name: "mathBlock",
       level: "block",
       start(src: string) {
-        const i = src.indexOf("$$");
-        return i >= 0 ? i : undefined;
+        const dollar = src.indexOf("$$");
+        const bracket = src.indexOf("\\[");
+        const candidates = [dollar, bracket].filter((index) => index >= 0);
+        return candidates.length ? Math.min(...candidates) : undefined;
       },
       tokenizer(src: string) {
-        const m = src.match(/^\$\$([\s\S]+?)\$\$/);
+        const m = src.match(/^\$\$([\s\S]+?)\$\$/) ||
+          src.match(/^\\\[([\s\S]+?)\\\]/);
         if (m) {
           const text = m[1].trim();
           if (text) return { type: "mathBlock", raw: m[0], text, displayMode: true };
@@ -64,16 +67,25 @@ marked.use({
       name: "mathInline",
       level: "inline",
       start(src: string) {
-        const i = src.indexOf("$");
-        return i >= 0 ? i : undefined;
+        const dollar = src.indexOf("$");
+        const paren = src.indexOf("\\(");
+        const candidates = [dollar, paren].filter((index) => index >= 0);
+        return candidates.length ? Math.min(...candidates) : undefined;
       },
       tokenizer(src: string) {
-        const m = src.match(/^\$([^\$\n]+?)\$/);
-        if (m) {
-          const text = m[1].trim();
+        const dollar = src.match(/^\$([^\$\n]+?)\$/);
+        if (dollar) {
+          const text = dollar[1].trim();
           // Reject pure-prose dollar amounts: "$5", "$10 and $20" etc.
           if (text && /[^a-zA-Z0-9 ,.]/.test(text)) {
-            return { type: "mathInline", raw: m[0], text, displayMode: false };
+            return { type: "mathInline", raw: dollar[0], text, displayMode: false };
+          }
+        }
+        const paren = src.match(/^\\\(([\s\S]+?)\\\)/);
+        if (paren) {
+          const text = paren[1].trim();
+          if (text) {
+            return { type: "mathInline", raw: paren[0], text, displayMode: false };
           }
         }
       },

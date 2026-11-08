@@ -24,6 +24,8 @@ pub mod chatroom;
 pub mod paths;
 pub mod office_memory;
 pub mod file_change;
+pub mod agent_activity;
+pub mod browser_dock;
 
 // Re-exports for convenience
 pub use bot::*;
@@ -51,3 +53,5 @@ pub use paths::{
 };
 pub use office_memory::*;
 pub use file_change::*;
+pub use agent_activity::*;
+pub use browser_dock::*;

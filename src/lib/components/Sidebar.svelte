@@ -54,6 +54,7 @@
     openSettings: () => void;
     onNewChat?: () => void;
     onReorder?: (orderedIds: string[]) => void;
+    onOpenSearch?: () => void;
   }
 
   let {
@@ -66,6 +67,7 @@
     openSettings,
     onNewChat,
     onReorder,
+    onOpenSearch,
   }: Props = $props();
 
   let showCreateModal = $state(false);
@@ -279,7 +281,7 @@
         <Plus class="size-4 group-hover:rotate-90 transition-transform duration-300" />
         <span>{t("sidebar.newChat")}</span>
       </div>
-      <span class="text-[11px] font-mono text-black/60 bg-black/10 px-1.5 py-0.5 rounded">⌘N</span>
+      <span class="text-[11px] font-mono text-[var(--text-on-light)]/60 bg-[var(--text-on-light)]/10 px-1.5 py-0.5 rounded">⌘N</span>
     </button>
   </div>
 
@@ -329,15 +331,28 @@
 
   <!-- Search & Filter Controls -->
   <div class="px-3 py-1 space-y-1.5">
-    <div class="relative group/search">
-      <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none transition-colors group-focus-within/search:text-[var(--text-secondary)]" />
-      <input
-        type="text"
-        placeholder={t("sidebar.search")}
-        aria-label={t("sidebar.search")}
-        bind:value={searchQuery}
-        class="w-full h-8 pl-8 pr-3 bg-[var(--surface-2)] border border-[var(--hairline)] rounded-md text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/25 transition-all font-sans"
-      />
+    <div class="flex items-center gap-1.5">
+      <div class="relative min-w-0 flex-1 group/search">
+        <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)] pointer-events-none transition-colors group-focus-within/search:text-[var(--text-secondary)]" />
+        <input
+          type="text"
+          placeholder={t("sidebar.search")}
+          aria-label={t("sidebar.search")}
+          bind:value={searchQuery}
+          class="w-full h-8 pl-8 pr-3 bg-[var(--surface-2)] border border-[var(--hairline)] rounded-md text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)] focus:ring-2 focus:ring-[var(--brand)]/25 transition-all font-sans"
+        />
+      </div>
+      {#if onOpenSearch}
+        <button
+          type="button"
+          class="icon-btn size-8 shrink-0 border border-[var(--hairline)] bg-[var(--surface-2)]"
+          aria-label={`${t("palette.searchAll")} (⌘K)`}
+          title={`${t("palette.searchAll")} (⌘K)`}
+          onclick={onOpenSearch}
+        >
+          <Search class="size-3.5" />
+        </button>
+      {/if}
     </div>
 
     <!-- Waiting on me filter toggle -->
