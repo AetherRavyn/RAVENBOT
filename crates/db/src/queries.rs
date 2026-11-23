@@ -1161,7 +1161,8 @@ impl RunQueries {
     /// Park runs that were active when the process quit so startup can resume
     /// them from their checkpoint. Deliberately limited to top-level, plain
     /// 1:1 threads: office graph nodes and delegated child runs have no
-    /// independent restart path, and resuming each one would duplicate work.
+    /// independent restart path, and a 1:1 goal round is retried as a whole
+    /// round so it cannot skip the goal's review/verdict step.
     pub async fn park_interrupted_runs(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
@@ -1173,6 +1174,13 @@ impl RunQueries {
                AND thread_id NOT IN (SELECT thread_id FROM chatroom_office_threads)
                AND thread_id NOT IN (
                    SELECT thread_id FROM channel_tasks WHERE thread_id IS NOT NULL
+               )
+               -- A 1:1 goal owns its round. Resuming the raw run would skip
+               -- the goal's review/verdict step and leave the goal due, so the
+               -- round is closed and the goal loop starts a fresh one.
+               AND thread_id NOT IN (
+                   SELECT thread_id FROM goals
+                   WHERE office_id IS NULL AND thread_id IS NOT NULL AND status != 'done'
                )",
         )
         .bind(now)
@@ -1181,8 +1189,9 @@ impl RunQueries {
         Ok(result.rows_affected())
     }
 
-    /// Close active office, graph-child, and channel-task runs that cannot be
-    /// resumed independently. They are reported as interrupted failures.
+    /// Close active office, graph-child, channel-task, and 1:1 goal runs that
+    /// cannot be resumed independently. They are reported as interrupted
+    /// failures.
     pub async fn fail_orphaned_runs(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
@@ -1196,6 +1205,10 @@ impl RunQueries {
                    OR thread_id IN (SELECT thread_id FROM chatroom_office_threads)
                    OR thread_id IN (
                        SELECT thread_id FROM channel_tasks WHERE thread_id IS NOT NULL
+                   )
+                   OR thread_id IN (
+                       SELECT thread_id FROM goals
+                       WHERE office_id IS NULL AND thread_id IS NOT NULL AND status != 'done'
                    )
                )",
         )
@@ -1484,6 +1497,52 @@ impl RunProgressQueries {
             lease_expires_at: parse_event_time(row.8),
             updated_at: parse_event_time(Some(row.9)).unwrap_or_else(Utc::now),
         }))
+    }
+
+    /// Whether a live or user-paused run currently owns this thread.
+    ///
+    /// The thread-goal scheduler uses this to yield to a user turn instead of
+    /// starting a second run in the same conversation. A paused run counts:
+    /// resuming it later must not interleave with a goal round that started
+    /// while it was parked.
+    pub async fn has_active_for_thread(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        let exists: Option<i64> = sqlx::query_scalar(
+            "SELECT 1 FROM runs
+             WHERE thread_id = ?
+               AND state IN ('planning','acting','observing','reflecting','waiting_on_user','paused')
+             LIMIT 1",
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(exists.is_some())
+    }
+
+    /// Every non-terminal run currently attached to one thread.
+    ///
+    /// Used when a user stops a 1:1 goal: scheduling alone would leave the
+    /// round already in flight running to completion, which is not what
+    /// "stop" means in the conversation.
+    pub async fn active_ids_for_thread(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+    ) -> Result<Vec<Uuid>, sqlx::Error> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT id FROM runs
+             WHERE thread_id = ?
+               AND state IN ('planning','acting','observing','reflecting','waiting_on_user','paused')
+             ORDER BY created_at ASC",
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id,)| Uuid::parse_str(&id).ok())
+            .collect())
     }
 
     /// Active runs whose last heartbeat is older than `threshold_secs`.
@@ -2926,6 +2985,20 @@ impl GoalQueries {
         thread_id: Option<Uuid>,
         contract: &ravenbot_core::GoalContract,
     ) -> Result<GoalRecord, sqlx::Error> {
+        Self::create_with_rounds(pool, office_id, thread_id, contract, 24).await
+    }
+
+    /// Create a goal with an explicit automatic-round budget.
+    ///
+    /// Office goals keep the historical 24-round default; a 1:1 thread goal
+    /// exposes the budget to the user and may set a smaller or larger one.
+    pub async fn create_with_rounds(
+        pool: &SqlitePool,
+        office_id: Option<Uuid>,
+        thread_id: Option<Uuid>,
+        contract: &ravenbot_core::GoalContract,
+        max_rounds: u32,
+    ) -> Result<GoalRecord, sqlx::Error> {
         let id = Uuid::new_v4();
         let now = Utc::now().to_rfc3339();
         // Five seconds lets the current turn finish starting before a winit
@@ -2933,7 +3006,7 @@ impl GoalQueries {
         let next_run_at = (Utc::now() + chrono::Duration::seconds(5)).to_rfc3339();
         let mut contract = contract.clone();
         contract.normalize();
-        let max_rounds = 24i64;
+        let max_rounds = i64::from(max_rounds.clamp(1, 64));
         sqlx::query(
             "INSERT INTO goals
                 (id, office_id, thread_id, objective, contract_json, status,
@@ -2995,6 +3068,44 @@ impl GoalQueries {
             .fetch_optional(pool)
             .await?;
         Ok(row.map(GoalRecord::from))
+    }
+
+    /// The completion contract attached to a 1:1 agent thread.
+    pub async fn get_by_thread(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+    ) -> Result<Option<GoalRecord>, sqlx::Error> {
+        let row: Option<GoalRow> = sqlx::query_as(
+            "SELECT * FROM goals WHERE thread_id = ? AND office_id IS NULL
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(thread_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(GoalRecord::from))
+    }
+
+    /// Create the thread's goal only when it does not already have one.
+    pub async fn ensure_thread_goal(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+        objective: &str,
+        max_rounds: u32,
+    ) -> Result<GoalRecord, sqlx::Error> {
+        if let Some(existing) = Self::get_by_thread(pool, thread_id).await? {
+            if existing.status == "active" && existing.next_run_at.is_none() {
+                if let Ok(id) = Uuid::parse_str(&existing.id) {
+                    Self::arm_now(pool, id).await?;
+                }
+                return Self::get_by_thread(pool, thread_id)
+                    .await?
+                    .ok_or(sqlx::Error::RowNotFound);
+            }
+            return Ok(existing);
+        }
+        let mut contract = ravenbot_core::GoalContract::for_objective(objective);
+        contract.max_turns = max_rounds.clamp(1, 64);
+        Self::create_with_rounds(pool, None, Some(thread_id), &contract, max_rounds).await
     }
 
     /// Replace the editable contract fields without resetting its history.
@@ -3106,6 +3217,28 @@ impl GoalQueries {
         Ok(rows.into_iter().map(GoalRecord::from).collect())
     }
 
+    /// Due 1:1 thread goals, filtered in SQL so a busy office queue cannot
+    /// starve them out of a shared page of results.
+    pub async fn due_thread_for_autopilot(
+        pool: &SqlitePool,
+        now: &str,
+        limit: u32,
+    ) -> Result<Vec<GoalRecord>, sqlx::Error> {
+        let rows: Vec<GoalRow> = sqlx::query_as(
+            "SELECT * FROM goals
+             WHERE status = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ?
+               AND office_id IS NULL AND thread_id IS NOT NULL
+               AND rounds_used < max_rounds
+             ORDER BY next_run_at ASC, updated_at ASC
+             LIMIT ?",
+        )
+        .bind(now)
+        .bind(i64::from(limit.clamp(1, 100)))
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(GoalRecord::from).collect())
+    }
+
     pub async fn set_status(
         pool: &SqlitePool,
         id: Uuid,
@@ -3200,11 +3333,16 @@ impl GoalQueries {
             current.status.as_str(),
             "done" | "cancelled" | "failed" | "blocked" | "paused"
         );
-        let (status, retry_after_secs) = if terminal
-            && matches!(
-                verdict,
-                ravenbot_core::GoalVerdict::Continue | ravenbot_core::GoalVerdict::Wait
-            ) {
+        // A cancelled goal is closed for every verdict, not only for a late
+        // continue: a round that finishes after the user stopped it must not
+        // revive the goal by claiming done.
+        let cancelled = current.status == "cancelled";
+        let (status, retry_after_secs) = if cancelled
+            || (terminal
+                && matches!(
+                    verdict,
+                    ravenbot_core::GoalVerdict::Continue | ravenbot_core::GoalVerdict::Wait
+                )) {
             // A late review must not resurrect a terminal or parked goal.
             (current.status.as_str(), None)
         } else {
@@ -3294,6 +3432,23 @@ impl GoalQueries {
         .bind(since)
         .bind(office_id.to_string())
         .bind(office_id.to_string())
+        .fetch_one(pool)
+        .await?;
+        Ok(total.max(0) as u64)
+    }
+
+    /// Total tokens spent by runs in one 1:1 thread since a timestamp.
+    pub async fn tokens_for_thread_since(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+        since: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let total: i64 = sqlx::query_scalar(
+            "SELECT CAST(COALESCE(SUM(tokens_consumed), 0) AS INTEGER)
+             FROM runs WHERE thread_id = ? AND created_at >= ?",
+        )
+        .bind(thread_id.to_string())
+        .bind(since)
         .fetch_one(pool)
         .await?;
         Ok(total.max(0) as u64)
@@ -3395,6 +3550,16 @@ impl GoalQueries {
         office_id: Uuid,
     ) -> Result<Option<GoalDetail>, sqlx::Error> {
         let Some(goal) = Self::get_by_office(pool, office_id).await? else {
+            return Ok(None);
+        };
+        Self::detail(pool, Uuid::parse_str(&goal.id).unwrap_or_default()).await
+    }
+
+    pub async fn thread_detail(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+    ) -> Result<Option<GoalDetail>, sqlx::Error> {
+        let Some(goal) = Self::get_by_thread(pool, thread_id).await? else {
             return Ok(None);
         };
         Self::detail(pool, Uuid::parse_str(&goal.id).unwrap_or_default()).await
@@ -9304,6 +9469,120 @@ mod goal_tests {
     }
 
     #[tokio::test]
+    async fn a_thread_goal_is_created_once_with_its_round_budget() {
+        let pool = db().await;
+        let thread = Uuid::new_v4();
+        let goal = GoalQueries::ensure_thread_goal(&pool, thread, "Ship the feature", 6)
+            .await
+            .expect("ensure");
+        assert_eq!(goal.office_id, None);
+        assert_eq!(goal.thread_id, Some(thread.to_string()));
+        assert_eq!(goal.status, "active");
+        assert_eq!(goal.max_rounds, 6);
+        assert_eq!(goal.contract.max_turns, 6);
+
+        let again = GoalQueries::ensure_thread_goal(&pool, thread, "Different", 2)
+            .await
+            .expect("ensure again");
+        assert_eq!(
+            again.id, goal.id,
+            "the existing thread goal is not replaced"
+        );
+        assert_eq!(again.max_rounds, 6);
+
+        let found = GoalQueries::get_by_thread(&pool, thread)
+            .await
+            .expect("get")
+            .expect("goal");
+        assert_eq!(found.id, goal.id);
+        let detail = GoalQueries::thread_detail(&pool, thread)
+            .await
+            .expect("detail")
+            .expect("detail");
+        assert!(detail.gates.is_empty());
+
+        // An office goal must never be picked up by the thread-goal loop.
+        let office_goal =
+            GoalQueries::ensure_office_goal(&pool, Uuid::new_v4(), "Office mission", 2)
+                .await
+                .expect("office goal");
+        let due = GoalQueries::due_thread_for_autopilot(&pool, "2999-01-01T00:00:00Z", 10)
+            .await
+            .expect("due");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].id, goal.id);
+        assert_ne!(due[0].id, office_goal.id);
+        assert!(
+            GoalQueries::due_thread_for_autopilot(&pool, "1970-01-01T00:00:00Z", 10)
+                .await
+                .expect("not due")
+                .is_empty(),
+            "a goal armed in the future is not due"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_thread_goal_yields_to_a_live_run() {
+        let pool = db().await;
+        let bot = ravenbot_core::Bot::new("Writer", "writing");
+        BotQueries::insert(&pool, &bot).await.expect("bot");
+        let thread = ravenbot_core::Thread::new(bot.id, "Goal thread");
+        ThreadQueries::create(&pool, &thread).await.expect("thread");
+
+        let run = ravenbot_core::Run::new(bot.id, thread.id);
+        RunQueries::insert(&pool, &run).await.expect("run");
+        sqlx::query("UPDATE runs SET state = 'acting' WHERE id = ?")
+            .bind(run.id.to_string())
+            .execute(&pool)
+            .await
+            .expect("mark acting");
+        assert!(
+            RunProgressQueries::has_active_for_thread(&pool, thread.id)
+                .await
+                .expect("active"),
+            "a live run in the thread must block another goal turn"
+        );
+        assert_eq!(
+            RunProgressQueries::active_ids_for_thread(&pool, thread.id)
+                .await
+                .expect("active ids"),
+            vec![run.id],
+            "stopping a goal can address the run in flight"
+        );
+
+        sqlx::query("UPDATE runs SET state = 'paused' WHERE id = ?")
+            .bind(run.id.to_string())
+            .execute(&pool)
+            .await
+            .expect("mark paused");
+        assert!(
+            RunProgressQueries::has_active_for_thread(&pool, thread.id)
+                .await
+                .expect("paused"),
+            "a user-paused run must not be interleaved with a goal round"
+        );
+
+        sqlx::query("UPDATE runs SET state = 'completed' WHERE id = ?")
+            .bind(run.id.to_string())
+            .execute(&pool)
+            .await
+            .expect("mark completed");
+        assert!(
+            !RunProgressQueries::has_active_for_thread(&pool, thread.id)
+                .await
+                .expect("inactive"),
+            "a finished run must not block the next goal turn"
+        );
+        assert!(
+            RunProgressQueries::active_ids_for_thread(&pool, thread.id)
+                .await
+                .expect("finished ids")
+                .is_empty(),
+            "a finished run is not cancellable work"
+        );
+    }
+
+    #[tokio::test]
     async fn verdicts_update_history_and_done_is_terminal() {
         let pool = db().await;
         let office = Uuid::new_v4();
@@ -9375,6 +9654,33 @@ mod goal_tests {
         assert!(reopened.next_run_at.is_some());
         assert!(reopened.completed_at.is_none());
         assert!(reopened.last_verdict.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_round_that_finishes_after_cancel_cannot_revive_the_goal() {
+        let pool = db().await;
+        let office = Uuid::new_v4();
+        let goal = GoalQueries::ensure_office_goal(&pool, office, "Ship it", 4)
+            .await
+            .expect("ensure");
+        let id = Uuid::parse_str(&goal.id).unwrap();
+        GoalQueries::set_status(&pool, id, ravenbot_core::GoalStatus::Cancelled)
+            .await
+            .expect("cancel");
+        let late = GoalQueries::record_verdict(
+            &pool,
+            id,
+            ravenbot_core::GoalVerdict::Done,
+            "the round finished after the user stopped it",
+            0,
+            false,
+        )
+        .await
+        .expect("late")
+        .expect("goal");
+        assert_eq!(late.status, "cancelled");
+        assert!(late.completed_at.is_none());
+        assert!(late.next_run_at.is_none());
     }
 
     #[tokio::test]

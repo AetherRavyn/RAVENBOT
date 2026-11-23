@@ -9040,6 +9040,223 @@ async fn reopen_office_goal(
         .ok_or_else(|| "The goal was not found.".to_string())
 }
 
+/// The persistent goal attached to a 1:1 conversation, if any.
+#[tauri::command]
+async fn get_thread_goal(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<Option<ravenbot_db::queries::GoalDetail>, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    ravenbot_db::queries::GoalQueries::thread_detail(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Start an unattended goal in a 1:1 conversation.
+///
+/// The goal is the scheduler: the current turn finishes, then the thread-goal
+/// heartbeat runs another reviewed round until the contract is met or the
+/// round budget is exhausted. Starting is refused while a live goal already
+/// owns the thread; the UI can resume or stop that one first.
+#[tauri::command]
+async fn start_thread_goal(
+    state: State<'_, AppState>,
+    thread_id: String,
+    objective: String,
+    outcome: Option<String>,
+    gate: Option<String>,
+    max_rounds: Option<u32>,
+) -> Result<ravenbot_db::queries::GoalDetail, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    let thread = ravenbot_db::queries::ThreadQueries::get(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The conversation was not found.".to_string())?;
+    if thread.ephemeral {
+        return Err("A temporary chat cannot own a persistent goal.".to_string());
+    }
+    let bot = ravenbot_db::queries::BotQueries::get(state.db.pool(), thread.bot_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The conversation's agent was not found.".to_string())?;
+    let objective = objective.trim();
+    if objective.is_empty() {
+        return Err("Describe the goal before starting it.".to_string());
+    }
+    if objective.chars().count() > 4_000 {
+        return Err("A goal objective must be at most 4000 characters.".to_string());
+    }
+    if let Some(existing) =
+        ravenbot_db::queries::GoalQueries::get_by_thread(state.db.pool(), thread_id)
+            .await
+            .map_err(|error| error.to_string())?
+    {
+        if matches!(existing.status.as_str(), "active" | "paused" | "blocked") {
+            return Err(format!(
+                "This conversation already has a '{}' goal. Resume or stop it first.",
+                existing.status
+            ));
+        }
+    }
+
+    let max_rounds = max_rounds.unwrap_or(8).clamp(1, 64);
+    let mut contract = ravenbot_core::GoalContract::for_objective(objective);
+    contract.outcome = outcome
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("The requested work is complete and verified.")
+        .to_string();
+    contract.stop_when =
+        "The requested work is complete and every required verification gate passes.".to_string();
+    if contract.outcome.chars().count() > 2_000 {
+        return Err("The completion evidence must be at most 2000 characters.".to_string());
+    }
+    contract.max_turns = max_rounds;
+    match gate
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(command) => {
+            if command.chars().count() > 500 {
+                return Err("A verification command must be at most 500 characters.".to_string());
+            }
+            let root = thread_goal_root(&bot);
+            if let Some(reason) =
+                ravenbot_skills::safety::dangerous_command_reason(command, &[root])
+            {
+                return Err(format!("The verification command is blocked: {reason}"));
+            }
+            contract.gates = vec![ravenbot_core::GoalGate {
+                id: Uuid::new_v4(),
+                command: command.to_string(),
+                cwd: None,
+                timeout_secs: 600,
+                required: true,
+                position: 0,
+            }];
+        }
+        None => contract.gates = Vec::new(),
+    }
+    contract.normalize();
+    let goal = ravenbot_db::queries::GoalQueries::create_with_rounds(
+        state.db.pool(),
+        None,
+        Some(thread_id),
+        &contract,
+        max_rounds,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::GoalQueries::thread_detail(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("The goal {} could not be loaded.", goal.id))
+}
+
+/// Pause the 1:1 goal. The current round may finish; no new round starts.
+#[tauri::command]
+async fn pause_thread_goal(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<ravenbot_db::queries::GoalDetail, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    let goal = ravenbot_db::queries::GoalQueries::get_by_thread(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "This conversation has no goal.".to_string())?;
+    if goal.status != "active" {
+        return Err(format!(
+            "Only an active goal can be paused; this goal is '{}'.",
+            goal.status
+        ));
+    }
+    let id = Uuid::parse_str(&goal.id).map_err(|_| "The goal id is not valid.".to_string())?;
+    ravenbot_db::queries::GoalQueries::set_status(
+        state.db.pool(),
+        id,
+        ravenbot_core::GoalStatus::Paused,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::GoalQueries::thread_detail(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The goal was not found.".to_string())
+}
+
+#[tauri::command]
+async fn resume_thread_goal(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<ravenbot_db::queries::GoalDetail, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    let goal = ravenbot_db::queries::GoalQueries::get_by_thread(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "This conversation has no goal.".to_string())?;
+    if !matches!(goal.status.as_str(), "paused" | "blocked") {
+        return Err(format!(
+            "A goal in '{}' state cannot be resumed. Only paused or blocked goals can resume.",
+            goal.status
+        ));
+    }
+    let id = Uuid::parse_str(&goal.id).map_err(|_| "The goal id is not valid.".to_string())?;
+    ravenbot_db::queries::GoalQueries::set_status(
+        state.db.pool(),
+        id,
+        ravenbot_core::GoalStatus::Active,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::GoalQueries::thread_detail(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The goal was not found.".to_string())
+}
+
+#[tauri::command]
+async fn cancel_thread_goal(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<ravenbot_db::queries::GoalDetail, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    let goal = ravenbot_db::queries::GoalQueries::get_by_thread(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "This conversation has no goal.".to_string())?;
+    if matches!(goal.status.as_str(), "done" | "cancelled") {
+        return Err(format!("This goal is already '{}'.", goal.status));
+    }
+    let id = Uuid::parse_str(&goal.id).map_err(|_| "The goal id is not valid.".to_string())?;
+    // Stop scheduling first, then the round already in flight. Otherwise a
+    // verdict from that round could race the cancel and schedule another one.
+    ravenbot_db::queries::GoalQueries::set_status(
+        state.db.pool(),
+        id,
+        ravenbot_core::GoalStatus::Cancelled,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let active =
+        ravenbot_db::queries::RunProgressQueries::active_ids_for_thread(state.db.pool(), thread_id)
+            .await
+            .unwrap_or_default();
+    for run_id in active {
+        state.runtime.request_cancel(run_id);
+    }
+    ravenbot_db::queries::GoalQueries::thread_detail(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The goal was not found.".to_string())
+}
+
 /// List the durable work items for one office.
 #[tauri::command]
 async fn list_work_items(
@@ -9463,6 +9680,7 @@ async fn delete_workflow(state: State<'_, AppState>, id: String) -> Result<(), S
         .map_err(|error| error.to_string())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_graph_for_host(
     db: &ravenbot_db::Database,
     runtime: &Arc<ravenbot_runtime::Runtime>,
@@ -9471,6 +9689,7 @@ pub(crate) async fn execute_graph_for_host(
     goal: String,
     tasks: Vec<GraphTask>,
     chatroom_id: Option<Uuid>,
+    standalone_thread: Option<Uuid>,
 ) -> Result<GraphResult, String> {
     // When the plan belongs to a room, resolve its roster/thread so the run is
     // posted as a genuine, attributed office conversation. A standalone graph
@@ -9481,6 +9700,18 @@ pub(crate) async fn execute_graph_for_host(
     };
     let thread_id = match (&roster, chatroom_id) {
         (Some(r), Some(cid)) => Some(ensure_chatroom_thread(db.pool(), cid, r.bots[0].1.id).await?),
+        _ => None,
+    };
+
+    // A 1:1 goal runs a one-node graph directly in the agent's existing
+    // thread. The office paths above own their own thread; this keeps the
+    // standalone node's answer in the conversation the user is watching.
+    let standalone_root: Option<std::path::PathBuf> = match (standalone_thread, chatroom_id) {
+        (Some(_), None) => ravenbot_db::queries::BotQueries::get(db.pool(), orchestrator_bot_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|bot| thread_goal_root(&bot)),
         _ => None,
     };
 
@@ -9692,6 +9923,14 @@ pub(crate) async fn execute_graph_for_host(
         }
     }
 
+    if let Some(tid) = standalone_thread {
+        // The executor reuses a node's thread across retries and loop
+        // iterations; pinning it here is what makes the agent reply in the
+        // user's 1:1 conversation instead of a fresh hidden thread.
+        for node in graph.nodes.values_mut() {
+            node.thread_id = Some(tid);
+        }
+    }
     let graph = Arc::new(tokio::sync::Mutex::new(graph));
     // Board persistence for Plan mode. The normal office path owns this in
     // office_turn; without it here, a plan-mode board disappears when the view
@@ -9734,15 +9973,16 @@ pub(crate) async fn execute_graph_for_host(
         events.emit("agent-stream", payload);
     }
     // Project folders for every node in this office (same rule as send_to_chatroom).
-    let office_dirs: Vec<String> = match chatroom_id {
-        Some(cid) => match ravenbot_db::queries::ChatRoomQueries::get(db.pool(), cid).await {
+    let office_dirs: Vec<String> = match (chatroom_id, standalone_root.as_ref()) {
+        (Some(cid), _) => match ravenbot_db::queries::ChatRoomQueries::get(db.pool(), cid).await {
             Ok(Some(r)) if !r.project_folders.is_empty() => r.project_folders.clone(),
             Ok(Some(r)) => vec![ravenbot_runtime::default_project_dir(&r.name)
                 .to_string_lossy()
                 .to_string()],
             _ => Vec::new(),
         },
-        None => Vec::new(),
+        (None, Some(root)) => vec![root.to_string_lossy().to_string()],
+        (None, None) => Vec::new(),
     };
     let node_events = events.clone();
     let node_event_board = board_tx.clone();
@@ -9858,19 +10098,27 @@ pub(crate) async fn execute_graph_for_host(
 
     // Close the run only after the room holds the full persisted conversation
     // (matches send_to_chatroom; the UI holds live lanes until this arrives).
-    if let Some(tid) = thread_id {
+    if let Some(tid) = thread_id.or(standalone_thread) {
         events.emit(
             "agent-stream",
             serde_json::json!({ "kind": "done", "thread_id": tid.to_string() }),
         );
     }
 
+    let standalone_summary = standalone_thread.and_then(|_| {
+        graph_snapshot
+            .ordered_node_ids()
+            .into_iter()
+            .filter_map(|node_id| graph_snapshot.nodes.get(&node_id)?.output.clone())
+            .next_back()
+    });
+
     Ok(GraphResult {
         goal,
-        thread_id,
+        thread_id: thread_id.or(standalone_thread),
         checklist,
         blackboard_data: blackboard.data,
-        summary,
+        summary: summary.or(standalone_summary),
         status,
         failures: failed_tasks,
     })
@@ -9893,6 +10141,7 @@ async fn execute_graph(
         goal,
         tasks,
         chatroom_id,
+        None,
     )
     .await
 }
@@ -15443,26 +15692,26 @@ fn goal_budget_stop(
         "paused" => {
             return Some((
                 ravenbot_core::GoalStatus::Paused,
-                "The office goal is paused. Resume it in Office settings to continue.".to_string(),
+                "The goal is paused. Resume it to continue.".to_string(),
             ))
         }
         "blocked" => {
             return Some((
                 ravenbot_core::GoalStatus::Blocked,
-                format!("The office goal is blocked: {}", goal.last_reason.trim()),
+                format!("The goal is blocked: {}", goal.last_reason.trim()),
             ))
         }
         "done" => {
             return Some((
                 ravenbot_core::GoalStatus::Done,
-                "The office goal is already complete. Update the goal to start a new mission."
+                "The goal is already complete. Start a new goal to begin a new mission."
                     .to_string(),
             ))
         }
         "cancelled" => {
             return Some((
                 ravenbot_core::GoalStatus::Cancelled,
-                "The office goal was cancelled.".to_string(),
+                "The goal was cancelled.".to_string(),
             ))
         }
         _ => {}
@@ -15472,7 +15721,7 @@ fn goal_budget_stop(
         return Some((
             ravenbot_core::GoalStatus::Paused,
             format!(
-                "The goal's token budget is exhausted ({} of {} tokens). Raise it in Office settings to continue.",
+                "The goal's token budget is exhausted ({} of {} tokens). Raise the goal's budget and resume it to continue.",
                 goal.tokens_used.max(0),
                 contract.max_tokens
             ),
@@ -15488,7 +15737,7 @@ fn goal_budget_stop(
                 return Some((
                     ravenbot_core::GoalStatus::Paused,
                     format!(
-                        "The goal's wall-clock budget is exhausted ({}s of {}s). Raise it in Office settings to continue.",
+                        "The goal's wall-clock budget is exhausted ({}s of {}s). Raise the goal's budget and resume it to continue.",
                         elapsed, contract.max_wall_seconds
                     ),
                 ));
@@ -18487,11 +18736,8 @@ fn office_top_level(root: &std::path::Path) -> (Vec<String>, Vec<String>) {
     (dirs, files)
 }
 
-fn office_has_implementation(room: Option<&ravenbot_core::ChatRoom>) -> bool {
-    let Some(root) = office_root(room) else {
-        return false;
-    };
-    let (_dirs, files) = office_top_level(&root);
+fn root_has_implementation(root: &std::path::Path) -> bool {
+    let (_dirs, files) = office_top_level(root);
     let code_dir_has_a_file = ["app", "src", "tests"].iter().any(|dir| {
         std::fs::read_dir(root.join(dir))
             .map(|mut entries| entries.next().is_some())
@@ -18504,6 +18750,12 @@ fn office_has_implementation(room: Option<&ravenbot_core::ChatRoom>) -> bool {
                 "pyproject.toml" | "package.json" | "Cargo.toml" | "go.mod" | "Makefile"
             )
         })
+}
+
+fn office_has_implementation(room: Option<&ravenbot_core::ChatRoom>) -> bool {
+    office_root(room)
+        .as_deref()
+        .is_some_and(root_has_implementation)
 }
 
 /// A compact, model-visible picture of the office workspace.
@@ -18637,6 +18889,462 @@ async fn office_queue_loop(
 /// conversation and the board. It runs in the app process, not in a window, so
 /// navigating away cannot stop it. The header toggle, the kill switch, and a
 /// pending question all pause it.
+/// The workspace a 1:1 agent's tools run in.
+fn thread_goal_root(bot: &ravenbot_core::Bot) -> std::path::PathBuf {
+    bot.config
+        .working_folder
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ravenbot_core::expand_home)
+        .unwrap_or_else(|| ravenbot_runtime::default_project_dir(&bot.name))
+}
+
+fn thread_workspace_snapshot(root: &std::path::Path) -> String {
+    if !root.is_dir() {
+        return format!("Workspace: {} (missing)", root.display());
+    }
+    let (dirs, files) = office_top_level(root);
+    let top = dirs
+        .into_iter()
+        .chain(files)
+        .take(60)
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "Workspace: {}\nTop level: {}\nImplementation: {}\n",
+        root.display(),
+        if top.is_empty() { "(empty)" } else { &top },
+        if root_has_implementation(root) {
+            "present (a code root or manifest exists)"
+        } else {
+            "MISSING — no app/, src/, tests/, pyproject.toml, package.json, Cargo.toml, or go.mod"
+        }
+    )
+}
+
+fn thread_goal_checklist(result: &GraphResult) -> String {
+    if result.checklist.is_empty() {
+        return result
+            .summary
+            .clone()
+            .unwrap_or_else(|| "The agent returned no checklist.".to_string());
+    }
+    result
+        .checklist
+        .iter()
+        .map(|item| {
+            let mark = match item.status {
+                ravenbot_core::ChecklistStatus::Completed => "✓",
+                ravenbot_core::ChecklistStatus::Failed => "✗",
+                ravenbot_core::ChecklistStatus::Skipped => "–",
+                _ => "○",
+            };
+            format!(
+                "{mark} {} → {}",
+                briefing_label(&item.label),
+                truncate_chars(
+                    item.result
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("(no result)"),
+                    240
+                )
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn thread_goal_instruction(goal: &ravenbot_db::queries::GoalRecord, round: u32) -> String {
+    let contract = &goal.contract;
+    let mut text = format!(
+        "[Persistent goal — round {round} of {}]\n\n\
+         Objective:\n{}\n\n\
+         Outcome that counts as done:\n{}\n\n\
+         Stop when:\n{}",
+        goal.max_rounds.max(1),
+        goal.objective.trim(),
+        contract.outcome.trim(),
+        contract.stop_when.trim()
+    );
+    if !contract.constraints.is_empty() {
+        text.push_str("\n\nConstraints:\n");
+        for constraint in contract.constraints.iter().take(12) {
+            text.push_str(&format!("- {constraint}\n"));
+        }
+    }
+    if !contract.boundaries.is_empty() {
+        text.push_str("\nBoundaries (do not cross):\n");
+        for boundary in contract.boundaries.iter().take(12) {
+            text.push_str(&format!("- {boundary}\n"));
+        }
+    }
+    if !goal.last_reason.trim().is_empty() {
+        text.push_str(&format!(
+            "\nPrevious round's verdict and next step:\n{}\n",
+            truncate_chars(goal.last_reason.trim(), 1400)
+        ));
+    }
+    text.push_str(
+        "\nAct now. Use the available tools, including shell and file tools, and run the project's \
+         test or build command when one exists. The user is not present; do not ask a question. \
+         Do not stop at a plan: make the change, verify it, and report exactly what changed, what \
+         evidence proves it, and what remains.",
+    );
+    text
+}
+
+/// Run one reviewed goal cycle in a 1:1 thread.
+///
+/// The node is pinned to the existing thread so the agent's answer and its
+/// tool timeline land in the conversation the user is watching, not in a
+/// hidden worker thread. The same completion contract, quality gates and
+/// review parser used by offices decide whether the goal continues.
+async fn run_thread_goal_turn(
+    db: &ravenbot_db::Database,
+    runtime: &Arc<ravenbot_runtime::Runtime>,
+    events: &HostEvents,
+    goal: &ravenbot_db::queries::GoalRecord,
+) -> Result<(), String> {
+    let goal_id =
+        Uuid::parse_str(goal.id.trim()).map_err(|_| "The goal id is not valid.".to_string())?;
+    // The loop selected this goal before the user could still pause or stop
+    // it. Re-read the row so a click that landed in that window wins.
+    let Some(fresh) = ravenbot_db::queries::GoalQueries::get(db.pool(), goal_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(());
+    };
+    if fresh.status != "active" {
+        return Ok(());
+    }
+    let thread_id = goal
+        .thread_id
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .ok_or_else(|| "The goal has no thread.".to_string())?;
+    let Some(thread) = ravenbot_db::queries::ThreadQueries::get(db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        let _ = ravenbot_db::queries::GoalQueries::pause_with_reason(
+            db.pool(),
+            goal_id,
+            "The goal's conversation no longer exists.",
+        )
+        .await;
+        return Ok(());
+    };
+    let Some(bot) = ravenbot_db::queries::BotQueries::get(db.pool(), thread.bot_id)
+        .await
+        .map_err(|error| error.to_string())?
+    else {
+        let _ = ravenbot_db::queries::GoalQueries::pause_with_reason(
+            db.pool(),
+            goal_id,
+            "The goal's agent no longer exists. Restore the agent, then resume the goal.",
+        )
+        .await;
+        return Ok(());
+    };
+    if thread.ephemeral {
+        let reason = "This is a temporary chat; start the goal in a normal conversation.";
+        let _ =
+            ravenbot_db::queries::GoalQueries::pause_with_reason(db.pool(), goal_id, reason).await;
+        return Ok(());
+    }
+
+    let root = thread_goal_root(&bot);
+    let _ = std::fs::create_dir_all(&root);
+    let gates = ravenbot_db::queries::GoalQueries::get_gates(db.pool(), goal_id)
+        .await
+        .unwrap_or_default();
+    let round = (goal.rounds_used.max(0) + 1) as u32;
+    let instruction = thread_goal_instruction(goal, round);
+    let start = chrono::Utc::now().to_rfc3339();
+
+    let tasks = vec![GraphTask {
+        bot_id: bot.id,
+        instruction,
+        depends_on: Vec::new(),
+        condition: None,
+        data_from: None,
+        retries: 0,
+        output_schema: None,
+        loop_iterations: 1,
+        loop_until: None,
+        loop_group: None,
+        loop_group_terminal: false,
+        loop_group_iterations: 1,
+        loop_group_stop: None,
+        node_type: Some("agent".to_string()),
+    }];
+
+    let result = match execute_graph_for_host(
+        db,
+        runtime,
+        events,
+        bot.id,
+        goal.objective.clone(),
+        tasks,
+        None,
+        Some(thread_id),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(error) => {
+            let reason = format!(
+                "The goal round could not start: {}",
+                truncate_chars(&error, 800)
+            );
+            let _ = ravenbot_db::queries::GoalQueries::record_verdict(
+                db.pool(),
+                goal_id,
+                ravenbot_core::GoalVerdict::Continue,
+                &reason,
+                0,
+                true,
+            )
+            .await;
+            let _ = post_bot_message(
+                db.pool(),
+                thread_id,
+                bot.id,
+                bot.name.clone(),
+                format!("⚠️ **Goal round {round} did not start**\n\n{reason}"),
+            )
+            .await;
+            return Err(error);
+        }
+    };
+
+    // A user can stop the goal while its round is running. Do not spend a
+    // review call on work they already ended, and do not let that round's
+    // verdict reopen a cancelled goal.
+    let after_round = ravenbot_db::queries::GoalQueries::get(db.pool(), goal_id)
+        .await
+        .ok()
+        .flatten();
+    if after_round
+        .as_ref()
+        .is_some_and(|record| matches!(record.status.as_str(), "cancelled" | "done"))
+    {
+        events.emit(
+            "thread-goal",
+            serde_json::json!({
+                "thread_id": thread_id.to_string(),
+                "goal_id": goal.id,
+                "status": after_round.as_ref().map(|record| record.status.clone()),
+                "rounds_used": after_round.as_ref().map(|record| record.rounds_used),
+                "max_rounds": after_round.as_ref().map(|record| record.max_rounds),
+            }),
+        );
+        return Ok(());
+    }
+
+    let board = thread_goal_checklist(&result);
+    let mut failures = result.failures.clone();
+    if result.status != "completed" && failures.is_empty() {
+        failures.push(format!("The agent reported status '{}'.", result.status));
+    }
+    let summary = result
+        .summary
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| board.clone());
+    let has_implementation = root_has_implementation(&root);
+    let workspace = thread_workspace_snapshot(&root);
+    let history = if goal.last_reason.trim().is_empty() {
+        Vec::new()
+    } else {
+        vec![goal.last_reason.clone()]
+    };
+    let review = office_cycle_review(
+        runtime,
+        bot.id,
+        &goal.objective,
+        &board,
+        &workspace,
+        has_implementation,
+        goal.rounds_used.max(0) as u32,
+        &history,
+        &summary,
+        &failures,
+        0,
+        (goal.rounds_used.max(0) as i64) < goal.max_rounds,
+        Some(&root),
+        &gates,
+    )
+    .await;
+
+    let reason = if review.next_task.trim().is_empty() {
+        review.reason.clone()
+    } else {
+        format!("{} Next: {}", review.reason.trim(), review.next_task.trim())
+    };
+    let tokens =
+        ravenbot_db::queries::GoalQueries::tokens_for_thread_since(db.pool(), thread_id, &start)
+            .await
+            .unwrap_or(0);
+    let failed = result.status != "completed" || !failures.is_empty();
+    let recorded = ravenbot_db::queries::GoalQueries::record_verdict(
+        db.pool(),
+        goal_id,
+        review.verdict,
+        &reason,
+        tokens,
+        failed,
+    )
+    .await
+    .ok()
+    .flatten();
+
+    let label = match recorded.as_ref().map(|record| record.status.as_str()) {
+        Some("done") => "✅ **Goal complete**",
+        Some("blocked") => "🚧 **Goal blocked**",
+        Some("paused") => "⏸ **Goal paused**",
+        Some("cancelled") => "⏹ **Goal stopped**",
+        _ => match review.verdict {
+            ravenbot_core::GoalVerdict::Blocked => "🚧 **Goal blocked this round — retrying**",
+            ravenbot_core::GoalVerdict::Wait => "⏸ **Goal waiting**",
+            ravenbot_core::GoalVerdict::Done => "✅ **Goal complete**",
+            ravenbot_core::GoalVerdict::Continue => "🎯 **Goal round finished**",
+        },
+    };
+    let budget_exhausted = recorded.as_ref().is_some_and(|record| {
+        record.status == "paused" && record.rounds_used >= record.max_rounds.max(1)
+    });
+    let suffix = if budget_exhausted {
+        "\n\nThe automatic round budget is exhausted. Resume the goal to continue with a fresh round budget."
+    } else {
+        ""
+    };
+    let _ = post_bot_message(
+        db.pool(),
+        thread_id,
+        bot.id,
+        bot.name.clone(),
+        format!(
+            "{label} — round {round} of {}\n\n{}{}",
+            goal.max_rounds.max(1),
+            truncate_chars(reason.trim(), 1600),
+            suffix
+        ),
+    )
+    .await;
+    // The UI watching this conversation cannot infer a background round from
+    // the stream alone: the verdict message is posted after the run ends. One
+    // small event is enough for it to reload the goal and the transcript.
+    events.emit(
+        "thread-goal",
+        serde_json::json!({
+            "thread_id": thread_id.to_string(),
+            "goal_id": goal.id,
+            "status": recorded.as_ref().map(|record| record.status.clone()),
+            "rounds_used": recorded.as_ref().map(|record| record.rounds_used),
+            "max_rounds": goal.max_rounds,
+        }),
+    );
+    Ok(())
+}
+
+/// The 1:1 goal heartbeat.
+///
+/// Office goals are driven by `office_autonomy_loop`; this loop owns goals
+/// whose `thread_id` is set and `office_id` is null. It is deliberately
+/// serial: one goal turn at a time, and it yields to any live interactive run
+/// in the same thread. The next round is scheduled by `record_verdict`.
+async fn thread_goal_loop(
+    db: ravenbot_db::Database,
+    runtime: Arc<ravenbot_runtime::Runtime>,
+    events: HostEvents,
+) {
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        if runtime.is_paused().await {
+            continue;
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let goals =
+            ravenbot_db::queries::GoalQueries::due_thread_for_autopilot(db.pool(), &now, 25)
+                .await
+                .unwrap_or_default();
+        for goal in goals {
+            if goal.status != "active" {
+                continue;
+            }
+            let Some(thread_id) = goal
+                .thread_id
+                .as_deref()
+                .and_then(|value| Uuid::parse_str(value).ok())
+            else {
+                continue;
+            };
+            if goal.consecutive_failures >= 5 {
+                if let Ok(id) = Uuid::parse_str(&goal.id) {
+                    let _ = ravenbot_db::queries::GoalQueries::pause_with_reason(
+                        db.pool(),
+                        id,
+                        "Five automatic goal rounds could not obtain a completion verdict. Check the model/provider, then resume the goal.",
+                    )
+                    .await;
+                }
+                continue;
+            }
+            let thread = match ravenbot_db::queries::ThreadQueries::get(db.pool(), thread_id).await
+            {
+                Ok(Some(thread)) => thread,
+                Ok(None) => {
+                    if let Ok(id) = Uuid::parse_str(&goal.id) {
+                        let _ = ravenbot_db::queries::GoalQueries::pause_with_reason(
+                            db.pool(),
+                            id,
+                            "The goal's conversation no longer exists.",
+                        )
+                        .await;
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(goal_id = %goal.id, %error, "Could not read a goal thread");
+                    continue;
+                }
+            };
+            if ravenbot_db::queries::RunProgressQueries::has_active_for_thread(db.pool(), thread_id)
+                .await
+                .unwrap_or(true)
+            {
+                continue;
+            }
+            if let Some((status, message)) = goal_budget_stop(&goal, chrono::Utc::now()) {
+                if let Ok(id) = Uuid::parse_str(&goal.id) {
+                    let _ =
+                        ravenbot_db::queries::GoalQueries::set_status(db.pool(), id, status).await;
+                }
+                let _ = post_bot_message(
+                    db.pool(),
+                    thread_id,
+                    thread.bot_id,
+                    "Goal".to_string(),
+                    format!("⏸ **Goal paused**\n\n{message}"),
+                )
+                .await;
+                continue;
+            }
+            if let Err(error) = run_thread_goal_turn(&db, &runtime, &events, &goal).await {
+                tracing::warn!(goal_id = %goal.id, %error, "Thread goal round failed");
+            }
+            // One turn per tick keeps two long goals from competing for the
+            // same provider budget; the loop wakes again in ten seconds.
+            break;
+        }
+    }
+}
+
 async fn office_autonomy_loop(
     db: ravenbot_db::Database,
     runtime: Arc<ravenbot_runtime::Runtime>,
@@ -20789,6 +21497,11 @@ pub fn run() {
         pause_office_goal,
         resume_office_goal,
         reopen_office_goal,
+        get_thread_goal,
+        start_thread_goal,
+        pause_thread_goal,
+        resume_thread_goal,
+        cancel_thread_goal,
         list_work_items,
         get_work_item,
         add_work_comment,
@@ -21260,6 +21973,18 @@ pub fn run() {
                     autonomy_db,
                     autonomy_runtime,
                     HostEvents::Tauri(autonomy_app),
+                )
+                .await;
+            });
+
+            let goal_db = db.clone();
+            let goal_runtime = runtime.clone();
+            let goal_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                thread_goal_loop(
+                    goal_db,
+                    goal_runtime,
+                    HostEvents::Tauri(goal_app),
                 )
                 .await;
             });
@@ -24646,6 +25371,95 @@ mod startup_reconciliation_tests {
         drop(db);
         let _ = std::fs::remove_file(path);
     }
+
+    #[tokio::test]
+    async fn restart_closes_a_goal_round_and_leaves_the_goal_runnable() {
+        let path =
+            std::env::temp_dir().join(format!("ravenbot-reconcile-goal-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("temp db");
+        let bot = Bot::new("Restart Goal", "reconciliation");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let thread = ravenbot_core::Thread::new(bot.id, "goal thread");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+        let goal = ravenbot_db::queries::GoalQueries::ensure_thread_goal(
+            db.pool(),
+            thread.id,
+            "Summarize the restart notes into a short brief.",
+            4,
+        )
+        .await
+        .unwrap();
+        // Simulate a crash between a round starting and any verdict: the
+        // schedule was consumed, so startup must arm the goal again.
+        sqlx::query("UPDATE goals SET next_run_at = NULL WHERE id = ?")
+            .bind(&goal.id)
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let run = ravenbot_core::Run::new(bot.id, thread.id);
+        ravenbot_db::queries::RunQueries::insert(db.pool(), &run)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE runs SET state = 'acting' WHERE id = ?")
+            .bind(run.id.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let state = reconcile_startup_state(db.pool()).await.expect("reconcile");
+        assert_eq!(
+            state.resumable_runs, 0,
+            "a goal round is not resumed as a raw run"
+        );
+        assert_eq!(state.failed_runs, 1);
+
+        let failed: (String, Option<String>) =
+            sqlx::query_as("SELECT state, outcome FROM runs WHERE id = ?")
+                .bind(run.id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(failed.0, "failed");
+        assert!(failed.1.is_some());
+        assert!(
+            ravenbot_db::queries::RunQueries::claim_resumable_run(db.pool())
+                .await
+                .unwrap()
+                .is_none(),
+            "the closed goal round is not claimable"
+        );
+
+        let reloaded = ravenbot_db::queries::GoalQueries::get_by_thread(db.pool(), thread.id)
+            .await
+            .unwrap()
+            .expect("goal");
+        assert_eq!(reloaded.status, "active");
+        assert!(
+            reloaded.next_run_at.is_some(),
+            "startup arms the active goal so the loop starts a fresh round"
+        );
+        assert_eq!(
+            ravenbot_db::queries::GoalQueries::due_thread_for_autopilot(
+                db.pool(),
+                "2999-01-01T00:00:00Z",
+                10
+            )
+            .await
+            .unwrap()
+            .len(),
+            1
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
 }
 
 #[cfg(test)]
@@ -25134,6 +25948,300 @@ mod office_graph_persistence_tests {
         assert_eq!(ready, vec![second], "only the interrupted node is ready");
 
         cleanup(&path);
+    }
+}
+
+#[cfg(test)]
+mod thread_goal_tests {
+    use super::*;
+    use ravenbot_models::{ModelProviderTrait, ModelResponse, ToolCall, Usage};
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// Answers the agent turn with a final report and each review turn with
+    /// the next scripted verdict. No network, no real provider.
+    struct GoalProvider {
+        reviews: Mutex<VecDeque<(&'static str, &'static str)>>,
+    }
+
+    impl GoalProvider {
+        fn new(reviews: Vec<(&'static str, &'static str)>) -> Self {
+            Self {
+                reviews: Mutex::new(reviews.into()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ModelProviderTrait for GoalProvider {
+        fn provider_type(&self) -> ravenbot_core::ModelProvider {
+            ravenbot_core::ModelProvider::OpenRouter
+        }
+
+        fn with_model(self: Box<Self>, _model: String) -> Box<dyn ModelProviderTrait> {
+            self
+        }
+
+        async fn complete(
+            &self,
+            _messages: &[ravenbot_models::Message],
+            tools: &[ravenbot_models::ToolDefinition],
+            _temperature: f32,
+            _max_tokens: u32,
+        ) -> Result<ModelResponse, ravenbot_models::ModelError> {
+            if tools.iter().any(|tool| tool.name == "submit_review") {
+                let (verdict, reason) = self
+                    .reviews
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .pop_front()
+                    .unwrap_or(("done", "The work is complete."));
+                let next_task = if verdict == "continue" {
+                    "Verify the brief against the original notes."
+                } else {
+                    ""
+                };
+                return Ok(ModelResponse {
+                    content: None,
+                    tool_calls: vec![ToolCall {
+                        name: "submit_review".to_string(),
+                        arguments: serde_json::json!({
+                            "verdict": verdict,
+                            "reason": reason,
+                            "next_task": next_task
+                        }),
+                        id: "review-1".to_string(),
+                    }],
+                    usage: Usage {
+                        input_tokens: 11,
+                        output_tokens: 4,
+                    },
+                    reasoning: None,
+                });
+            }
+            Ok(ModelResponse {
+                content: Some(
+                    "Wrote the meeting brief to notes/brief.md and checked it against the transcript."
+                        .to_string(),
+                ),
+                tool_calls: Vec::new(),
+                usage: Usage {
+                    input_tokens: 20,
+                    output_tokens: 8,
+                },
+                reasoning: None,
+            })
+        }
+
+        async fn health_check(&self) -> Result<bool, ravenbot_models::ModelError> {
+            Ok(true)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_thread_goal_round_reuses_the_conversation_and_records_its_verdict() {
+        let path = std::env::temp_dir().join(format!("ravenbot-thread-goal-{}.db", Uuid::new_v4()));
+        let db = ravenbot_db::Database::new(&path).await.expect("temp db");
+        let workspace =
+            std::env::temp_dir().join(format!("ravenbot-thread-goal-ws-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).expect("workspace");
+
+        let mut bot = ravenbot_core::Bot::new("Writer", "writing");
+        bot.config.working_folder = Some(workspace.to_string_lossy().to_string());
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .expect("bot");
+        let thread = ravenbot_core::Thread::new(bot.id, "Notes");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .expect("thread");
+        let goal = ravenbot_db::queries::GoalQueries::ensure_thread_goal(
+            db.pool(),
+            thread.id,
+            "Summarize the meeting notes into a short brief.",
+            1,
+        )
+        .await
+        .expect("goal");
+        let prompt = thread_goal_instruction(&goal, 1);
+        assert!(
+            prompt.contains("Objective:\nSummarize the meeting notes into a short brief."),
+            "the contract is rendered without stray indentation"
+        );
+        assert!(
+            !prompt.contains("         Objective"),
+            "formatting whitespace must not leak into the model prompt"
+        );
+
+        let runtime = Arc::new(ravenbot_runtime::Runtime::new(db.clone()));
+        runtime
+            .set_provider_override(Some(Arc::new(GoalProvider::new(vec![(
+                "done",
+                "The brief was written and checked against the notes.",
+            )])) as Arc<dyn ModelProviderTrait>))
+            .await;
+
+        run_thread_goal_turn(&db, &runtime, &HostEvents::Headless, &goal)
+            .await
+            .expect("goal turn");
+
+        let detail = ravenbot_db::queries::GoalQueries::thread_detail(db.pool(), thread.id)
+            .await
+            .expect("detail")
+            .expect("goal detail");
+        assert_eq!(detail.goal.status, "done");
+        assert_eq!(detail.goal.rounds_used, 1);
+        assert_eq!(detail.goal.last_verdict.as_deref(), Some("done"));
+
+        let threads = ravenbot_db::queries::ThreadQueries::list_by_bot(db.pool(), bot.id)
+            .await
+            .expect("threads");
+        assert_eq!(
+            threads.len(),
+            1,
+            "the goal must reuse the 1:1 conversation, not create a hidden thread"
+        );
+        assert_eq!(threads[0].id, thread.id);
+
+        let messages = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)
+            .await
+            .expect("messages");
+        let texts: Vec<String> = messages
+            .iter()
+            .filter_map(|message| match &message.content {
+                ravenbot_core::MessageContent::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.iter().any(|text| text.contains("[Persistent goal")),
+            "the goal instruction is posted in the user's conversation"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|text| text.contains("Wrote the meeting brief")),
+            "the agent's answer is posted in the same thread"
+        );
+        assert!(
+            texts.iter().any(|text| text.contains("Goal complete")),
+            "the reviewed verdict is visible in the conversation"
+        );
+        assert!(
+            detail.goal.tokens_used > 0,
+            "the round records the tokens it spent"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+        let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn a_continue_verdict_arms_the_next_round_until_the_budget_ends() {
+        let path =
+            std::env::temp_dir().join(format!("ravenbot-thread-goal-two-{}.db", Uuid::new_v4()));
+        let db = ravenbot_db::Database::new(&path).await.expect("temp db");
+        let workspace =
+            std::env::temp_dir().join(format!("ravenbot-thread-goal-two-ws-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&workspace).expect("workspace");
+
+        let mut bot = ravenbot_core::Bot::new("Writer", "writing");
+        bot.config.working_folder = Some(workspace.to_string_lossy().to_string());
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .expect("bot");
+        let thread = ravenbot_core::Thread::new(bot.id, "Notes");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .expect("thread");
+        let goal = ravenbot_db::queries::GoalQueries::ensure_thread_goal(
+            db.pool(),
+            thread.id,
+            "Summarize the meeting notes into a short brief.",
+            2,
+        )
+        .await
+        .expect("goal");
+
+        let runtime = Arc::new(ravenbot_runtime::Runtime::new(db.clone()));
+        runtime
+            .set_provider_override(Some(Arc::new(GoalProvider::new(vec![
+                ("continue", "The brief exists; verify its dates."),
+                ("done", "The dates were checked and the brief is complete."),
+            ])) as Arc<dyn ModelProviderTrait>))
+            .await;
+
+        run_thread_goal_turn(&db, &runtime, &HostEvents::Headless, &goal)
+            .await
+            .expect("first round");
+
+        let after_first = ravenbot_db::queries::GoalQueries::get_by_thread(db.pool(), thread.id)
+            .await
+            .expect("goal")
+            .expect("first detail");
+        assert_eq!(after_first.status, "active");
+        assert_eq!(after_first.rounds_used, 1);
+        assert_eq!(after_first.last_verdict.as_deref(), Some("continue"));
+        assert!(
+            after_first.next_run_at.is_some(),
+            "a continue verdict arms the next round"
+        );
+        assert_eq!(
+            ravenbot_db::queries::GoalQueries::due_thread_for_autopilot(
+                db.pool(),
+                "2999-01-01T00:00:00Z",
+                10
+            )
+            .await
+            .expect("due")
+            .len(),
+            1,
+            "the armed goal is the one the loop would pick up"
+        );
+
+        run_thread_goal_turn(&db, &runtime, &HostEvents::Headless, &after_first)
+            .await
+            .expect("second round");
+
+        let after_second = ravenbot_db::queries::GoalQueries::thread_detail(db.pool(), thread.id)
+            .await
+            .expect("detail")
+            .expect("second detail");
+        assert_eq!(after_second.goal.status, "done");
+        assert_eq!(after_second.goal.rounds_used, 2);
+        assert_eq!(after_second.goal.last_verdict.as_deref(), Some("done"));
+        assert!(after_second.goal.next_run_at.is_none());
+        assert_eq!(
+            ravenbot_db::queries::ThreadQueries::list_by_bot(db.pool(), bot.id)
+                .await
+                .expect("threads")
+                .len(),
+            1,
+            "both rounds stay in the original conversation"
+        );
+        let texts: Vec<String> =
+            ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)
+                .await
+                .expect("messages")
+                .into_iter()
+                .filter_map(|message| match message.content {
+                    ravenbot_core::MessageContent::Text { text, .. } => Some(text),
+                    _ => None,
+                })
+                .collect();
+        assert!(texts
+            .iter()
+            .any(|text| text.contains("Goal round finished")));
+        assert!(texts.iter().any(|text| text.contains("Goal complete")));
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+        let _ = std::fs::remove_dir_all(&workspace);
     }
 }
 

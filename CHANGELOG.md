@@ -13,8 +13,31 @@ All notable changes to RAVENBOT are documented here.
   code. The token renderer and its HTML/link safety checks are unchanged.
 - **Harness audit** — `docs/OPENCODE-PARITY.md` maps OpenCode's desktop and
   markdown worker/cache system against RAVENBOT, and lists the remaining
-  24/7 gaps: a goal loop for 1:1 agent threads, snapshot/revert, worktrees,
-  LSP diagnostics, and a unified patch tool.
+  24/7 gaps: snapshot/revert, worktrees, LSP diagnostics, and a unified patch
+  tool.
+
+### Persistent 1:1 goal loop
+
+- **Unattended goals in any conversation** — every 1:1 thread now has a Goal
+  control. The agent keeps planning, acting and verifying in that same thread
+  until the completion contract is met, the round budget is exhausted, the
+  goal is blocked, or the user stops it.
+- **Same review as an office** — each round runs the normal agent with tools,
+  then reuses the office completion judge, `goal_gates`, and deterministic
+  quality gates. A red test/build gate overrules a model that claims done.
+- **No hidden conversations** — the graph node is pinned to the user's thread,
+  so the answer, tool trace and per-round verdict all appear where the user is
+  watching. Starting a goal never creates a second thread.
+- **Safe scheduling** — goals are read with a thread-only due query, run one
+  turn at a time, and yield to any live or user-paused run in the same thread.
+  Repeated judge failures park the goal instead of burning tokens forever.
+- **Restart-safe** — an interrupted goal round is closed honestly on startup
+  and the goal is re-armed for a fresh round; it is never resumed as a raw run
+  that would skip the review step. The headless fleet daemon runs the same
+  heartbeat, so goals continue without a window.
+- **Lifecycle** — start, pause, resume and stop are persisted. Stop also
+  cancels the round in flight, and a background round emits a small event so
+  the open conversation refreshes its banner and transcript.
 
 ### Platform, remote and product surfaces
 

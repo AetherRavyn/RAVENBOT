@@ -139,6 +139,14 @@ pub async fn run() -> Result<(), String> {
         runtime.clone(),
         HostEvents::Headless,
     ));
+    // 1:1 thread goals are not office-scoped, so they need their own
+    // heartbeat. Running it here is what keeps an unattended goal advancing
+    // when the headless daemon owns the fleet instead of the desktop window.
+    let thread_goal_task = tokio::spawn(crate::thread_goal_loop(
+        db.clone(),
+        runtime.clone(),
+        HostEvents::Headless,
+    ));
     let audit_task = tokio::spawn(crate::audit_maintenance_loop(db.pool().clone()));
     let credentials_task = tokio::spawn(provider_credentials_loop(db.clone(), runtime.clone()));
     let attention_task = tokio::spawn(attention_loop(db.clone()));
@@ -188,6 +196,7 @@ pub async fn run() -> Result<(), String> {
     scheduler_task.abort();
     queue_task.abort();
     autonomy_task.abort();
+    thread_goal_task.abort();
     audit_task.abort();
     credentials_task.abort();
     attention_task.abort();
@@ -470,6 +479,7 @@ async fn run_workflow_job(
         goal.to_string(),
         graph_tasks,
         Some(office_id),
+        None,
     )
     .await
     {

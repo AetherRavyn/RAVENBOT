@@ -83,7 +83,7 @@ but not the general one; **Missing** = no implementation.
 | MCP client | `crates/mcp`, server catalog, resources | MCP + event tools | **Present (client)** |
 | Browser/computer | dock, `browser_dom`, `computer_control`, screenshot | browser tool | **Present** |
 | Multi-agent office | plan graph, roster, review judge, goal autopilot | subagents/agents | **Present** |
-| **Goal loop for a 1:1 agent** | office rooms only; `ThreadView` has no plan/goal; `GoalQueries` supports `thread_id` but the scheduler only reads `office_id` | session goal/todo loop | **Missing (P0)** |
+| Goal loop for a 1:1 agent | durable thread goal, one-node graph pinned to the user thread, office review/gates, pause/resume/stop, restart-safe scheduling, same heartbeat in the headless daemon | session goal/todo loop | **Present** |
 | **File snapshot / revert** | `file_changes` ledger stores diffs but there is no restore command/UI | `packages/core/src/snapshot.ts`, VCS | **Missing (P0)** |
 | **Isolated worktrees** | not present | `packages/core/src/worktree.ts` | **Missing (P1)** |
 | **LSP / project diagnostics** | no LSP client; code edits rely on compiler/test tools | project LSP settings in app | **Missing (P1)** |
@@ -93,33 +93,29 @@ but not the general one; **Missing** = no implementation.
 | **MCP event-triggered jobs** | MCP client only; scheduler triggers are cron/webhook | automation from MCP events | **Missing (P2)** |
 | **Public session share** | remote access/device pairing, no public share link | share UI | **Missing (P3)** |
 
-## 5. The three gaps that actually block 24/7 “any task”
+## 5. The gaps that still block 24/7 “any task”
 
-### P0 — a goal loop for every agent thread
+### Shipped — a goal loop for every agent thread
 
-The office already has planner → graph → verify → judge → continue. A 1:1
-agent has only one turn. A user can leave a 1:1 chat and nothing continues.
+The office already had planner → graph → verify → judge → continue. A 1:1
+agent had one turn. That gap is now closed:
 
-Implementation sketch:
+- `GoalQueries` owns a thread-scoped goal with a round budget, objective,
+  outcome, constraints and optional verification gate.
+- `thread_goal_loop` reads only active, due, office-less goals in SQL; it is
+  serial across goals and yields to any live or paused run in the same thread.
+- `run_thread_goal_turn` builds a one-node graph and pins the node to the
+  user's existing thread, then runs the same `office_cycle_review`, goal gates
+  and deterministic completion rules used by offices.
+- Every round posts a visible verdict into the conversation; `record_verdict`
+  schedules the next round, pauses at the budget, or makes done/blocked
+  terminal.
+- Startup closes an interrupted goal round instead of resuming it raw, then
+  re-arms the goal. The headless daemon runs the same loop.
+- `ThreadView` exposes start/pause/resume/stop, the round counter and the last
+  verdict; a background round emits a refresh event.
 
-1. `goals` already stores `thread_id` and `office_id` as nullable. Add
-   `GoalQueries::get_by_thread`, `ensure_thread_goal`, and a scheduler query
-   for `status = 'active' AND office_id IS NULL AND thread_id IS NOT NULL`.
-2. Add `agent_goal_loop` next to `office_autonomy_loop`:
-   - read the goal and the thread's recent messages;
-   - build a one-node `TaskGraph` with the goal prompt and the thread's bot;
-   - execute with `chatroom_id = None` but stamp the existing thread id on the
-     node (the executor already reuses `node.thread_id`);
-   - run the same completion judge/gate rules as the office;
-   - write `rounds_used`, `next_run_at`, `last_verdict`, and a visible system
-     message into the 1:1 thread.
-3. Add a “Goal” toggle/status card to `ThreadView` (objective, gates, rounds,
-   pause/resume/stop).
-4. Reuse `goal_gates` for build/test commands; deterministic completion stays
-   the same as the office (`quality_gate.rs`).
-
-This is the single highest-value parity item: it turns “one good turn” into
-“works until the evidence says done”.
+That turns “one good turn” into “works until the evidence says done”.
 
 ### P0 — snapshot and revert
 
@@ -171,9 +167,16 @@ Implementation sketch:
 - Worker complexity before block caching: the worker only pays off once blocks
   are stable and large; add the cache first.
 
-## 8. Verification for this change
+## 8. Verification
 
-- `npm run check` — clean.
-- `npm test` — full suite.
+- `npm run check` — clean; `npm test` — full suite.
 - The prose rules are in `src/lib/styles/components.css`; the token renderer
   and its DOM tests are unchanged.
+- Thread-goal end-to-end: `a_thread_goal_round_reuses_the_conversation_and_records_its_verdict`
+  runs a persisted goal with a fake provider and proves the round reuses the
+  1:1 thread, records the reviewed verdict and spends tokens in that thread.
+- Restart: `restart_closes_a_goal_round_and_leaves_the_goal_runnable` proves an
+  interrupted goal round is closed and the active goal is re-armed.
+- Scheduling: `a_thread_goal_is_created_once_with_its_round_budget` and
+  `a_thread_goal_yields_to_a_live_run` cover the due query, round budget and
+  the live/paused-run guard.

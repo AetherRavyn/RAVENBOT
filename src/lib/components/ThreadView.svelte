@@ -133,6 +133,7 @@
     Monitor,
     Hash,
     Users,
+    Target,
   } from "@lucide/svelte";
 
   interface Props {
@@ -145,6 +146,16 @@
   let threads = $state<any[]>([]);
   let selectedThreadId = $state<string | null>(null);
   let messages = $state<any[]>([]);
+  /** The persistent 1:1 goal attached to the selected thread. */
+  let threadGoal = $state<any | null>(null);
+  let goalOpen = $state(false);
+  let goalObjective = $state("");
+  let goalOutcome = $state("");
+  let goalGate = $state("");
+  let goalRounds = $state(8);
+  let goalBusy = $state(false);
+  let goalError = $state("");
+  let goalObjectiveRef = $state<HTMLTextAreaElement | null>(null);
   /** The first thread load, so a focus request can wait for it instead of racing it. */
   let initialLoad: Promise<void> | null = null;
   let loadedBotId: string | null = null;
@@ -781,6 +792,8 @@
   let voiceMode = $state(false);
   let speaking = $state(false);
   let unlisten: UnlistenFn | null = null;
+  /** Refreshes the goal banner and transcript after a background goal round. */
+  let goalUnlisten: UnlistenFn | null = null;
 
   async function openSource(url: string) {
     try {
@@ -1034,6 +1047,12 @@
             break;
         }
       });
+      goalUnlisten = await listen<any>("thread-goal", (event) => {
+        const tid = String(event.payload?.thread_id || "");
+        if (!tid || tid !== selectedThreadId) return;
+        void loadThreadGoal(tid);
+        void loadMessages(tid);
+      });
     } catch (e) {
       console.error("Failed to attach stream listener:", e);
     }
@@ -1042,6 +1061,8 @@
   onDestroy(() => {
     unlisten?.();
     unlisten = null;
+    goalUnlisten?.();
+    goalUnlisten = null;
     window.removeEventListener("local-skill-try", handleTryLocalSkill);
     window.removeEventListener(MESSAGE_FOCUS_EVENT, handleMessageFocus);
     window.removeEventListener(THREAD_FOCUS_EVENT, handleThreadFocus);
@@ -1170,6 +1191,7 @@
     messageWindow = MESSAGE_WINDOW;
     windowEnd = 0;
     selectedThreadId = threadId;
+    void loadThreadGoal(threadId);
     if (changed && bot?.id) {
       newMessage = drafts.load(threadDraftKey(bot.id, threadId));
       void tick().then(() => {
@@ -1211,6 +1233,80 @@
     }
   }
 
+  // Focus the field a keyboard user came to fill. Svelte rejects a bare
+  // `autofocus`, and a modal that opens with focus left behind the scrim is
+  // not actually usable without a pointer.
+  $effect(() => {
+    if (!goalOpen || !goalObjectiveRef) return;
+    void tick().then(() => goalObjectiveRef?.focus());
+  });
+
+  async function loadThreadGoal(threadId: string | null) {
+    if (!threadId) {
+      threadGoal = null;
+      return;
+    }
+    try {
+      const goal = await invoke("get_thread_goal", { threadId });
+      // A fast thread switch must not let an older response win.
+      if (threadId === selectedThreadId) threadGoal = goal;
+    } catch (error) {
+      console.debug("thread goal unavailable:", error);
+      if (threadId === selectedThreadId) threadGoal = null;
+    }
+  }
+
+  function openGoalDialog() {
+    goalError = "";
+    goalObjective = threadGoal?.goal?.objective || "";
+    goalOutcome = threadGoal?.goal?.contract?.outcome || "";
+    goalGate = threadGoal?.gates?.[0]?.command || "";
+    goalRounds = threadGoal?.goal?.max_rounds || 8;
+    goalOpen = true;
+  }
+
+  async function startThreadGoal() {
+    const threadId = selectedThreadId;
+    if (!threadId) {
+      goalError = "Start a conversation thread first.";
+      return;
+    }
+    goalBusy = true;
+    goalError = "";
+    try {
+      const goal = await invoke("start_thread_goal", {
+        threadId,
+        objective: goalObjective,
+        outcome: goalOutcome || null,
+        gate: goalGate || null,
+        maxRounds: Number(goalRounds) || 8,
+      });
+      if (threadId === selectedThreadId) {
+        threadGoal = goal;
+        goalOpen = false;
+      }
+    } catch (error) {
+      if (threadId === selectedThreadId) goalError = String(error);
+    } finally {
+      goalBusy = false;
+    }
+  }
+
+  async function threadGoalAction(action: "pause" | "resume" | "cancel") {
+    const threadId = selectedThreadId;
+    if (!threadId) return;
+    goalBusy = true;
+    goalError = "";
+    try {
+      const goal = await invoke(`${action}_thread_goal`, { threadId });
+      if (threadId === selectedThreadId) threadGoal = goal;
+    } catch (error) {
+      if (threadId === selectedThreadId) goalError = String(error);
+    } finally {
+      goalBusy = false;
+    }
+  }
+
   async function createNewThread() {
     try {
       const thread = await invoke("create_thread", {
@@ -1222,6 +1318,7 @@
       threads = [thread, ...threads];
       selectedThreadId = (thread as any).id;
       messages = [];
+      threadGoal = null;
       replyingTo = null;
       showThreadDropdown = false;
       await tick();
@@ -3047,6 +3144,39 @@
         />
       </div>
 
+      {#if threadGoal?.goal}
+        <div class="px-4 pb-1 shrink-0">
+          <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto flex items-center gap-2 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2">
+            <Target class="size-3.5 shrink-0 text-[var(--brand-text)]" />
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 text-xs font-medium text-[var(--text-primary)]">
+                <span class="truncate">{threadGoal.goal.objective}</span>
+                <span class="shrink-0 rounded border border-[var(--hairline)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-tertiary)]">
+                  {threadGoal.goal.status} · {threadGoal.goal.rounds_used}/{threadGoal.goal.max_rounds}
+                </span>
+              </div>
+              {#if threadGoal.goal.last_reason}
+                <p class="truncate text-[11px] text-[var(--text-muted)]">{threadGoal.goal.last_reason}</p>
+              {/if}
+            </div>
+            {#if threadGoal.goal.status === "active"}
+              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void threadGoalAction("pause")} title="Pause goal" aria-label="Pause goal" disabled={goalBusy}>
+                <Pause class="size-3.5" />
+              </button>
+            {:else if threadGoal.goal.status === "paused" || threadGoal.goal.status === "blocked"}
+              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void threadGoalAction("resume")} title="Resume goal" aria-label="Resume goal" disabled={goalBusy}>
+                <Play class="size-3.5" />
+              </button>
+            {/if}
+            {#if !["done", "cancelled", "failed"].includes(threadGoal.goal.status)}
+              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--danger)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void threadGoalAction("cancel")} title="Stop goal" aria-label="Stop goal" disabled={goalBusy}>
+                <X class="size-3.5" />
+              </button>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
       <!-- Grok Floating Capsule Composer -->
       <div class="p-4 bg-[var(--surface-0)] shrink-0">
         <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -3215,6 +3345,20 @@
               </button>
 
               <ContextMeter threadId={selectedThreadId} class="ml-1" />
+              {#if selectedThreadId}
+                <button
+                  type="button"
+                  class="h-7 px-2.5 rounded-lg border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {threadGoal
+                    ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/50'
+                    : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
+                  onclick={openGoalDialog}
+                  aria-pressed={Boolean(threadGoal)}
+                  title="Run a persistent goal in this conversation"
+                >
+                  <Target class="size-3" />
+                  <span>Goal</span>
+                </button>
+              {/if}
               <button
                 type="button"
                 class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center transition-colors cursor-pointer"
@@ -3367,6 +3511,135 @@
     onClose={() => (showTeamImport = false)}
     onImported={() => { loadChannelOptions(); }}
   />
+{/if}
+
+<!-- Persistent 1:1 Goal Modal -->
+{#if goalOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-50 bg-[var(--scrim)] flex items-center justify-center p-4 animate-in fade-in"
+    onclick={() => (goalOpen = false)}
+  >
+    <div
+      class="modal-panel w-full max-w-lg p-5 space-y-3 max-h-[85vh] overflow-y-auto"
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Persistent goal"
+      tabindex="-1"
+    >
+      <div class="flex items-start justify-between gap-3 border-b border-[var(--hairline)] pb-2">
+        <div>
+          <h2 class="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-1.5">
+            <Target class="size-4 text-[var(--brand-text)]" />
+            Persistent goal
+          </h2>
+          <p class="mt-0.5 text-[11px] text-[var(--text-muted)]">
+            The agent keeps planning, acting and verifying in this thread until the goal is done or the round budget ends.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono"
+          onclick={() => (goalOpen = false)}
+          aria-label="Close goal dialog"
+        >
+          ✕
+        </button>
+      </div>
+
+      {#if threadGoal?.goal}
+        <div class="rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] p-3 space-y-1">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-xs font-medium text-[var(--text-primary)]">Current goal</span>
+            <span class="font-mono text-[11px] text-[var(--text-tertiary)]">
+              {threadGoal.goal.status} · {threadGoal.goal.rounds_used}/{threadGoal.goal.max_rounds}
+            </span>
+          </div>
+          <p class="text-xs text-[var(--text-secondary)]">{threadGoal.goal.objective}</p>
+          {#if threadGoal.goal.last_reason}
+            <p class="text-[11px] text-[var(--text-muted)]">{threadGoal.goal.last_reason}</p>
+          {/if}
+          <div class="flex gap-2 pt-1">
+            {#if threadGoal.goal.status === "active"}
+              <Button size="sm" variant="outline" disabled={goalBusy} onclick={() => void threadGoalAction("pause")}>Pause</Button>
+            {:else if threadGoal.goal.status === "paused" || threadGoal.goal.status === "blocked"}
+              <Button size="sm" variant="outline" disabled={goalBusy} onclick={() => void threadGoalAction("resume")}>Resume</Button>
+            {/if}
+            {#if !["done", "cancelled", "failed"].includes(threadGoal.goal.status)}
+              <Button size="sm" variant="outline" disabled={goalBusy} onclick={() => void threadGoalAction("cancel")}>Stop</Button>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
+      {#if !threadGoal?.goal || ["done", "cancelled", "failed"].includes(threadGoal.goal.status)}
+        <div class="space-y-2">
+          <label class="block text-[11px] font-medium text-[var(--text-secondary)]" for="thread-goal-objective">
+            What should the agent accomplish?
+          </label>
+          <textarea
+            id="thread-goal-objective"
+            bind:this={goalObjectiveRef}
+            bind:value={goalObjective}
+            rows={3}
+            maxlength={4000}
+            placeholder="Finish the feature, run its tests, and leave the workspace in a working state."
+            class="w-full resize-none rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+          ></textarea>
+
+          <label class="block text-[11px] font-medium text-[var(--text-secondary)]" for="thread-goal-outcome">
+            Evidence that counts as done (optional)
+          </label>
+          <input
+            id="thread-goal-outcome"
+            bind:value={goalOutcome}
+            placeholder="The test suite passes and the change is recorded."
+            class="w-full rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+          />
+
+          <label class="block text-[11px] font-medium text-[var(--text-secondary)]" for="thread-goal-gate">
+            Verification command (optional)
+          </label>
+          <input
+            id="thread-goal-gate"
+            bind:value={goalGate}
+            placeholder="python3 -m pytest -q tests"
+            spellcheck="false"
+            class="w-full rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
+          />
+
+          <label class="block text-[11px] font-medium text-[var(--text-secondary)]" for="thread-goal-rounds">
+            Automatic rounds
+          </label>
+          <input
+            id="thread-goal-rounds"
+            bind:value={goalRounds}
+            type="number"
+            min="1"
+            max="64"
+            class="w-24 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/50"
+          />
+        </div>
+      {/if}
+
+      {#if goalError}
+        <p class="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] px-3 py-2 text-[11px] text-[var(--danger)]" role="alert">
+          {goalError}
+        </p>
+      {/if}
+
+      <div class="flex items-center justify-end gap-2 border-t border-[var(--hairline)] pt-3">
+        <Button size="sm" variant="ghost" onclick={() => (goalOpen = false)}>Cancel</Button>
+        {#if !threadGoal?.goal || ["done", "cancelled", "failed"].includes(threadGoal.goal.status)}
+          <Button size="sm" disabled={goalBusy || !goalObjective.trim()} onclick={() => void startThreadGoal()}>
+            {goalBusy ? "Starting…" : "Start goal"}
+          </Button>
+        {/if}
+      </div>
+    </div>
+  </div>
 {/if}
 
 <!-- Fleet Sync / Backup Modal -->

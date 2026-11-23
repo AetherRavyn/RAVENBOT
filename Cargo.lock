@@ -5163,6 +5163,7 @@ name = "ravenbot"
 version = "0.2.0"
 dependencies = [
  "argon2",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "chrono",

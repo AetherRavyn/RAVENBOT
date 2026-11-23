@@ -106,6 +106,9 @@ javascriptcore-rs = "1.1"
 
 [dev-dependencies]
 plist = "1"
+# The thread-goal end-to-end test implements ModelProviderTrait directly so a
+# persisted goal can be exercised without a network provider.
+async-trait = "0.1"
 # The allowlist in office_org is checked against the real skill registry, so a
 # skill that exists but is not listed (or the reverse) fails a test rather than
 # quietly making a tool impossible to give an agent.
