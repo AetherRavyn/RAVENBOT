@@ -18,7 +18,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/toast";
-  import { Loader2, AlertTriangle, CheckCircle2, XCircle, Clock, Play, RefreshCw } from "@lucide/svelte";
+  import { Loader2, AlertTriangle, CheckCircle2, XCircle, Clock, Play, RefreshCw, RotateCcw } from "@lucide/svelte";
 
   interface Run {
     id: string;
@@ -33,10 +33,25 @@
     outcome: string | null;
   }
 
+  interface RevertConflict {
+    path: string;
+    reason: string;
+  }
+
+  interface RevertReport {
+    restored: string[];
+    deleted: string[];
+    skipped: RevertConflict[];
+    conflicts: RevertConflict[];
+  }
+
   let runs = $state<Run[]>([]);
   let isLoading = $state(false);
   let loadError = $state<string | null>(null);
   let resumingId = $state<string | null>(null);
+  let previewingId = $state<string | null>(null);
+  let revertingId = $state<string | null>(null);
+  let revertPending = $state<{ run: Run; report: RevertReport } | null>(null);
 
   async function load() {
     isLoading = true;
@@ -65,6 +80,51 @@
       notify(String(error), "error");
     } finally {
       resumingId = null;
+    }
+  }
+
+  /** Ask what a run revert would do before changing any file. */
+  async function previewRevert(run: Run) {
+    if (previewingId) return;
+    previewingId = run.id;
+    try {
+      const report = await invoke<RevertReport>("preview_run_revert", { runId: run.id });
+      revertPending = { run, report };
+    } catch (error) {
+      notify(String(error), "info");
+    } finally {
+      previewingId = null;
+    }
+  }
+
+  async function confirmRevert(force = false) {
+    const pending = revertPending;
+    if (!pending || revertingId) return;
+    revertingId = pending.run.id;
+    try {
+      const report = await invoke<RevertReport>("revert_run_files", {
+        runId: pending.run.id,
+        force,
+      });
+      if (report.conflicts.length && !force) {
+        revertPending = { run: pending.run, report };
+        return;
+      }
+      const changed = report.restored.length + report.deleted.length;
+      if (changed > 0) {
+        notify(t("runs.revertDone"), "success");
+      } else {
+        notify(t("runs.revertNothing"), "info");
+      }
+      if (report.skipped.length) {
+        notify(t("runs.revertSkipped", { count: report.skipped.length }), "info");
+      }
+      revertPending = null;
+      await load();
+    } catch (error) {
+      notify(String(error), "error");
+    } finally {
+      revertingId = null;
     }
   }
 
@@ -155,6 +215,23 @@
                 {/if}
               </button>
             {/if}
+            {#if ["completed", "failed", "cancelled"].includes(run.state)}
+              <button
+                type="button"
+                class="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] text-[11px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] cursor-pointer disabled:opacity-50"
+                onclick={() => void previewRevert(run)}
+                disabled={previewingId === run.id}
+                aria-label={t("runs.revert")}
+                title={t("runs.revertTitle")}
+              >
+                {#if previewingId === run.id}
+                  <Loader2 class="size-3 animate-spin" />
+                {:else}
+                  <RotateCcw class="size-3" />
+                {/if}
+                {t("runs.revert")}
+              </button>
+            {/if}
             <span class="ml-auto text-[11px] text-[var(--text-faint)] tabular-nums shrink-0">{fmtTime(run.created_at)}</span>
           </div>
           <div class="flex items-center gap-3 text-[11px] font-mono text-[var(--text-muted)]">
@@ -172,3 +249,73 @@
     </div>
   {/if}
 </div>
+
+{#if revertPending}
+  {@const pending = revertPending}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-50 bg-[var(--scrim)] flex items-center justify-center p-4"
+    onclick={() => (revertPending = null)}
+  >
+    <div
+      class="modal-panel w-full max-w-lg p-5 space-y-3"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="run-revert-title"
+      tabindex="-1"
+      onclick={(e) => e.stopPropagation()}
+    >
+      <div class="flex items-center gap-2 border-b border-[var(--hairline)] pb-2">
+        <RotateCcw class="size-4 text-[var(--brand-text)]" />
+        <h2 id="run-revert-title" class="text-sm font-semibold text-[var(--text-primary)]">
+          {t("runs.revertTitle")}
+        </h2>
+      </div>
+      <p class="text-xs text-[var(--text-secondary)]">
+        {t("runs.revertHint", {
+          restored: pending.report.restored.length,
+          deleted: pending.report.deleted.length,
+        })}
+      </p>
+      {#if pending.report.conflicts.length}
+        <p class="text-[11px] text-danger">{t("runs.revertConflicts")}</p>
+        <ul class="space-y-1 max-h-40 overflow-y-auto rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] p-2">
+          {#each pending.report.conflicts as conflict}
+            <li class="text-[11px] text-[var(--text-secondary)]">
+              <code class="font-mono text-[var(--text-primary)] break-all">{conflict.path}</code>
+              <span class="block">{conflict.reason}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+      {#if pending.report.restored.length + pending.report.deleted.length === 0 && !pending.report.conflicts.length}
+        <p class="text-[11px] text-[var(--text-muted)]">{t("runs.revertNothing")}</p>
+      {/if}
+      <div class="flex justify-end gap-2 border-t border-[var(--hairline)] pt-3">
+        <button
+          type="button"
+          class="h-7 px-3 rounded-lg border border-[var(--hairline)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] cursor-pointer"
+          onclick={() => (revertPending = null)}
+        >
+          {t("projects.cancel")}
+        </button>
+        {#if pending.report.restored.length + pending.report.deleted.length > 0}
+          <button
+            type="button"
+            class="h-7 px-3 rounded-lg border text-[11px] font-medium cursor-pointer disabled:opacity-50 {pending.report.conflicts.length
+              ? 'border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger)]'
+              : 'border-transparent bg-[var(--surface-light)] text-[var(--text-on-light)]'}"
+            disabled={revertingId === pending.run.id}
+            onclick={() => void confirmRevert(pending.report.conflicts.length > 0)}
+          >
+            {#if revertingId === pending.run.id}
+              <Loader2 class="size-3 animate-spin inline" />
+            {/if}
+            {pending.report.conflicts.length ? t("runs.revertAnyway") : t("runs.revert")}
+          </button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}

@@ -7380,6 +7380,9 @@ type FileChangeRow = (
     i64,
     i64,
     Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
     String,
 );
 
@@ -7389,8 +7392,10 @@ impl FileChangeQueries {
         change: &ravenbot_core::FileChange,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO file_changes (id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted, diff, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO file_changes
+                (id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted,
+                 diff, snapshot_path, before_sha256, after_sha256, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(change.id.to_string())
         .bind(change.bot_id.to_string())
@@ -7401,6 +7406,9 @@ impl FileChangeQueries {
         .bind(change.lines_added)
         .bind(change.lines_deleted)
         .bind(&change.diff)
+        .bind(&change.snapshot_path)
+        .bind(&change.before_sha256)
+        .bind(&change.after_sha256)
         .bind(&change.created_at)
         .execute(pool)
         .await?;
@@ -7427,7 +7435,7 @@ impl FileChangeQueries {
     ) -> Result<Vec<ravenbot_core::FileChange>, sqlx::Error> {
         let rows: Vec<FileChangeRow> = sqlx::query_as(
             "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted,
-                    NULL AS diff, created_at
+                    NULL AS diff, snapshot_path, before_sha256, after_sha256, created_at
              FROM file_changes WHERE bot_id = ?
              ORDER BY created_at DESC, rowid DESC
              LIMIT ?",
@@ -7509,6 +7517,86 @@ impl FileChangeQueries {
             .collect())
     }
 
+    /// One ledger row by id, with its diff.
+    pub async fn get(
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<ravenbot_core::FileChange>, sqlx::Error> {
+        let row: Option<FileChangeRow> = sqlx::query_as(
+            "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted,
+                    diff, snapshot_path, before_sha256, after_sha256, created_at
+             FROM file_changes WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.and_then(Self::row_to_domain))
+    }
+
+    /// Every write one run made, in write order.
+    pub async fn for_run(
+        pool: &SqlitePool,
+        run_id: Uuid,
+    ) -> Result<Vec<ravenbot_core::FileChange>, sqlx::Error> {
+        let rows: Vec<FileChangeRow> = sqlx::query_as(
+            "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted,
+                    NULL AS diff, snapshot_path, before_sha256, after_sha256, created_at
+             FROM file_changes WHERE run_id = ?
+             ORDER BY created_at ASC, rowid ASC",
+        )
+        .bind(run_id.to_string())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().filter_map(Self::row_to_domain).collect())
+    }
+
+    /// The newest write this run made to one absolute path.
+    pub async fn latest_for_run_path(
+        pool: &SqlitePool,
+        run_id: Uuid,
+        path: &str,
+    ) -> Result<Option<ravenbot_core::FileChange>, sqlx::Error> {
+        let row: Option<FileChangeRow> = sqlx::query_as(
+            "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted,
+                    NULL AS diff, snapshot_path, before_sha256, after_sha256, created_at
+             FROM file_changes
+             WHERE run_id = ? AND snapshot_path = ?
+             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        )
+        .bind(run_id.to_string())
+        .bind(path)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.and_then(Self::row_to_domain))
+    }
+
+    /// The first write to a path after `after`, optionally ignoring one run.
+    ///
+    /// Used for two conflicts: a later write in another run blocks a whole-run
+    /// revert, and a later write in any run blocks a single-change revert.
+    pub async fn first_after_path(
+        pool: &SqlitePool,
+        path: &str,
+        after: &str,
+        exclude_run: Option<Uuid>,
+    ) -> Result<Option<ravenbot_core::FileChange>, sqlx::Error> {
+        let row: Option<FileChangeRow> = sqlx::query_as(
+            "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted,
+                    NULL AS diff, snapshot_path, before_sha256, after_sha256, created_at
+             FROM file_changes
+             WHERE snapshot_path = ? AND created_at > ?
+               AND (? IS NULL OR run_id IS NOT ?)
+             ORDER BY created_at ASC, rowid ASC LIMIT 1",
+        )
+        .bind(path)
+        .bind(after)
+        .bind(exclude_run.map(|id| id.to_string()))
+        .bind(exclude_run.map(|id| id.to_string()))
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.and_then(Self::row_to_domain))
+    }
+
     /// One tuple in, one domain row out.
     ///
     /// Takes the row rather than nine loose fields: sqlx hands back a tuple and
@@ -7526,8 +7614,318 @@ impl FileChangeQueries {
             lines_added: r.6,
             lines_deleted: r.7,
             diff: r.8,
-            created_at: r.9,
+            snapshot_path: r.9,
+            before_sha256: r.10,
+            after_sha256: r.11,
+            created_at: r.12,
         })
+    }
+}
+
+/// One run's revert snapshot.
+///
+/// Created lazily on the first file-writing tool call. `root` is the
+/// canonical workspace root; entries may still sit in another configured
+/// folder of the same run, so each entry carries its own root too.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceSnapshotRecord {
+    pub id: String,
+    pub run_id: String,
+    pub thread_id: Option<String>,
+    pub root: String,
+    pub kind: String,
+    /// False when a file/size cap stopped the walk. A partial snapshot cannot
+    /// prove a path was absent, so revert refuses it instead of deleting files
+    /// it never saw.
+    pub complete: bool,
+    pub created_at: String,
+}
+
+/// One path in a run snapshot.
+///
+/// `existed = false` means the run created the path; reverting deletes it.
+/// `existed = true` with `blob = None` means the before-image could not be
+/// stored (too large or unreadable) and the path is reported as unavailable
+/// rather than restored as an empty file.
+#[derive(Debug, Clone, Serialize)]
+pub struct SnapshotEntryRecord {
+    pub snapshot_id: String,
+    pub path: String,
+    pub root: String,
+    pub blob: Option<String>,
+    pub existed: bool,
+    pub sha256: Option<String>,
+    pub mode: Option<i64>,
+    pub size: i64,
+    pub note: String,
+    pub created_at: String,
+}
+
+pub struct SnapshotQueries;
+
+impl SnapshotQueries {
+    /// Return the run's snapshot, creating it if this is the first write.
+    ///
+    /// The unique index on `run_id` makes the insert race-safe: two parallel
+    /// nodes that touch a file at the same moment still share one snapshot.
+    pub async fn ensure_for_run(
+        pool: &SqlitePool,
+        run_id: Uuid,
+        thread_id: Uuid,
+        root: &str,
+    ) -> Result<WorkspaceSnapshotRecord, sqlx::Error> {
+        if let Some(existing) = Self::for_run(pool, run_id).await? {
+            return Ok(existing);
+        }
+        let id = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT OR IGNORE INTO workspace_snapshots
+                (id, run_id, thread_id, root, kind, complete, created_at)
+             VALUES (?, ?, ?, ?, 'files', 1, ?)",
+        )
+        .bind(id.to_string())
+        .bind(run_id.to_string())
+        .bind(thread_id.to_string())
+        .bind(root)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        Self::for_run(pool, run_id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    /// Mark a snapshot as incomplete.
+    ///
+    /// A partial walk cannot prove a path was absent, so revert refuses it
+    /// rather than deleting a file it never saw.
+    pub async fn mark_partial(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE workspace_snapshots SET complete = 0 WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn for_run(
+        pool: &SqlitePool,
+        run_id: Uuid,
+    ) -> Result<Option<WorkspaceSnapshotRecord>, sqlx::Error> {
+        let row: Option<(String, String, Option<String>, String, String, bool, String)> =
+            sqlx::query_as(
+                "SELECT id, run_id, thread_id, root, kind, complete, created_at
+                 FROM workspace_snapshots WHERE run_id = ?",
+            )
+            .bind(run_id.to_string())
+            .fetch_optional(pool)
+            .await?;
+        Ok(row.map(|row| WorkspaceSnapshotRecord {
+            id: row.0,
+            run_id: row.1,
+            thread_id: row.2,
+            root: row.3,
+            kind: row.4,
+            complete: row.5,
+            created_at: row.6,
+        }))
+    }
+
+    pub async fn get(
+        pool: &SqlitePool,
+        id: Uuid,
+    ) -> Result<Option<WorkspaceSnapshotRecord>, sqlx::Error> {
+        let row: Option<(String, String, Option<String>, String, String, bool, String)> =
+            sqlx::query_as(
+                "SELECT id, run_id, thread_id, root, kind, complete, created_at
+                 FROM workspace_snapshots WHERE id = ?",
+            )
+            .bind(id.to_string())
+            .fetch_optional(pool)
+            .await?;
+        Ok(row.map(|row| WorkspaceSnapshotRecord {
+            id: row.0,
+            run_id: row.1,
+            thread_id: row.2,
+            root: row.3,
+            kind: row.4,
+            complete: row.5,
+            created_at: row.6,
+        }))
+    }
+
+    /// Record the before-image for one path, once per run.
+    ///
+    /// `INSERT OR IGNORE` is the important part: the second write to a path in
+    /// the same run must not replace the state from before the run. Reverting
+    /// a turn means going back to the version the user started with.
+    pub async fn insert_entry_if_absent(
+        pool: &SqlitePool,
+        entry: &SnapshotEntryRecord,
+    ) -> Result<bool, sqlx::Error> {
+        let changed = sqlx::query(
+            "INSERT OR IGNORE INTO workspace_snapshot_entries
+                (snapshot_id, path, root, blob, existed, sha256, mode, size, note, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&entry.snapshot_id)
+        .bind(&entry.path)
+        .bind(&entry.root)
+        .bind(&entry.blob)
+        .bind(entry.existed)
+        .bind(&entry.sha256)
+        .bind(entry.mode)
+        .bind(entry.size)
+        .bind(&entry.note)
+        .bind(&entry.created_at)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        Ok(changed == 1)
+    }
+
+    /// Insert a whole walk's entries in one transaction.
+    ///
+    /// A workspace snapshot can name tens of thousands of files; one autocommit
+    /// round trip per file would turn a safety feature into a visible pause.
+    pub async fn insert_entries_if_absent(
+        pool: &SqlitePool,
+        entries: &[SnapshotEntryRecord],
+    ) -> Result<(), sqlx::Error> {
+        if entries.is_empty() {
+            return Ok(());
+        }
+        let mut tx = pool.begin().await?;
+        for entry in entries {
+            sqlx::query(
+                "INSERT OR IGNORE INTO workspace_snapshot_entries
+                    (snapshot_id, path, root, blob, existed, sha256, mode, size, note, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(&entry.snapshot_id)
+            .bind(&entry.path)
+            .bind(&entry.root)
+            .bind(&entry.blob)
+            .bind(entry.existed)
+            .bind(&entry.sha256)
+            .bind(entry.mode)
+            .bind(entry.size)
+            .bind(&entry.note)
+            .bind(&entry.created_at)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Delete snapshots older than `cutoff` and their manifests.
+    ///
+    /// The `file_changes` ledger is untouched: it is history. A revert after
+    /// retention simply says the before-image is gone.
+    pub async fn prune_older_than(pool: &SqlitePool, cutoff: &str) -> Result<u64, sqlx::Error> {
+        sqlx::query(
+            "DELETE FROM workspace_snapshot_entries
+             WHERE snapshot_id IN (SELECT id FROM workspace_snapshots WHERE created_at < ?)",
+        )
+        .bind(cutoff)
+        .execute(pool)
+        .await?;
+        let deleted = sqlx::query("DELETE FROM workspace_snapshots WHERE created_at < ?")
+            .bind(cutoff)
+            .execute(pool)
+            .await?
+            .rows_affected();
+        Ok(deleted)
+    }
+
+    /// Every blob still named by a manifest, for garbage collection.
+    pub async fn referenced_blobs(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT sha256 FROM workspace_snapshot_entries WHERE sha256 IS NOT NULL",
+        )
+        .fetch_all(pool)
+        .await
+    }
+
+    pub async fn entries(
+        pool: &SqlitePool,
+        snapshot_id: &str,
+    ) -> Result<Vec<SnapshotEntryRecord>, sqlx::Error> {
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            Option<String>,
+            bool,
+            Option<String>,
+            Option<i64>,
+            i64,
+            String,
+            String,
+        )> = sqlx::query_as(
+            "SELECT snapshot_id, path, root, blob, existed, sha256, mode, size, note, created_at
+             FROM workspace_snapshot_entries
+             WHERE snapshot_id = ?
+             ORDER BY path ASC",
+        )
+        .bind(snapshot_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| SnapshotEntryRecord {
+                snapshot_id: row.0,
+                path: row.1,
+                root: row.2,
+                blob: row.3,
+                existed: row.4,
+                sha256: row.5,
+                mode: row.6,
+                size: row.7,
+                note: row.8,
+                created_at: row.9,
+            })
+            .collect())
+    }
+
+    pub async fn entry_for_path(
+        pool: &SqlitePool,
+        snapshot_id: &str,
+        path: &str,
+    ) -> Result<Option<SnapshotEntryRecord>, sqlx::Error> {
+        let row: Option<(
+            String,
+            String,
+            String,
+            Option<String>,
+            bool,
+            Option<String>,
+            Option<i64>,
+            i64,
+            String,
+            String,
+        )> = sqlx::query_as(
+            "SELECT snapshot_id, path, root, blob, existed, sha256, mode, size, note, created_at
+             FROM workspace_snapshot_entries
+             WHERE snapshot_id = ? AND path = ?",
+        )
+        .bind(snapshot_id)
+        .bind(path)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(|row| SnapshotEntryRecord {
+            snapshot_id: row.0,
+            path: row.1,
+            root: row.2,
+            blob: row.3,
+            existed: row.4,
+            sha256: row.5,
+            mode: row.6,
+            size: row.7,
+            note: row.8,
+            created_at: row.9,
+        }))
     }
 }
 

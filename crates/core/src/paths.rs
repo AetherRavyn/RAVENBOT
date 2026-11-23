@@ -16,6 +16,7 @@
 //!   keys/                  signing keys
 //!   logs/                  runtime logs
 //!   cache/                 scratch + downloaded model weights
+//!   snapshots/             content-addressed before-images for revert
 //!   projects/<office>/     an office workspace (the agents' room)
 //!   agents/<bot>/          a private workspace for 1:1 conversations
 //! ```
@@ -100,6 +101,15 @@ pub fn raven_root() -> PathBuf {
 /// `~/RAVENBOT/<name>` for a subdirectory of the root.
 fn under_root(name: &str) -> PathBuf {
     raven_root().join(name)
+}
+
+/// Where content-addressed workspace snapshots live.
+///
+/// One blob per file hash plus a manifest in the database. Keeping them under
+/// the RAVENBOT root means a backup of that folder is a backup of every file
+/// the agents can put back.
+pub fn snapshots_dir() -> PathBuf {
+    under_root("snapshots")
 }
 
 /// Where settings, cached provider metadata, and UI preferences live.

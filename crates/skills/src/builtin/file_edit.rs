@@ -167,12 +167,14 @@ async fn apply_codex_patch(
     let mut changes = Vec::new();
     for file in &files {
         let full = resolve(ctx, base, &file.path)?;
+        let absolute = full.display().to_string();
         if file.delete {
             if full.exists() {
                 deletes.push(full);
             }
             changes.push(serde_json::json!({
                 "path": file.path,
+                "absolute_path": &absolute,
                 "lines_added": 0,
                 "lines_deleted": 0,
                 "diff": file.raw,
@@ -193,6 +195,7 @@ async fn apply_codex_patch(
             writes.push((full, content));
             changes.push(serde_json::json!({
                 "path": file.path,
+                "absolute_path": &absolute,
                 "lines_added": file.added_content.len(),
                 "lines_deleted": 0,
                 "diff": file.raw,
@@ -228,6 +231,7 @@ async fn apply_codex_patch(
         writes.push((full, content));
         changes.push(serde_json::json!({
             "path": file.path,
+            "absolute_path": &absolute,
             "lines_added": added,
             "lines_deleted": deleted,
             "diff": file.raw,
@@ -321,9 +325,11 @@ async fn apply_exact_edits(
         } else {
             existing.replacen(old, new, 1)
         };
+        let absolute = full.display().to_string();
         writes.push((full, updated));
         changes.push(serde_json::json!({
             "path": path,
+            "absolute_path": &absolute,
             "lines_added": new.lines().count(),
             "lines_deleted": old.lines().count(),
         }));

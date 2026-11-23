@@ -54,7 +54,21 @@
     lines_deleted: number;
     /** Absent on purpose: see `file_change_diff`. Fetched when a row opens. */
     diff?: string | null;
+    /** Present when this write has a before-image that can be restored. */
+    snapshot_path?: string | null;
     created_at: string;
+  }
+
+  interface RevertConflict {
+    path: string;
+    reason: string;
+  }
+
+  interface RevertReport {
+    restored: string[];
+    deleted: string[];
+    skipped: RevertConflict[];
+    conflicts: RevertConflict[];
   }
 
   interface Totals {
@@ -169,6 +183,11 @@
   const diffs = $state<Record<string, string | null | undefined>>({});
   const diffLoading = $state<Record<string, boolean>>({});
   const diffError = $state<Record<string, string>>({});
+
+  /** The change whose revert is in flight, so its row disables while it runs. */
+  let revertingChange = $state<string | null>(null);
+  /** A blocked revert waiting for the user to accept overwriting newer work. */
+  let revertDialog = $state<{ change: FileChange; report: RevertReport } | null>(null);
 
   onMount(() => {
     void load();
@@ -756,6 +775,50 @@
     }
   }
 
+  /**
+   * Revert one ledger row to the version captured before its run.
+   *
+   * A row that was already changed again is not overwritten silently: the
+   * backend returns the conflicts, the dialog lists them, and only a second,
+   * explicit click sends `force`.
+   */
+  async function revertChange(change: FileChange, force = false) {
+    if (revertingChange) return;
+    revertingChange = change.id;
+    try {
+      const report = await invoke<RevertReport>("revert_file_change", {
+        changeId: change.id,
+        force,
+      });
+      if (report.conflicts.length && !force) {
+        revertDialog = { change, report };
+        return;
+      }
+      revertDialog = null;
+      const changed = report.restored.length + report.deleted.length;
+      if (changed > 0) {
+        notify(
+          t("projects.revertDone", {
+            restored: report.restored.length,
+            deleted: report.deleted.length,
+          }),
+          "success",
+        );
+      } else {
+        notify(t("projects.revertNothing"), "info");
+      }
+      if (report.skipped.length) {
+        notify(t("projects.revertSkipped", { count: report.skipped.length }), "info");
+      }
+      await load();
+      await reloadFile();
+    } catch (error) {
+      notify(t("projects.revertFailed") + String(error), "error");
+    } finally {
+      revertingChange = null;
+    }
+  }
+
   function toggleDir(treeKey: string, path: string) {
     const id = `${treeKey}|${path}`;
     const next = new Set(openDirs);
@@ -1284,6 +1347,26 @@
                         -->
                         <p class="proj__hint proj__hint--pad">{t("projects.noDiff")}</p>
                       {/if}
+                      <div class="proj__changeactions">
+                        {#if c.snapshot_path}
+                          <button
+                            type="button"
+                            class="proj__action"
+                            disabled={revertingChange === c.id}
+                            onclick={() => void revertChange(c)}
+                          >
+                            {#if revertingChange === c.id}
+                              <Loader2 class="size-3.5 animate-spin" strokeWidth={2} />
+                            {:else}
+                              <RotateCcw class="size-3.5" strokeWidth={2} />
+                            {/if}
+                            {t("projects.revertFile")}
+                          </button>
+                          <span class="proj__hint">{t("projects.revertHint")}</span>
+                        {:else}
+                          <span class="proj__hint">{t("projects.revertUnavailable")}</span>
+                        {/if}
+                      </div>
                     </div>
                   {/if}
                 </li>
@@ -1330,6 +1413,46 @@
             <Save class="size-3.5" strokeWidth={2} />
           {/if}
           {t("projects.saveAndContinue")}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if revertDialog}
+  {@const pending = revertDialog}
+  <div class="proj__overlay">
+    <div
+      class="proj__dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="proj-revert-title"
+      tabindex="-1"
+    >
+      <div class="proj__dialoghead">
+        <AlertTriangle class="size-4 shrink-0" strokeWidth={1.75} />
+        <h2 id="proj-revert-title">{t("projects.revertBlockedTitle")}</h2>
+      </div>
+      <p>{t("projects.revertBlockedHint")}</p>
+      <ul class="proj__conflicts">
+        {#each pending.report.conflicts as conflict}
+          <li class="proj__conflict">
+            <code>{conflict.path}</code>
+            <span>{conflict.reason}</span>
+          </li>
+        {/each}
+      </ul>
+      <div class="proj__dialogactions">
+        <button type="button" class="proj__action" onclick={() => (revertDialog = null)}>
+          {t("projects.keepEditing")}
+        </button>
+        <button
+          type="button"
+          class="proj__action proj__action--danger"
+          disabled={revertingChange === pending.change.id}
+          onclick={() => void revertChange(pending.change, true)}
+        >
+          {t("projects.revertAnyway")}
         </button>
       </div>
     </div>

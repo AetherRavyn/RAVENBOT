@@ -41,6 +41,20 @@ pub struct FileChange {
     /// reported rather than approximated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff: Option<String>,
+    /// Absolute path used by the run's revert snapshot.
+    ///
+    /// The ledger keeps `path` as the tool resolved it (often relative). A
+    /// snapshot entry is keyed by the absolute path on disk, and conflict
+    /// checks need to join the two, so the resolved form travels beside it
+    /// instead of being guessed from `path` at revert time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_path: Option<String>,
+    /// SHA-256 of the bytes before this write (from the run snapshot).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_sha256: Option<String>,
+    /// SHA-256 of the bytes after this write, when they could be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_sha256: Option<String>,
     /// RFC 3339, matching every other timestamp in the schema.
     pub created_at: String,
 }
@@ -65,6 +79,9 @@ impl FileChange {
             lines_added: lines_added.max(0),
             lines_deleted: lines_deleted.max(0),
             diff: None,
+            snapshot_path: None,
+            before_sha256: None,
+            after_sha256: None,
             created_at: chrono::Utc::now().to_rfc3339(),
         }
     }

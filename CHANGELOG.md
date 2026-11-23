@@ -39,6 +39,34 @@ All notable changes to RAVENBOT are documented here.
   cancels the round in flight, and a background round emits a small event so
   the open conversation refreshes its banner and transcript.
 
+### Snapshot and revert
+
+- **Every mutating run gets a before-image** — the first file-writing or
+  shell/git/package tool in a run walks its workspace roots and stores each
+  regular file as a SHA-256 blob under `<RAVENBOT_HOME>/snapshots`, with the
+  path manifest in SQLite. Read-only runs pay nothing; generated directories
+  (`node_modules`, `target`, `.git`, caches) are skipped.
+- **Revert a run or one file** — Projects shows a Revert action on every
+  snapshotted change, and Runs & Diagnostics previews a whole-run revert before
+  changing anything. A run revert restores the files it wrote and deletes the
+  files it created; reverting one change restores that path to before its run.
+- **Newer work is protected** — a later run's write, a file edited after the
+  run, an unavailable before-image, or a symlinked/replaced path blocks the
+  revert. The preview names every conflict, and only a second explicit
+  confirmation sends `force`. Partial snapshots refuse deletion entirely rather
+  than guessing which files existed.
+- **Private, inspectable storage** — blobs are content-addressed, deduplicated,
+  and written with user-only permissions; symlinks are never followed into the
+  store. Startup and run persistence are unchanged; a snapshot survives a
+  restart and its manifest is queryable like the rest of the ledger. Shell
+  changes that never produced a `file_changes` row are deliberately outside a
+  run revert: the ledger is the list of paths a revert may touch.
+- **Bounded disk** — manifests older than seven days are pruned by the existing
+  audit-maintenance loop, and unreferenced blobs older than a day are removed.
+  `RAVENBOT_SNAPSHOT_RETENTION_DAYS=0` keeps them indefinitely;
+  `RAVENBOT_SNAPSHOT=0` disables capture on a workspace where a tree walk is
+  unwanted.
+
 ### Platform, remote and product surfaces
 
 - **Headless fleet daemon** — the installed service runs `ravenbot daemon`,

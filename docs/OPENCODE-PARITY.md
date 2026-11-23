@@ -84,7 +84,7 @@ but not the general one; **Missing** = no implementation.
 | Browser/computer | dock, `browser_dom`, `computer_control`, screenshot | browser tool | **Present** |
 | Multi-agent office | plan graph, roster, review judge, goal autopilot | subagents/agents | **Present** |
 | Goal loop for a 1:1 agent | durable thread goal, one-node graph pinned to the user thread, office review/gates, pause/resume/stop, restart-safe scheduling, same heartbeat in the headless daemon | session goal/todo loop | **Present** |
-| **File snapshot / revert** | `file_changes` ledger stores diffs but there is no restore command/UI | `packages/core/src/snapshot.ts`, VCS | **Missing (P0)** |
+| File snapshot / revert | content-addressed before-images, run/file revert previews, conflict checks, Projects and Runs actions | `packages/core/src/snapshot.ts`, VCS | **Present** |
 | **Isolated worktrees** | not present | `packages/core/src/worktree.ts` | **Missing (P1)** |
 | **LSP / project diagnostics** | no LSP client; code edits rely on compiler/test tools | project LSP settings in app | **Missing (P1)** |
 | **Unified patch tool** | `code_edit`/`file_edit` string edits; no `apply_patch` | `tool/patch*` | **Missing (P1)** |
@@ -117,24 +117,26 @@ agent had one turn. That gap is now closed:
 
 That turns “one good turn” into “works until the evidence says done”.
 
-### P0 — snapshot and revert
+### Shipped — snapshot and revert
 
-`file_changes` proves what changed, but cannot put the workspace back. A 24/7
-agent needs a rollback point per turn.
+The `file_changes` ledger proves what changed; it now also has a way back.
 
-Implementation sketch:
-
-1. Add `WorkspaceSnapshot` capture at run start when the workspace is a git
-   repo: `git stash create` (or a content-addressed tree in
-   `~/.local/share/ravenbot/snapshots/<account>/<hash>`), including untracked
-   files up to a size cap.
-2. Store `run_id → snapshot_id` in a new table.
-3. Add `revert_run(run_id)` and `revert_file_change(change_id)` commands:
-   restore selected paths from the snapshot; refuse if a later write touched
-   the same path unless the user confirms.
-4. Surface “Revert this turn” on the run/trace card and per-file diff viewer.
-5. Non-git workspaces: capture changed files only (from `file_changes`), not a
-   full tree; the ledger already names every path.
+- The first mutating tool in a run walks the workspace roots and writes every
+  regular file to a content-addressed blob store under
+  `<RAVENBOT_HOME>/snapshots`, with a path manifest in
+  `workspace_snapshots` / `workspace_snapshot_entries`. Generated trees
+  (`.git`, `node_modules`, `target`, caches) are skipped; caps mark a snapshot
+  partial instead of pretending it is complete.
+- `preview_run_revert` / `revert_run_files` restore the paths a run wrote and
+  delete the paths it created. `revert_file_change` restores one path to its
+  pre-run version.
+- A later write, a changed file hash, an unavailable before-image, a symlink, or
+  a path that escaped its root blocks the action. `force` is a separate,
+  explicit confirmation. A partial snapshot is never used to delete files it
+  did not see.
+- Blobs are private to the user and deduplicated. A shell command that wrote a
+  file without emitting a `file_changes` row remains outside a run revert; the
+  ledger is the contract for which paths may be touched.
 
 ### P1 — worktrees, LSP, patch
 
@@ -180,3 +182,9 @@ Implementation sketch:
 - Scheduling: `a_thread_goal_is_created_once_with_its_round_budget` and
   `a_thread_goal_yields_to_a_live_run` cover the due query, round budget and
   the live/paused-run guard.
+- Snapshot/revert: `a_file_write_is_journaled_with_a_revertable_before_image`
+  exercises capture → journal → restore through the real tool path;
+  `a_run_snapshot_restores_overwrites_and_deletes_created_files` and
+  `a_later_write_blocks_the_revert_until_forced` cover run-level revert and the
+  force gate. `RunsPanel` and `ProjectsView` DOM tests cover the preview and
+  confirmation flows.

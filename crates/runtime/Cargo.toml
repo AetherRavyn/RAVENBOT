@@ -23,6 +23,7 @@ serde_json.workspace = true
 jsonschema.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+sha2 = "0.10"
 tracing.workspace = true
 thiserror.workspace = true
 sqlx.workspace = true

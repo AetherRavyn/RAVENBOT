@@ -235,3 +235,57 @@ describe("ProjectsView editor", () => {
     expect(container.querySelector(".proj__editor")).toBeNull();
   });
 });
+
+describe("ProjectsView revert", () => {
+  it("reverts one file and asks before overwriting a later write", async () => {
+    const change = {
+      id: "change-1",
+      bot_id: "bot-1",
+      run_id: "run-1",
+      thread_id: "thread-1",
+      path: `${ROOT}/README.md`,
+      snapshot_path: `${ROOT}/README.md`,
+      skill: "file_write",
+      lines_added: 1,
+      lines_deleted: 1,
+      created_at: "2026-11-20T10:00:00Z",
+    };
+    const calls: Array<{ changeId: string; force: boolean }> = [];
+    serve({
+      list_recent_file_changes: [change],
+      file_change_diff:
+        "--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-# Acme\n+# Acme v2\n",
+      revert_file_change: (args: Record<string, unknown>) => {
+        calls.push(args as { changeId: string; force: boolean });
+        if (!args.force) {
+          return {
+            restored: [change.path],
+            deleted: [],
+            skipped: [],
+            conflicts: [
+              {
+                path: change.path,
+                reason: "A later write changed this file.",
+              },
+            ],
+          };
+        }
+        return { restored: [change.path], deleted: [], skipped: [], conflicts: [] };
+      },
+    });
+
+    const { container, getByText } = await openProjects();
+    const head = container.querySelector(".proj__changehead") as HTMLElement;
+    expect(head).toBeTruthy();
+    await fireEvent.click(head);
+
+    await waitFor(() => expect(getByText("Revert file")).toBeTruthy());
+    await fireEvent.click(getByText("Revert file"));
+    await waitFor(() => expect(getByText("This file changed after the run")).toBeTruthy());
+    expect(calls.at(-1)?.force).toBe(false);
+
+    await fireEvent.click(getByText("Revert anyway"));
+    await waitFor(() => expect(calls.at(-1)?.force).toBe(true));
+    expect(calls.at(-1)?.changeId).toBe("change-1");
+  });
+});

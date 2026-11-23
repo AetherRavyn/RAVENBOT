@@ -7484,10 +7484,12 @@ async fn list_recent_file_changes(
             String,
             i64,
             i64,
+            Option<String>,
             String,
         ),
     >(
-        "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted, created_at
+        "SELECT id, bot_id, run_id, thread_id, path, skill, lines_added, lines_deleted,
+                snapshot_path, created_at
          FROM file_changes
          ORDER BY created_at DESC, rowid DESC
          LIMIT ?",
@@ -7510,7 +7512,10 @@ async fn list_recent_file_changes(
                 lines_added: r.6,
                 lines_deleted: r.7,
                 diff: None,
-                created_at: r.8,
+                snapshot_path: r.8,
+                before_sha256: None,
+                after_sha256: None,
+                created_at: r.9,
             })
         })
         .collect())
@@ -7530,6 +7535,44 @@ async fn file_change_diff(state: State<'_, AppState>, id: Uuid) -> Result<Option
     ravenbot_db::queries::FileChangeQueries::diff_for(state.db.pool(), id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// What a whole-run revert would restore or delete, without touching files.
+#[tauri::command]
+async fn preview_run_revert(
+    state: State<'_, AppState>,
+    run_id: Uuid,
+) -> Result<ravenbot_runtime::snapshot::RevertReport, String> {
+    ravenbot_runtime::snapshot::preview_run(&state.db, run_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Revert every file the run wrote to its before-run state.
+///
+/// `force` is the user's confirmation that overwriting newer writes and
+/// deleting files the run created is intended.
+#[tauri::command]
+async fn revert_run_files(
+    state: State<'_, AppState>,
+    run_id: Uuid,
+    force: Option<bool>,
+) -> Result<ravenbot_runtime::snapshot::RevertReport, String> {
+    ravenbot_runtime::snapshot::revert_run(&state.db, run_id, force.unwrap_or(false))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Revert one file change to the version captured before its run.
+#[tauri::command]
+async fn revert_file_change(
+    state: State<'_, AppState>,
+    change_id: Uuid,
+    force: Option<bool>,
+) -> Result<ravenbot_runtime::snapshot::RevertReport, String> {
+    ravenbot_runtime::snapshot::revert_file_change(&state.db, change_id, force.unwrap_or(false))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Per-agent change totals for the projects view: files, writes, +lines, -lines.
@@ -21212,8 +21255,26 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 
 /// Signed backup before retention, then prune. Shared by the desktop shell and
 /// the headless daemon so audit policy does not depend on a window existing.
+/// How long before-images are kept. Zero keeps them until the user deletes
+/// them; the default bounds a 24/7 fleet's disk without surprising a user who
+/// wants to undo yesterday's work.
+fn snapshot_retention_days() -> u32 {
+    std::env::var("RAVENBOT_SNAPSHOT_RETENTION_DAYS")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .map(|days| days.min(3650))
+        .unwrap_or(7)
+}
+
 pub(crate) async fn audit_maintenance_loop(pool: sqlx::SqlitePool) {
     loop {
+        match ravenbot_runtime::snapshot::prune(&pool, snapshot_retention_days()).await {
+            Ok((snapshots, blobs)) if snapshots > 0 || blobs > 0 => {
+                tracing::info!(snapshots, blobs, "Pruned old file snapshots");
+            }
+            Ok(_) => {}
+            Err(error) => tracing::warn!(%error, "File snapshot retention failed"),
+        }
         let backup = run_audit_export_if_due(&pool).await;
         let backup_failed_due = matches!(backup, Some(Err(_)));
         match backup {
@@ -21371,6 +21432,9 @@ pub fn run() {
         list_file_changes,
         list_recent_file_changes,
         file_change_diff,
+        preview_run_revert,
+        revert_run_files,
+        revert_file_change,
         read_workspace_file,
         read_workspace_media,
         write_workspace_file,

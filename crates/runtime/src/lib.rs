@@ -8,6 +8,7 @@ pub mod governor;
 pub mod graph;
 pub mod orchestrator;
 pub mod quality_gate;
+pub mod snapshot;
 pub mod state;
 pub mod tree;
 pub mod work;
@@ -785,6 +786,7 @@ impl Runtime {
         bot: &ravenbot_core::Bot,
         skill: &str,
         result: &serde_json::Value,
+        working_dirs: &[std::path::PathBuf],
     ) {
         let payload = tool_payload(result);
         let Some(entries) = payload.get("file_changes").and_then(|v| v.as_array()) else {
@@ -793,6 +795,10 @@ impl Runtime {
         if entries.is_empty() {
             return;
         }
+        let snapshot = ravenbot_db::queries::SnapshotQueries::for_run(self.db.pool(), run.id)
+            .await
+            .ok()
+            .flatten();
         for entry in entries {
             let Some(path) = entry.get("path").and_then(|v| v.as_str()) else {
                 continue;
@@ -805,13 +811,74 @@ impl Runtime {
                 .get("lines_deleted")
                 .and_then(|v| v.as_i64())
                 .unwrap_or(0);
+            let diff = entry
+                .get("diff")
+                .and_then(|v| v.as_str())
+                .filter(|value| !value.trim().is_empty());
+            let is_new = entry
+                .get("is_new_file")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             // A change that touched nothing (a context-only hunk, a rewrite with
-            // identical content) is not a change. Recording it would inflate the
-            // file count and make a no-op look like work.
-            if added == 0 && deleted == 0 {
+            // identical content) is not a change. Deletions and empty new files
+            // have zero line counts but still have a diff or a creation marker,
+            // and dropping them would make both invisible to revert.
+            if added == 0 && deleted == 0 && diff.is_none() && !is_new {
                 continue;
             }
-            let change = ravenbot_core::FileChange::new(
+
+            // The skill reports the path it resolved. That absolute form is
+            // what the run snapshot keys on; a relative path is accepted only
+            // when it lands inside a configured root.
+            let absolute = entry
+                .get("absolute_path")
+                .and_then(|v| v.as_str())
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    let raw = std::path::Path::new(path);
+                    raw.is_absolute().then(|| raw.to_path_buf())
+                })
+                .or_else(|| {
+                    working_dirs
+                        .iter()
+                        .map(|root| root.join(path))
+                        .find(|candidate| candidate.exists())
+                });
+            let snapshot_path = absolute
+                .as_ref()
+                .filter(|candidate| {
+                    candidate.is_absolute()
+                        && (working_dirs.iter().any(|root| candidate.starts_with(root))
+                            || snapshot
+                                .as_ref()
+                                .is_some_and(|snapshot| candidate.starts_with(&snapshot.root)))
+                })
+                .map(|candidate| candidate.display().to_string());
+            let before_sha256 = match (&snapshot, &snapshot_path) {
+                (Some(snapshot), Some(snapshot_path)) => {
+                    ravenbot_db::queries::SnapshotQueries::entry_for_path(
+                        self.db.pool(),
+                        &snapshot.id,
+                        snapshot_path,
+                    )
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|entry| entry.sha256)
+                }
+                _ => None,
+            };
+            let after_sha256 = match &snapshot_path {
+                Some(snapshot_path) => {
+                    crate::snapshot::hash_path(std::path::Path::new(snapshot_path))
+                        .await
+                        .ok()
+                        .flatten()
+                }
+                None => None,
+            };
+
+            let mut change = ravenbot_core::FileChange::new(
                 bot.id,
                 Some(run.id),
                 Some(run.thread_id),
@@ -820,12 +887,10 @@ impl Runtime {
                 added,
                 deleted,
             )
-            .with_diff(
-                entry
-                    .get("diff")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string),
-            );
+            .with_diff(diff.map(str::to_string));
+            change.snapshot_path = snapshot_path;
+            change.before_sha256 = before_sha256;
+            change.after_sha256 = after_sha256;
             if let Err(e) =
                 ravenbot_db::queries::FileChangeQueries::insert(self.db.pool(), &change).await
             {
@@ -3284,6 +3349,20 @@ impl Runtime {
                 self.audit_denied_tool(bot, run, name, &denial).await;
                 return serde_json::json!({ "error": denial.explain() });
             }
+        }
+
+        // The before-image must exist before the tool can change anything.
+        // Capturing after the write would only record the result. A failed
+        // capture blocks this write: a 24/7 agent may not silently destroy the
+        // undo path it promised.
+        if let Err(error) =
+            crate::snapshot::capture_before_write(&self.db, skill_context, name).await
+        {
+            return serde_json::json!({
+                "error": format!(
+                    "Could not create a revert snapshot, so the tool was not run: {error}"
+                )
+            });
         }
 
         let result: Result<ravenbot_skills::SkillResult, ravenbot_skills::SkillError> = if name
@@ -6148,8 +6227,14 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
                 // question nobody could answer. Written here, it is a fact in
                 // the database that any view can read, live, without having
                 // seen the run happen.
-                self.journal_file_changes(run, &bot, &name, &result_json)
-                    .await;
+                self.journal_file_changes(
+                    run,
+                    &bot,
+                    &name,
+                    &result_json,
+                    &skill_context.working_dirs,
+                )
+                .await;
 
                 let mut extracted_sources = Vec::new();
                 extract_sources(&result_json, &mut extracted_sources);
@@ -9325,6 +9410,102 @@ mod integration_tests {
             !std::path::Path::new("/tmp/should-not-exist").exists(),
             "a denied tool still executed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_file_write_is_journaled_with_a_revertable_before_image() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let root = std::env::temp_dir().join(format!("rb-snapshot-write-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("note.txt"), "before\n").unwrap();
+
+        let mut bot = Bot::new("Writer", "snapshot integration");
+        bot.skills = vec!["file_write".to_string()];
+        bot.permissions = vec![ravenbot_core::Permission::FileSystem {
+            paths: vec!["/".to_string()],
+        }];
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let thread = Thread::new(bot.id, "snapshot");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+        let run = Run::new(bot.id, thread.id);
+        ravenbot_db::queries::RunQueries::insert(db.pool(), &run)
+            .await
+            .unwrap();
+
+        let skill = ravenbot_skills::SkillRegistry::new_builtin()
+            .get("file_write")
+            .expect("file_write is registered");
+        let ctx = SkillContext::new(
+            bot.id,
+            run.id,
+            thread.id,
+            ravenbot_core::SandboxTier::OsLevel,
+        )
+        .with_working_dirs(vec![root.clone()])
+        .confined();
+        let path = root.join("note.txt");
+        let result = runtime
+            .execute_tool_call(
+                &bot,
+                &run,
+                &[skill],
+                &ctx,
+                "file_write",
+                &serde_json::json!({
+                    "path": path.display().to_string(),
+                    "content": "after\n"
+                }),
+            )
+            .await;
+        assert_eq!(
+            result.get("success").and_then(|value| value.as_bool()),
+            Some(true),
+            "the write should succeed: {result}"
+        );
+        runtime
+            .journal_file_changes(&run, &bot, "file_write", &result, &ctx.working_dirs)
+            .await;
+
+        let snapshot = ravenbot_db::queries::SnapshotQueries::for_run(db.pool(), run.id)
+            .await
+            .unwrap()
+            .expect("snapshot");
+        assert!(snapshot.complete);
+        let change = ravenbot_db::queries::FileChangeQueries::for_run(db.pool(), run.id)
+            .await
+            .unwrap()
+            .pop()
+            .expect("journaled change");
+        assert_eq!(
+            change.snapshot_path.as_deref(),
+            Some(path.to_string_lossy().as_ref())
+        );
+        assert!(change.before_sha256.is_some());
+        assert!(change.after_sha256.is_some());
+        let entry = ravenbot_db::queries::SnapshotQueries::entry_for_path(
+            db.pool(),
+            &snapshot.id,
+            change.snapshot_path.as_deref().unwrap(),
+        )
+        .await
+        .unwrap()
+        .expect("before-image entry");
+        assert!(entry.blob.is_some());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "after\n");
+
+        let report = crate::snapshot::revert_run(&db, run.id, false)
+            .await
+            .expect("revert");
+        assert!(report.conflicts.is_empty(), "{report:?}");
+        assert_eq!(report.restored.len(), 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "before\n");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[tokio::test]

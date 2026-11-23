@@ -129,11 +129,18 @@ impl Skill for CodeEditSkill {
         // split, because "changed 40 lines" does not say which file to look at.
         // The patch text comes along with it so the ledger can show the hunks,
         // not only their arithmetic.
+        //
+        // The absolute form is what the run snapshot keys on. A patch applies
+        // relative to the tool's `path` directory, which is not always the
+        // workspace root, so joining at journal time would guess wrong.
+        let patch_dir = exec::resolve_cwd(ctx, path)?;
         let file_changes: Vec<serde_json::Value> = crate::diff::patch_file_diffs(patch)
             .into_iter()
             .map(|p| {
+                let absolute = patch_dir.join(&p.path);
                 serde_json::json!({
                     "path": p.path,
+                    "absolute_path": absolute.display().to_string(),
                     "lines_added": p.added,
                     "lines_deleted": p.deleted,
                     "diff": p.text,

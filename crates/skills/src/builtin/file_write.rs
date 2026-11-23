@@ -188,6 +188,9 @@ impl Skill for FileWriteSkill {
             // produced those two numbers can.
             "file_changes": [{
                 "path": path.display().to_string(),
+                // The ledger keeps `path` as the tool saw it; this is the
+                // absolute file the run snapshot keys on.
+                "absolute_path": path.display().to_string(),
                 "lines_added": lines_added,
                 "lines_deleted": lines_deleted,
                 "diff": diff,

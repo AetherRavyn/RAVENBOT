@@ -19,7 +19,7 @@ pub enum MigrationError {
 /// else, because that is the only thing it can honestly describe: a database
 /// whose `_migrations` table tops out at 23 is at 23, whatever an earlier
 /// constant still says.
-pub const CURRENT_VERSION: i32 = 70;
+pub const CURRENT_VERSION: i32 = 71;
 
 /// SQL for each migration version
 const MIGRATIONS: &[(i32, &str)] = &[
@@ -132,6 +132,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (68, include_str!("migrations/068_goals.sql")),
     (69, include_str!("migrations/069_context_summaries.sql")),
     (70, include_str!("migrations/070_goal_autopilot.sql")),
+    (71, include_str!("migrations/071_workspace_snapshots.sql")),
 ];
 
 /// Split a migration into executable statements without breaking trigger
