@@ -16,6 +16,7 @@
    *    the error string the run recorded, and that is all it needs.
    */
   import { invoke } from "@tauri-apps/api/core";
+  import { tick } from "svelte";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/toast";
   import { Loader2, AlertTriangle, CheckCircle2, XCircle, Clock, Play, RefreshCw, RotateCcw } from "@lucide/svelte";
@@ -52,6 +53,7 @@
   let previewingId = $state<string | null>(null);
   let revertingId = $state<string | null>(null);
   let revertPending = $state<{ run: Run; report: RevertReport } | null>(null);
+  let revertDialogEl = $state<HTMLElement | null>(null);
 
   async function load() {
     isLoading = true;
@@ -68,6 +70,10 @@
 
   // Load on mount.
   $effect(() => { load(); });
+
+  $effect(() => {
+    if (revertPending) void tick().then(() => revertDialogEl?.focus());
+  });
 
   async function resumeRun(id: string) {
     if (resumingId) return;
@@ -264,6 +270,7 @@
       aria-modal="true"
       aria-labelledby="run-revert-title"
       tabindex="-1"
+      bind:this={revertDialogEl}
       onclick={(e) => e.stopPropagation()}
     >
       <div class="flex items-center gap-2 border-b border-[var(--hairline)] pb-2">

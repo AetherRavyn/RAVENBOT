@@ -188,6 +188,7 @@
   let revertingChange = $state<string | null>(null);
   /** A blocked revert waiting for the user to accept overwriting newer work. */
   let revertDialog = $state<{ change: FileChange; report: RevertReport } | null>(null);
+  let revertDialogEl = $state<HTMLElement | null>(null);
 
   onMount(() => {
     void load();
@@ -216,6 +217,10 @@
   // never keeps typing behind an overlay.
   $effect(() => {
     if (pendingIntent) void tick().then(() => dialogEl?.focus());
+  });
+
+  $effect(() => {
+    if (revertDialog) void tick().then(() => revertDialogEl?.focus());
   });
 
   async function load() {
@@ -1428,6 +1433,7 @@
       aria-modal="true"
       aria-labelledby="proj-revert-title"
       tabindex="-1"
+      bind:this={revertDialogEl}
     >
       <div class="proj__dialoghead">
         <AlertTriangle class="size-4 shrink-0" strokeWidth={1.75} />
