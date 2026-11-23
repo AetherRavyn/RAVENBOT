@@ -87,7 +87,7 @@ but not the general one; **Missing** = no implementation.
 | File snapshot / revert | content-addressed before-images, run/file revert previews, conflict checks, Projects and Runs actions | `packages/core/src/snapshot.ts`, VCS | **Present** |
 | **Isolated worktrees** | not present | `packages/core/src/worktree.ts` | **Missing (P1)** |
 | **LSP / project diagnostics** | no LSP client; code edits rely on compiler/test tools | project LSP settings in app | **Missing (P1)** |
-| **Unified patch tool** | `code_edit`/`file_edit` string edits; no `apply_patch` | `tool/patch*` | **Missing (P1)** |
+| Unified patch tool | `file_edit` (also `apply_patch`) parses standard unified diffs and Codex patches in-process, validates every hunk, writes atomically, and journals each file | `tool/patch*` | **Present** |
 | **Timeline virtualisation** | history paginated, all loaded rows remain mounted | `session/timeline/virtualizer.tsx` | **Partial (P1)** |
 | **Worker markdown/highlight** | marked + custom tokens on the UI thread | `markdown.worker.ts` | **Missing (P2)** |
 | **MCP event-triggered jobs** | MCP client only; scheduler triggers are cron/webhook | automation from MCP events | **Missing (P2)** |
@@ -138,16 +138,30 @@ The `file_changes` ledger proves what changed; it now also has a way back.
   file without emitting a `file_changes` row remains outside a run revert; the
   ledger is the contract for which paths may be touched.
 
-### P1 — worktrees, LSP, patch
+### Shipped — in-process patch application
+
+`file_edit`, reached through the model-facing `apply_patch` alias, now applies
+a standard unified diff without shelling out to `patch(1)`.
+
+- Hunk headers, context, additions, and deletions are parsed with the hunk
+  counts as the boundary, so a removed line beginning with `--` is not mistaken
+  for a file header.
+- Every file and hunk is checked before the first write; a mismatch leaves the
+  workspace unchanged. Adds, deletes, multi-file diffs, CRLF, and a missing
+  final newline are supported; renames and binary diffs are refused with a
+  clear message.
+- Writes go through a temp file and rename, preserve the existing mode, and
+  restore earlier files if a later write fails. The workspace snapshot and
+  `file_changes` ledger receive each file's absolute path, diff, and hashes.
+- `code_edit` remains for callers that explicitly want the system patch tool.
+
+### P1 — worktrees and LSP
 
 - **Worktrees:** a task gets its own `git worktree` so a failed 24/7 run cannot
   dirty the main checkout. Reuse the existing project folder as the base and
   list/remove worktrees from the project settings.
 - **LSP:** start the language server for the project root, surface diagnostics
   after writes and before “done”; this catches type errors that tests miss.
-- **Patch tool:** accept a unified diff, validate paths against the workspace,
-  apply with a context check, and record it as one `file_change`. This is the
-  tool OpenCode’s edit loop is built around.
 
 ## 6. Renderer roadmap (after the typography change)
 
@@ -184,7 +198,11 @@ The `file_changes` ledger proves what changed; it now also has a way back.
   the live/paused-run guard.
 - Snapshot/revert: `a_file_write_is_journaled_with_a_revertable_before_image`
   exercises capture → journal → restore through the real tool path;
-  `a_run_snapshot_restores_overwrites_and_deletes_created_files` and
-  `a_later_write_blocks_the_revert_until_forced` cover run-level revert and the
-  force gate. `RunsPanel` and `ProjectsView` DOM tests cover the preview and
-  confirmation flows.
+  `an_apply_patch_alias_applies_a_unified_diff_and_journals_it` does the same
+  through `apply_patch`; `a_run_snapshot_restores_overwrites_and_deletes_created_files`
+  and `a_later_write_blocks_the_revert_until_forced` cover run-level revert and
+  the force gate. `RunsPanel` and `ProjectsView` DOM tests cover the preview
+  and confirmation flows.
+- Patch tool: `patch::tests` covers multi-file parsing, add/delete, CRLF,
+  no-final-newline, mismatched context, and rename rejection; the file-edit
+  tests cover the real atomic write path.

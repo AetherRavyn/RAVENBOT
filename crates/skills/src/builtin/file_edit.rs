@@ -58,7 +58,7 @@ impl Skill for FileEditSkill {
         "Edit File"
     }
     fn description(&self) -> &str {
-        "Edit one or more files with a Codex-style apply_patch (*** Begin Patch / *** Update File) or exact old/new replacements. Applies atomically: a patch that does not match changes nothing. Use code_edit for a standard unified diff."
+        "Edit one or more files with a standard unified diff (---/+++/@@), a Codex-style apply_patch (*** Begin Patch / *** Update File), or exact old/new replacements. Applies atomically: a patch that does not match changes nothing."
     }
     fn version(&self) -> &str {
         "1.0.0"
@@ -74,7 +74,11 @@ impl Skill for FileEditSkill {
             "properties": {
                 "patch": {
                     "type": "string",
-                    "description": "Codex apply_patch text: *** Begin Patch, then *** Update File/*** Add File/*** Delete File, hunks starting with @@, and *** End Patch. Context lines start with a space, removed with -, added with +."
+                    "description": "A standard unified diff (--- a/file, +++ b/file, @@ -1,2 +1,2 @@) or a Codex apply_patch (*** Begin Patch, then *** Update File/*** Add File/*** Delete File and *** End Patch). Context lines start with a space, removed with -, added with +."
+                },
+                "dry_run": {
+                    "type": "boolean",
+                    "description": "Validate and report the change without writing anything."
                 },
                 "path": {
                     "type": "string",
@@ -134,10 +138,27 @@ impl Skill for FileEditSkill {
                 .ok_or_else(|| SkillError::Execution("No working directory.".into()))?,
         };
         if let Some(patch) = args.get("patch").and_then(|v| v.as_str()) {
-            return apply_codex_patch(ctx, &base, patch).await;
+            let dry_run = args
+                .get("dry_run")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let trimmed = patch.trim_start();
+            if trimmed.starts_with("*** Begin Patch") {
+                return apply_codex_patch(ctx, &base, patch, dry_run).await;
+            }
+            if trimmed.starts_with("--- ") || trimmed.starts_with("diff --git ") {
+                return apply_unified_patch(ctx, &base, patch, dry_run).await;
+            }
+            return Ok(SkillResult::failure(
+                "Patch text must start with '*** Begin Patch', '--- ', or 'diff --git '. Send the complete patch, not prose around it.",
+            ));
         }
         if let Some(edits) = args.get("edits").and_then(|v| v.as_array()) {
-            return apply_exact_edits(ctx, &base, default_file.as_deref(), edits).await;
+            let dry_run = args
+                .get("dry_run")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            return apply_exact_edits(ctx, &base, default_file.as_deref(), edits, dry_run).await;
         }
         Err(SkillError::InvalidArguments(
             "Provide 'patch' or 'edits'".into(),
@@ -145,10 +166,17 @@ impl Skill for FileEditSkill {
     }
 }
 
+impl Default for FileEditSkill {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 async fn apply_codex_patch(
     ctx: &SkillContext,
     base: &Path,
     patch: &str,
+    dry_run: bool,
 ) -> Result<SkillResult, SkillError> {
     let files = match parse_codex_patch(patch) {
         Ok(files) => files,
@@ -238,6 +266,14 @@ async fn apply_codex_patch(
         }));
     }
 
+    if dry_run {
+        return Ok(SkillResult::success(serde_json::json!({
+            "dry_run": true,
+            "files": changes,
+            "file_changes": changes,
+        })));
+    }
+
     for (path, content) in &writes {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
@@ -261,11 +297,223 @@ async fn apply_codex_patch(
     })))
 }
 
+/// Apply a standard unified diff in-process, with a full validation pass
+/// before any file is touched.
+async fn apply_unified_patch(
+    ctx: &SkillContext,
+    base: &Path,
+    patch: &str,
+    dry_run: bool,
+) -> Result<SkillResult, SkillError> {
+    let files = match crate::patch::parse(patch) {
+        Ok(files) => files,
+        Err(error) => return Ok(SkillResult::failure(error)),
+    };
+    if files.is_empty() {
+        return Ok(SkillResult::failure(
+            "The unified diff contains no file sections. Nothing was changed.",
+        ));
+    }
+
+    let mut writes: Vec<(PathBuf, String, Option<String>)> = Vec::new();
+    let mut deletes: Vec<(PathBuf, String)> = Vec::new();
+    let mut changes = Vec::new();
+
+    for file in &files {
+        let Some(raw_path) = file.path() else {
+            return Ok(SkillResult::failure(
+                "A file section has no path on either side. Nothing was changed.",
+            ));
+        };
+        if raw_path.is_empty()
+            || std::path::Path::new(raw_path).is_absolute()
+            || raw_path.contains('\\')
+            || raw_path.split('/').any(|part| part == "..")
+        {
+            return Ok(SkillResult::failure(format!(
+                "The patch names '{raw_path}', which is not a relative path inside the workspace. Use paths like 'src/lib.rs'."
+            )));
+        }
+        let full = resolve(ctx, base, raw_path)?;
+        if let Some(reason) = crate::safety::protected_path_reason(&full, &ctx.working_dirs) {
+            return Ok(SkillResult::failure(reason));
+        }
+        let absolute = full.display().to_string();
+
+        if file.is_add() {
+            if full.exists() {
+                return Ok(SkillResult::failure(format!(
+                    "The diff adds {raw_path}, but that path already exists. Nothing was changed."
+                )));
+            }
+            let content = match crate::patch::apply("", file) {
+                Ok(content) => content,
+                Err(error) => {
+                    return Ok(SkillResult::failure(format!(
+                        "Could not build {raw_path} from the patch: {error}"
+                    )))
+                }
+            };
+            writes.push((full, content, None));
+            changes.push(serde_json::json!({
+                "path": raw_path,
+                "absolute_path": &absolute,
+                "lines_added": file.lines_added(),
+                "lines_deleted": 0,
+                "diff": file.raw,
+            }));
+            continue;
+        }
+
+        let existing = match tokio::fs::read_to_string(&full).await {
+            Ok(existing) => existing,
+            Err(error) => {
+                return Ok(SkillResult::failure(format!(
+                    "Could not read {raw_path}: {error}. Nothing was changed."
+                )))
+            }
+        };
+
+        if file.is_delete() {
+            let deleted = file.lines_deleted().max(existing.lines().count());
+            deletes.push((full, existing));
+            changes.push(serde_json::json!({
+                "path": raw_path,
+                "absolute_path": &absolute,
+                "lines_added": 0,
+                "lines_deleted": deleted,
+                "diff": file.raw,
+            }));
+            continue;
+        }
+
+        let content = match crate::patch::apply(&existing, file) {
+            Ok(content) => content,
+            Err(error) => {
+                return Ok(SkillResult::failure(format!(
+                    "Patch for {raw_path} failed: {error} Nothing was changed."
+                )))
+            }
+        };
+        writes.push((full, content, Some(existing)));
+        changes.push(serde_json::json!({
+            "path": raw_path,
+            "absolute_path": &absolute,
+            "lines_added": file.lines_added(),
+            "lines_deleted": file.lines_deleted(),
+            "diff": file.raw,
+        }));
+    }
+
+    if dry_run {
+        return Ok(SkillResult::success(serde_json::json!({
+            "dry_run": true,
+            "files": changes,
+            "file_changes": changes,
+        })));
+    }
+
+    let mut applied_writes: Vec<usize> = Vec::new();
+    for (index, (path, content, _)) in writes.iter().enumerate() {
+        if let Err(error) = write_patch_file(path, content).await {
+            restore_patch_files(&writes, &applied_writes, &[], &[]).await;
+            return Err(error);
+        }
+        applied_writes.push(index);
+    }
+    let mut applied_deletes: Vec<usize> = Vec::new();
+    for (index, (path, _)) in deletes.iter().enumerate() {
+        if let Err(error) = tokio::fs::remove_file(path).await {
+            restore_patch_files(&writes, &applied_writes, &deletes, &applied_deletes).await;
+            return Err(SkillError::Io(format!(
+                "Could not delete {}: {error}",
+                path.display()
+            )));
+        }
+        applied_deletes.push(index);
+    }
+
+    Ok(SkillResult::success(serde_json::json!({
+        "applied": true,
+        "files": changes,
+        "file_changes": changes,
+    })))
+}
+
+async fn restore_patch_files(
+    writes: &[(PathBuf, String, Option<String>)],
+    applied_writes: &[usize],
+    deletes: &[(PathBuf, String)],
+    applied_deletes: &[usize],
+) {
+    for index in applied_writes.iter().rev() {
+        let (path, _, original) = &writes[*index];
+        match original {
+            Some(original) => {
+                let _ = write_patch_file(path, original).await;
+            }
+            None => {
+                let _ = tokio::fs::remove_file(path).await;
+            }
+        }
+    }
+    for index in applied_deletes.iter().rev() {
+        let (path, original) = &deletes[*index];
+        let _ = write_patch_file(path, original).await;
+    }
+}
+
+async fn write_patch_file(path: &Path, content: &str) -> Result<(), SkillError> {
+    let Some(parent) = path.parent() else {
+        return Err(SkillError::Io(format!(
+            "{} has no parent directory.",
+            path.display()
+        )));
+    };
+    tokio::fs::create_dir_all(parent)
+        .await
+        .map_err(|error| SkillError::Io(error.to_string()))?;
+    #[cfg(unix)]
+    let mode = tokio::fs::metadata(path).await.ok().map(|meta| {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode() & 0o7777
+    });
+    let temp = parent.join(format!(".ravenbot-patch-{}", uuid::Uuid::new_v4()));
+    tokio::fs::write(&temp, content)
+        .await
+        .map_err(|error| SkillError::Io(error.to_string()))?;
+    #[cfg(unix)]
+    if let Some(mode) = mode {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) =
+            tokio::fs::set_permissions(&temp, std::fs::Permissions::from_mode(mode)).await
+        {
+            let _ = tokio::fs::remove_file(&temp).await;
+            return Err(SkillError::Io(error.to_string()));
+        }
+    }
+    #[cfg(windows)]
+    {
+        if path.exists() {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+    }
+    if let Err(error) = tokio::fs::rename(&temp, path).await {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(SkillError::Io(format!(
+            "Could not replace {}: {error}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
 async fn apply_exact_edits(
     ctx: &SkillContext,
     base: &Path,
     default_file: Option<&Path>,
     edits: &[serde_json::Value],
+    dry_run: bool,
 ) -> Result<SkillResult, SkillError> {
     if edits.is_empty() {
         return Err(SkillError::InvalidArguments("'edits' is empty".into()));
@@ -333,6 +581,13 @@ async fn apply_exact_edits(
             "lines_added": new.lines().count(),
             "lines_deleted": old.lines().count(),
         }));
+    }
+    if dry_run {
+        return Ok(SkillResult::success(serde_json::json!({
+            "dry_run": true,
+            "files": changes,
+            "file_changes": changes,
+        })));
     }
     for (path, content) in writes {
         tokio::fs::write(&path, content).await.map_err(|error| {
@@ -563,6 +818,49 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ravenbot-file-edit-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[tokio::test]
+    async fn a_standard_unified_diff_updates_adds_and_deletes_files() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(dir.join("old.txt"), "bye\n").unwrap();
+        let patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1,1 @@\n+hello\n--- a/old.txt\n+++ /dev/null\n@@ -1,1 +0,0 @@\n-bye\n";
+
+        let result = FileEditSkill::new()
+            .execute(&context(&dir), serde_json::json!({"patch": patch}))
+            .await
+            .expect("execute");
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "one\nTWO\nthree\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("new.txt")).unwrap(),
+            "hello\n"
+        );
+        assert!(!dir.join("old.txt").exists());
+        let changes = result.output["file_changes"].as_array().expect("changes");
+        assert_eq!(changes.len(), 3);
+        assert!(changes
+            .iter()
+            .all(|change| change["absolute_path"].as_str().is_some()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn a_standard_diff_with_a_bad_hunk_changes_nothing() {
+        let dir = temp_dir();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        let patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1,1 +1,1 @@\n-missing\n+new\n";
+        let result = FileEditSkill::new()
+            .execute(&context(&dir), serde_json::json!({"patch": patch}))
+            .await
+            .expect("execute");
+        assert!(!result.success);
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "one\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

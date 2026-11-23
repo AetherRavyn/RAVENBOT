@@ -5373,7 +5373,7 @@ impl Runtime {
 - For a real web page, call browser_open(url), then browser_dom action=snapshot before click, fill, press, or eval. browser_navigate is a headless text fetch only; it cannot click, fill, or inspect a live DOM. Use computer_control only for desktop apps, not for a web page.\n\
 - Computer control is off by default and blocked on Wayland until the user opts in under Settings → Computer. If it reports a missing backend, name the missing xdotool/ydotool/wtype dependency and use browser tools for web work instead of retrying.\n\
 - Use shell_exec for builds, tests, git, and processes — not for browsing the filesystem. Do not sleep or poll for a process; run it with a timeout and inspect the result.\n\
-- Read an existing file before overwriting it. Prefer file_edit for small exact replacements (Codex-style patches or old/new text) and code_edit for multi-file or multi-hunk unified diffs. Treat unfamiliar files as someone else's work: inspect them before deleting or rewriting.\n\
+- Read an existing file before overwriting it. Prefer file_edit (also accepted as apply_patch) for a complete standard unified diff, a Codex patch, or exact old/new replacements: it checks every hunk in-process before writing and changes nothing on a mismatch. code_edit remains available for the system patch tool. Treat unfamiliar files as someone else's work: inspect them before deleting or rewriting.\n\
 - Issue independent reads and searches together in one tool round; the runtime runs them in parallel. Do not serialize work that has no dependency.\n\
 - After a tool result, check success and exit_code. If it failed, change the approach; never repeat the same failing call. A sandbox denial is policy, not a command bug — adapt instead of retrying.\n\
 - If a file named in the task does not exist, inspect the workspace tree once, adapt the task, or write the blocker to Shared/STATUS.md. Do not search the machine.\n\
@@ -9504,6 +9504,90 @@ mod integration_tests {
         assert!(report.conflicts.is_empty(), "{report:?}");
         assert_eq!(report.restored.len(), 1);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "before\n");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[tokio::test]
+    async fn an_apply_patch_alias_applies_a_unified_diff_and_journals_it() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let root = std::env::temp_dir().join(format!("rb-snapshot-patch-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("note.txt"), "one\n").unwrap();
+
+        let mut bot = Bot::new("Patcher", "snapshot integration");
+        bot.skills = vec!["file_edit".to_string()];
+        bot.permissions = vec![ravenbot_core::Permission::FileSystem {
+            paths: vec!["/".to_string()],
+        }];
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let thread = Thread::new(bot.id, "patch");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+        let run = Run::new(bot.id, thread.id);
+        ravenbot_db::queries::RunQueries::insert(db.pool(), &run)
+            .await
+            .unwrap();
+
+        let skill = ravenbot_skills::SkillRegistry::new_builtin()
+            .get("file_edit")
+            .expect("file_edit is registered");
+        let ctx = SkillContext::new(
+            bot.id,
+            run.id,
+            thread.id,
+            ravenbot_core::SandboxTier::OsLevel,
+        )
+        .with_working_dirs(vec![root.clone()])
+        .confined();
+        let patch = "--- a/note.txt\n+++ b/note.txt\n@@ -1,1 +1,1 @@\n-one\n+two\n";
+        let result = runtime
+            .execute_tool_call(
+                &bot,
+                &run,
+                &[skill],
+                &ctx,
+                "apply_patch",
+                &serde_json::json!({ "patch": patch }),
+            )
+            .await;
+        assert_eq!(
+            result.get("success").and_then(|value| value.as_bool()),
+            Some(true),
+            "the patch should succeed: {result}"
+        );
+        runtime
+            .journal_file_changes(&run, &bot, "file_edit", &result, &ctx.working_dirs)
+            .await;
+
+        let change = ravenbot_db::queries::FileChangeQueries::for_run(db.pool(), run.id)
+            .await
+            .unwrap()
+            .pop()
+            .expect("journaled change");
+        assert_eq!(
+            change.snapshot_path.as_deref(),
+            Some(root.join("note.txt").to_string_lossy().as_ref())
+        );
+        assert!(change.before_sha256.is_some());
+        assert!(change.after_sha256.is_some());
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.txt")).unwrap(),
+            "two\n"
+        );
+
+        let report = crate::snapshot::revert_run(&db, run.id, false)
+            .await
+            .expect("revert");
+        assert!(report.conflicts.is_empty(), "{report:?}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.txt")).unwrap(),
+            "one\n"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }

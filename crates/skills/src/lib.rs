@@ -13,6 +13,7 @@ pub mod diff;
 pub mod exec;
 pub mod http;
 pub mod local;
+pub mod patch;
 pub mod processes;
 pub mod registry;
 pub mod safety;

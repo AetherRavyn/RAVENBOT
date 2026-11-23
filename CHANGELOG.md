@@ -70,6 +70,22 @@ All notable changes to RAVENBOT are documented here.
   `RAVENBOT_SNAPSHOT=0` disables capture on a workspace where a tree walk is
   unwanted.
 
+### In-process patch application
+
+- **`file_edit` / `apply_patch` now accepts a standard unified diff** as well
+  as a Codex `*** Begin Patch`. The diff is parsed and applied in-process:
+  exact hunk context is required, a mismatch changes nothing, and new files,
+  deletions, multi-file diffs, CRLF files, and `\ No newline at end of file`
+  are handled. Paths must stay inside the workspace and symlinked/replaced
+  parents are refused.
+- **Atomic and recoverable** — every file is validated before the first write;
+  writes use a temp file plus rename and preserve the existing mode; a failure
+  mid-apply restores the files already written. The run snapshot and
+  `file_changes` ledger see each file with its absolute path, diff, and
+  before/after hashes, so a patch is as revertable as any other write.
+- `code_edit` remains available for the system `patch(1)` path, but the common
+  edit loop no longer depends on that binary.
+
 ### Platform, remote and product surfaces
 
 - **Headless fleet daemon** — the installed service runs `ravenbot daemon`,
