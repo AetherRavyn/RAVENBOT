@@ -4,6 +4,18 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Rendering and harness parity
+
+- **OpenCode-style prose rendering** — message Markdown now uses the
+  session-ui rhythm RAVENBOT was missing: 14px body at 160% line height,
+  17/15/14px headings with hierarchical margins, 32px list indents, 8px
+  list-item spacing, hover-only link underlines, and quiet 8%-fill inline
+  code. The token renderer and its HTML/link safety checks are unchanged.
+- **Harness audit** — `docs/OPENCODE-PARITY.md` maps OpenCode's desktop and
+  markdown worker/cache system against RAVENBOT, and lists the remaining
+  24/7 gaps: a goal loop for 1:1 agent threads, snapshot/revert, worktrees,
+  LSP diagnostics, and a unified patch tool.
+
 ### Platform, remote and product surfaces
 
 - **Headless fleet daemon** — the installed service runs `ravenbot daemon`,
