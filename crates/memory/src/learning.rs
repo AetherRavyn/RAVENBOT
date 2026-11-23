@@ -1,17 +1,26 @@
+use chrono::Utc;
+use ravenbot_core::{AgentIntelligence, AgentLearning};
 use sqlx::SqlitePool;
 use uuid::Uuid;
-use chrono::Utc;
-use ravenbot_core::{AgentLearning, AgentIntelligence};
 
 pub struct LearningEngine {
     pool: SqlitePool,
 }
 
 impl LearningEngine {
-    pub fn new(pool: SqlitePool) -> Self { Self { pool } }
+    pub fn new(pool: SqlitePool) -> Self {
+        Self { pool }
+    }
 
     /// Record a learning — called after every task, makes agent smarter
-    pub async fn record(&self, bot_id: Uuid, chatroom_id: Option<Uuid>, learning_type: &str, content: &str, success: bool) -> Result<(), String> {
+    pub async fn record(
+        &self,
+        bot_id: Uuid,
+        chatroom_id: Option<Uuid>,
+        learning_type: &str,
+        content: &str,
+        success: bool,
+    ) -> Result<(), String> {
         let now = Utc::now();
         sqlx::query(
             "INSERT INTO agent_learnings (id, bot_id, chatroom_id, learning_type, content, success_rate, tasks_completed, tasks_failed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -35,21 +44,51 @@ impl LearningEngine {
     }
 
     async fn update_intelligence(&self, bot_id: Uuid) -> Result<(), String> {
-        let (memories,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memory_facts WHERE bot_id = ?")
-            .bind(bot_id.to_string()).fetch_one(&self.pool).await.map_err(|e| e.to_string())?;
-        let (office_mems,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM office_memories WHERE created_by = ?")
-            .bind(bot_id.to_string()).fetch_one(&self.pool).await.map_err(|e| e.to_string()).unwrap_or((0,));
-        let (learnings,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM agent_learnings WHERE bot_id = ?")
-            .bind(bot_id.to_string()).fetch_one(&self.pool).await.map_err(|e| e.to_string())?;
-        let (completed,): (i64,) = sqlx::query_as("SELECT COALESCE(SUM(tasks_completed),0) FROM agent_learnings WHERE bot_id = ?")
-            .bind(bot_id.to_string()).fetch_one(&self.pool).await.map_err(|e| e.to_string())?;
-        let (failed,): (i64,) = sqlx::query_as("SELECT COALESCE(SUM(tasks_failed),0) FROM agent_learnings WHERE bot_id = ?")
-            .bind(bot_id.to_string()).fetch_one(&self.pool).await.map_err(|e| e.to_string())?;
+        let (memories,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM memory_facts WHERE bot_id = ?")
+                .bind(bot_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        let (office_mems,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM office_memories WHERE created_by = ?")
+                .bind(bot_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| e.to_string())
+                .unwrap_or((0,));
+        let (learnings,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM agent_learnings WHERE bot_id = ?")
+                .bind(bot_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
+        let (completed,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(SUM(tasks_completed),0) FROM agent_learnings WHERE bot_id = ?",
+        )
+        .bind(bot_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        let (failed,): (i64,) = sqlx::query_as(
+            "SELECT COALESCE(SUM(tasks_failed),0) FROM agent_learnings WHERE bot_id = ?",
+        )
+        .bind(bot_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
         let total = (completed + failed).max(1) as f32;
         let success_rate = completed as f32 / total;
         let streak: i64 = completed; // simplified
-        // Intelligence score grows with data: memories + learnings + success
-        let score = ((memories as f32 * 0.1 + office_mems as f32 * 0.15 + learnings as f32 * 0.2 + success_rate * 0.5).min(1.0) * 100.0).round() / 100.0;
+                                     // Intelligence score grows with data: memories + learnings + success
+        let score = ((memories as f32 * 0.1
+            + office_mems as f32 * 0.15
+            + learnings as f32 * 0.2
+            + success_rate * 0.5)
+            .min(1.0)
+            * 100.0)
+            .round()
+            / 100.0;
 
         sqlx::query(
             "INSERT OR REPLACE INTO agent_intelligence (bot_id, total_memories, office_memories, learnings_count, intelligence_score, tasks_today, success_streak, last_active, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -80,8 +119,14 @@ impl LearningEngine {
                 intelligence_score: r.4 as f32,
                 tasks_today: r.5 as u32,
                 success_streak: r.6 as u32,
-                last_active: r.7.and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok().map(|dt| dt.with_timezone(&Utc))),
-                updated_at: chrono::DateTime::parse_from_rfc3339(&r.8).map(|dt| dt.with_timezone(&Utc)).unwrap_or_else(|_| Utc::now()),
+                last_active: r.7.and_then(|s| {
+                    chrono::DateTime::parse_from_rfc3339(&s)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc))
+                }),
+                updated_at: chrono::DateTime::parse_from_rfc3339(&r.8)
+                    .map(|dt| dt.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
             })
         } else {
             Ok(AgentIntelligence {
@@ -98,21 +143,33 @@ impl LearningEngine {
         }
     }
 
-    pub async fn list_learnings(&self, bot_id: Uuid, limit: u32) -> Result<Vec<AgentLearning>, String> {
+    pub async fn list_learnings(
+        &self,
+        bot_id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<AgentLearning>, String> {
         let rows: Vec<(String, String, Option<String>, String, String, Option<String>, f64, i64, i64, String)> = sqlx::query_as(
             "SELECT id, bot_id, chatroom_id, learning_type, content, context, success_rate, tasks_completed, tasks_failed, created_at FROM agent_learnings WHERE bot_id = ? ORDER BY created_at DESC LIMIT ?"
         ).bind(bot_id.to_string()).bind(limit).fetch_all(&self.pool).await.map_err(|e| e.to_string())?;
-        Ok(rows.into_iter().filter_map(|r| Some(AgentLearning {
-            id: Uuid::parse_str(&r.0).ok()?,
-            bot_id: Uuid::parse_str(&r.1).ok()?,
-            chatroom_id: r.2.and_then(|s| Uuid::parse_str(&s).ok()),
-            learning_type: r.3,
-            content: r.4,
-            context: r.5,
-            success_rate: r.6 as f32,
-            tasks_completed: r.7 as u32,
-            tasks_failed: r.8 as u32,
-            created_at: chrono::DateTime::parse_from_rfc3339(&r.9).ok().map(|dt| dt.with_timezone(&Utc)).unwrap_or_else(Utc::now),
-        })).collect())
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                Some(AgentLearning {
+                    id: Uuid::parse_str(&r.0).ok()?,
+                    bot_id: Uuid::parse_str(&r.1).ok()?,
+                    chatroom_id: r.2.and_then(|s| Uuid::parse_str(&s).ok()),
+                    learning_type: r.3,
+                    content: r.4,
+                    context: r.5,
+                    success_rate: r.6 as f32,
+                    tasks_completed: r.7 as u32,
+                    tasks_failed: r.8 as u32,
+                    created_at: chrono::DateTime::parse_from_rfc3339(&r.9)
+                        .ok()
+                        .map(|dt| dt.with_timezone(&Utc))
+                        .unwrap_or_else(Utc::now),
+                })
+            })
+            .collect())
     }
 }

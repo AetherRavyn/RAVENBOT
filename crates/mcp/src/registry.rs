@@ -57,9 +57,13 @@ impl Skill for McpSkill {
     }
     async fn execute(
         &self,
-        _ctx: &SkillContext,
+        ctx: &SkillContext,
         args: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
+        if let Some(url) = self.config.url.as_deref() {
+            ctx.ensure_network_allowed(url)
+                .map_err(SkillError::Execution)?;
+        }
         let client = crate::client::McpClient::with_env(self.config.clone(), self.env.clone());
         match client.call_tool(&self.tool.name, args).await {
             Ok(v) => Ok(SkillResult::success(v)),
@@ -211,9 +215,11 @@ fn validate_server_for_save(
                     "Provide either a command (stdio) or a URL (HTTP), not both.".to_string(),
                 );
             }
-            if !(u.starts_with("http://") || u.starts_with("https://")) || u.len() > 2048 {
-                return Err("URL must start with http:// or https:// (max 2048 chars).".to_string());
+            if u.len() > 2048 {
+                return Err("URL must be at most 2048 chars.".to_string());
             }
+            ravenbot_core::net::validate_http_url(u)
+                .map_err(|error| format!("MCP server URL rejected: {error}"))?;
             if headers.len() > 32 {
                 return Err("Use at most 32 headers.".to_string());
             }
@@ -265,6 +271,33 @@ type ServerRow = (
     String,
     Option<String>,
 );
+
+/// Resolve custom HTTP headers, migrating a legacy plaintext JSON value to the
+/// keychain on first read. A marker whose keychain entry cannot be read is
+/// treated as no headers rather than passed on as the marker string.
+async fn resolve_mcp_headers(
+    pool: &sqlx::SqlitePool,
+    server_id: &str,
+    stored: Option<String>,
+) -> Result<Option<String>, String> {
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    if stored == ravenbot_db::secrets::KEYCHAIN_MARKER {
+        return Ok(ravenbot_db::secrets::get_mcp_headers(server_id).await);
+    }
+    if stored.trim().is_empty() {
+        return Ok(None);
+    }
+    if ravenbot_db::secrets::set_mcp_headers(server_id, &stored).await {
+        let _ = sqlx::query("UPDATE mcp_servers SET headers_json = ? WHERE id = ?")
+            .bind(ravenbot_db::secrets::KEYCHAIN_MARKER)
+            .bind(server_id)
+            .execute(pool)
+            .await;
+    }
+    Ok(Some(stored))
+}
 
 pub struct McpRegistry {
     pool: sqlx::SqlitePool,
@@ -398,36 +431,35 @@ impl McpRegistry {
             sqlx::query_as("SELECT id, name, description, category, icon, command, args, env_keys, enabled, is_custom, created_at, url, transport, headers_json FROM mcp_servers ORDER BY is_custom DESC, category, name")
                 .fetch_all(&self.pool).await.map_err(|e| e.to_string())?
         };
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                let verified = crate::servers::is_verified(&r.0);
-                McpServerConfig {
-                    id: r.0,
-                    name: r.1,
-                    description: r.2,
-                    category: r.3,
-                    icon: r.4,
-                    command: r.5,
-                    args: serde_json::from_str(&r.6).unwrap_or_default(),
-                    env_keys: serde_json::from_str(&r.7).unwrap_or_default(),
-                    env_fields: Vec::new(),
-                    url: r.11,
-                    headers: r
-                        .13
-                        .as_deref()
-                        .and_then(|s| serde_json::from_str(s).ok())
-                        .unwrap_or_default(),
-                    auth: None,
-                    transport: parse_transport(&r.12),
-                    mcp_type: None,
-                    enabled_by_default: r.8 != 0,
-                    is_custom: r.9 != 0,
-                    verified,
-                    source: None,
-                }
-            })
-            .collect())
+        let mut out = Vec::with_capacity(rows.len());
+        for r in rows {
+            let verified = crate::servers::is_verified(&r.0);
+            let headers = resolve_mcp_headers(&self.pool, &r.0, r.13).await?;
+            out.push(McpServerConfig {
+                id: r.0,
+                name: r.1,
+                description: r.2,
+                category: r.3,
+                icon: r.4,
+                command: r.5,
+                args: serde_json::from_str(&r.6).unwrap_or_default(),
+                env_keys: serde_json::from_str(&r.7).unwrap_or_default(),
+                env_fields: Vec::new(),
+                url: r.11,
+                headers: headers
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str(s).ok())
+                    .unwrap_or_default(),
+                auth: None,
+                transport: parse_transport(&r.12),
+                mcp_type: None,
+                enabled_by_default: r.8 != 0,
+                is_custom: r.9 != 0,
+                verified,
+                source: None,
+            });
+        }
+        Ok(out)
     }
 
     pub async fn list_server_summaries(
@@ -506,6 +538,7 @@ impl McpRegistry {
 
         if let Some(r) = row {
             let verified = crate::servers::is_verified(&r.0);
+            let headers = resolve_mcp_headers(&self.pool, &r.0, r.13).await?;
             Ok(Some(McpServerConfig {
                 id: r.0,
                 name: r.1,
@@ -517,8 +550,7 @@ impl McpRegistry {
                 env_keys: serde_json::from_str(&r.7).unwrap_or_default(),
                 env_fields: Vec::new(),
                 url: r.11,
-                headers: r
-                    .13
+                headers: headers
                     .as_deref()
                     .and_then(|s| serde_json::from_str(s).ok())
                     .unwrap_or_default(),
@@ -554,6 +586,14 @@ impl McpRegistry {
             "stdio"
         };
         let headers_json = serde_json::to_string(&config.headers).unwrap_or_else(|_| "{}".into());
+        let headers_stored = if config.headers.is_empty() {
+            ravenbot_db::secrets::delete_mcp_headers(&clean_id).await;
+            None
+        } else if ravenbot_db::secrets::set_mcp_headers(&clean_id, &headers_json).await {
+            Some(ravenbot_db::secrets::KEYCHAIN_MARKER.to_string())
+        } else {
+            Some(headers_json)
+        };
 
         sqlx::query(
             r#"INSERT OR REPLACE INTO mcp_servers
@@ -572,7 +612,7 @@ impl McpRegistry {
         .bind(chrono::Utc::now().to_rfc3339())
         .bind(&url)
         .bind(transport_str)
-        .bind(&headers_json)
+        .bind(headers_stored)
         .execute(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -581,6 +621,18 @@ impl McpRegistry {
     }
 
     pub async fn delete_server(&self, id: &str) -> Result<(), String> {
+        ravenbot_db::secrets::delete_mcp_headers(id).await;
+        // Remove the keychain entries before their names disappear from the DB.
+        if let Ok(keys) =
+            sqlx::query_as::<_, (String,)>("SELECT key FROM mcp_server_env WHERE server_id = ?")
+                .bind(id)
+                .fetch_all(&self.pool)
+                .await
+        {
+            for (key,) in keys {
+                ravenbot_db::secrets::delete_mcp_env(id, &key).await;
+            }
+        }
         sqlx::query("DELETE FROM mcp_servers WHERE id = ?")
             .bind(id)
             .execute(&self.pool)
@@ -621,6 +673,28 @@ impl McpRegistry {
 
         let mut map = HashMap::new();
         for (k, v) in rows {
+            if v == ravenbot_db::secrets::KEYCHAIN_MARKER {
+                if let Some(secret) = ravenbot_db::secrets::get_mcp_env(server_id, &k).await {
+                    map.insert(k, secret);
+                }
+                continue;
+            }
+            if v.trim().is_empty() {
+                continue;
+            }
+            // Legacy plaintext row: migrate it on the first read if the OS
+            // store accepts it, and keep it usable either way.
+            if ravenbot_db::secrets::set_mcp_env(server_id, &k, &v).await {
+                let _ = sqlx::query(
+                    "UPDATE mcp_server_env SET value = ?, updated_at = ? WHERE server_id = ? AND key = ?",
+                )
+                .bind(ravenbot_db::secrets::KEYCHAIN_MARKER)
+                .bind(chrono::Utc::now().to_rfc3339())
+                .bind(server_id)
+                .bind(&k)
+                .execute(&self.pool)
+                .await;
+            }
             map.insert(k, v);
         }
         Ok(map)
@@ -664,6 +738,7 @@ impl McpRegistry {
                 .await
                 .map_err(|e| e.to_string())?;
                 if exists == 0 {
+                    ravenbot_db::secrets::delete_mcp_env(server_id, &k).await;
                     sqlx::query("DELETE FROM mcp_server_env WHERE server_id = ? AND key = ?")
                         .bind(server_id)
                         .bind(&k)
@@ -673,10 +748,15 @@ impl McpRegistry {
                 }
                 // else: keep saved value (write-only placeholder)
             } else {
+                let stored = if ravenbot_db::secrets::set_mcp_env(server_id, &k, &v).await {
+                    ravenbot_db::secrets::KEYCHAIN_MARKER
+                } else {
+                    v.as_str()
+                };
                 sqlx::query(
                     "INSERT OR REPLACE INTO mcp_server_env (server_id, key, value, updated_at) VALUES (?, ?, ?, ?)"
                 )
-                .bind(server_id).bind(&k).bind(&v).bind(&now).execute(&self.pool).await.map_err(|e| e.to_string())?;
+                .bind(server_id).bind(&k).bind(stored).bind(&now).execute(&self.pool).await.map_err(|e| e.to_string())?;
             }
         }
         Ok(())
@@ -1055,6 +1135,35 @@ mod mcp_risk_tests {
 }
 
 #[cfg(test)]
+mod url_guard_tests {
+    use super::*;
+
+    #[test]
+    fn custom_mcp_urls_cannot_target_metadata_or_non_http_schemes() {
+        let headers = HashMap::new();
+        for url in [
+            "http://169.254.169.254/latest/meta-data",
+            "http://metadata.google.internal/computeMetadata/v1",
+            "file:///etc/passwd",
+        ] {
+            assert!(
+                validate_server_for_save("server", "", Some(url), &[], &[], &headers).is_err(),
+                "{url} must be rejected"
+            );
+        }
+        assert!(validate_server_for_save(
+            "server",
+            "",
+            Some("https://example.com/mcp"),
+            &[],
+            &[],
+            &headers
+        )
+        .is_ok());
+    }
+}
+
+#[cfg(test)]
 mod resolution_tests {
     use super::*;
     use std::path::PathBuf;
@@ -1148,7 +1257,7 @@ mod resolution_tests {
         let mut bad_scheme = base_config("schemebad");
         bad_scheme.url = Some("ftp://example.com/mcp".into());
         let err = reg.save_custom_server(bad_scheme).await.unwrap_err();
-        assert!(err.contains("http://"), "got: {err}");
+        assert!(err.contains("http"), "got: {err}");
     }
 
     #[tokio::test]

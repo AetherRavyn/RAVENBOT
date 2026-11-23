@@ -163,7 +163,17 @@ impl OpenAiCompatibleProvider {
 
         if let Some(on_delta) = on_delta {
             let mut acc = StreamAccumulator::new();
-            streaming::consume_sse(response, |json| {
+            let mut completed = false;
+            let saw_done = streaming::consume_sse(response, |json| {
+                if json
+                    .get("choices")
+                    .and_then(|choices| choices.get(0))
+                    .and_then(|choice| choice.get("finish_reason"))
+                    .and_then(|reason| reason.as_str())
+                    .is_some()
+                {
+                    completed = true;
+                }
                 if let Some(usage) = json.get("usage") {
                     let input = usage
                         .get("prompt_tokens")
@@ -213,6 +223,11 @@ impl OpenAiCompatibleProvider {
                 Ok(())
             })
             .await?;
+            if !completed && !saw_done {
+                return Err(ModelError::IncompleteStream {
+                    partial: acc.content().to_string(),
+                });
+            }
             Ok(acc.finish())
         } else {
             let chat_response: ChatResponse = response.json().await.map_err(ModelError::Http)?;
@@ -259,10 +274,7 @@ impl OpenAiCompatibleProvider {
     }
 
     fn client(&self) -> reqwest::Client {
-        reqwest::Client::builder()
-            .user_agent("ravenbot/0.2.0 (https://github.com/AetherRavyn/RAVENBOT)")
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new())
+        crate::http_client()
     }
 }
 

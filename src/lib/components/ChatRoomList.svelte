@@ -1,11 +1,11 @@
 <script lang="ts">
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { Button } from "$lib/components/ui/button";
   import { Skeleton } from "$lib/components/ui/skeleton";
   import { getDiceBearUrl } from "$lib/utils";
   import { officeTemplateDesc } from "$lib/catalogI18n";
   import { t } from "$lib/i18n";
+  import { workspace } from "$lib/workspace.svelte";
   import CreateChatRoom from "$lib/components/CreateChatRoom.svelte";
   import {
     Building2,
@@ -26,9 +26,11 @@
 
   let { bots = [], selectedRoomId, onSelectRoom, onRoomCreated }: Props = $props();
 
-  let rooms = $state<any[]>([]);
   let showCreate = $state(false);
-  let loading = $state(true);
+  // One source of truth. Keeping a private copy here meant a created or
+  // deleted office could be missing from the sidebar until restart.
+  const rooms = $derived(workspace.chatrooms);
+  const loading = $derived(workspace.loading);
 
   const templateIcons: Record<string, any> = {
  "it-office": Laptop,
@@ -38,24 +40,6 @@
  "custom": Building2,
   };
 
-  async function load() {
-    try {
-      rooms = await invoke("list_chatrooms");
-    } catch (e) {
-      console.error("Failed to load chatrooms:", e);
-    } finally {
-      loading = false;
-    }
-  }
-
-  $effect(() => {
-    load();
-  });
-
-  $effect(() => {
-    void bots.length;
-    load();
-  });
 </script>
 
 <div class="flex flex-col h-full overflow-hidden select-none">
@@ -164,7 +148,6 @@
   open={showCreate}
   onClose={() => (showCreate = false)}
   onCreated={(room) => {
-    rooms = [room, ...rooms];
     onRoomCreated(room);
     onSelectRoom(room.id);
   }}

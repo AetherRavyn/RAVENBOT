@@ -28,9 +28,16 @@ Thumbs.db
 
 # Database
 *.db
+
+# Runtime account data (databases, browser profiles, credentials)
+accounts/
 *.db-journal
 *.db-wal
 *.db-shm
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
 
 # Logs
 *.log
@@ -52,9 +59,14 @@ src-tauri/gen/
 # under these is source: they are agent workspaces, and a suite that runs an
 # agent creates a folder per bot. Committing them would put generated work into
 # history and leave a nested `projects/git/.git` to trip `git add -A`.
-projects/
-config/
-logs/
-cache/
-keys/
-skills/
+#
+# The leading slash is load-bearing. Without it these patterns match a
+# directory of that name at ANY depth, which silently ignored every new file
+# under `crates/skills/` (and would do the same to any future `*/config/…`).
+# Anchor them to the repository root so source trees can never be hidden.
+/projects/
+/config/
+/logs/
+/cache/
+/keys/
+/skills/

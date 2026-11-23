@@ -1,6 +1,6 @@
 <script lang="ts">
   import { t, type TranslationKey } from "$lib/i18n";
-  import type { RunEntry, RunPhase } from "$lib/chat/runTimeline.svelte";
+  import { summarizeRun, type RunEntry, type RunPhase } from "$lib/chat/runTimeline.svelte";
   import { Play, Wrench, Check, ShieldAlert, MessageCircleQuestion, Pause, Flag } from "@lucide/svelte";
 
   interface Props {
@@ -10,6 +10,7 @@
   }
 
   let { events, nameFor }: Props = $props();
+  const summaries = $derived(summarizeRun(events));
 
   let stripEl = $state<HTMLDivElement | null>(null);
 
@@ -57,15 +58,23 @@
 </script>
 
 <div bind:this={stripEl} class="flex items-center gap-1.5 overflow-x-auto no-scrollbar px-4 py-1.5 border-b border-[var(--hairline)] bg-[var(--surface-1)] shrink-0">
-  {#each events as e (e.id)}
-    {@const Icon = phaseIcon[e.phase]}
+  {#each summaries as summary (summary.botId)}
+    {@const Icon = phaseIcon[summary.phase]}
     <span
       class="inline-flex items-center gap-1 h-6 pl-1.5 pr-2 rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] text-[11px] whitespace-nowrap shrink-0"
-      title={`${clock(e.at)} · ${nameFor(e.botId)} ${t(phaseKey[e.phase])}${e.detail ? ` · ${e.detail}` : ""}`}
+      title={`${clock(summary.at)} · ${nameFor(summary.botId)} ${t(phaseKey[summary.phase])}${summary.detail ? ` · ${summary.detail}` : ""}`}
     >
-      <Icon class="size-3 shrink-0 {phaseTone[e.phase]}" />
-      <span class="font-semibold text-[var(--text-secondary)]">{nameFor(e.botId)}</span>
-      <span class="text-[var(--text-muted)]">{t(phaseKey[e.phase])}</span>
+      <Icon class="size-3 shrink-0 {phaseTone[summary.phase]}" />
+      <span class="font-semibold text-[var(--text-secondary)]">{nameFor(summary.botId)}</span>
+      <span class="text-[var(--text-muted)]">{t(phaseKey[summary.phase])}</span>
+      {#if summary.detail}
+        <span class="max-w-28 truncate font-mono text-[var(--text-tertiary)]">{summary.detail}</span>
+      {/if}
+      {#if summary.toolCalls > 0}
+        <span class="rounded-full bg-[var(--surface-3)] px-1.5 tabular-nums text-[var(--text-muted)]" title={`${summary.toolsDone}/${summary.toolCalls} tool calls finished`}>
+          {summary.toolsDone}/{summary.toolCalls}
+        </span>
+      {/if}
     </span>
   {/each}
 </div>

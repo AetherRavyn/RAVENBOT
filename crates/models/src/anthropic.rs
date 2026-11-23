@@ -90,7 +90,7 @@ impl AnthropicProvider {
         Self {
             api_key,
             model_id: "claude-3-5-sonnet-20241022".to_string(),
-            client: reqwest::Client::new(),
+            client: crate::http_client(),
             base_url: None,
             headers: std::collections::HashMap::new(),
         }
@@ -275,11 +275,15 @@ impl AnthropicProvider {
         if let Some(on_delta) = on_delta {
             // Streaming path: Anthropic event-based SSE
             let mut acc = StreamAccumulator::new();
+            let mut completed = false;
             // Extended thinking: reasoning deltas stream on their own tagged
             // channel so the UI can show them live and keep them out of the
             // answer; they are also kept out of the final content (returned
             // separately as `reasoning`).
-            streaming::consume_sse(response, |json| {
+            let saw_done = streaming::consume_sse(response, |json| {
+                if json.get("type").and_then(|v| v.as_str()) == Some("message_stop") {
+                    completed = true;
+                }
                 match json.get("type").and_then(|v| v.as_str()).unwrap_or("") {
                     "message_start" => {
                         if let Some(input) = json
@@ -366,6 +370,11 @@ impl AnthropicProvider {
                 Ok(())
             })
             .await?;
+            if !completed && !saw_done {
+                return Err(ModelError::IncompleteStream {
+                    partial: acc.content().to_string(),
+                });
+            }
             Ok(acc.finish())
         } else {
             // Non-streaming path

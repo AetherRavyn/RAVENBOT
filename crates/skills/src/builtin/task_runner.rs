@@ -4,6 +4,7 @@ use crate::traits::{Skill, SkillContext, SkillError, SkillResult};
 use async_trait::async_trait;
 use ravenbot_core::Permission;
 use std::path::Path;
+use uuid::Uuid;
 
 pub struct TaskRunnerSkill;
 
@@ -42,14 +43,16 @@ impl Skill for TaskRunnerSkill {
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["run", "list", "watch", "stop", "schedule"],
-                    "description": "Task action"
+                    "enum": ["run", "list", "wait", "status", "processes", "stop", "watch", "schedule"],
+                    "description": "Task action: run, list project tasks, wait for a background process, inspect status, list background processes, stop one, watch, or schedule"
                 },
                 "task": {"type": "string", "description": "Task name or command to run"},
                 "cwd": {"type": "string", "description": "Working directory"},
-                "timeout": {"type": "integer", "description": "Timeout in seconds (default: 60, max: 600)"},
+                "timeout": {"type": "integer", "description": "Timeout in seconds (default: 60, max: 3600 for waits, 600 for runs)"},
                 "env": {"type": "object", "description": "Additional environment variables"},
-                "background": {"type": "boolean", "description": "Run in background (default: false)"},
+                "background": {"type": "boolean", "description": "Run in background and return a process id immediately (default: false)"},
+                "process_id": {"type": "string", "description": "Background process id returned by a background run"},
+                "pattern": {"type": "string", "description": "Wait until this text appears in the process output"},
                 "schedule": {"type": "string", "description": "Cron expression for scheduling"}
             },
             "required": ["action"]
@@ -69,11 +72,13 @@ impl Skill for TaskRunnerSkill {
         match action {
             "run" => self.run_task(ctx, args).await,
             "list" => self.list_tasks(ctx, args).await,
+            "wait" => self.wait_task(args).await,
+            "status" => self.status_task(args).await,
+            "processes" => self.processes_task(ctx, args).await,
+            "stop" => self.stop_task(args).await,
             "watch" => Ok(SkillResult::failure(
-                "Watch mode not yet implemented".to_string(),
-            )),
-            "stop" => Ok(SkillResult::failure(
-                "Stop requires background task tracking".to_string(),
+                "Watch mode not yet implemented; run in the background and use wait with a pattern instead."
+                    .to_string(),
             )),
             "schedule" => Ok(SkillResult::failure(
                 "Use the scheduler skill for cron scheduling".to_string(),
@@ -158,6 +163,33 @@ impl TaskRunnerSkill {
                 }
                 cmd.env(k, val);
             }
+        }
+
+        if args
+            .get("background")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            let snapshot = crate::processes::start(
+                cmd,
+                command.clone(),
+                cwd.clone(),
+                ctx.bot_id,
+                ctx.thread_id,
+                ctx.run_id,
+            )
+            .map_err(SkillError::Execution)?;
+            return Ok(SkillResult::success(serde_json::json!({
+                "task": task,
+                "command": command,
+                "background": true,
+                "process_id": snapshot.process_id,
+                "pid": snapshot.pid,
+                "status": snapshot.status,
+                "output": snapshot.output,
+                "started_at": snapshot.started_at,
+                "note": "Use action=wait with this process_id to release on exit, a pattern, or a timeout."
+            })));
         }
 
         let start = std::time::Instant::now();
@@ -249,6 +281,61 @@ impl TaskRunnerSkill {
         task.to_string()
     }
 
+    fn process_id(args: &serde_json::Value) -> Result<Uuid, SkillError> {
+        args.get("process_id")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| SkillError::InvalidArguments("Missing 'process_id'".into()))
+            .and_then(|value| {
+                Uuid::parse_str(value.trim()).map_err(|_| {
+                    SkillError::InvalidArguments("'process_id' is not a valid id".into())
+                })
+            })
+    }
+
+    async fn wait_task(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+        let id = Self::process_id(&args)?;
+        let timeout = args
+            .get("timeout")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(60)
+            .min(3_600);
+        let pattern = args.get("pattern").and_then(|value| value.as_str());
+        let outcome = crate::processes::wait(id, timeout, pattern)
+            .await
+            .map_err(SkillError::Execution)?;
+        Ok(SkillResult::success(serde_json::json!({
+            "process": outcome.snapshot,
+            "matched_pattern": outcome.matched_pattern,
+            "timed_out": outcome.timed_out
+        })))
+    }
+
+    async fn status_task(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+        let id = Self::process_id(&args)?;
+        Ok(SkillResult::success(serde_json::json!({
+            "process": crate::processes::snapshot(id).map_err(SkillError::Execution)?
+        })))
+    }
+
+    async fn processes_task(
+        &self,
+        ctx: &SkillContext,
+        _args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
+        let processes = crate::processes::list(Some(ctx.thread_id), None);
+        Ok(SkillResult::success(serde_json::json!({
+            "processes": processes,
+            "count": processes.len()
+        })))
+    }
+
+    async fn stop_task(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+        let id = Self::process_id(&args)?;
+        Ok(SkillResult::success(serde_json::json!({
+            "process": crate::processes::stop(id).await.map_err(SkillError::Execution)?
+        })))
+    }
+
     async fn list_tasks(
         &self,
         ctx: &SkillContext,
@@ -320,5 +407,126 @@ impl TaskRunnerSkill {
 impl Default for TaskRunnerSkill {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::traits::Skill;
+
+    #[cfg(unix)]
+    fn context() -> (SkillContext, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("ravenbot-task-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ctx = SkillContext::new(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            ravenbot_core::SandboxTier::Host,
+        )
+        .with_working_dirs(vec![dir.clone()])
+        .confined();
+        (ctx, dir)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_background_task_can_be_waited_to_completion() {
+        let (ctx, dir) = context();
+        let skill = TaskRunnerSkill::new();
+        let started = skill
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "action": "run",
+                    "task": "printf 'READY\\n'; sleep 0.2; printf 'DONE\\n'",
+                    "background": true
+                }),
+            )
+            .await
+            .expect("start");
+        assert!(started.success, "{:?}", started.error);
+        assert_eq!(started.output["background"], true);
+        let id = started.output["process_id"]
+            .as_str()
+            .expect("process id")
+            .to_string();
+
+        let waited = skill
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "action": "wait",
+                    "process_id": id,
+                    "timeout": 5
+                }),
+            )
+            .await
+            .expect("wait");
+        assert!(waited.success, "{:?}", waited.error);
+        assert_eq!(waited.output["process"]["status"], "completed");
+        assert!(waited.output["process"]["output"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("DONE"));
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_pattern_releases_a_wait_while_the_process_still_runs() {
+        let (ctx, dir) = context();
+        let skill = TaskRunnerSkill::new();
+        let started = skill
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "action": "run",
+                    "task": "printf 'READY\\n'; sleep 20",
+                    "background": true
+                }),
+            )
+            .await
+            .expect("start");
+        let id = started.output["process_id"]
+            .as_str()
+            .expect("process id")
+            .to_string();
+
+        let waited = skill
+            .execute(
+                &ctx,
+                serde_json::json!({
+                    "action": "wait",
+                    "process_id": id,
+                    "pattern": "READY",
+                    "timeout": 5
+                }),
+            )
+            .await
+            .expect("wait");
+        assert!(waited.success);
+        assert_eq!(waited.output["matched_pattern"], true);
+        assert_eq!(waited.output["process"]["status"], "running");
+
+        let stopped = skill
+            .execute(
+                &ctx,
+                serde_json::json!({"action": "stop", "process_id": id}),
+            )
+            .await
+            .expect("stop");
+        assert!(stopped.success);
+        assert_eq!(stopped.output["process"]["status"], "stopped");
+
+        let listed = skill
+            .execute(&ctx, serde_json::json!({"action": "processes"}))
+            .await
+            .expect("list");
+        assert!(listed.output["count"].as_u64().unwrap_or(0) >= 1);
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

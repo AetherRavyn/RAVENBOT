@@ -107,11 +107,7 @@ fn action_point(action: &ComputerAction) -> Option<(f32, f32)> {
     }
 }
 
-fn required_f32(
-    arguments: &serde_json::Value,
-    key: &str,
-    action: &str,
-) -> Result<f32, SkillError> {
+fn required_f32(arguments: &serde_json::Value, key: &str, action: &str) -> Result<f32, SkillError> {
     arguments
         .get(key)
         .and_then(|value| value.as_f64())
@@ -121,10 +117,7 @@ fn required_f32(
         })
 }
 
-fn required_window_id(
-    arguments: &serde_json::Value,
-    action: &str,
-) -> Result<u64, SkillError> {
+fn required_window_id(arguments: &serde_json::Value, action: &str) -> Result<u64, SkillError> {
     arguments
         .get("window_id")
         .and_then(|value| value.as_u64())
@@ -256,7 +249,10 @@ impl Skill for ComputerControlSkill {
                 activity(
                     context,
                     action,
-                    format!("captured window {} ({}x{})", window_id, shot.width, shot.height),
+                    format!(
+                        "captured window {} ({}x{})",
+                        window_id, shot.width, shot.height
+                    ),
                     true,
                 );
                 return Ok(SkillResult::success(serde_json::json!({
@@ -446,13 +442,7 @@ impl Skill for ComputerControlSkill {
         let result = match controller.execute(&computer_action).await {
             Ok(result) => result,
             Err(error) => {
-                activity_at(
-                    context,
-                    action,
-                    format!("{detail}: {error}"),
-                    false,
-                    point,
-                );
+                activity_at(context, action, format!("{detail}: {error}"), false, point);
                 return Err(SkillError::Execution(error.to_string()));
             }
         };
@@ -538,7 +528,11 @@ mod tests {
         // Headless CI may have no compositor; either a real list or an honest
         // failure is acceptable.
         if result.success {
-            assert!(result.output.get("windows").and_then(|value| value.as_array()).is_some());
+            assert!(result
+                .output
+                .get("windows")
+                .and_then(|value| value.as_array())
+                .is_some());
         } else {
             assert!(result.error.is_some());
         }
@@ -546,6 +540,9 @@ mod tests {
 
     #[tokio::test]
     async fn takeover_blocks_input_but_not_observation() {
+        let _takeover = crate::TAKEOVER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         ravenbot_core::set_computer_control_paused(true);
         let skill = ComputerControlSkill::new();
         let blocked = skill

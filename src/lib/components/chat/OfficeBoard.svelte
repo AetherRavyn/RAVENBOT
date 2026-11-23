@@ -52,6 +52,18 @@
     done: boolean;
   }
 
+  /** One row from the durable work ledger (previous cycles included). */
+  export interface BoardWorkItem {
+    id: string;
+    title: string;
+    status: string;
+    owner_bot_id?: string | null;
+    attempts?: number;
+    max_attempts?: number;
+    error?: string | null;
+    result?: string | null;
+  }
+
   interface Props {
     goal: string;
     nodes: BoardNode[];
@@ -59,6 +71,10 @@
     runActive: boolean;
     /** Per-bot self-tracked checklists (`todo` tool), keyed by bot id. */
     todos?: Record<string, BotTodo[]>;
+    /** Durable work items from earlier cycles, not only this graph. */
+    workItems?: BoardWorkItem[];
+    /** Open the durable task record for a card. */
+    onSelect?: (node: BoardNode) => void;
     /**
      * `wide` lays the four states side by side above the conversation.
      * `rail` stacks them in the office's right-hand column, where 380px is
@@ -67,7 +83,7 @@
     variant?: "wide" | "rail";
   }
 
-  let { goal, nodes, members, runActive, todos, variant = "wide" }: Props = $props();
+  let { goal, nodes, members, runActive, todos, workItems, onSelect, variant = "wide" }: Props = $props();
   const rail = $derived(variant === "rail");
 
   // A settled office opens with the board summarized; a live run expands it.
@@ -95,6 +111,57 @@
       items: [...nodes.filter((n) => n.state === "failed"), ...nodes.filter((n) => n.state === "skipped")],
     },
   ]);
+
+  /**
+   * Work from earlier cycles that is not in this graph.
+   *
+   * The live board is one plan. A project also has a durable backlog: a failed
+   * QA task, a blocked adapter, a pending acceptance report. Showing only the
+   * live plan made those tasks disappear from the UI between cycles.
+   */
+  const backlog = $derived.by(() => {
+    const live = new Set(nodes.map((node) => node.nodeId));
+    const priority: Record<string, number> = {
+      failed: 0,
+      blocked: 1,
+      running: 2,
+      review: 3,
+      ready: 4,
+      pending: 5,
+      skipped: 6,
+    };
+    return (workItems ?? [])
+      .filter((item) => !live.has(item.id))
+      .filter((item) => !["done", "cancelled"].includes(item.status))
+      .sort((a, b) => (priority[a.status] ?? 9) - (priority[b.status] ?? 9))
+      .slice(0, 8);
+  });
+
+  function workStatusState(status: string): BoardNode["state"] {
+    switch (status) {
+      case "running":
+      case "review":
+        return "running";
+      case "failed":
+      case "blocked":
+        return "failed";
+      case "skipped":
+        return "skipped";
+      default:
+        return "pending";
+    }
+  }
+
+  function backlogNode(item: BoardWorkItem): BoardNode {
+    return {
+      nodeId: item.id,
+      botId: item.owner_bot_id ?? "",
+      label: item.title,
+      dependsOn: [],
+      state: workStatusState(item.status),
+      preview: item.error ?? item.result ?? undefined,
+    };
+  }
 
   const doneCount = $derived(
     nodes.filter((n) => n.state === "done" || n.state === "skipped").length
@@ -215,7 +282,21 @@
                    scroll areas for no gain. -->
               <div class="space-y-1 min-w-0 {rail ? '' : 'max-h-56 overflow-y-auto'}">
                 {#each col.items as n (n.nodeId)}
-                  <div use:entrance class="min-w-0 rounded-lg px-2 py-1.5 {cardTone(n.state)}">
+                  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
+                  <div
+                    use:entrance
+                    class="min-w-0 rounded-lg px-2 py-1.5 {cardTone(n.state)} {onSelect ? 'cursor-pointer hover:ring-1 hover:ring-[var(--hairline)] transition-shadow' : ''}"
+                    role={onSelect ? "button" : undefined}
+                    tabindex={onSelect ? 0 : undefined}
+                    aria-label={onSelect ? `${nameFor(n.botId)}: ${n.label}` : undefined}
+                    onclick={() => onSelect?.(n)}
+                    onkeydown={(event) => {
+                      if (onSelect && (event.key === "Enter" || event.key === " ")) {
+                        event.preventDefault();
+                        onSelect(n);
+                      }
+                    }}
+                  >
                     <div class="flex items-center gap-1.5 min-w-0">
                       <!-- A board card is the densest place the app shows who
                            is doing what, so the face reacts here too: a running
@@ -261,12 +342,39 @@
                     {/if}
                   </div>
                 {:else}
-                  <div class="text-[11px] text-[var(--text-faint)] px-1 py-1">{t("room.noTasks")}</div>
+                  <div class="text-[11px] text-[var(--text-faint)] px-1 py-1" aria-hidden="true">—</div>
                 {/each}
               </div>
             </div>
           {/each}
         </div>
+
+        {#if backlog.length > 0}
+          <div class="min-w-0 border-t border-[var(--hairline)] pt-2">
+            <div class="flex items-baseline gap-1.5 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              <span class="truncate">{t("room.board.backlog")}</span>
+              <span class="ml-auto tabular-nums font-normal">{backlog.length}</span>
+            </div>
+            <div class="space-y-1">
+              {#each backlog as item (item.id)}
+                <button
+                  type="button"
+                  class="w-full min-w-0 flex items-center gap-1.5 rounded-md bg-[var(--surface-2)] px-2 py-1.5 text-left hover:bg-[var(--surface-3)] disabled:hover:bg-[var(--surface-2)]"
+                  disabled={!onSelect}
+                  onclick={() => onSelect?.(backlogNode(item))}
+                  title={item.error ?? item.title}
+                >
+                  <span class="size-1.5 rounded-full shrink-0 {stateDot(workStatusState(item.status))}" aria-hidden="true"></span>
+                  <span class="min-w-0 flex-1 truncate text-[11px] text-[var(--text-secondary)]">{item.title}</span>
+                  {#if item.owner_bot_id}
+                    <span class="shrink-0 text-[11px] text-[var(--text-muted)]">{nameFor(item.owner_bot_id)}</span>
+                  {/if}
+                  <span class="shrink-0 text-[11px] font-mono uppercase text-[var(--text-faint)]">{item.status}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/if}
 
         {#if hasDeps}
           <div class="min-w-0 border-t border-[var(--hairline)] pt-2">

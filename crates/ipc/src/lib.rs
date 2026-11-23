@@ -15,50 +15,29 @@ use uuid::Uuid;
 pub enum Command {
     // Bot commands
     /// Create a new bot
-    CreateBot {
-        name: String,
-        description: String,
-    },
+    CreateBot { name: String, description: String },
     /// Get all bots
     ListBots,
     /// Get a bot by ID
-    GetBot {
-        bot_id: Uuid,
-    },
+    GetBot { bot_id: Uuid },
     /// Update a bot
-    UpdateBot {
-        bot: Bot,
-    },
+    UpdateBot { bot: Bot },
     /// Delete a bot
-    DeleteBot {
-        bot_id: Uuid,
-    },
+    DeleteBot { bot_id: Uuid },
 
     // Thread commands
     /// Create a new thread
-    CreateThread {
-        bot_id: Uuid,
-        title: String,
-    },
+    CreateThread { bot_id: Uuid, title: String },
     /// Get threads for a bot
-    ListThreads {
-        bot_id: Uuid,
-    },
+    ListThreads { bot_id: Uuid },
     /// Get a thread
-    GetThread {
-        thread_id: Uuid,
-    },
+    GetThread { thread_id: Uuid },
 
     // Message commands
     /// Get messages in a thread
-    ListMessages {
-        thread_id: Uuid,
-    },
+    ListMessages { thread_id: Uuid },
     /// Send a message to a bot
-    SendMessage {
-        thread_id: Uuid,
-        content: String,
-    },
+    SendMessage { thread_id: Uuid, content: String },
     /// Send a multimodal message (with attachments)
     SendMessageWithAttachments {
         thread_id: Uuid,
@@ -68,62 +47,35 @@ pub enum Command {
 
     // Run commands
     /// Start or resume a run
-    StartRun {
-        run_id: Uuid,
-    },
+    StartRun { run_id: Uuid },
     /// Pause a run
-    PauseRun {
-        run_id: Uuid,
-    },
+    PauseRun { run_id: Uuid },
     /// Cancel a run
-    CancelRun {
-        run_id: Uuid,
-    },
+    CancelRun { run_id: Uuid },
     /// Get run status
-    GetRun {
-        run_id: Uuid,
-    },
+    GetRun { run_id: Uuid },
 
     // Budget commands
     /// Set a bot's budget
-    SetBudget {
-        bot_id: Uuid,
-        budget: Budget,
-    },
+    SetBudget { bot_id: Uuid, budget: Budget },
     /// Get a bot's budget
-    GetBudget {
-        bot_id: Uuid,
-    },
+    GetBudget { bot_id: Uuid },
     /// Get current usage
-    GetUsage {
-        bot_id: Uuid,
-    },
+    GetUsage { bot_id: Uuid },
 
     // Memory commands
     /// Search memory
-    SearchMemory {
-        bot_id: Uuid,
-        query: String,
-    },
+    SearchMemory { bot_id: Uuid, query: String },
     /// Add a memory fact
-    AddMemory {
-        bot_id: Uuid,
-        content: String,
-    },
+    AddMemory { bot_id: Uuid, content: String },
 
     // Skill commands
     /// Get available skills
     ListSkills,
     /// Enable a skill for a bot
-    EnableSkill {
-        bot_id: Uuid,
-        skill_id: String,
-    },
+    EnableSkill { bot_id: Uuid, skill_id: String },
     /// Disable a skill for a bot
-    DisableSkill {
-        bot_id: Uuid,
-        skill_id: String,
-    },
+    DisableSkill { bot_id: Uuid, skill_id: String },
 
     // Audit commands
     /// Get audit log
@@ -134,25 +86,15 @@ pub enum Command {
 
     // Version commands
     /// Get bot version history
-    GetVersionHistory {
-        bot_id: Uuid,
-    },
+    GetVersionHistory { bot_id: Uuid },
     /// Rollback to a previous version
-    RollbackVersion {
-        bot_id: Uuid,
-        version_id: Uuid,
-    },
+    RollbackVersion { bot_id: Uuid, version_id: Uuid },
 
     // Bundle commands
     /// Export a bot
-    ExportBot {
-        bot_id: Uuid,
-        include_memory: bool,
-    },
+    ExportBot { bot_id: Uuid, include_memory: bool },
     /// Import a bot
-    ImportBot {
-        bundle: BotBundle,
-    },
+    ImportBot { bundle: BotBundle },
 
     // Global commands
     /// Global kill switch - pause all bots
@@ -175,10 +117,7 @@ pub enum Event {
     /// Bot deleted
     BotDeleted { bot_id: Uuid },
     /// Bot status changed
-    BotStatusChanged {
-        bot_id: Uuid,
-        status: BotStatus,
-    },
+    BotStatusChanged { bot_id: Uuid, status: BotStatus },
 
     // Thread events
     /// Thread created
@@ -200,14 +139,9 @@ pub enum Event {
 
     // Budget events
     /// Budget warning (approaching limit)
-    BudgetWarning {
-        bot_id: Uuid,
-        remaining: f64,
-    },
+    BudgetWarning { bot_id: Uuid, remaining: f64 },
     /// Budget exceeded
-    BudgetExceeded {
-        bot_id: Uuid,
-    },
+    BudgetExceeded { bot_id: Uuid },
 
     // Audit events
     /// Audit entry added

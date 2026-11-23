@@ -2,6 +2,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { render, cleanup } from "@testing-library/svelte";
 import ToolTraceList from "$lib/components/ToolTraceList.svelte";
+import ImageGeneration from "$lib/components/chat/ImageGeneration.svelte";
 import { setLocale } from "$lib/i18n";
 
 describe("ToolTraceList exported documents", () => {
@@ -57,6 +58,58 @@ describe("ToolTraceList exported documents", () => {
     );
     expect(container.querySelector(".tools__deck-title")?.textContent).toContain("2 designed slides");
     expect(container.querySelector(".tools__deck-head button")?.textContent).toContain("Open PPTX");
+  });
+
+  it("shows a generated image with its prompt, provider and open link", () => {
+    const tools = [
+      {
+        name: "image_gen",
+        arguments: { prompt: "a red fox in snow", size: "1024x1024" },
+        result: {
+          success: true,
+          output: {
+            provider: "openai",
+            prompt: "a red fox in snow",
+            url: "https://example.com/fox.png",
+          },
+        },
+        duration_ms: 1200,
+      },
+    ];
+    const { container } = render(ToolTraceList, { props: { tools } });
+    const card = container.querySelector('.image-gen[data-state="completed"]');
+    expect(card).not.toBeNull();
+    expect(card?.querySelector("img")?.getAttribute("src")).toBe("https://example.com/fox.png");
+    expect(card?.querySelector(".image-gen__prompt")?.textContent).toContain("a red fox");
+    expect(card?.querySelector(".image-gen__meta")?.textContent).toContain("openai");
+    expect(card?.querySelector(".image-gen__open")?.getAttribute("href")).toBe(
+      "https://example.com/fox.png",
+    );
+  });
+
+  it("shows a failed image generation instead of a blank box", () => {
+    const tools = [
+      {
+        name: "image_gen",
+        arguments: { prompt: "a red fox in snow" },
+        result: { success: false, error: "provider rate limit" },
+        is_error: true,
+      },
+    ];
+    const { container } = render(ToolTraceList, { props: { tools } });
+    const card = container.querySelector('.image-gen[data-state="failed"]');
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain("provider rate limit");
+    expect(card?.querySelector("img")).toBeNull();
+  });
+
+  it("renders the live generating state", () => {
+    const { container } = render(ImageGeneration, {
+      props: { state: "generating", prompt: "a red fox in snow", size: "1024x1024" },
+    });
+    expect(container.querySelector('.image-gen[data-state="generating"]')).not.toBeNull();
+    expect(container.textContent).toContain("Generating image");
+    expect(container.querySelector("img")).toBeNull();
   });
 
   it("does not invent a card for an ordinary JSON result", () => {

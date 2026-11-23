@@ -1,7 +1,7 @@
 //! Bundle signing and verification
 
-use ed25519_dalek::{SigningKey, Signer, Verifier};
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
+use ed25519_dalek::{Signer, SigningKey, Verifier};
 use serde::{Deserialize, Serialize};
 
 /// Bundle signer for export/import
@@ -19,18 +19,20 @@ impl BundleSigner {
 
     /// Build a signer from a persisted 32-byte seed
     pub fn from_bytes(seed: [u8; 32]) -> Self {
-        Self { signing_key: SigningKey::from_bytes(&seed) }
+        Self {
+            signing_key: SigningKey::from_bytes(&seed),
+        }
     }
 
-    /// Get or create keypair (in production, use OS keychain)
+    /// A transient signer for callers that do not persist a bundle identity.
+    ///
+    /// `BundleManager::open` is the persisted path. This constructor must never
+    /// reuse a constant seed: doing so would make every install's signatures
+    /// identical and turn a signing key into a public constant.
     fn get_or_create_keypair() -> SigningKey {
-        // In production:
-        // 1. Check keyring for existing key
-        // 2. If not found, generate new key
-        // 3. Store in keyring
-        
-        // For demo, use a deterministic key
-        let seed = [1u8; 32]; // In production, generate random
+        use rand::RngCore;
+        let mut seed = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut seed);
         SigningKey::from_bytes(&seed)
     }
 
@@ -62,7 +64,10 @@ impl BundleSigner {
             Err(_) => return false,
         };
 
-        self.signing_key.verifying_key().verify(data, &signature).is_ok()
+        self.signing_key
+            .verifying_key()
+            .verify(data, &signature)
+            .is_ok()
     }
 
     /// Sign a bundle

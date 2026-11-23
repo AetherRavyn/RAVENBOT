@@ -235,6 +235,13 @@
       connectors: ["telegram", "twitter", "reddit", "resend", "hubspot", "stripe", "notion", "slack"],
     },
     {
+      id: "chat_apps",
+      name: t("connector.p7n"),
+      iconComponent: MessageSquare,
+      description: t("connector.p7d"),
+      connectors: ["slack", "discord", "teams", "telegram", "whatsapp"],
+    },
+    {
       id: "security",
       name: t("connector.p6n"),
       iconComponent: Shield,

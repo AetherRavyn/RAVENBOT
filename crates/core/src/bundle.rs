@@ -1,7 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-
 use crate::bot::Bot;
 use crate::memory::MemoryFact;
 use crate::skill::Skill;
@@ -60,7 +59,7 @@ impl BotBundle {
     pub fn sign(mut self, private_key: &[u8]) -> Self {
         // Deterministic signing for bundle authenticity
         // Real verification uses ed25519-dalek; this keeps core lightweight
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
         let mut data = serde_json::to_vec(&self.bot).unwrap_or_default();
         data.extend_from_slice(private_key);
         // Simple hash-based signature for core (full Ed25519 in sync crate)
@@ -80,7 +79,7 @@ impl BotBundle {
         // Core verification: check signature exists and is base64-decodable
         // Full Ed25519 verification lives in ravenbot-sync crate
         if let Some(sig) = &self.signature {
-            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
             STANDARD.decode(sig).is_ok()
         } else {
             false

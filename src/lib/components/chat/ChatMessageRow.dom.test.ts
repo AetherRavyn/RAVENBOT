@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/svelte";
 import ChatMessageRow from "./ChatMessageRow.svelte";
 import { setLocale } from "$lib/i18n";
+import { a11yViolations } from "$lib/test/a11y";
 
 describe("ChatMessageRow", () => {
   beforeEach(() => {
@@ -43,6 +44,7 @@ describe("ChatMessageRow", () => {
     });
 
     expect(container.querySelectorAll(".message-reaction-chip")).toHaveLength(2);
+    expect(await a11yViolations(container)).toEqual([]);
     await fireEvent.click(getByLabelText("Remove 👍 reaction"));
     expect(onReact).toHaveBeenCalledWith("👍");
   });
@@ -130,5 +132,23 @@ describe("ChatMessageRow", () => {
     const row = container.querySelector("#message-42");
     expect(row?.classList.contains("message-search-hit")).toBe(true);
     expect(row?.classList.contains("message-search-hit--current")).toBe(true);
+  });
+
+  it("marks an optimistic user row as sending", () => {
+    const { getByText } = render(ChatMessageRow, {
+      props: {
+        isUser: true,
+        text: "Working on it",
+        pending: true,
+      },
+    });
+    expect(getByText("Sending…")).toBeTruthy();
+  });
+
+  it("carries the persisted message id for selection quoting", () => {
+    const { container } = render(ChatMessageRow, {
+      props: { isUser: false, text: "Quote this passage.", messageId: "msg-9" },
+    });
+    expect(container.querySelector('[data-message-id="msg-9"]')).not.toBeNull();
   });
 });

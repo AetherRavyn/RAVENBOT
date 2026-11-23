@@ -11,7 +11,7 @@ pub struct TavilySearchSkill {
 impl TavilySearchSkill {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http::http_client(),
         }
     }
 }
@@ -50,7 +50,7 @@ impl Skill for TavilySearchSkill {
 
     async fn execute(
         &self,
-        _ctx: &SkillContext,
+        ctx: &SkillContext,
         args: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let query = args
@@ -63,12 +63,22 @@ impl Skill for TavilySearchSkill {
             .unwrap_or(5);
         // Try Tavily if key in env, else fallback to web_search logic
         if let Ok(key) = std::env::var("TAVILY_API_KEY") {
+            ctx.ensure_network_allowed("https://api.tavily.com/search")
+                .map_err(SkillError::InvalidArguments)?;
             let res = self.client.post("https://api.tavily.com/search")
                 .json(&serde_json::json!({"api_key": key, "query": query, "max_results": max, "include_answer": true}))
                 .send().await;
             if let Ok(r) = res {
-                if let Ok(j) = r.json::<serde_json::Value>().await {
-                    return Ok(SkillResult::success(j));
+                // A rejected key or quota error is not a paid search. Falling
+                // through keeps the free fallback working and avoids charging
+                // for an error body parsed as a result.
+                if r.status().is_success() {
+                    if let Ok(mut j) = r.json::<serde_json::Value>().await {
+                        if let Some(object) = j.as_object_mut() {
+                            object.insert("provider".to_string(), serde_json::json!("tavily"));
+                        }
+                        return Ok(SkillResult::success(j));
+                    }
                 }
             }
         }
@@ -76,7 +86,7 @@ impl Skill for TavilySearchSkill {
         let fallback = crate::builtin::web_search::WebSearchSkill::new();
         // Carry the confinement across with the rest of the context, so a
         // delegated call is bound exactly like the original.
-        let ctx = _ctx.clone_for_delegation();
+        let ctx = ctx.clone_for_delegation();
         fallback
             .execute(
                 &ctx,

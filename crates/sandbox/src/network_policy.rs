@@ -67,18 +67,12 @@ impl Default for NetworkPolicy {
             enabled: true,
             rules: vec![
                 // Allow common APIs
-                NetworkRule::allow("api.openai.com")
-                    .with_description("OpenAI API"),
-                NetworkRule::allow("api.anthropic.com")
-                    .with_description("Anthropic API"),
-                NetworkRule::allow("openrouter.ai")
-                    .with_description("OpenRouter API"),
-                NetworkRule::allow("api.tokenrouter.com")
-                    .with_description("TokenRouter API"),
-                NetworkRule::allow("localhost")
-                    .with_description("Local services (Ollama, etc.)"),
-                NetworkRule::allow("127.0.0.1")
-                    .with_description("Localhost"),
+                NetworkRule::allow("api.openai.com").with_description("OpenAI API"),
+                NetworkRule::allow("api.anthropic.com").with_description("Anthropic API"),
+                NetworkRule::allow("openrouter.ai").with_description("OpenRouter API"),
+                NetworkRule::allow("api.tokenrouter.com").with_description("TokenRouter API"),
+                NetworkRule::allow("localhost").with_description("Local services (Ollama, etc.)"),
+                NetworkRule::allow("127.0.0.1").with_description("Localhost"),
                 // Block sensitive domains
                 NetworkRule::deny("metadata.google.internal")
                     .with_description("Cloud metadata endpoint"),

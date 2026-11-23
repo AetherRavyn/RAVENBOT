@@ -23,6 +23,7 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) })
 vi.mock("$lib/toast", () => ({ notify: vi.fn() }));
 
 import WorkspaceBrowser from "./WorkspaceBrowser.svelte";
+import { a11yViolations } from "$lib/test/a11y";
 
 const entry = (over: Record<string, unknown> = {}) => ({
   path: "OFFICE.md",
@@ -116,6 +117,7 @@ describe("WorkspaceBrowser", () => {
     await waitFor(() => expect(getByText("deliverables")).toBeTruthy());
     expect(getByText("OFFICE.md")).toBeTruthy();
     expect(container.textContent).toContain("1");
+    expect(await a11yViolations(container), JSON.stringify(await a11yViolations(container))).toEqual([]);
   });
 
   it("shows a file's text when it is selected", async () => {

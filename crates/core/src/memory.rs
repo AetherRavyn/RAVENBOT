@@ -22,6 +22,22 @@ pub struct MemoryFact {
     pub last_accessed: DateTime<Utc>,
     /// Created timestamp
     pub created_at: DateTime<Utc>,
+    /// Where the memory came from: user, agent, self-review, import, unknown.
+    #[serde(default = "default_memory_source")]
+    pub source: String,
+    /// Thread the memory was learned in, when known.
+    #[serde(default)]
+    pub source_thread_id: Option<Uuid>,
+    /// Run the memory was learned in, when known.
+    #[serde(default)]
+    pub source_run_id: Option<Uuid>,
+    /// Last content or importance change.
+    #[serde(default = "chrono::Utc::now")]
+    pub updated_at: DateTime<Utc>,
+}
+
+fn default_memory_source() -> String {
+    "unknown".to_string()
 }
 
 impl MemoryFact {
@@ -37,6 +53,10 @@ impl MemoryFact {
             access_count: 0,
             last_accessed: now,
             created_at: now,
+            source: "unknown".to_string(),
+            source_thread_id: None,
+            source_run_id: None,
+            updated_at: now,
         }
     }
 
@@ -53,7 +73,7 @@ impl MemoryFact {
         let base = self.importance;
         let access_boost = (self.access_count as f32).ln_1p() * 0.1;
         let age_penalty = age_days * 0.01;
-        let recency_boost = 1.0 / (1.0 + recency * 0.1) ;
+        let recency_boost = 1.0 / (1.0 + recency * 0.1);
         (base + access_boost - age_penalty) * recency_boost
     }
 }

@@ -84,7 +84,7 @@ impl Skill for ApiTesterSkill {
 
     async fn execute(
         &self,
-        _ctx: &SkillContext,
+        ctx: &SkillContext,
         args: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let action = args
@@ -93,9 +93,9 @@ impl Skill for ApiTesterSkill {
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'action'".into()))?;
 
         match action {
-            "request" => self.single_request(args).await,
-            "collection" => self.run_collection(args).await,
-            "graphql" => self.graphql_request(args).await,
+            "request" => self.single_request(ctx, args).await,
+            "collection" => self.run_collection(ctx, args).await,
+            "graphql" => self.graphql_request(ctx, args).await,
             "health_check" => self.health_check(args).await,
             "websocket_test" => Ok(SkillResult::failure(
                 "WebSocket testing not yet implemented".to_string(),
@@ -109,20 +109,30 @@ impl Skill for ApiTesterSkill {
 }
 
 impl ApiTesterSkill {
-    async fn single_request(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn single_request(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let method = args.get("method").and_then(|v| v.as_str()).unwrap_or("GET");
         let url = args
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'url'".into()))?;
+        let url = ctx
+            .ensure_network_allowed(url)
+            .map_err(SkillError::InvalidArguments)?;
+        let (client, url) = crate::http::pinned_client(url.as_str())
+            .await
+            .map_err(SkillError::Network)?;
 
         let mut req = match method {
-            "POST" => self.client.post(url),
-            "PUT" => self.client.put(url),
-            "PATCH" => self.client.patch(url),
-            "DELETE" => self.client.delete(url),
-            "HEAD" => self.client.head(url),
-            _ => self.client.get(url),
+            "POST" => client.post(url),
+            "PUT" => client.put(url),
+            "PATCH" => client.patch(url),
+            "DELETE" => client.delete(url),
+            "HEAD" => client.head(url),
+            _ => client.get(url),
         };
 
         if let Some(h) = args.get("headers").and_then(|v| v.as_object()) {
@@ -179,7 +189,11 @@ impl ApiTesterSkill {
         })))
     }
 
-    async fn run_collection(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn run_collection(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let collection = args
             .get("collection")
             .and_then(|v| v.as_array())
@@ -202,7 +216,7 @@ impl ApiTesterSkill {
                     req_args["action"] = serde_json::json!("request");
                 }
 
-                match self.single_request(req_args).await {
+                match self.single_request(ctx, req_args).await {
                     Ok(result) => {
                         let passed = result.output["all_passed"].as_bool().unwrap_or(false);
                         if passed {
@@ -243,19 +257,28 @@ impl ApiTesterSkill {
         })))
     }
 
-    async fn graphql_request(&self, args: serde_json::Value) -> Result<SkillResult, SkillError> {
+    async fn graphql_request(
+        &self,
+        ctx: &SkillContext,
+        args: serde_json::Value,
+    ) -> Result<SkillResult, SkillError> {
         let url = args
             .get("url")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing 'url'".into()))?;
+        let url = ctx
+            .ensure_network_allowed(url)
+            .map_err(SkillError::InvalidArguments)?;
+        let (client, url) = crate::http::pinned_client(url.as_str())
+            .await
+            .map_err(SkillError::Network)?;
         let query = args
             .get("body")
             .and_then(|v| v.get("query"))
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing query in body".into()))?;
 
-        let mut req = self
-            .client
+        let mut req = client
             .post(url)
             .json(&serde_json::json!({ "query": query }));
 

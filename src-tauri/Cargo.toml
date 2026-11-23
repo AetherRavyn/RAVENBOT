@@ -19,6 +19,7 @@ ravenbot-core = { path = "../crates/core" }
 ravenbot-db = { path = "../crates/db" }
 ravenbot-models = { path = "../crates/models" }
 ravenbot-runtime = { path = "../crates/runtime" }
+ravenbot-memory = { path = "../crates/memory" }
 ravenbot-scheduler = { path = "../crates/scheduler" }
 ravenbot-sync = { path = "../crates/sync" }
 ravenbot-governance = { path = "../crates/governance" }
@@ -28,15 +29,19 @@ ravenbot-skills = { path = "../crates/skills" }
 ravenbot-sandbox = { path = "../crates/sandbox" }
 ravenbot-vision = { path = "../crates/vision" }
 ravenbot-ipc = { path = "../crates/ipc" }
+ravenbot-remote = { path = "../crates/remote" }
 
 # Tauri
 # `unstable` unlocks `Window::add_child`, which is how the browser dock is a
 # real child webview instead of an iframe that remote sites refuse to load.
-tauri = { version = "2", features = ["unstable", "protocol-asset"] }
+tauri = { version = "2", features = ["unstable", "protocol-asset", "tray-icon"] }
+tauri-plugin-autostart = "2"
+notify-rust = "4"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
-tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
+# SMTP attention alerts. Default features include STARTTLS + native-tls.
+lettre = "0.11"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -44,6 +49,7 @@ tokio = { version = "1", features = ["full"] }
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+jsonschema = { workspace = true }
 
 # Logging
 tracing = "0.1"
@@ -54,6 +60,8 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Time
 chrono = { version = "0.4", features = ["serde"] }
+argon2 = "0.5"
+rand.workspace = true
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "uuid", "chrono", "json"] }
@@ -63,6 +71,17 @@ keyring = "3"
 
 # Window management
 tauri-plugin-window-state = "2"
+# WhatsApp Cloud API webhook receiver and HMAC verification.
+axum = "0.8"
+hmac = "0.12"
+jsonwebtoken = { version = "12", features = ["rust_crypto"] }
+subtle = "2"
+# Slack Socket Mode uses a WebSocket; rustls avoids the OpenSSL toolchain.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots", "url"] }
+futures.workspace = true
+tauri-plugin-single-instance = "2"
+# One fleet owner (desktop or headless daemon) at a time.
+fs2 = "0.4"
 
 # HTTP for OpenAPI import
 reqwest = { version = "0.12", features = ["json"] }
@@ -86,6 +105,7 @@ gtk = "0.18"
 javascriptcore-rs = "1.1"
 
 [dev-dependencies]
+plist = "1"
 # The allowlist in office_org is checked against the real skill registry, so a
 # skill that exists but is not listed (or the reverse) fails a test rather than
 # quietly making a tool impossible to give an agent.

@@ -20,3 +20,6 @@ xcap = "0.4"
 image = "0.25"
 reqwest = { workspace = true, features = ["json", "multipart"] }
 dirs.workspace = true
+
+[dev-dependencies]
+axum = "0.8"

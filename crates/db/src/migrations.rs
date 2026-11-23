@@ -19,7 +19,7 @@ pub enum MigrationError {
 /// else, because that is the only thing it can honestly describe: a database
 /// whose `_migrations` table tops out at 23 is at 23, whatever an earlier
 /// constant still says.
-pub const CURRENT_VERSION: i32 = 35;
+pub const CURRENT_VERSION: i32 = 70;
 
 /// SQL for each migration version
 const MIGRATIONS: &[(i32, &str)] = &[
@@ -72,35 +72,102 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (26, include_str!("migrations/026_office_autonomy.sql")),
     (27, include_str!("migrations/027_office_queue.sql")),
     (28, include_str!("migrations/028_team_channels.sql")),
-    (
-        29,
-        include_str!("migrations/029_message_reactions.sql"),
-    ),
-    (
-        30,
-        include_str!("migrations/030_office_queue_reply.sql"),
-    ),
+    (29, include_str!("migrations/029_message_reactions.sql")),
+    (30, include_str!("migrations/030_office_queue_reply.sql")),
     (
         31,
         include_str!("migrations/031_retire_placeholder_plugins.sql"),
     ),
-    (
-        32,
-        include_str!("migrations/032_plugin_base_url.sql"),
-    ),
+    (32, include_str!("migrations/032_plugin_base_url.sql")),
     (
         33,
         include_str!("migrations/033_plugin_credential_hint.sql"),
     ),
-    (
-        34,
-        include_str!("migrations/034_operation_body_format.sql"),
-    ),
+    (34, include_str!("migrations/034_operation_body_format.sql")),
     (
         35,
         include_str!("migrations/035_operation_query_params.sql"),
     ),
+    (36, include_str!("migrations/036_interaction_blocks.sql")),
+    (37, include_str!("migrations/037_office_queue_position.sql")),
+    (38, include_str!("migrations/038_webhook_secret_hash.sql")),
+    (39, include_str!("migrations/039_vault.sql")),
+    (40, include_str!("migrations/040_audit_viewer.sql")),
+    (41, include_str!("migrations/041_workflows.sql")),
+    (42, include_str!("migrations/042_workflow_history.sql")),
+    (43, include_str!("migrations/043_browser_profiles.sql")),
+    (44, include_str!("migrations/044_workflow_schedules.sql")),
+    (45, include_str!("migrations/045_memory_provenance.sql")),
+    (46, include_str!("migrations/046_workflow_webhooks.sql")),
+    (
+        47,
+        include_str!("migrations/047_browser_profile_cookie_policy.sql"),
+    ),
+    (48, include_str!("migrations/048_budget_period_windows.sql")),
+    (49, include_str!("migrations/049_single_budget_per_bot.sql")),
+    (50, include_str!("migrations/050_usage_breakdown.sql")),
+    (51, include_str!("migrations/051_remote_access.sql")),
+    (52, include_str!("migrations/052_telegram.sql")),
+    (53, include_str!("migrations/053_slack.sql")),
+    (54, include_str!("migrations/054_discord.sql")),
+    (55, include_str!("migrations/055_whatsapp.sql")),
+    (56, include_str!("migrations/056_teams.sql")),
+    (57, include_str!("migrations/057_run_actors.sql")),
+    (58, include_str!("migrations/058_message_context.sql")),
+    (
+        59,
+        include_str!("migrations/059_office_queue_recipient.sql"),
+    ),
+    (
+        60,
+        include_str!("migrations/060_message_context_breakdown.sql"),
+    ),
+    (61, include_str!("migrations/061_run_resume_on_start.sql")),
+    (62, include_str!("migrations/062_default_yolo_approval.sql")),
+    (63, include_str!("migrations/063_office_graphs.sql")),
+    (64, include_str!("migrations/064_messages_fts.sql")),
+    (65, include_str!("migrations/065_run_progress.sql")),
+    (66, include_str!("migrations/066_work_items.sql")),
+    (67, include_str!("migrations/067_quality_gates.sql")),
+    (68, include_str!("migrations/068_goals.sql")),
+    (69, include_str!("migrations/069_context_summaries.sql")),
+    (70, include_str!("migrations/070_goal_autopilot.sql")),
 ];
+
+/// Split a migration into executable statements without breaking trigger
+/// bodies. The simple `split(';')` approach cuts a `BEGIN ... END;` trigger in
+/// half; this tracks the BEGIN/END depth and only splits at depth zero.
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut trigger_depth = 0usize;
+    for line in sql.lines() {
+        let trimmed = line.trim();
+        current.push_str(line);
+        current.push('\n');
+        if trimmed.is_empty() || trimmed.starts_with("--") {
+            continue;
+        }
+        let upper = trimmed.to_ascii_uppercase();
+        if upper == "BEGIN" || upper.ends_with(" BEGIN") {
+            trigger_depth += 1;
+        } else if upper == "END;" || upper == "END" {
+            trigger_depth = trigger_depth.saturating_sub(1);
+        }
+        if trigger_depth == 0 && trimmed.ends_with(';') {
+            let statement = current.trim().to_string();
+            if !statement.is_empty() {
+                statements.push(statement);
+            }
+            current.clear();
+        }
+    }
+    let rest = current.trim().to_string();
+    if !rest.is_empty() {
+        statements.push(rest);
+    }
+    statements
+}
 
 /// Run all pending migrations
 pub async fn run(pool: &SqlitePool) -> Result<(), super::DbError> {
@@ -126,8 +193,8 @@ pub async fn run(pool: &SqlitePool) -> Result<(), super::DbError> {
         if version > current_version {
             tracing::info!("Applying migration v{}", version);
 
-            // Split by semicolons and execute each statement
-            for statement in sql.split(';') {
+            // Split into statements, keeping trigger bodies together.
+            for statement in split_sql_statements(sql) {
                 let statement = statement.trim();
                 if !statement.is_empty() {
                     // `ALTER TABLE ... ADD COLUMN` is not idempotent in SQLite,
@@ -151,4 +218,48 @@ pub async fn run(pool: &SqlitePool) -> Result<(), super::DbError> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_sql_statements;
+
+    #[test]
+    fn trigger_bodies_are_not_split_into_broken_statements() {
+        let sql = r#"
+CREATE TABLE t (id TEXT);
+CREATE TRIGGER t_ai AFTER INSERT ON t
+BEGIN
+    INSERT INTO other VALUES (new.id);
+    DELETE FROM stale WHERE id = new.id;
+END;
+INSERT INTO t VALUES ('x');
+"#;
+        let statements = split_sql_statements(sql);
+        assert_eq!(statements.len(), 3, "{statements:#?}");
+        assert!(
+            statements[1].starts_with("CREATE TRIGGER"),
+            "{statements:#?}"
+        );
+        assert!(
+            statements[1].contains("INSERT INTO other"),
+            "{statements:#?}"
+        );
+        assert!(statements[1].ends_with("END;"), "{statements:#?}");
+        assert!(statements[2].contains("INSERT INTO t"), "{statements:#?}");
+    }
+
+    #[test]
+    fn a_case_end_does_not_close_a_trigger_early() {
+        let sql = r#"
+UPDATE t SET kind = COALESCE(CASE
+    WHEN x = 0 THEN ''
+    ELSE x
+END, '');
+CREATE INDEX i ON t(kind);
+"#;
+        let statements = split_sql_statements(sql);
+        assert_eq!(statements.len(), 2, "{statements:#?}");
+        assert!(statements[0].contains("END, ''"), "{statements:#?}");
+    }
 }

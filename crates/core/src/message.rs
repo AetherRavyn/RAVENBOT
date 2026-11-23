@@ -162,6 +162,28 @@ pub struct Message {
     /// thing the model produced.
     #[serde(default)]
     pub reactions: Vec<String>,
+    /// Estimated prompt tokens the model saw for this turn.
+    ///
+    /// Recorded on the assistant message so a reload can restore the composer's
+    /// context meter before the next run emits a live `context` event. It is an
+    /// estimate, not a provider billing figure.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_used_tokens: Option<u64>,
+    /// Context window used for that estimate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
+    /// Whether the turn compacted history before the model call.
+    #[serde(default)]
+    pub context_compacted: bool,
+    /// Disjoint prompt-token buckets captured with the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_system_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tool_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_memory_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_message_tokens: Option<u64>,
     /// Timestamp
     pub created_at: DateTime<Utc>,
 }
@@ -229,6 +251,9 @@ pub struct ToolTrace {
     /// Wall-clock milliseconds. A turn that felt slow is usually one call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// User-configured per-call price for a paid tool, when one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<f64>,
 }
 
 /// How many tool traces one message keeps.
@@ -252,6 +277,7 @@ impl ToolTrace {
             result: serde_json::Value::Null,
             is_error: false,
             duration_ms: None,
+            cost: None,
         }
     }
 
@@ -263,6 +289,11 @@ impl ToolTrace {
 
     pub fn with_duration_ms(mut self, ms: u64) -> Self {
         self.duration_ms = Some(ms);
+        self
+    }
+
+    pub fn with_cost(mut self, cost: f64) -> Self {
+        self.cost = Some(cost);
         self
     }
 
@@ -361,6 +392,13 @@ impl Message {
             sender_name: Some("You".to_string()),
             reply_to_id: None,
             reactions: Vec::new(),
+            context_used_tokens: None,
+            context_window_tokens: None,
+            context_compacted: false,
+            context_system_tokens: None,
+            context_tool_tokens: None,
+            context_memory_tokens: None,
+            context_message_tokens: None,
             created_at: Utc::now(),
         }
     }
@@ -383,6 +421,13 @@ impl Message {
             sender_name: None,
             reply_to_id: None,
             reactions: Vec::new(),
+            context_used_tokens: None,
+            context_window_tokens: None,
+            context_compacted: false,
+            context_system_tokens: None,
+            context_tool_tokens: None,
+            context_memory_tokens: None,
+            context_message_tokens: None,
             created_at: Utc::now(),
         }
     }
@@ -422,6 +467,13 @@ impl Message {
             sender_name: None,
             reply_to_id: None,
             reactions: Vec::new(),
+            context_used_tokens: None,
+            context_window_tokens: None,
+            context_compacted: false,
+            context_system_tokens: None,
+            context_tool_tokens: None,
+            context_memory_tokens: None,
+            context_message_tokens: None,
             created_at: Utc::now(),
         }
     }
@@ -460,6 +512,13 @@ impl Message {
             sender_name: None,
             reply_to_id: None,
             reactions: Vec::new(),
+            context_used_tokens: None,
+            context_window_tokens: None,
+            context_compacted: false,
+            context_system_tokens: None,
+            context_tool_tokens: None,
+            context_memory_tokens: None,
+            context_message_tokens: None,
             created_at: Utc::now(),
         }
     }
@@ -528,6 +587,13 @@ impl Message {
             sender_name: None,
             reply_to_id: None,
             reactions: Vec::new(),
+            context_used_tokens: None,
+            context_window_tokens: None,
+            context_compacted: false,
+            context_system_tokens: None,
+            context_tool_tokens: None,
+            context_memory_tokens: None,
+            context_message_tokens: None,
             created_at: Utc::now(),
         }
     }

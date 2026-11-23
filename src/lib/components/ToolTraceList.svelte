@@ -22,6 +22,7 @@
   import { summarizeArgs, renderToolValue } from "$lib/chat/toolSummary";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { ChevronRight, Check, X, Timer, FileText, ExternalLink, Presentation } from "@lucide/svelte";
+  import ImageGeneration from "$lib/components/chat/ImageGeneration.svelte";
 
   interface Props {
     tools: ToolTrace[];
@@ -122,6 +123,37 @@
     );
   }
 
+  interface GeneratedImageCard {
+    state: "completed" | "failed";
+    prompt: string;
+    provider: string;
+    url: string;
+    size: string;
+    error: string;
+  }
+
+  /** A real image_gen result, not a JSON URL the reader has to open manually. */
+  function generatedImage(tool: ToolTrace): GeneratedImageCard | null {
+    if (tool.name !== "image_gen") return null;
+    const result = tool.result as any;
+    const output = result?.output ?? result;
+    const args = (tool.arguments ?? {}) as any;
+    const prompt = String(output?.prompt ?? args?.prompt ?? "");
+    const provider = String(output?.provider ?? "");
+    const url = typeof output?.url === "string" ? output.url : "";
+    const size = String(args?.size ?? "");
+    if (tool.is_error || !url) {
+      const detail =
+        typeof output?.error === "string"
+          ? output.error
+          : typeof result?.error === "string"
+            ? result.error
+            : "";
+      return { state: "failed", prompt, provider, url: "", size, error: detail };
+    }
+    return { state: "completed", prompt, provider, url, size, error: "" };
+  }
+
   async function openDocument(path: string) {
     try {
       const { openPath } = await import("@tauri-apps/plugin-opener");
@@ -139,6 +171,7 @@
       {@const ms = duration(tool)}
       {@const document = documentResult(tool)}
       {@const deck = slideDeck(tool)}
+      {@const generated = generatedImage(tool)}
       <div class="tools__item" data-failed={bad}>
         <button
           type="button"
@@ -205,6 +238,17 @@
               {/each}
             </div>
           </div>
+        {/if}
+
+        {#if generated}
+          <ImageGeneration
+            state={generated.state}
+            prompt={generated.prompt}
+            provider={generated.provider}
+            url={generated.url}
+            size={generated.size}
+            error={generated.error}
+          />
         {/if}
 
         {#if open[i] ?? false}

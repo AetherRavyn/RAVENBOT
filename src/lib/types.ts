@@ -134,6 +134,17 @@ export interface Message {
   role: MessageRole;
   content: MessageContent;
   attachments: Attachment[];
+  sender_bot_id?: string | null;
+  sender_name?: string | null;
+  reply_to_id?: string | null;
+  reactions?: string[];
+  context_used_tokens?: number | null;
+  context_window_tokens?: number | null;
+  context_compacted?: boolean;
+  context_system_tokens?: number | null;
+  context_tool_tokens?: number | null;
+  context_memory_tokens?: number | null;
+  context_message_tokens?: number | null;
   created_at: string;
 }
 

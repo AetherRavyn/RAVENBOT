@@ -32,10 +32,6 @@ fn list_timeout() -> Duration {
 fn call_timeout() -> Duration {
     timeout_from_env("RAVENBOT_MCP_CALL_TIMEOUT_SECS", 180)
 }
-fn http_timeout() -> Duration {
-    timeout_from_env("RAVENBOT_MCP_HTTP_TIMEOUT_SECS", 60)
-}
-
 /// A live stdio MCP session. `kill_on_drop` guarantees the child is reaped on
 /// every early-return path, which is what previously leaked `npx`/node processes
 /// (and their RAM) whenever initialization timed out.
@@ -179,11 +175,19 @@ impl McpClient {
                 }
             }
         }
-        Self { server_id: config.id.clone(), config, env }
+        Self {
+            server_id: config.id.clone(),
+            config,
+            env,
+        }
     }
 
     pub fn with_env(config: crate::servers::McpServerConfig, env: HashMap<String, String>) -> Self {
-        Self { server_id: config.id.clone(), config, env }
+        Self {
+            server_id: config.id.clone(),
+            config,
+            env,
+        }
     }
 
     fn is_builtin(&self) -> bool {
@@ -201,10 +205,7 @@ impl McpClient {
 
     /// Explicit URL for a Cursor-style HTTP (streamable/SSE) MCP server.
     fn http_url(&self) -> Option<String> {
-        self.config
-            .url
-            .clone()
-            .filter(|u| !u.trim().is_empty())
+        self.config.url.clone().filter(|u| !u.trim().is_empty())
     }
 
     fn uses_http(&self) -> bool {
@@ -243,7 +244,10 @@ impl McpClient {
 
     async fn spawn_stdio(&self) -> Result<StdioSession, String> {
         if self.config.command.trim().is_empty() {
-            return Err(format!("Server '{}' has no command configured", self.server_id));
+            return Err(format!(
+                "Server '{}' has no command configured",
+                self.server_id
+            ));
         }
         let mut child = Command::new(&self.config.command)
             .args(&self.config.args)
@@ -308,7 +312,9 @@ impl McpClient {
     async fn list_tools_stdio(&self) -> Result<Vec<McpTool>, String> {
         let mut session = self.spawn_stdio().await?;
         self.initialize(&mut session).await?;
-        let result = session.request("tools/list", json!({}), 2, list_timeout()).await;
+        let result = session
+            .request("tools/list", json!({}), 2, list_timeout())
+            .await;
         let _ = session.child.kill().await;
         let result = result?;
 
@@ -409,11 +415,9 @@ impl McpClient {
 
     async fn http_post(&self, body: Value) -> Result<reqwest::Response, String> {
         let url = self.http_url().ok_or("HTTP MCP server is missing a url")?;
-        let mut req = reqwest::Client::builder()
-            .timeout(http_timeout())
-            .build()
-            .map_err(|e| e.to_string())?
-            .post(&url)
+        let (client, url) = ravenbot_skills::http::pinned_client(&url).await?;
+        let mut req = client
+            .post(url.clone())
             .header("content-type", "application/json")
             .header("accept", "application/json, text/event-stream")
             .json(&body);
@@ -476,40 +480,98 @@ impl McpClient {
     pub fn synthesized_tools(&self) -> Vec<McpTool> {
         let tools: Vec<(String, String)> = match self.server_id.as_str() {
             "github" => vec![
-                ("github_list_repos".into(), "List repositories and organizations".into()),
-                ("github_create_issue".into(), "Create and manage GitHub issues".into()),
-                ("github_create_pr".into(), "Open and review pull requests".into()),
-                ("github_search_code".into(), "Semantic and literal code search across repos".into()),
+                (
+                    "github_list_repos".into(),
+                    "List repositories and organizations".into(),
+                ),
+                (
+                    "github_create_issue".into(),
+                    "Create and manage GitHub issues".into(),
+                ),
+                (
+                    "github_create_pr".into(),
+                    "Open and review pull requests".into(),
+                ),
+                (
+                    "github_search_code".into(),
+                    "Semantic and literal code search across repos".into(),
+                ),
             ],
             "gitlab" => vec![
-                ("gitlab_list_projects".into(), "List accessible GitLab projects".into()),
-                ("gitlab_create_issue".into(), "Create GitLab issues and track milestones".into()),
-                ("gitlab_merge_request".into(), "Create and manage Merge Requests".into()),
+                (
+                    "gitlab_list_projects".into(),
+                    "List accessible GitLab projects".into(),
+                ),
+                (
+                    "gitlab_create_issue".into(),
+                    "Create GitLab issues and track milestones".into(),
+                ),
+                (
+                    "gitlab_merge_request".into(),
+                    "Create and manage Merge Requests".into(),
+                ),
             ],
             "postgres" => vec![
-                ("pg_query".into(), "Execute read/write PostgreSQL queries".into()),
-                ("pg_list_tables".into(), "Inspect database schema and tables".into()),
-                ("pg_describe_table".into(), "Get column definitions and indexes".into()),
+                (
+                    "pg_query".into(),
+                    "Execute read/write PostgreSQL queries".into(),
+                ),
+                (
+                    "pg_list_tables".into(),
+                    "Inspect database schema and tables".into(),
+                ),
+                (
+                    "pg_describe_table".into(),
+                    "Get column definitions and indexes".into(),
+                ),
             ],
             "sqlite" => vec![
-                ("sqlite_query".into(), "Run query on local SQLite database".into()),
+                (
+                    "sqlite_query".into(),
+                    "Run query on local SQLite database".into(),
+                ),
                 ("sqlite_list_tables".into(), "List tables and views".into()),
             ],
             "duckdb" => vec![
-                ("duckdb_query".into(), "Run analytical SQL (Parquet, CSV, Arrow)".into()),
-                ("duckdb_execute".into(), "Execute DuckDB SQL statements".into()),
+                (
+                    "duckdb_query".into(),
+                    "Run analytical SQL (Parquet, CSV, Arrow)".into(),
+                ),
+                (
+                    "duckdb_execute".into(),
+                    "Execute DuckDB SQL statements".into(),
+                ),
             ],
-            "fetch" => vec![("fetch_url".into(), "Fetch raw HTML/text from any HTTP/HTTPS URL".into())],
+            "fetch" => vec![(
+                "fetch_url".into(),
+                "Fetch raw HTML/text from any HTTP/HTTPS URL".into(),
+            )],
             "browserbase" | "puppeteer" | "playwright" => vec![
                 ("browser_navigate".into(), "Navigate to web page".into()),
                 ("browser_click".into(), "Click elements and interact".into()),
-                ("browser_screenshot".into(), "Capture page screenshot".into()),
+                (
+                    "browser_screenshot".into(),
+                    "Capture page screenshot".into(),
+                ),
             ],
             "filesystem" => vec![
-                ("read_file".into(), "Read the complete contents of a file".into()),
-                ("write_file".into(), "Create a new file or completely overwrite an existing file".into()),
-                ("list_directory".into(), "Get a detailed listing of all files and directories in a specific location".into()),
-                ("search_files".into(), "Recursively search for files and directories matching a pattern".into()),
+                (
+                    "read_file".into(),
+                    "Read the complete contents of a file".into(),
+                ),
+                (
+                    "write_file".into(),
+                    "Create a new file or completely overwrite an existing file".into(),
+                ),
+                (
+                    "list_directory".into(),
+                    "Get a detailed listing of all files and directories in a specific location"
+                        .into(),
+                ),
+                (
+                    "search_files".into(),
+                    "Recursively search for files and directories matching a pattern".into(),
+                ),
             ],
             "git" => vec![
                 ("git_status".into(), "Show working tree status".into()),
@@ -518,29 +580,59 @@ impl McpClient {
             ],
             "docker" => vec![
                 ("docker_ps".into(), "List running Docker containers".into()),
-                ("docker_logs".into(), "Inspect container stdout/stderr logs".into()),
+                (
+                    "docker_logs".into(),
+                    "Inspect container stdout/stderr logs".into(),
+                ),
             ],
             "slack" => vec![
-                ("slack_send_message".into(), "Send message to Slack channel".into()),
-                ("slack_read_channel".into(), "Read recent channel messages".into()),
+                (
+                    "slack_send_message".into(),
+                    "Send message to Slack channel".into(),
+                ),
+                (
+                    "slack_read_channel".into(),
+                    "Read recent channel messages".into(),
+                ),
             ],
             "notion" => vec![
-                ("notion_search".into(), "Search Notion workspace pages and databases".into()),
+                (
+                    "notion_search".into(),
+                    "Search Notion workspace pages and databases".into(),
+                ),
                 ("notion_create_page".into(), "Create Notion document".into()),
             ],
             "stripe" => vec![
-                ("stripe_list_charges".into(), "List customer charges and balances".into()),
-                ("stripe_create_customer".into(), "Create new Stripe customer".into()),
+                (
+                    "stripe_list_charges".into(),
+                    "List customer charges and balances".into(),
+                ),
+                (
+                    "stripe_create_customer".into(),
+                    "Create new Stripe customer".into(),
+                ),
             ],
             "pinecone" | "qdrant" | "weaviate" | "chroma" => vec![
-                ("vector_search".into(), "Query nearest neighbors with vector embeddings".into()),
-                ("vector_upsert".into(), "Insert and index vector embeddings".into()),
+                (
+                    "vector_search".into(),
+                    "Query nearest neighbors with vector embeddings".into(),
+                ),
+                (
+                    "vector_upsert".into(),
+                    "Insert and index vector embeddings".into(),
+                ),
             ],
             _ => {
                 let clean_id = self.server_id.replace('-', "_");
                 vec![
-                    (format!("{}_execute", clean_id), format!("Execute operations on {}", self.config.name)),
-                    (format!("{}_query", clean_id), format!("Query data from {}", self.config.name)),
+                    (
+                        format!("{}_execute", clean_id),
+                        format!("Execute operations on {}", self.config.name),
+                    ),
+                    (
+                        format!("{}_query", clean_id),
+                        format!("Query data from {}", self.config.name),
+                    ),
                 ]
             }
         };
@@ -736,6 +828,26 @@ fn unwrap_tool_result(result: Value) -> Result<Value, String> {
             arr.iter()
                 .find_map(|c| c.get("text").and_then(|t| t.as_str()))
         });
+    // MCP separates transport success from tool success. A filesystem server
+    // denying a path is a successful RPC carrying `isError: true`; treating it
+    // as a successful tool result hides a real failure from the model.
+    let is_error = result
+        .get("isError")
+        .or_else(|| result.get("is_error"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if is_error {
+        let message = content_text
+            .map(str::to_string)
+            .or_else(|| {
+                result
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "The connector reported an error.".to_string());
+        return Err(message);
+    }
     if let Some(text) = content_text {
         if let Ok(json) = serde_json::from_str::<Value>(text) {
             return Ok(json);
@@ -784,6 +896,26 @@ async fn duckdb_call(tool_name: &str, args: &Value) -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_mcp_error_result_is_not_reported_as_success() {
+        let result = serde_json::json!({
+            "content": [{"type": "text", "text": "Access denied - path outside allowed directories"}],
+            "isError": true
+        });
+        let error = super::unwrap_tool_result(result).expect_err("must be an error");
+        assert!(error.contains("Access denied"), "{error}");
+    }
+
+    #[test]
+    fn a_normal_mcp_text_result_still_unwraps() {
+        let result = serde_json::json!({
+            "content": [{"type": "text", "text": "{\"ok\":true}"}],
+            "isError": false
+        });
+        let value = super::unwrap_tool_result(result).expect("success");
+        assert_eq!(value["ok"], true);
+    }
+
     use super::*;
     use crate::servers::McpServerConfig;
 
@@ -797,7 +929,11 @@ mod tests {
     #[test]
     fn synthesized_tools_are_stable_for_known_servers() {
         let client = McpClient::new(cfg("git"));
-        let names: Vec<String> = client.synthesized_tools().into_iter().map(|t| t.name).collect();
+        let names: Vec<String> = client
+            .synthesized_tools()
+            .into_iter()
+            .map(|t| t.name)
+            .collect();
         assert!(names.contains(&"git_status".to_string()));
         assert_eq!(client.server_id, "git");
     }

@@ -4,8 +4,8 @@
    *
    * Two things have to be true before RAVENBOT can design an office:
    *   1. a provider key exists, so the app can think;
-   *   2. an office architect exists, so the app knows which agent designs
-   *      offices and on which model.
+   *   2. a default agent exists, so the app knows which agent designs offices,
+   *      runs as the primary assistant, and which model it uses.
    *
    * The second step used to be implicit — the app guessed a model and designed
    * offices with no identity behind it. Asking once produces a real bot the
@@ -27,40 +27,61 @@
   let checking = $state(false);
   let creating = $state(false);
   let error = $state<string | null>(null);
-  let agentName = $state("Chief of Staff");
+  let agentName = $state("The Raven");
   let provider = $state("");
   let model = $state("");
   let hasKeys = $state(false);
   let existingAgent = $state<any | null>(null);
+  let localModels = $state<any[]>([]);
+  let localAvailable = $derived(localModels.length > 0);
+  let preferredLocal = $derived(
+    localModels.find((m: any) => m.supports_tools) ?? localModels[0] ?? null,
+  );
 
   async function check() {
     checking = true;
     error = null;
     try {
-      const [keys, agent] = await Promise.all([
+      const [keys, agent, local] = await Promise.all([
         invoke<string[]>("get_configured_providers"),
         invoke<any>("get_default_agent").catch(() => null),
+        invoke<any>("probe_ollama").catch(() => null),
       ]);
       hasKeys = Array.isArray(keys) && keys.length > 0;
       existingAgent = agent ?? null;
+      localModels = Array.isArray(local?.models) ? local.models : [];
+      const localAgent =
+        existingAgent?.config?.model_provider === "ollama" ||
+        existingAgent?.config?.model_provider === "local";
+      // A saved architect is not "ready" if the provider it needs has neither
+      // a key nor a local endpoint.
+      if (!hasKeys && !localAgent) {
+        step = 0;
+        return;
+      }
       if (existingAgent) {
         step = 2;
         return;
       }
-      if (hasKeys) {
-        const def: any = await invoke("get_default_model").catch(() => null);
-        provider = def?.provider || "opencode-go";
-        model = def?.model || "deepseek-v4.1-flash";
-        step = 1;
-      } else {
-        step = 0;
-      }
+      const def: any = await invoke("get_default_model").catch(() => null);
+      // Prefer the configured default; fall back to the keyless local path
+      // rather than inventing a cloud provider the user may not have.
+      provider = def?.provider || "ollama";
+      model = def?.model || preferredLocal?.id || "llama3.1";
+      step = 1;
     } catch (e) {
       error = String(e);
       step = 0;
     } finally {
       checking = false;
     }
+  }
+
+  function useLocalOllama() {
+    if (!preferredLocal) return;
+    provider = "ollama";
+    model = preferredLocal.id || preferredLocal.name || "llama3.1";
+    step = 1;
   }
 
   // Re-check whenever the overlay opens. `open` is the only dependency: the
@@ -75,7 +96,7 @@
     error = null;
     try {
       const bot = await invoke<any>("create_default_agent", {
-        name: agentName.trim() || "Chief of Staff",
+        name: agentName.trim() || "The Raven",
         provider: provider || undefined,
         model: model || undefined,
       });
@@ -113,8 +134,8 @@
               {step === 0
                 ? "Connect a provider so the app can think"
                 : step === 1
-                  ? "Choose the agent that designs your offices"
-                  : "Your office architect is ready"}
+                  ? "Choose your default agent"
+                  : "Your default agent is ready"}
             </p>
           </div>
           <button
@@ -131,10 +152,25 @@
       {#if step === 0}
         <div class="px-6 pb-4 space-y-2.5">
           <p class="text-[12px] text-[var(--text-secondary)] leading-relaxed">
-            RAVENBOT runs on your machine, but it needs an API key to think. Pick any provider
-            you have an account with — OpenRouter, Anthropic, OpenAI, OpenCode Go, a local
-            LM Studio, or any OpenAI-compatible endpoint — and paste the key.
+            {localAvailable
+              ? "RAVENBOT found a local Ollama instance. You can start without an API key, or connect any cloud or OpenAI-compatible provider."
+              : "RAVENBOT runs on your machine, but it needs an API key to think. Pick any provider you have an account with — OpenRouter, Anthropic, OpenAI, OpenCode Go, a local LM Studio, or any OpenAI-compatible endpoint — and paste the key."}
           </p>
+          {#if localAvailable && preferredLocal}
+            <div class="rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-3 py-2.5 space-y-1.5">
+              <p class="text-[12px] font-semibold text-[var(--brand-text)]">Local Ollama detected</p>
+              <p class="text-[11px] text-[var(--text-secondary)]">
+                {localModels.length} model{localModels.length === 1 ? "" : "s"} ready · no API key needed.
+              </p>
+              <button
+                type="button"
+                class="h-8 px-3 rounded-lg bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] text-[11px] font-semibold cursor-pointer"
+                onclick={useLocalOllama}
+              >
+                Use {preferredLocal.name || preferredLocal.id}
+              </button>
+            </div>
+          {/if}
           <div class="flex items-start gap-3">
             <span class="size-5 rounded-full bg-[var(--surface-3)] text-[11px] font-bold text-[var(--text-tertiary)] flex items-center justify-center shrink-0 mt-0.5">1</span>
             <div class="min-w-0">
@@ -153,9 +189,9 @@
       {:else if step === 1}
         <div class="px-6 pb-4 space-y-3">
           <p class="text-[12px] text-[var(--text-secondary)] leading-relaxed">
-            Your office architect reads the tools, connectors, skills, and plugins installed
-            here and turns a name and a mission into a charter and a team. It designs offices;
-            it does not do their work.
+            The Raven is your default agent. It reads the tools, connectors, skills, and
+            plugins installed here, turns a name and a mission into a charter and a team,
+            and leads the fleet. It designs offices; it does not do their work.
           </p>
           <div class="space-y-1.5">
             <label for="onboarding-agent-name" class="text-[11px] font-semibold text-[var(--text-tertiary)]">
@@ -165,7 +201,7 @@
               id="onboarding-agent-name"
               bind:value={agentName}
               class="w-full h-9 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] px-3 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/60"
-              placeholder="Chief of Staff"
+              placeholder="The Raven"
             />
           </div>
           <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2.5">
@@ -175,7 +211,7 @@
               <span class="ml-auto font-mono truncate">{provider}/{model}</span>
             </div>
             <p class="text-[11px] text-[var(--text-muted)] mt-1 leading-relaxed">
-              Change the default model in Settings → Model Manager first if you want a different brain.
+              Change the default model in Settings → Default agent first if you want a different brain.
             </p>
           </div>
           {#if error}
@@ -188,12 +224,12 @@
       {:else}
         <div class="px-6 pb-4 space-y-2">
           <p class="text-[12px] text-[var(--text-secondary)] leading-relaxed">
-            <span class="font-semibold text-[var(--text-primary)]">{existingAgent?.name || "Chief of Staff"}</span>
+            <span class="font-semibold text-[var(--text-primary)]">{existingAgent?.name || "The Raven"}</span>
             will design each office from its name and mission, using only the tools that exist
             on this machine.
           </p>
           <p class="text-[11px] text-[var(--text-muted)]">
-            You can change it later in Settings → Model Manager.
+            You can change it later in Settings → Default agent.
           </p>
         </div>
       {/if}
@@ -241,7 +277,7 @@
             disabled={creating}
           >
             {#if creating}<Loader2 class="size-3.5 animate-spin" />{:else}<Sparkles class="size-3.5" />{/if}
-            {creating ? "Creating…" : "Create default agent"}
+            {creating ? "Creating…" : "Create The Raven"}
           </button>
         {:else}
           <span></span>

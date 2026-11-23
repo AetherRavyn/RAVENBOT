@@ -1,8 +1,8 @@
 //! Computer control through vision-guided actions
 
+use crate::image_analysis::{AnalysisResult, ImageAnalyzer};
 use crate::input::{Button, InputInjector};
 use crate::screenshot::{Screenshot, ScreenshotCapture};
-use crate::image_analysis::{ImageAnalyzer, AnalysisResult};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -31,7 +31,12 @@ pub enum ComputerAction {
     /// Press a key
     PressKey { key: String },
     /// Scroll at coordinates
-    Scroll { x: f32, y: f32, delta_x: i32, delta_y: i32 },
+    Scroll {
+        x: f32,
+        y: f32,
+        delta_x: i32,
+        delta_y: i32,
+    },
     /// Move mouse to coordinates
     MoveMouse { x: f32, y: f32 },
     /// Wait for a duration
@@ -110,9 +115,7 @@ impl ComputerController {
         tracing::info!(action = ?action, "Executing computer action");
 
         match action {
-            ComputerAction::Click { x, y, button } => {
-                self.perform_click(*x, *y, button).await
-            }
+            ComputerAction::Click { x, y, button } => self.perform_click(*x, *y, button).await,
             ComputerAction::DoubleClick { x, y } => {
                 self.perform_click(*x, *y, &MouseButton::Left).await?;
                 self.perform_click(*x, *y, &MouseButton::Left).await
@@ -120,18 +123,15 @@ impl ComputerController {
             ComputerAction::RightClick { x, y } => {
                 self.perform_click(*x, *y, &MouseButton::Right).await
             }
-            ComputerAction::TypeText { text } => {
-                self.perform_type_text(text).await
-            }
-            ComputerAction::PressKey { key } => {
-                self.perform_key_press(key).await
-            }
-            ComputerAction::Scroll { x, y, delta_x, delta_y } => {
-                self.perform_scroll(*x, *y, *delta_x, *delta_y).await
-            }
-            ComputerAction::MoveMouse { x, y } => {
-                self.perform_move_mouse(*x, *y).await
-            }
+            ComputerAction::TypeText { text } => self.perform_type_text(text).await,
+            ComputerAction::PressKey { key } => self.perform_key_press(key).await,
+            ComputerAction::Scroll {
+                x,
+                y,
+                delta_x,
+                delta_y,
+            } => self.perform_scroll(*x, *y, *delta_x, *delta_y).await,
+            ComputerAction::MoveMouse { x, y } => self.perform_move_mouse(*x, *y).await,
             ComputerAction::Wait { milliseconds } => {
                 tokio::time::sleep(tokio::time::Duration::from_millis(*milliseconds)).await;
                 Ok(ActionResult {
@@ -152,7 +152,12 @@ impl ComputerController {
     }
 
     /// Perform a click action
-    async fn perform_click(&self, x: f32, y: f32, button: &MouseButton) -> Result<ActionResult, ControlError> {
+    async fn perform_click(
+        &self,
+        x: f32,
+        y: f32,
+        button: &MouseButton,
+    ) -> Result<ActionResult, ControlError> {
         self.input
             .click(x, y, self.map_button(button))
             .await
@@ -167,7 +172,10 @@ impl ComputerController {
 
     /// Perform text typing
     async fn perform_type_text(&self, text: &str) -> Result<ActionResult, ControlError> {
-        self.input.type_text(text).await.map_err(ControlError::ActionFailed)?;
+        self.input
+            .type_text(text)
+            .await
+            .map_err(ControlError::ActionFailed)?;
         tracing::info!(len = text.len(), "Typed text");
         Ok(ActionResult {
             success: true,
@@ -178,7 +186,10 @@ impl ComputerController {
 
     /// Perform key press
     async fn perform_key_press(&self, key: &str) -> Result<ActionResult, ControlError> {
-        self.input.press_key(key).await.map_err(ControlError::ActionFailed)?;
+        self.input
+            .press_key(key)
+            .await
+            .map_err(ControlError::ActionFailed)?;
         tracing::info!(key, "Pressed key");
         Ok(ActionResult {
             success: true,
@@ -188,7 +199,13 @@ impl ComputerController {
     }
 
     /// Perform scroll
-    async fn perform_scroll(&self, x: f32, y: f32, delta_x: i32, delta_y: i32) -> Result<ActionResult, ControlError> {
+    async fn perform_scroll(
+        &self,
+        x: f32,
+        y: f32,
+        delta_x: i32,
+        delta_y: i32,
+    ) -> Result<ActionResult, ControlError> {
         self.input
             .scroll(x, y, delta_x, delta_y)
             .await
@@ -203,7 +220,10 @@ impl ComputerController {
 
     /// Perform mouse move
     async fn perform_move_mouse(&self, x: f32, y: f32) -> Result<ActionResult, ControlError> {
-        self.input.move_mouse(x, y).await.map_err(ControlError::ActionFailed)?;
+        self.input
+            .move_mouse(x, y)
+            .await
+            .map_err(ControlError::ActionFailed)?;
         tracing::info!(x, y, "Moved mouse");
         Ok(ActionResult {
             success: true,
@@ -214,28 +234,37 @@ impl ComputerController {
 
     /// Take a screenshot and analyze it
     pub async fn observe(&self) -> Result<(Screenshot, AnalysisResult), ControlError> {
-        let screenshot = self.screenshot_capture.capture().await
+        let screenshot = self
+            .screenshot_capture
+            .capture()
+            .await
             .map_err(|e| ControlError::ScreenshotFailed(e.to_string()))?;
-        
-        let analysis = self.image_analyzer.analyze_screenshot(&screenshot).await
+
+        let analysis = self
+            .image_analyzer
+            .analyze_screenshot(&screenshot)
+            .await
             .map_err(|e| ControlError::AnalysisFailed(e.to_string()))?;
-        
+
         Ok((screenshot, analysis))
     }
 
     /// Execute a sequence of actions
-    pub async fn execute_sequence(&self, actions: &[ComputerAction]) -> Result<Vec<ActionResult>, ControlError> {
+    pub async fn execute_sequence(
+        &self,
+        actions: &[ComputerAction],
+    ) -> Result<Vec<ActionResult>, ControlError> {
         let mut results = Vec::new();
         let actions_to_run = actions.iter().take(self.max_actions);
-        
+
         for action in actions_to_run {
             let result = self.execute(action).await?;
             results.push(result);
-            
+
             // Small delay between actions
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
-        
+
         Ok(results)
     }
 }

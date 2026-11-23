@@ -5,7 +5,7 @@
 //!   2. Local Python inference with the downloaded SanoTTTS model
 //!   3. Clear error telling the user exactly what to install/set
 
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -32,12 +32,35 @@ pub struct VoiceOptions {
 
 impl Default for VoiceOptions {
     fn default() -> Self {
-        Self { voice: "default".to_string(), rate: 1.0, volume: 1.0, pitch: 1.0 }
+        Self {
+            voice: "default".to_string(),
+            rate: 1.0,
+            volume: 1.0,
+            pitch: 1.0,
+        }
     }
 }
 
 /// The SanoTTTS model repo on Hugging Face.
 const SANO_TTS_REPO: &str = "swadhin234/sanoTTS-bucket";
+
+const TTS_SCRIPT: &str = include_str!("../../../../scripts/infer_sano_tts.py");
+
+/// Write the embedded inference script into the cache on first use. It is
+/// rewritten when the embedded copy changes, so an upgrade does not keep an
+/// old script around.
+fn ensure_tts_script() -> Result<std::path::PathBuf, TtsError> {
+    let dir = ravenbot_core::cache_dir().join("tts");
+    std::fs::create_dir_all(&dir)
+        .map_err(|error| TtsError::Failed(format!("Cannot create TTS cache dir: {error}")))?;
+    let path = dir.join("infer_sano_tts.py");
+    let current = std::fs::read_to_string(&path).ok();
+    if current.as_deref() != Some(TTS_SCRIPT) {
+        std::fs::write(&path, TTS_SCRIPT)
+            .map_err(|error| TtsError::Failed(format!("Cannot write TTS script: {error}")))?;
+    }
+    Ok(path)
+}
 
 pub struct TextToSpeech {
     default_options: VoiceOptions,
@@ -47,7 +70,10 @@ pub struct TextToSpeech {
 
 impl TextToSpeech {
     pub fn new() -> Self {
-        Self { default_options: VoiceOptions::default(), openai_key: None }
+        Self {
+            default_options: VoiceOptions::default(),
+            openai_key: None,
+        }
     }
 
     pub fn with_voice(mut self, options: VoiceOptions) -> Self {
@@ -62,14 +88,27 @@ impl TextToSpeech {
     }
 
     fn resolved_openai_key(&self) -> Option<String> {
-        self.openai_key
-            .clone()
-            .or_else(|| std::env::var("OPENAI_API_KEY").ok().filter(|k| !k.trim().is_empty()))
+        self.openai_key.clone().or_else(|| {
+            std::env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|k| !k.trim().is_empty())
+        })
     }
 
     /// Synthesize text to WAV bytes. Tries OpenAI (multi-voice) first when a
     /// key is available, then the HF Inference API, then local Python.
     pub async fn synthesize(&self, text: &str) -> Result<Vec<u8>, TtsError> {
+        self.synthesize_with_provider(text)
+            .await
+            .map(|(audio, _)| audio)
+    }
+
+    /// The provider is returned so a paid call can be attributed honestly. A
+    /// key being present does not mean the paid path produced this audio.
+    pub async fn synthesize_with_provider(
+        &self,
+        text: &str,
+    ) -> Result<(Vec<u8>, &'static str), TtsError> {
         if text.trim().is_empty() {
             return Err(TtsError::Failed("Empty text".to_string()));
         }
@@ -78,7 +117,7 @@ impl TextToSpeech {
         if self.resolved_openai_key().is_some() {
             if let Ok(audio) = self.synthesize_openai(text).await {
                 if !audio.is_empty() {
-                    return Ok(audio);
+                    return Ok((audio, "openai"));
                 }
             }
         }
@@ -86,13 +125,13 @@ impl TextToSpeech {
         // 2. Hugging Face Inference API (fastest, no local GPU needed).
         if let Ok(audio) = self.synthesize_cloud(text).await {
             if !audio.is_empty() {
-                return Ok(audio);
+                return Ok((audio, "huggingface"));
             }
         }
 
         // 3. Fall back to local Python inference with the downloaded model.
         match self.synthesize_local(text).await {
-            Ok(audio) if !audio.is_empty() => Ok(audio),
+            Ok(audio) if !audio.is_empty() => Ok((audio, "local")),
             Ok(_) => Err(TtsError::NoEngine),
             Err(e) => Err(e),
         }
@@ -165,28 +204,38 @@ impl TextToSpeech {
 
         if !resp.status().is_success() {
             let msg = resp.text().await.unwrap_or_default();
-            return Err(TtsError::Failed(format!("Inference API error: {}", msg.chars().take(300).collect::<String>())));
+            return Err(TtsError::Failed(format!(
+                "Inference API error: {}",
+                msg.chars().take(300).collect::<String>()
+            )));
         }
 
-        let bytes = resp.bytes().await
+        let bytes = resp
+            .bytes()
+            .await
             .map_err(|e| TtsError::Failed(format!("Failed to read audio: {}", e)))?;
 
         // HF returns audio as a JSON with base64 or raw WAV/FLAC bytes.
         // Try to detect: if it starts with RIFF/WAVE or ID3, it's raw audio.
-        let is_raw_audio = bytes.len() > 4 && (
-            bytes.starts_with(b"RIFF") || bytes.starts_with(b"ID3\x03") ||
-            bytes.starts_with(b"fLaC") || bytes.starts_with(b"OggS")
-        );
+        let is_raw_audio = bytes.len() > 4
+            && (bytes.starts_with(b"RIFF")
+                || bytes.starts_with(b"ID3\x03")
+                || bytes.starts_with(b"fLaC")
+                || bytes.starts_with(b"OggS"));
 
         if is_raw_audio {
             Ok(bytes.to_vec())
         } else {
             // Try parsing as JSON with a base64 audio field.
             if let Ok(val) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                if let Some(b64) = val.get("audio").and_then(|v| v.as_str())
+                if let Some(b64) = val
+                    .get("audio")
+                    .and_then(|v| v.as_str())
                     .or_else(|| val.as_str())
                 {
-                    return general_purpose::STANDARD.decode(b64).map_err(|e| TtsError::Failed(format!("Bad base64 audio: {}", e)))
+                    return general_purpose::STANDARD
+                        .decode(b64)
+                        .map_err(|e| TtsError::Failed(format!("Bad base64 audio: {}", e)))
                         .map_err(|e| TtsError::Failed(format!("Bad base64 audio: {}", e)));
                 }
             }
@@ -194,7 +243,9 @@ impl TextToSpeech {
             if bytes.len() > 100 {
                 Ok(bytes.to_vec())
             } else {
-                Err(TtsError::Failed("Inference API returned no usable audio".to_string()))
+                Err(TtsError::Failed(
+                    "Inference API returned no usable audio".to_string(),
+                ))
             }
         }
     }
@@ -208,23 +259,23 @@ impl TextToSpeech {
             model_manager::model_dir(SANO_TTS_REPO)
         } else {
             tracing::info!("Downloading SanoTTTS model on first use...");
-            model_manager::download_model(SANO_TTS_REPO).await
+            model_manager::download_model(SANO_TTS_REPO)
+                .await
                 .map_err(|e| match e {
-                    ModelError::DownloadFailed(msg) => TtsError::Failed(format!("Model download failed: {}", msg)),
-                    ModelError::NotFound(f) => TtsError::Failed(format!("Model file missing: {}", f)),
+                    ModelError::DownloadFailed(msg) => {
+                        TtsError::Failed(format!("Model download failed: {}", msg))
+                    }
+                    ModelError::NotFound(f) => {
+                        TtsError::Failed(format!("Model file missing: {}", f))
+                    }
                     ModelError::Io(e) => TtsError::Failed(format!("IO error: {}", e)),
                 })?
         };
 
-        // Find the Python inference script.
-        // Scripts live at the workspace root, two levels up from the crate.
-        let script_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../scripts/infer_sano_tts.py");
-        if !script_path.exists() {
-            return Err(TtsError::Failed(
-                format!("Inference script not found at {}", script_path.display())
-            ));
-        }
+        // The script is embedded, not read from the developer checkout. A
+        // bundled app does not have `scripts/`, so the old path made local TTS
+        // fail in release builds even when the model and Python were present.
+        let script_path = ensure_tts_script()?;
 
         // Write output to a temp file.
         let output_dir = std::env::temp_dir().join("ravenbot_tts");
@@ -235,14 +286,20 @@ impl TextToSpeech {
         let python = std::env::var("PYTHON_BIN").unwrap_or_else(|_| "python3".to_string());
         let output = tokio::process::Command::new(&python)
             .arg(&script_path)
-            .arg("--model-dir").arg(&model_dir)
-            .arg("--text").arg(text)
-            .arg("--output").arg(&output_path)
+            .arg("--model-dir")
+            .arg(&model_dir)
+            .arg("--text")
+            .arg(text)
+            .arg("--output")
+            .arg(&output_path)
             .output()
             .await
-            .map_err(|e| TtsError::Failed(format!(
-                "Failed to start Python ({}). Is Python 3 installed? Error: {}", python, e
-            )))?;
+            .map_err(|e| {
+                TtsError::Failed(format!(
+                    "Failed to start Python ({}). Is Python 3 installed? Error: {}",
+                    python, e
+                ))
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -259,7 +316,9 @@ impl TextToSpeech {
         let _ = std::fs::remove_file(&output_path);
 
         if audio.len() < 100 {
-            return Err(TtsError::Failed("Python returned empty/too-short audio".to_string()));
+            return Err(TtsError::Failed(
+                "Python returned empty/too-short audio".to_string(),
+            ));
         }
 
         Ok(audio)
@@ -301,4 +360,16 @@ fn normalize_openai_voice(voice: &str) -> &'static str {
         .copied()
         .find(|c| *c == v.as_str())
         .unwrap_or("alloy")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TTS_SCRIPT;
+
+    #[test]
+    fn the_tts_script_is_embedded_for_bundled_builds() {
+        assert!(TTS_SCRIPT.contains("infer_sano_tts.py"));
+        assert!(TTS_SCRIPT.contains("argparse"));
+        assert!(TTS_SCRIPT.len() > 1000);
+    }
 }

@@ -73,6 +73,18 @@ pub struct SkillContext {
     /// at all, which denies every path — the fail-closed answer to "this run
     /// should be confined but nobody worked out where".
     pub confined: bool,
+    /// Per-agent network grant. None means unrestricted (the legacy default);
+    /// Some(list) means only those domains/subdomains. Some(empty) denies all.
+    pub network_domains: Option<Vec<String>>,
+    /// Whether unrestricted agents may reach localhost/private hosts. Explicit
+    /// domain grants always win.
+    pub allow_private_network: bool,
+    /// OpenAI credential resolved from the owner's provider settings.
+    ///
+    /// Skills that call an OpenAI endpoint (Whisper transcription, image
+    /// generation) receive it here instead of reaching into process env. Never
+    /// serialized or logged; `None` keeps the environment fallback.
+    pub openai_api_key: Option<String>,
 }
 
 impl SkillContext {
@@ -90,7 +102,16 @@ impl SkillContext {
             sandbox_tier,
             working_dirs: Vec::new(),
             confined: false,
+            network_domains: None,
+            allow_private_network: false,
+            openai_api_key: None,
         }
+    }
+
+    /// Attach the saved OpenAI key for skills that call an OpenAI endpoint.
+    pub fn with_openai_api_key(mut self, key: Option<String>) -> Self {
+        self.openai_api_key = key.filter(|value| !value.trim().is_empty());
+        self
     }
 
     /// Attach the project folders this run may work in.
@@ -104,6 +125,52 @@ impl SkillContext {
         }
         self.working_dirs = dirs;
         self
+    }
+
+    /// Apply the agent's narrowed network grant. `None` is unrestricted.
+    pub fn with_network_domains(mut self, domains: Option<Vec<String>>) -> Self {
+        self.network_domains = domains;
+        self
+    }
+
+    pub fn with_private_network(mut self, allow: bool) -> Self {
+        self.allow_private_network = allow;
+        self
+    }
+
+    /// Validate a URL and check it against this agent's network grant.
+    pub fn ensure_network_allowed(&self, raw: &str) -> Result<url::Url, String> {
+        let url = ravenbot_core::net::validate_http_url(raw)?;
+        let host = url
+            .host_str()
+            .ok_or_else(|| "The URL has no host.".to_string())?;
+        let mut explicitly_granted = false;
+        if let Some(domains) = &self.network_domains {
+            explicitly_granted = domains
+                .iter()
+                .any(|domain| ravenbot_core::capability::domain_covers(domain, host));
+            if !explicitly_granted {
+                return Err(format!(
+                    "This agent's network grant does not allow {host}. Update its network domains in the agent settings."
+                ));
+            }
+        }
+        let private_host = ravenbot_core::net::is_private_host(host)
+            || url.host().is_some_and(|host| {
+                matches!(
+                    host,
+                    url::Host::Ipv4(ip) if ravenbot_core::net::is_private_ip(std::net::IpAddr::V4(ip))
+                ) || matches!(
+                    host,
+                    url::Host::Ipv6(ip) if ravenbot_core::net::is_private_ip(std::net::IpAddr::V6(ip))
+                )
+            });
+        if private_host && !self.allow_private_network && !explicitly_granted {
+            return Err(format!(
+                "The default policy blocks local/private tool networks. Enable it in Settings → Local or grant {host} to this agent explicitly."
+            ));
+        }
+        Ok(url)
     }
 
     /// A run that may not touch any path, because no workspace was resolved.
@@ -124,6 +191,9 @@ impl SkillContext {
             sandbox_tier,
             working_dirs: Vec::new(),
             confined: true,
+            network_domains: None,
+            allow_private_network: false,
+            openai_api_key: None,
         }
     }
 
@@ -236,6 +306,9 @@ impl SkillContext {
             sandbox_tier: self.sandbox_tier.clone(),
             working_dirs: self.working_dirs.clone(),
             confined: self.confined,
+            network_domains: self.network_domains.clone(),
+            allow_private_network: self.allow_private_network,
+            openai_api_key: self.openai_api_key.clone(),
         }
     }
 
@@ -513,6 +586,21 @@ mod tests {
     }
 
     #[test]
+    fn a_saved_openai_key_survives_delegation() {
+        let ctx = SkillContext::with_default_tier(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
+            .with_openai_api_key(Some("saved-provider-key".to_string()));
+        assert_eq!(ctx.openai_api_key.as_deref(), Some("saved-provider-key"));
+        assert_eq!(
+            ctx.clone_for_delegation().openai_api_key.as_deref(),
+            Some("saved-provider-key")
+        );
+
+        let empty = SkillContext::with_default_tier(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
+            .with_openai_api_key(Some("   ".to_string()));
+        assert_eq!(empty.openai_api_key, None);
+    }
+
+    #[test]
     fn relative_paths_resolve_into_the_project_folder() {
         let s = Sandbox::new();
         let ctx = s.ctx();
@@ -702,6 +790,51 @@ mod tests {
             PathBuf::from("../x")
         );
         assert_eq!(lexically_normalize(Path::new("")), PathBuf::from("."));
+    }
+
+    #[test]
+    fn network_grant_restricts_actual_urls() {
+        let base = || {
+            SkillContext::new(
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                ravenbot_core::SandboxTier::Host,
+            )
+        };
+        assert!(base()
+            .ensure_network_allowed("https://anywhere.example/path")
+            .is_ok());
+        assert!(base()
+            .ensure_network_allowed("http://localhost:3000/api")
+            .is_err());
+        assert!(base()
+            .with_private_network(true)
+            .ensure_network_allowed("http://localhost:3000/api")
+            .is_ok());
+        assert!(base()
+            .ensure_network_allowed("http://192.168.1.20/")
+            .is_err());
+        assert!(base()
+            .with_network_domains(Some(vec!["localhost".into()]))
+            .ensure_network_allowed("http://localhost:3000/api")
+            .is_ok());
+
+        let granted = base().with_network_domains(Some(vec!["example.com".into()]));
+        assert!(granted
+            .ensure_network_allowed("https://api.example.com/v1")
+            .is_ok());
+        assert!(granted
+            .ensure_network_allowed("https://evil.example.net/")
+            .is_err());
+
+        let denied = base().with_network_domains(Some(Vec::new()));
+        assert!(denied
+            .ensure_network_allowed("https://example.com/")
+            .is_err());
+        assert!(base()
+            .ensure_network_allowed("http://169.254.169.254/latest/meta-data")
+            .is_err());
     }
 
     #[test]

@@ -82,7 +82,7 @@ owning thread in one click.
 
 ### P0 — First-run flow that finishes the job
 
-RAVENBOT’s onboarding modal asks for a provider key and an office architect.
+RAVENBOT’s onboarding modal asks for a provider key and The Raven, the default agent.
 OpenBot’s first run is a full sequence: language, provider detection/download,
 sign-in, model choice, and a clear transition into the workspace.
 

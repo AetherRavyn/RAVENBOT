@@ -83,6 +83,10 @@ describe("TurnTrace", () => {
     await waitFor(() =>
       expect(container.querySelectorAll(".turn-trace__bar-row").length).toBe(3),
     );
+    expect(container.querySelectorAll(".turn-step")).toHaveLength(3);
+    expect(container.querySelector(".turn-step[data-kind='memory']")?.textContent).toContain(
+      "Memory saved",
+    );
     expect(container.querySelector('[data-kind="model"]')?.textContent).toContain("Model round 1");
     expect(container.querySelector('[data-kind="memory"]')?.getAttribute("data-failed")).toBe("true");
     expect(container.querySelector('[data-kind="memory"]')?.textContent).toContain(

@@ -618,6 +618,7 @@ const LIGHT_ROLE_TOKENS: Record<string, string> = {
   "--success-wash": "rgba(21, 115, 71, 0.045)",
   "--warning-text": "#8a5a00",
   "--warning-soft": "rgba(180, 120, 0, 0.12)",
+  "--warning-border": "rgba(180, 120, 0, 0.36)",
   "--danger-text": "#c02b3f",
   "--danger-hover": "#a52236",
   "--danger-soft": "rgba(192, 43, 63, 0.08)",

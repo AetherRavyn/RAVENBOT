@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { describeRunEvent, RunTimeline } from "./runTimeline.svelte";
+import { describeRunEvent, RunTimeline, summarizeRun } from "./runTimeline.svelte";
 
 describe("run timeline", () => {
   it("maps known event kinds and ignores the rest", () => {
@@ -34,5 +34,35 @@ describe("run timeline", () => {
     expect(tl.events[0].detail).toBe("t20");
     tl.reset();
     expect(tl.events).toEqual([]);
+  });
+});
+
+describe("run timeline summaries", () => {
+  it("collapses repeated events into one chip per agent", () => {
+    const tl = new RunTimeline();
+    tl.track({ kind: "run_started", bot_id: "a" }, 1);
+    tl.track({ kind: "tool_started", bot_id: "a", name: "file_read" }, 2);
+    tl.track({ kind: "tool_finished", bot_id: "a", name: "file_read" }, 3);
+    tl.track({ kind: "tool_started", bot_id: "a", name: "shell_exec" }, 4);
+    tl.track({ kind: "run_started", bot_id: "b" }, 5);
+    const summaries = summarizeRun(tl.events);
+    expect(summaries).toHaveLength(2);
+    expect(summaries[0]).toMatchObject({
+      botId: "a",
+      phase: "tool",
+      detail: "shell_exec",
+      toolCalls: 2,
+      toolsDone: 1,
+    });
+    expect(summaries[1]).toMatchObject({ botId: "b", phase: "start" });
+  });
+
+  it("keeps the last phase and time for the chip", () => {
+    const tl = new RunTimeline();
+    tl.track({ kind: "tool_started", bot_id: "a", name: "x" }, 10);
+    tl.track({ kind: "done", bot_id: "a" }, 20);
+    const [summary] = summarizeRun(tl.events);
+    expect(summary.phase).toBe("done");
+    expect(summary.at).toBe(20);
   });
 });

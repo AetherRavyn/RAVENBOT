@@ -20,22 +20,21 @@ impl MemoryRetriever {
         query: &str,
         max_memories: usize,
     ) -> Result<String, String> {
-        let memories = self.store.retrieve(bot_id, query, max_memories, 0.3).await?;
+        let memories = self
+            .store
+            .retrieve(bot_id, query, max_memories, 0.3)
+            .await?;
 
         if memories.is_empty() {
             return Ok(String::new());
         }
 
-        let context: Vec<String> = memories.iter()
-            .map(|(fact, score)| {
-                format!("- [relevance: {:.2}] {}", score, fact.content)
-            })
+        let context: Vec<String> = memories
+            .iter()
+            .map(|(fact, score)| format!("- [relevance: {:.2}] {}", score, fact.content))
             .collect();
 
-        Ok(format!(
-            "Relevant memories:\n{}",
-            context.join("\n")
-        ))
+        Ok(format!("Relevant memories:\n{}", context.join("\n")))
     }
 
     /// Retrieve and summarize memories for a topic
@@ -50,15 +49,13 @@ impl MemoryRetriever {
             return Ok(None);
         }
 
-        let summary = memories.iter()
+        let summary = memories
+            .iter()
             .map(|(fact, _)| fact.content.as_str())
             .collect::<Vec<_>>()
             .join("; ");
 
-        Ok(Some(format!(
-            "Regarding '{}': {}",
-            topic, summary
-        )))
+        Ok(Some(format!("Regarding '{}': {}", topic, summary)))
     }
 
     /// Check if any memories relate to a specific fact

@@ -4,6 +4,7 @@ import {
   diceStyle,
   dicebearStyles as allDiceStyles,
   avatarBackground,
+  acceptedAvatarBackground,
   DEFAULT_AVATAR_STYLE,
   type DiceStyle,
 } from "$lib/diceStyles";
@@ -108,6 +109,14 @@ export function getDiceBearUrl(
     radius: "50",
     ...Object.fromEntries(new URLSearchParams(extra)),
   });
+
+  // `extra` can carry a caller's override, including a list from the old API.
+  // Re-check the final value so every URL this function returns is one the
+  // current API accepts.
+  const background = params.get("backgroundColor");
+  if (background !== null) {
+    params.set("backgroundColor", acceptedAvatarBackground(background, cleanSeed));
+  }
 
   // A style we do not know is assumed static rather than sent a speed: an
   // unrecognised `animationVariant` is not an error, it silently yields a still

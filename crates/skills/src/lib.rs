@@ -11,14 +11,22 @@ pub mod awesome;
 pub mod builtin;
 pub mod diff;
 pub mod exec;
+pub mod http;
 pub mod local;
+pub mod processes;
 pub mod registry;
 pub mod safety;
 pub mod traits;
+pub mod url_safety;
 
 pub use registry::SkillRegistry;
 pub use safety::dangerous_command_reason;
 pub use traits::{Skill, SkillContext, SkillError, SkillKind, SkillResult, SkillRisk};
+
+/// Serializes tests that touch the process-wide computer-takeover flag.
+/// The browser and computer tools share it, so parallel tests otherwise race.
+#[cfg(test)]
+pub(crate) static TAKEOVER_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Clip a UTF-8 string to at most `max_bytes` without splitting a character.
 ///

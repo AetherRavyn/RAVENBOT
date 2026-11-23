@@ -92,7 +92,9 @@ pub async fn image_present(image: &str) -> bool {
 
 /// Whether a container with this name exists (`true`) and whether it runs.
 async fn inspect(name: &str) -> Option<bool> {
-    let out = docker(&["inspect", "-f", "{{.State.Running}}", name]).await.ok()?;
+    let out = docker(&["inspect", "-f", "{{.State.Running}}", name])
+        .await
+        .ok()?;
     Some(out.trim() == "true")
 }
 
@@ -116,7 +118,11 @@ pub async fn status(bot_id: &Uuid) -> Result<Option<DesktopSession>, String> {
         Some(running) => Ok(Some(DesktopSession {
             container: name.clone(),
             running,
-            url: if running { desktop_url(&name).await } else { None },
+            url: if running {
+                desktop_url(&name).await
+            } else {
+                None
+            },
             image,
         })),
     }
@@ -199,7 +205,9 @@ mod tests {
         assert!(args.contains(&"2".to_string()));
         assert!(args.contains(&"2048m".to_string()));
         // Dedicated per-bot volume.
-        assert!(args.iter().any(|a| a.starts_with("ravenbot-desk-") && a.ends_with(":/workspace")));
+        assert!(args
+            .iter()
+            .any(|a| a.starts_with("ravenbot-desk-") && a.ends_with(":/workspace")));
         // Image is last.
         assert_eq!(args.last().unwrap(), "img:tag");
     }
@@ -218,12 +226,19 @@ mod tests {
 
         let session = start(&id, 1.0, 256).await.expect("start desktop");
         assert!(session.running);
-        assert!(session.url.as_deref().unwrap_or("").starts_with("http://127.0.0.1:"));
+        assert!(session
+            .url
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("http://127.0.0.1:"));
 
         let live = status(&id).await.unwrap().expect("status present");
         assert!(live.running);
 
         stop(&id).await.expect("stop desktop");
-        assert!(status(&id).await.unwrap().is_none(), "container should be gone");
+        assert!(
+            status(&id).await.unwrap().is_none(),
+            "container should be gone"
+        );
     }
 }

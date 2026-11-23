@@ -18,11 +18,13 @@
   import PluginsStore from "$lib/components/PluginsStore.svelte";
   import WorkspaceRail from "$lib/components/workspace/WorkspaceRail.svelte";
   import WorkspaceSidebar from "$lib/components/workspace/WorkspaceSidebar.svelte";
+  import ChatRoomList from "$lib/components/ChatRoomList.svelte";
+  import AttentionInbox from "$lib/components/workspace/AttentionInbox.svelte";
   import HomePane from "$lib/components/workspace/HomePane.svelte";
   import ProjectsView from "$lib/components/workspace/ProjectsView.svelte";
-  import BrowserDock from "$lib/components/workspace/BrowserDock.svelte";
+  import SidePanel from "$lib/components/workspace/SidePanel.svelte";
   import TeamChannelsView from "$lib/components/workspace/TeamChannelsView.svelte";
-  import { browserDock } from "$lib/browserDock.svelte";
+  import { sidePanel } from "$lib/workspace/sidePanel.svelte";
   import { requestMessageFocus } from "$lib/chat/messageFocus";
   import { agentActivity, type AgentActivityEvent } from "$lib/agentActivity.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -31,45 +33,43 @@
   import { getDiceBearUrl } from "$lib/utils";
   import { workspace, RAIL_WIDTH, SIDEBAR_MIN, SIDEBAR_MAX } from "$lib/workspace.svelte";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
+  import { startWorkflowScheduler, stopWorkflowScheduler } from "$lib/workflowScheduler";
+  import { attention } from "$lib/attention.svelte";
   import { initI18n, t } from "$lib/i18n";
+  import { sessionRole } from "$lib/sessionRole.svelte";
   import { prefersReducedMotion, keyboardShortcuts } from "$lib/a11y";
   import { getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition } from "$lib/theme";
+  import { resolveTargetBotId } from "$lib/workspace/targetBot";
+  import { needsDefaultAgentSetup } from "$lib/workspace/setup";
 
   let currentTheme = $state<ThemeDefinition>(getStoredTheme());
   let routinesBotId = $state<string | null>(null);
   let skillsModalBotId = $state<string | null>(null);
   let marketplaceModalBotId = $state<string | null>(null);
+  let marketplaceOpen = $state(false);
   let showOnboarding = $state(false);
 
-  const ONBOARDING_DISMISSED = "ravenbot_onboarding_dismissed";
-  function onboardingDismissed(): boolean {
-    try {
-      return typeof localStorage !== "undefined" && localStorage.getItem(ONBOARDING_DISMISSED) === "1";
-    } catch {
-      return false;
-    }
-  }
   function dismissOnboarding() {
+    // Missing provider/agent setup reopens on the next start; a dismissal only
+    // hides it for this session.
     showOnboarding = false;
-    try {
-      localStorage.setItem(ONBOARDING_DISMISSED, "1");
-    } catch {
-      /* storage unavailable — the overlay simply reappears next launch */
-    }
   }
   /**
-   * First run needs two things: a provider key and an office architect. The
-   * old check only looked for a key, so an installation with a key but no
-   * designer silently guessed a model and designed offices anonymously.
+   * First run needs two things: a provider key and The Raven, the default
+   * agent. A dismissed onboarding screen must not hide missing setup: if
+   * either is absent, the setup flow comes back on the next app start.
    */
   async function checkFirstRun() {
-    if (onboardingDismissed()) return;
     try {
       const [keys, agent] = await Promise.all([
         invoke<string[]>("get_configured_providers"),
         invoke<any>("get_default_agent").catch(() => null),
       ]);
-      showOnboarding = !keys || keys.length === 0 || !agent;
+      if (needsDefaultAgentSetup(keys, agent)) {
+        showOnboarding = true;
+        return;
+      }
+      showOnboarding = false;
     } catch {
       /* keep the current state if the backend is still starting */
     }
@@ -123,7 +123,7 @@
 
   // Rail launchers act on the agent you're looking at, falling back to the first one.
   function targetBotId(): string | null {
-    return workspace.selectedBotId || workspace.bots[0]?.id || null;
+    return resolveTargetBotId(workspace.bots, workspace.selectedBotId);
   }
   function openSkills() {
     const id = targetBotId();
@@ -131,9 +131,10 @@
     skillsModalBotId = id;
   }
   function openMarketplace() {
-    const id = targetBotId();
-    if (!id) { workspace.showAgents(); return; }
-    marketplaceModalBotId = id;
+    // The catalog is useful even before an agent is chosen. Equip actions
+    // remain disabled until a real agent is resolved.
+    marketplaceModalBotId = targetBotId();
+    marketplaceOpen = true;
   }
 
   let newAgentName = $state("");
@@ -154,9 +155,17 @@
 
   let showSidebar = $derived(
     !workspace.sidebarCollapsed &&
+      workspace.dest !== "inbox" &&
       workspace.dest !== "connectors" &&
       workspace.dest !== "routines" &&
       workspace.dest !== "channels",
+  );
+  // A side-by-side browser column needs room for the conversation. Below this
+  // width the dock becomes an overlay drawer instead of squeezing the app to a
+  // sliver, which is also what keeps the native page's bounds inside the window.
+  const BROWSER_COLUMN_MIN_WINDOW = 1120;
+  let browserOverlay = $derived(
+    sidePanel.open && workspace.windowWidth < BROWSER_COLUMN_MIN_WINDOW,
   );
   let routinesBot = $derived(
     workspace.bots.find((b: any) => b.id === routinesBotId) || workspace.bots[0],
@@ -165,14 +174,17 @@
   initI18n();
 
   onMount(() => {
+    sessionRole.load();
     applyTheme(getStoredTheme().id);
     const unsubTheme = subscribeTheme((theme) => (currentTheme = theme));
 
     workspace.init();
     fleetActivity.start();
+    void attention.start();
+    startWorkflowScheduler();
 
-    // First-run check: a provider key and the office architect that designs
-    // offices. Both are asked for once; either missing opens the setup flow.
+    // First-run check: a provider key and The Raven, the default agent.
+    // Either missing opens the setup flow even if it was dismissed before.
     void checkFirstRun();
 
     let unlistenActivity: UnlistenFn | null = null;
@@ -197,7 +209,7 @@
       workspace.sidebarCollapsed = !workspace.sidebarCollapsed;
     });
     const unsubN = keyboardShortcuts.register("mod+n", () => workspace.newChat());
-    const unsubBrowser = keyboardShortcuts.register("mod+shift+b", () => browserDock.toggle());
+    const unsubBrowser = keyboardShortcuts.register("mod+shift+b", () => sidePanel.toggleForSelection("browser"));
     const unsubEsc = keyboardShortcuts.register("escape", () => {
       workspace.showPalette = false;
       workspace.showSettings = false;
@@ -221,14 +233,21 @@
     const handleOfficeDeleted = (e: Event) => workspace.handleRoomDeleted(e);
     const handleOfficeUpdated = (e: Event) => workspace.handleRoomUpdated(e);
     const handleBotsChanged = () => workspace.refreshBots();
+    const handleFleetChanged = () => {
+      void workspace.refreshBots();
+      void workspace.refreshChatrooms();
+    };
     window.addEventListener("open-settings", handleOpenSettings);
     window.addEventListener("open-connectors", handleOpenConnectors);
     window.addEventListener("office-deleted", handleOfficeDeleted);
     window.addEventListener("office-updated", handleOfficeUpdated);
     window.addEventListener("bots-changed", handleBotsChanged);
+    window.addEventListener("fleet-changed", handleFleetChanged);
 
     return () => {
       fleetActivity.stop();
+      attention.stop();
+      stopWorkflowScheduler();
       unsubTheme();
       unsubK();
       unsubComma();
@@ -244,6 +263,7 @@
       window.removeEventListener("office-deleted", handleOfficeDeleted);
       window.removeEventListener("office-updated", handleOfficeUpdated);
       window.removeEventListener("bots-changed", handleBotsChanged);
+      window.removeEventListener("fleet-changed", handleFleetChanged);
     };
   });
 </script>
@@ -254,9 +274,8 @@
 </svelte:head>
 
 <div
-  class="flex flex-col h-screen w-screen overflow-hidden select-none font-sans bg-[var(--surface-0)] text-[var(--text-primary)]"
+  class="flex flex-col h-screen w-screen overflow-hidden font-sans bg-[var(--surface-0)] text-[var(--text-primary)]"
   class:reduce-motion={prefersReducedMotion()}
-  role="application"
   aria-label={currentTheme.brand.brandTitle}
 >
   <TitleBar
@@ -266,8 +285,9 @@
 
   <div
     class="app-frame flex-1 min-h-0"
-    style="--frame-sidebar: {showSidebar ? workspace.sidebarWidth + 'px' : '0px'}; --frame-browser: {browserDock.open
-      ? 'min(620px, 46vw)'
+    style="--frame-sidebar: {showSidebar ? workspace.sidebarWidth + 'px' : '0px'}; --frame-browser: {sidePanel.open &&
+    !browserOverlay
+      ? 'clamp(460px, 46vw, 820px)'
       : '0px'}"
   >
     <WorkspaceRail
@@ -321,6 +341,11 @@
           <KillSwitch />
         </div>
       {/if}
+      {#if sessionRole.role !== "owner"}
+        <div class="px-4 py-1.5 text-[11px] text-center border-b border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-secondary)]" role="status">
+          {sessionRole.role === "viewer" ? t("workspace.readOnlyBanner") : t("workspace.operatorBanner")}
+        </div>
+      {/if}
 
       {#if workspace.loading}
         <div class="flex-1 flex flex-col items-center justify-center gap-3 p-8 text-[var(--text-muted)]" role="status">
@@ -332,6 +357,8 @@
             <p class="text-xs text-[var(--text-muted)]">{t("workspace.bootDesc")}</p>
           </div>
         </div>
+      {:else if workspace.dest === "inbox"}
+        <AttentionInbox />
       {:else if workspace.dest === "connectors"}
         <div class="flex-1 min-h-0 overflow-hidden">
           <ConnectorCenter
@@ -397,16 +424,27 @@
             </form>
           </div>
         </div>
+      {:else if workspace.dest === "offices" && !workspace.selectedRoom}
+        <div class="flex-1 min-h-0 overflow-hidden flex items-start justify-center p-6">
+          <div class="w-full max-w-xl rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] overflow-hidden">
+            <ChatRoomList
+              bots={workspace.bots}
+              selectedRoomId={workspace.selectedRoomId}
+              onSelectRoom={(id) => workspace.selectRoom(id)}
+              onRoomCreated={(room) => workspace.handleRoomCreated(room)}
+            />
+          </div>
+        </div>
       {:else if workspace.selectedRoom}
         <ChatRoomView room={workspace.selectedRoom} bots={workspace.bots} />
       {:else if workspace.selectedBot}
-        <ThreadView bot={workspace.selectedBot} />
+        <ThreadView bot={workspace.selectedBot} onBotUpdated={(b) => workspace.handleBotUpdated(b)} />
       {:else}
         <HomePane theme={currentTheme} />
       {/if}
     </main>
 
-    <BrowserDock bots={workspace.bots} />
+    <SidePanel bots={workspace.bots} overlay={browserOverlay} />
   </div>
 </div>
 
@@ -440,7 +478,7 @@
   }}
   onOpenPlugins={openMarketplace}
   onOpenSkills={openSkills}
-  onToggleBrowser={() => browserDock.toggle()}
+  onToggleBrowser={() => sidePanel.toggleForSelection("browser")}
   onOpenMessage={(hit) => {
     workspace.showPalette = false;
     workspace.selectBot(hit.bot_id);
@@ -471,8 +509,11 @@
 
 <PluginsStore
   bot={marketplaceModalBot}
-  open={!!marketplaceModalBot}
-  onClose={() => (marketplaceModalBotId = null)}
+  open={marketplaceOpen}
+  onClose={() => {
+    marketplaceOpen = false;
+    marketplaceModalBotId = null;
+  }}
 />
 
 <ScreenReader message={workspace.srMessage} />

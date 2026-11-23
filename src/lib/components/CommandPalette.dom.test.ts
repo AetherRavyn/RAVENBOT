@@ -74,6 +74,21 @@ describe("CommandPalette global search", () => {
     cleanup();
   });
 
+  it("focuses the search field when it opens", async () => {
+    render(CommandPalette, { props: props() });
+    await waitFor(() => expect(document.activeElement).toBe(searchInput()));
+  });
+
+  it("accepts printable keys when focus is on the dialog shell", async () => {
+    const view = props();
+    render(CommandPalette, { props: view });
+    await waitFor(() => expect(document.body.textContent).toContain("Billing Agent"));
+
+    const dialog = document.querySelector('[role="dialog"]')!;
+    await fireEvent.keyDown(dialog, { key: "b" });
+    expect(searchInput().value).toBe("b");
+  });
+
   it("shows agents, offices, and quick actions before typing", async () => {
     render(CommandPalette, { props: props() });
     await waitFor(() => expect(document.body.textContent).toContain("Billing Agent"));

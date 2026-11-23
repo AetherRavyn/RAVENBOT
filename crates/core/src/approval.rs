@@ -3,15 +3,16 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// Per-bot approval mode — mirrors OpenMausBot's ask/auto/full levels:
-/// - `ask`: risky tools pause for an Allow/Deny decision (default)
+/// - `ask`: risky tools pause for an Allow/Deny decision
 /// - `auto`: low-risk writes run free; high-risk still asks
-/// - `full`: everything runs free (explicit opt-in, shown with a warning)
+/// - `full`: safe work runs free (default); destructive shell/database/file
+///   operations are refused by the hard safety policy before execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalMode {
-    #[default]
     Ask,
     Auto,
+    #[default]
     Full,
 }
 
@@ -26,9 +27,9 @@ impl ApprovalMode {
 
     pub fn parse(s: &str) -> Self {
         match s.trim().to_lowercase().as_str() {
+            "ask" => ApprovalMode::Ask,
             "auto" => ApprovalMode::Auto,
-            "full" => ApprovalMode::Full,
-            _ => ApprovalMode::Ask,
+            _ => ApprovalMode::Full,
         }
     }
 }

@@ -4,15 +4,31 @@
 
 use ravenbot_core::*;
 use ravenbot_db::Database;
+use ravenbot_memory::EmbeddingProvider;
 use ravenbot_models::ModelDiscovery;
-use ravenbot_runtime::graph::TaskGraph;
+use ravenbot_runtime::graph::{ConditionOperator, LoopStop, NodeCondition, NodeState, TaskGraph};
 use std::sync::Arc;
 use tauri::Emitter;
 use tauri::Manager;
 use tauri::State;
 use uuid::Uuid;
 
+mod access;
+pub mod accounts;
+pub mod chat_attachments;
+pub mod chat_commands;
+pub mod chat_outbound;
+pub mod chat_throttle;
+pub mod chat_webhook;
+pub mod daemon;
+pub mod discord;
+mod fleet;
 mod office_org;
+pub mod service;
+pub mod slack;
+pub mod teams;
+pub mod telegram;
+pub mod whatsapp;
 
 /// Application state shared across handlers
 pub struct AppState {
@@ -24,6 +40,16 @@ pub struct AppState {
     pub plugin_catalog: Arc<ravenbot_plugins::catalog::CatalogService>,
     /// Base URL of the running webhook receiver (set during setup).
     pub webhook_base_url: std::sync::RwLock<String>,
+    /// The optional authenticated remote-access listener.
+    pub remote: Arc<tokio::sync::Mutex<Option<ravenbot_remote::RemoteServer>>>,
+    /// Keeps this desktop process as the sole fleet owner for its lifetime.
+    pub fleet: fleet::FleetLock,
+    /// The signed-in account, the workspace it is using, and the effective role.
+    pub account: accounts::Account,
+    pub workspace: accounts::Account,
+    pub role: String,
+    pub account_base: std::path::PathBuf,
+    pub account_session: String,
 }
 
 // ── Interactive visual replies ─────────────────────────────────────────────
@@ -149,7 +175,8 @@ fn visual_protocol_response(
 // The dock has no Tauri capability entry: a remote origin must not reach app
 // commands. The shell drives it from the local frontend only.
 
-const BROWSER_DOCK_LABEL: &str = "browser-dock";
+const BROWSER_DOCK_TAB_PREFIX: &str = "browser-dock-tab-";
+const MAX_BROWSER_TABS: usize = 8;
 
 /// When the user takes control of the dock, agent DOM actions are refused
 /// until they release it. This is deliberately process-wide and reset when
@@ -166,10 +193,23 @@ fn set_browser_dock_takeover(taken: bool) -> bool {
     taken
 }
 
+#[derive(Default, Clone)]
+struct BrowserDockTab {
+    id: String,
+    title: String,
+    url: String,
+}
+
 #[derive(Default)]
 struct BrowserDockMeta {
-    title: String,
     visible: bool,
+    /// The persistent browser profile currently backing the dock.
+    profile: String,
+    active_tab: Option<String>,
+    tabs: Vec<BrowserDockTab>,
+    /// The last rectangle applied to the active tab. Closing a tab reuses it
+    /// so the revealed tab does not flash at a stale size.
+    last_bounds: Option<BrowserDockBounds>,
 }
 
 static BROWSER_DOCK_META: std::sync::OnceLock<std::sync::Mutex<BrowserDockMeta>> =
@@ -177,6 +217,223 @@ static BROWSER_DOCK_META: std::sync::OnceLock<std::sync::Mutex<BrowserDockMeta>>
 
 fn browser_dock_meta() -> &'static std::sync::Mutex<BrowserDockMeta> {
     BROWSER_DOCK_META.get_or_init(|| std::sync::Mutex::new(BrowserDockMeta::default()))
+}
+
+fn browser_tab_label(id: &str) -> String {
+    format!("{BROWSER_DOCK_TAB_PREFIX}{id}")
+}
+
+fn browser_new_tab_id() -> String {
+    Uuid::new_v4().simple().to_string()
+}
+
+fn browser_active_tab_id() -> Option<String> {
+    browser_dock_meta()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .active_tab
+        .clone()
+}
+
+fn browser_active_view<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Option<tauri::Webview<R>> {
+    let id = browser_active_tab_id()?;
+    app.get_webview(&browser_tab_label(&id))
+}
+
+fn browser_tab_view<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    tab_id: &str,
+) -> Option<tauri::Webview<R>> {
+    app.get_webview(&browser_tab_label(tab_id))
+}
+
+const BROWSER_TAB_SESSION_FILE: &str = "tabs.json";
+const MAX_BROWSER_TAB_SESSION_BYTES: u64 = 64 * 1024;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BrowserTabSessionEntry {
+    url: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct BrowserTabSession {
+    version: u32,
+    active: usize,
+    tabs: Vec<BrowserTabSessionEntry>,
+}
+
+fn browser_tab_session_path(profile_dir: &std::path::Path) -> std::path::PathBuf {
+    profile_dir.join(BROWSER_TAB_SESSION_FILE)
+}
+
+fn persist_browser_tab_session(
+    profile_dir: &std::path::Path,
+    tabs: &[BrowserDockTab],
+    active: Option<&str>,
+) {
+    let entries: Vec<BrowserTabSessionEntry> = tabs
+        .iter()
+        .filter(|tab| parse_browser_dock_url(&tab.url).is_ok())
+        .take(MAX_BROWSER_TABS)
+        .map(|tab| BrowserTabSessionEntry {
+            url: tab.url.clone(),
+        })
+        .collect();
+    let active_index = active
+        .and_then(|id| tabs.iter().position(|tab| tab.id == id))
+        .unwrap_or(0)
+        .min(entries.len().saturating_sub(1));
+    let session = BrowserTabSession {
+        version: 1,
+        active: active_index,
+        tabs: entries,
+    };
+    let bytes = match serde_json::to_vec(&session) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(%error, "Could not serialize browser tab session");
+            return;
+        }
+    };
+    let temp = profile_dir.join(format!(".tabs.json.tmp-{}", Uuid::new_v4()));
+    if let Err(error) = std::fs::write(&temp, &bytes) {
+        tracing::warn!(%error, "Could not write browser tab session");
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&temp, std::fs::Permissions::from_mode(0o600));
+    }
+    if let Err(error) = std::fs::rename(&temp, browser_tab_session_path(profile_dir)) {
+        tracing::warn!(%error, "Could not commit browser tab session");
+        let _ = std::fs::remove_file(&temp);
+    }
+}
+
+fn load_browser_tab_session(profile_dir: &std::path::Path) -> (Vec<String>, usize) {
+    let path = browser_tab_session_path(profile_dir);
+    let Ok(metadata) = std::fs::metadata(&path) else {
+        return (Vec::new(), 0);
+    };
+    if metadata.len() > MAX_BROWSER_TAB_SESSION_BYTES {
+        tracing::warn!("Browser tab session is larger than the 64KB limit; ignoring it");
+        return (Vec::new(), 0);
+    }
+    let Ok(bytes) = std::fs::read(&path) else {
+        return (Vec::new(), 0);
+    };
+    let Ok(session) = serde_json::from_slice::<BrowserTabSession>(&bytes) else {
+        tracing::warn!("Browser tab session is corrupt; ignoring it");
+        return (Vec::new(), 0);
+    };
+    if session.version != 1 {
+        return (Vec::new(), 0);
+    }
+    let urls: Vec<String> = session
+        .tabs
+        .into_iter()
+        .map(|tab| tab.url)
+        .filter(|url| parse_browser_dock_url(url).is_ok())
+        .take(MAX_BROWSER_TABS)
+        .collect();
+    let active = if urls.is_empty() {
+        0
+    } else {
+        session.active.min(urls.len() - 1)
+    };
+    (urls, active)
+}
+
+/// Persist the live tab list for the active profile. Best-effort: the browser
+/// must keep working even when the profile directory is read-only.
+fn persist_current_browser_tabs() {
+    let (profile, tabs, active) = {
+        let meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (
+            meta.profile.clone(),
+            meta.tabs.clone(),
+            meta.active_tab.clone(),
+        )
+    };
+    if profile.is_empty() {
+        return;
+    }
+    let directory = browser_profile_dir(&profile);
+    if !directory.is_dir() {
+        return;
+    }
+    persist_browser_tab_session(&directory, &tabs, active.as_deref());
+}
+
+fn reorder_browser_tabs(meta: &mut BrowserDockMeta, tab_ids: &[String]) -> Result<(), String> {
+    if tab_ids.len() != meta.tabs.len() {
+        return Err("The tab order must list every open tab exactly once.".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut reordered = Vec::with_capacity(meta.tabs.len());
+    for id in tab_ids {
+        if !seen.insert(id.clone()) {
+            return Err("The tab order contains a duplicate tab.".to_string());
+        }
+        let tab = meta
+            .tabs
+            .iter()
+            .find(|tab| &tab.id == id)
+            .ok_or_else(|| "The tab order contains an unknown tab.".to_string())?;
+        reordered.push(tab.clone());
+    }
+    meta.tabs = reordered;
+    Ok(())
+}
+
+fn activate_browser_tab(
+    app: &tauri::AppHandle,
+    tab_id: &str,
+    bounds: &BrowserDockBounds,
+) -> Result<(), String> {
+    let tab_ids = {
+        let meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !meta.tabs.iter().any(|tab| tab.id == tab_id) {
+            return Err("That browser tab no longer exists.".to_string());
+        }
+        meta.tabs
+            .iter()
+            .map(|tab| tab.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let view = browser_tab_view(app, tab_id)
+        .ok_or_else(|| "That browser tab is no longer open.".to_string())?;
+    for other in &tab_ids {
+        if other != tab_id {
+            if let Some(view) = browser_tab_view(app, other) {
+                let _ = view.hide();
+            }
+        }
+    }
+    #[cfg(target_os = "linux")]
+    linux_dock_apply_bounds(&view, bounds)?;
+    #[cfg(not(target_os = "linux"))]
+    {
+        view.set_position(browser_dock_position(bounds))
+            .map_err(|error| error.to_string())?;
+        view.set_size(browser_dock_size(bounds))
+            .map_err(|error| error.to_string())?;
+    }
+    view.show().map_err(|error| error.to_string())?;
+    {
+        let mut meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        meta.active_tab = Some(tab_id.to_string());
+        meta.visible = true;
+        meta.last_bounds = Some(bounds.clone());
+    }
+    Ok(())
 }
 
 /// A file the dock downloaded. The list is session metadata plus a directory
@@ -394,6 +651,13 @@ thread_local! {
     /// when the app is maximized or the measured column is wide.
     static BROWSER_DOCK_FIXED: std::cell::RefCell<Option<gtk::Fixed>> =
         const { std::cell::RefCell::new(None) };
+    /// The overlay child is a vertical box: a top spacer (the dock chrome
+    /// height) followed by the page's fixed. A bare fixed at the overlay
+    /// origin let WebKit's child window cover the address bar even though the
+    /// page content was inset; making the page's container start below the
+    /// chrome fixes the window origin itself.
+    static BROWSER_DOCK_FRAME: std::cell::RefCell<Option<(gtk::Box, gtk::Box)>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(target_os = "linux")]
@@ -450,6 +714,7 @@ fn linux_dock_apply_bounds(
     view: &tauri::Webview,
     bounds: &BrowserDockBounds,
 ) -> Result<(), String> {
+    let x = bounds.x.max(0.0) as i32;
     let y = bounds.y.max(0.0) as i32;
     let width = bounds.width.clamp(180.0, 4096.0) as i32;
     let height = bounds.height.clamp(120.0, 4096.0) as i32;
@@ -461,31 +726,46 @@ fn linux_dock_apply_bounds(
             let overlay = BROWSER_DOCK_OVERLAY
                 .with(|slot| slot.borrow().clone())
                 .ok_or_else(|| "The dock overlay is not installed.".to_string())?;
-            let fixed = BROWSER_DOCK_FIXED
-                .with(|slot| slot.borrow().clone())
-                .unwrap_or_else(|| {
-                    let fixed = gtk::Fixed::new();
-                    // The fixed has no window of its own; the WebKit child has
-                    // one, confined to this fixed's allocation. This is what keeps
-                    // the page from covering the app chrome at large widths.
-                    fixed.set_has_window(false);
-                    fixed.set_halign(gtk::Align::End);
-                    fixed.set_valign(gtk::Align::Fill);
-                    fixed.set_hexpand(false);
-                    fixed.set_vexpand(true);
-                    fixed.set_margin_start(0);
-                    fixed.set_margin_end(0);
-                    fixed.set_margin_bottom(0);
-                    fixed.set_size_request(width, -1);
-                    overlay.add_overlay(&fixed);
-                    fixed.show();
-                    BROWSER_DOCK_FIXED.with(|slot| *slot.borrow_mut() = Some(fixed.clone()));
-                    fixed
-                });
+            let (frame, spacer, fixed) = match BROWSER_DOCK_FIXED.with(|slot| slot.borrow().clone())
+            {
+                Some(fixed) => {
+                    let (frame, spacer) = BROWSER_DOCK_FRAME
+                        .with(|slot| slot.borrow().clone())
+                        .ok_or_else(|| "The dock frame is not installed.".to_string())?;
+                    (frame, spacer, fixed)
+                }
+                None => {
+                    let frame = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                    frame.set_halign(gtk::Align::End);
+                    frame.set_valign(gtk::Align::Fill);
+                    frame.set_hexpand(false);
+                    frame.set_vexpand(true);
+                    frame.set_size_request(width, -1);
 
-            fixed.set_margin_top(y);
-            fixed.set_size_request(width, height);
-            fixed.queue_resize();
+                    let spacer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                    spacer.set_size_request(width, y);
+                    frame.pack_start(&spacer, false, false, 0);
+
+                    let fixed = gtk::Fixed::new();
+                    fixed.set_has_window(false);
+                    fixed.set_size_request(width, height);
+                    frame.pack_start(&fixed, false, false, 0);
+
+                    overlay.add_overlay(&frame);
+                    frame.show_all();
+                    BROWSER_DOCK_FIXED.with(|slot| *slot.borrow_mut() = Some(fixed.clone()));
+                    BROWSER_DOCK_FRAME
+                        .with(|slot| *slot.borrow_mut() = Some((frame.clone(), spacer.clone())));
+                    (frame, spacer, fixed)
+                }
+            };
+
+            let chrome_height = y.max(0);
+            let page_height = height.max(1);
+            spacer.set_size_request(width, chrome_height);
+            fixed.set_size_request(width, page_height);
+            frame.set_size_request(width, chrome_height + page_height);
+            frame.queue_resize();
 
             let parent = widget.parent();
             if let Some(box_) = parent.as_ref().and_then(|p| p.downcast_ref::<gtk::Box>()) {
@@ -494,12 +774,29 @@ fn linux_dock_apply_bounds(
             if parent
                 .as_ref()
                 .and_then(|p| p.downcast_ref::<gtk::Fixed>())
-                .is_none()
+                .is_some()
             {
+                fixed.move_(&widget, 0, 0);
+            } else {
                 fixed.put(&widget, 0, 0);
             }
             widget.set_size_request(width, height);
             widget.queue_resize();
+            // GTK can leave the WebKit child window at the fixed's origin even
+            // when the widget allocation is inset. Move the child window to the
+            // measured rectangle explicitly; this is what keeps the app's own
+            // address/tab chrome visible above the page.
+            if let Some(window) = widget.window() {
+                let target_x = x;
+                let target_y = y;
+                #[allow(deprecated)]
+                window.move_(target_x, target_y);
+                let idle_window = window.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    #[allow(deprecated)]
+                    idle_window.move_(target_x, target_y);
+                });
+            }
             let allocation = widget.allocation();
             tracing::debug!(
                 alloc_x = allocation.x(),
@@ -546,99 +843,162 @@ fn parse_browser_dock_url(raw: &str) -> Result<tauri::Url, String> {
     }
 }
 
+/// A profile id is a directory name, so it must be a single safe path segment.
+/// The frontend sends `agent-<uuid>` / `office-<uuid>` / `shared`.
+fn browser_profile_id(raw: Option<&str>) -> Result<String, String> {
+    let value = raw.unwrap_or("shared").trim().to_lowercase();
+    let value = if value.is_empty() {
+        "shared".to_string()
+    } else {
+        value
+    };
+    if value.len() > 120 {
+        return Err("The browser profile id is too long.".to_string());
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err("The browser profile id contains unsafe characters.".to_string());
+    }
+    Ok(value)
+}
+
+fn browser_profile_dir(profile: &str) -> std::path::PathBuf {
+    ravenbot_core::raven_root()
+        .join("browser-profiles")
+        .join(profile)
+}
+
+fn ensure_browser_profile_dir(profile: &str) -> Result<std::path::PathBuf, String> {
+    let directory = browser_profile_dir(profile);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("Could not create the browser profile directory: {error}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700));
+    }
+    Ok(directory)
+}
+
 fn browser_dock_status(app: &tauri::AppHandle) -> serde_json::Value {
-    let webview = app.get_webview(BROWSER_DOCK_LABEL);
-    let url = webview
-        .as_ref()
-        .and_then(|view| view.url().ok())
-        .map(|url| url.to_string());
-    let (title, visible) = {
+    let (visible, profile, active, tabs) = {
         let meta = browser_dock_meta()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        (meta.title.clone(), meta.visible)
+        (
+            meta.visible,
+            meta.profile.clone(),
+            meta.active_tab.clone(),
+            meta.tabs.clone(),
+        )
     };
+    let active_tab = active
+        .as_ref()
+        .and_then(|id| tabs.iter().find(|tab| &tab.id == id));
+    let live_url = active
+        .as_ref()
+        .and_then(|id| app.get_webview(&browser_tab_label(id)))
+        .and_then(|view| view.url().ok())
+        .map(|url| url.to_string());
+    let url = live_url
+        .or_else(|| active_tab.map(|tab| tab.url.clone()))
+        .filter(|url| !url.is_empty());
+    let title = active_tab.map(|tab| tab.title.clone()).unwrap_or_default();
     serde_json::json!({
-        "open": webview.is_some() && visible,
-        "exists": webview.is_some(),
+        "open": visible && !tabs.is_empty(),
+        "exists": !tabs.is_empty(),
         "url": url,
         "title": title,
+        "profile": profile,
+        "active_tab": active,
+        "tabs": tabs
+            .iter()
+            .map(|tab| serde_json::json!({
+                "id": tab.id,
+                "title": tab.title,
+                "url": tab.url,
+            }))
+            .collect::<Vec<_>>(),
         "taken_over": browser_dock_takeover_enabled(),
     })
 }
 
-#[tauri::command]
-async fn browser_dock_open(
-    app: tauri::AppHandle,
-    url: String,
-    bounds: BrowserDockBounds,
-) -> Result<serde_json::Value, String> {
-    let parsed = parse_browser_dock_url(&url)?;
-    let position = browser_dock_position(&bounds);
-    let size = browser_dock_size(&bounds);
-    // Mark visible before positioning: the GTK show path consults this flag,
-    // and a close that lands during creation must win.
-    browser_dock_meta()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .visible = true;
-
-    #[cfg(target_os = "linux")]
-    linux_dock_install_overlay(&app)?;
-
-    if let Some(view) = app.get_webview(BROWSER_DOCK_LABEL) {
-        // On Linux the child lives in a GtkFixed, so the runtime's own
-        // position/size calls are not enough; move the widget directly.
-        #[cfg(target_os = "linux")]
-        linux_dock_apply_bounds(&view, &bounds)?;
-        #[cfg(not(target_os = "linux"))]
-        {
-            view.set_position(position).map_err(|e| e.to_string())?;
-            view.set_size(size).map_err(|e| e.to_string())?;
-        }
-        // Reopening the panel should restore the page, scroll position and
-        // all. Only navigate when the caller actually asked for a new URL.
-        let current = view.url().ok().map(|url| url.to_string());
-        let same_page = current.as_deref() == Some(parsed.as_str());
-        if !same_page {
-            view.navigate(parsed.clone()).map_err(|e| e.to_string())?;
-        }
-        view.show().map_err(|e| e.to_string())?;
-        browser_dock_meta()
+/// Create one native tab. Every tab owns a real webview, so history, scroll
+/// position, and form state survive switching rather than being replayed from
+/// a URL. Returns the new tab id.
+fn create_browser_tab(
+    app: &tauri::AppHandle,
+    parsed: &tauri::Url,
+    bounds: &BrowserDockBounds,
+    profile_dir: &std::path::Path,
+    profile: &str,
+) -> Result<String, String> {
+    {
+        let meta = browser_dock_meta()
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .visible = true;
-        if !same_page {
-            let _ = app.emit(
-                "browser-dock:page-load",
-                serde_json::json!({"url": parsed.as_str(), "event": "started"}),
-            );
+            .unwrap_or_else(|error| error.into_inner());
+        if meta.tabs.len() >= MAX_BROWSER_TABS {
+            return Err(format!(
+                "At most {MAX_BROWSER_TABS} browser tabs can be open."
+            ));
         }
-        return Ok(browser_dock_status(&app));
     }
 
+    let tab_id = browser_new_tab_id();
+    let label = browser_tab_label(&tab_id);
+    let position = browser_dock_position(bounds);
+    let size = browser_dock_size(bounds);
     let window = app
         .get_window("main")
         .ok_or_else(|| "The main window is not open.".to_string())?;
 
     let load_app = app.clone();
+    let load_tab = tab_id.clone();
     let download_app = app.clone();
+    let download_tab = tab_id.clone();
     let title_app = app.clone();
+    let title_tab = tab_id.clone();
     let popup_app = app.clone();
+    let popup_tab = tab_id.clone();
+    let close_app = app.clone();
     let builder = tauri::webview::WebviewBuilder::new(
-        BROWSER_DOCK_LABEL,
+        label,
         tauri::WebviewUrl::External(parsed.clone()),
     )
-    .on_navigation(|url| matches!(url.scheme(), "http" | "https"))
+    .data_directory(profile_dir.to_path_buf())
+    .initialization_script(BROWSER_DOCK_PAGE_TOOLBAR)
+    .on_navigation(move |url| {
+        if is_browser_dock_close_url(url) {
+            let _ = close_app.emit("browser-dock:close", ());
+            return false;
+        }
+        matches!(url.scheme(), "http" | "https")
+    })
     .on_page_load(move |_view, payload| {
         let event = match payload.event() {
             tauri::webview::PageLoadEvent::Started => "started",
             tauri::webview::PageLoadEvent::Finished => "finished",
         };
-        tracing::debug!(url = %payload.url(), event, "browser dock page load");
+        let page_url = payload.url().to_string();
+        tracing::debug!(url = %page_url, event, tab = %load_tab, "browser tab page load");
+        {
+            let mut meta = browser_dock_meta()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(tab) = meta.tabs.iter_mut().find(|tab| tab.id == load_tab) {
+                tab.url = page_url.clone();
+            }
+        }
+        std::thread::spawn(persist_current_browser_tabs);
         let _ = load_app.emit(
             "browser-dock:page-load",
-            serde_json::json!({"url": payload.url().as_str(), "event": event}),
+            serde_json::json!({
+                "url": page_url,
+                "event": event,
+                "tab_id": load_tab.clone(),
+            }),
         );
     })
     .on_download(move |_view, event| {
@@ -661,6 +1021,7 @@ async fn browser_dock_open(
                             .find(|item| item.path == path.to_string_lossy())
                             .cloned(),
                         "success": true,
+                        "tab_id": download_tab.clone(),
                     }),
                 );
             }
@@ -673,21 +1034,25 @@ async fn browser_dock_open(
         true
     })
     .on_document_title_changed(move |_view, title| {
-        browser_dock_meta()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .title = title.clone();
-        tracing::debug!(title = %title, "browser dock title changed");
-        let _ = title_app.emit("browser-dock:title", serde_json::json!({"title": title}));
+        {
+            let mut meta = browser_dock_meta()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(tab) = meta.tabs.iter_mut().find(|tab| tab.id == title_tab) {
+                tab.title = title.clone();
+            }
+        }
+        tracing::debug!(title = %title, tab = %title_tab, "browser tab title changed");
+        let _ = title_app.emit(
+            "browser-dock:title",
+            serde_json::json!({"title": title, "tab_id": title_tab.clone()}),
+        );
     })
     .on_new_window(move |url, _features| {
-        // A target=_blank link should open in the dock, not in a second
-        // unmanaged window the app cannot control. The frontend owns layout,
-        // so ask it to navigate rather than guessing the bounds here.
         if matches!(url.scheme(), "http" | "https") {
             let _ = popup_app.emit(
                 "browser-dock:request",
-                serde_json::json!({"url": url.as_str()}),
+                serde_json::json!({"url": url.as_str(), "tab_id": popup_tab.clone()}),
             );
         }
         tauri::webview::NewWindowResponse::Deny
@@ -698,91 +1063,468 @@ async fn browser_dock_open(
 
     let view = window
         .add_child(builder, position, size)
-        .map_err(|error| format!("Could not create the browser dock: {error}"))?;
+        .map_err(|error| format!("Could not create the browser tab: {error}"))?;
 
+    // The system locale decides which language example.com (and other
+    // `navigator.languages`-aware sites) puts first. The app itself is
+    // English-first, so make the embedded page agree and clear any zoom left
+    // on the shared context by a previous tab.
     #[cfg(target_os = "linux")]
     {
-        // `add_child` briefly packed the webview into the window's box, which
-        // can make the window manager resize the window. Reparent it into the
-        // overlay and restore the window's measured size.
-        linux_dock_apply_bounds(&view, &bounds)?;
+        let _ = view.with_webview(|platform| {
+            use webkit2gtk::{WebContextExt, WebViewExt};
+            let webview = platform.inner();
+            if let Some(context) = webview.context() {
+                context.set_preferred_languages(&["en-US", "en"]);
+            }
+            // The dock is a side panel, not a full window. Desktop sites with
+            // a 1000px+ minimum layout otherwise clip their right column.
+            // 80% gives the page a wider CSS viewport than the physical pane.
+            webview.set_zoom_level(0.8);
+        });
+        linux_dock_apply_bounds(&view, bounds)?;
         if let Some(original_size) = original_size {
             let _ = window.set_size(original_size);
         }
     }
-    view.show().map_err(|e| e.to_string())?;
+
+    // Only the active tab is visible. Hiding the old widgets before showing
+    // the new one prevents a brief overlap on the GTK fixed container.
+    let other_ids = {
+        let meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        meta.tabs
+            .iter()
+            .map(|tab| tab.id.clone())
+            .collect::<Vec<_>>()
+    };
+    for other in other_ids {
+        if let Some(view) = browser_tab_view(app, &other) {
+            let _ = view.hide();
+        }
+    }
+
+    view.show().map_err(|error| error.to_string())?;
+    {
+        let mut meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        meta.tabs.push(BrowserDockTab {
+            id: tab_id.clone(),
+            title: String::new(),
+            url: parsed.to_string(),
+        });
+        meta.active_tab = Some(tab_id.clone());
+        meta.visible = true;
+        meta.profile = profile.to_string();
+        meta.last_bounds = Some(bounds.clone());
+    }
+    persist_current_browser_tabs();
+    Ok(tab_id)
+}
+
+#[tauri::command]
+async fn browser_dock_open(
+    app: tauri::AppHandle,
+    url: String,
+    bounds: BrowserDockBounds,
+    profile: Option<String>,
+    restore_tabs: Option<bool>,
+) -> Result<serde_json::Value, String> {
+    let parsed = parse_browser_dock_url(&url)?;
+    let profile = browser_profile_id(profile.as_deref())?;
+    let profile_dir = ensure_browser_profile_dir(&profile)?;
     {
         let mut meta = browser_dock_meta()
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         meta.visible = true;
-        meta.title.clear();
+        meta.last_bounds = Some(bounds.clone());
+    }
+
+    #[cfg(target_os = "linux")]
+    linux_dock_install_overlay(&app)?;
+
+    let (current_profile, active_id, tab_ids) = {
+        let meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (
+            meta.profile.clone(),
+            meta.active_tab.clone(),
+            meta.tabs
+                .iter()
+                .map(|tab| tab.id.clone())
+                .collect::<Vec<_>>(),
+        )
+    };
+
+    if let Some(active_id) = active_id {
+        if current_profile == profile || (current_profile.is_empty() && profile == "shared") {
+            if let Some(view) = browser_tab_view(&app, &active_id) {
+                for other in &tab_ids {
+                    if other != &active_id {
+                        if let Some(view) = browser_tab_view(&app, other) {
+                            let _ = view.hide();
+                        }
+                    }
+                }
+                #[cfg(target_os = "linux")]
+                linux_dock_apply_bounds(&view, &bounds)?;
+                #[cfg(not(target_os = "linux"))]
+                {
+                    view.set_position(browser_dock_position(&bounds))
+                        .map_err(|e| e.to_string())?;
+                    view.set_size(browser_dock_size(&bounds))
+                        .map_err(|e| e.to_string())?;
+                }
+                let current = view.url().ok().map(|url| url.to_string());
+                let same_page = current.as_deref() == Some(parsed.as_str());
+                if !same_page {
+                    view.navigate(parsed.clone()).map_err(|e| e.to_string())?;
+                }
+                view.show().map_err(|e| e.to_string())?;
+                {
+                    let mut meta = browser_dock_meta()
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    meta.visible = true;
+                    meta.profile = profile.clone();
+                    meta.last_bounds = Some(bounds.clone());
+                    if let Some(tab) = meta.tabs.iter_mut().find(|tab| tab.id == active_id) {
+                        tab.url = parsed.to_string();
+                    }
+                }
+                if !same_page {
+                    let _ = app.emit(
+                        "browser-dock:page-load",
+                        serde_json::json!({
+                            "url": parsed.as_str(),
+                            "event": "started",
+                            "tab_id": active_id,
+                        }),
+                    );
+                }
+                return Ok(browser_dock_status(&app));
+            }
+        }
+    }
+
+    // A profile switch or a missing active view invalidates every old tab.
+    if !tab_ids.is_empty() {
+        persist_current_browser_tabs();
+    }
+    {
+        let mut meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        meta.tabs.clear();
+        meta.active_tab = None;
+        meta.profile = profile.clone();
+        meta.visible = true;
+        meta.last_bounds = Some(bounds.clone());
+    }
+    for id in tab_ids {
+        if let Some(view) = browser_tab_view(&app, &id) {
+            let _ = view.close();
+        }
+    }
+
+    let (saved_urls, saved_active) = load_browser_tab_session(&profile_dir);
+    if !saved_urls.is_empty() {
+        for saved in &saved_urls {
+            if let Ok(saved_url) = parse_browser_dock_url(saved) {
+                let _ = create_browser_tab(&app, &saved_url, &bounds, &profile_dir, &profile);
+            }
+        }
+        let restored_ids = {
+            let meta = browser_dock_meta()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            meta.tabs
+                .iter()
+                .map(|tab| tab.id.clone())
+                .collect::<Vec<_>>()
+        };
+        if !restored_ids.is_empty() {
+            if restore_tabs.unwrap_or(false) {
+                let index = saved_active.min(restored_ids.len() - 1);
+                activate_browser_tab(&app, &restored_ids[index], &bounds)?;
+                persist_current_browser_tabs();
+                return Ok(browser_dock_status(&app));
+            }
+            let requested = parsed.as_str();
+            if let Some(index) = saved_urls
+                .iter()
+                .position(|saved| saved.trim_end_matches('/') == requested.trim_end_matches('/'))
+            {
+                let index = index.min(restored_ids.len() - 1);
+                activate_browser_tab(&app, &restored_ids[index], &bounds)?;
+                persist_current_browser_tabs();
+                return Ok(browser_dock_status(&app));
+            }
+            if restored_ids.len() < MAX_BROWSER_TABS {
+                create_browser_tab(&app, &parsed, &bounds, &profile_dir, &profile)?;
+                return Ok(browser_dock_status(&app));
+            }
+            // Full session: honour an explicit navigation by replacing the
+            // active restored page rather than failing with native tabs the
+            // renderer has not received.
+            let index = saved_active.min(restored_ids.len() - 1);
+            let tab_id = restored_ids[index].clone();
+            activate_browser_tab(&app, &tab_id, &bounds)?;
+            if let Some(view) = browser_tab_view(&app, &tab_id) {
+                view.navigate(parsed.clone()).map_err(|e| e.to_string())?;
+                let mut meta = browser_dock_meta()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                if let Some(tab) = meta.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+                    tab.url = parsed.to_string();
+                }
+            }
+            persist_current_browser_tabs();
+            return Ok(browser_dock_status(&app));
+        }
+    }
+
+    create_browser_tab(&app, &parsed, &bounds, &profile_dir, &profile)?;
+    Ok(browser_dock_status(&app))
+}
+
+#[tauri::command]
+fn browser_dock_new_tab(
+    app: tauri::AppHandle,
+    url: String,
+    bounds: BrowserDockBounds,
+    profile: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let parsed = parse_browser_dock_url(&url)?;
+    let requested = match profile
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => Some(browser_profile_id(Some(value))?),
+        None => None,
+    };
+    let (current_profile, has_tabs) = {
+        let meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        (meta.profile.clone(), !meta.tabs.is_empty())
+    };
+    let profile = if has_tabs {
+        if let Some(requested) = &requested {
+            if requested != &current_profile {
+                return Err("Switch browser profiles before opening another tab.".to_string());
+            }
+        }
+        current_profile
+    } else {
+        requested.unwrap_or_else(|| "shared".to_string())
+    };
+    let profile_dir = ensure_browser_profile_dir(&profile)?;
+    {
+        let mut meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        meta.visible = true;
+        meta.last_bounds = Some(bounds.clone());
+    }
+    #[cfg(target_os = "linux")]
+    linux_dock_install_overlay(&app)?;
+    create_browser_tab(&app, &parsed, &bounds, &profile_dir, &profile)?;
+    Ok(browser_dock_status(&app))
+}
+
+#[tauri::command]
+fn browser_dock_activate_tab(
+    app: tauri::AppHandle,
+    tab_id: String,
+    bounds: BrowserDockBounds,
+) -> Result<serde_json::Value, String> {
+    activate_browser_tab(&app, &tab_id, &bounds)?;
+    persist_current_browser_tabs();
+    Ok(browser_dock_status(&app))
+}
+
+#[tauri::command]
+fn browser_dock_close_tab(
+    app: tauri::AppHandle,
+    tab_id: String,
+) -> Result<serde_json::Value, String> {
+    let (was_active, index) = {
+        let meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let index = meta
+            .tabs
+            .iter()
+            .position(|tab| tab.id == tab_id)
+            .ok_or_else(|| "That browser tab no longer exists.".to_string())?;
+        (meta.active_tab.as_deref() == Some(tab_id.as_str()), index)
+    };
+    if let Some(view) = browser_tab_view(&app, &tab_id) {
+        let _ = view.close();
+    }
+    let (next, empty, last_bounds) = {
+        let mut meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(index) = meta.tabs.iter().position(|tab| tab.id == tab_id) {
+            meta.tabs.remove(index);
+        }
+        let next = if was_active {
+            let next_index = index.min(meta.tabs.len().saturating_sub(1));
+            meta.tabs.get(next_index).map(|tab| tab.id.clone())
+        } else {
+            meta.active_tab.clone()
+        };
+        meta.active_tab = next.clone();
+        let empty = meta.tabs.is_empty();
+        if empty {
+            meta.visible = false;
+            meta.active_tab = None;
+        }
+        (next, empty, meta.last_bounds.clone())
+    };
+    if was_active {
+        if let Some(next) = next {
+            if let Some(view) = browser_tab_view(&app, &next) {
+                if let Some(bounds) = last_bounds {
+                    #[cfg(target_os = "linux")]
+                    let _ = linux_dock_apply_bounds(&view, &bounds);
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        let _ = view.set_position(browser_dock_position(&bounds));
+                        let _ = view.set_size(browser_dock_size(&bounds));
+                    }
+                }
+                let _ = view.show();
+            }
+        }
+    }
+    persist_current_browser_tabs();
+    if empty {
+        set_browser_dock_takeover(false);
+        let _ = app.emit("browser-dock:closed", serde_json::json!({}));
     }
     Ok(browser_dock_status(&app))
 }
 
 #[tauri::command]
+fn browser_dock_reorder_tabs(
+    app: tauri::AppHandle,
+    tab_ids: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    {
+        let mut meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        reorder_browser_tabs(&mut meta, &tab_ids)?;
+    }
+    persist_current_browser_tabs();
+    Ok(browser_dock_status(&app))
+}
+
+#[tauri::command]
+fn browser_dock_set_zoom(app: tauri::AppHandle, zoom: f64) -> Result<f64, String> {
+    let view =
+        browser_active_view(&app).ok_or_else(|| "The browser dock is not open.".to_string())?;
+    let zoom = zoom.clamp(0.5, 2.0);
+    view.set_zoom(zoom).map_err(|error| error.to_string())?;
+    Ok(zoom)
+}
+
+#[tauri::command]
 fn browser_dock_set_bounds(app: tauri::AppHandle, bounds: BrowserDockBounds) -> Result<(), String> {
-    let view = app
-        .get_webview(BROWSER_DOCK_LABEL)
-        .ok_or_else(|| "The browser dock is not open.".to_string())?;
+    let view =
+        browser_active_view(&app).ok_or_else(|| "The browser dock is not open.".to_string())?;
     #[cfg(target_os = "linux")]
     {
-        linux_dock_apply_bounds(&view, &bounds)
+        linux_dock_apply_bounds(&view, &bounds)?;
     }
     #[cfg(not(target_os = "linux"))]
     {
         view.set_position(browser_dock_position(&bounds))
             .map_err(|e| e.to_string())?;
         view.set_size(browser_dock_size(&bounds))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
     }
+    browser_dock_meta()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .last_bounds = Some(bounds);
+    Ok(())
 }
 
 #[tauri::command]
 fn browser_dock_navigate(app: tauri::AppHandle, url: String) -> Result<serde_json::Value, String> {
     let parsed = parse_browser_dock_url(&url)?;
-    let view = app
-        .get_webview(BROWSER_DOCK_LABEL)
+    let tab_id =
+        browser_active_tab_id().ok_or_else(|| "The browser dock is not open.".to_string())?;
+    let view = browser_tab_view(&app, &tab_id)
         .ok_or_else(|| "The browser dock is not open.".to_string())?;
     view.navigate(parsed.clone()).map_err(|e| e.to_string())?;
     view.show().map_err(|e| e.to_string())?;
+    {
+        let mut meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(tab) = meta.tabs.iter_mut().find(|tab| tab.id == tab_id) {
+            tab.url = parsed.to_string();
+        }
+    }
+    persist_current_browser_tabs();
     let _ = app.emit(
         "browser-dock:page-load",
-        serde_json::json!({"url": parsed.as_str(), "event": "started"}),
+        serde_json::json!({
+            "url": parsed.as_str(),
+            "event": "started",
+            "tab_id": tab_id,
+        }),
     );
     Ok(browser_dock_status(&app))
 }
 
 #[tauri::command]
 fn browser_dock_back(app: tauri::AppHandle) -> Result<(), String> {
-    let view = app
-        .get_webview(BROWSER_DOCK_LABEL)
-        .ok_or_else(|| "The browser dock is not open.".to_string())?;
+    let view =
+        browser_active_view(&app).ok_or_else(|| "The browser dock is not open.".to_string())?;
     view.eval("history.back()").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn browser_dock_forward(app: tauri::AppHandle) -> Result<(), String> {
-    let view = app
-        .get_webview(BROWSER_DOCK_LABEL)
-        .ok_or_else(|| "The browser dock is not open.".to_string())?;
+    let view =
+        browser_active_view(&app).ok_or_else(|| "The browser dock is not open.".to_string())?;
     view.eval("history.forward()").map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 fn browser_dock_reload(app: tauri::AppHandle) -> Result<(), String> {
-    let view = app
-        .get_webview(BROWSER_DOCK_LABEL)
-        .ok_or_else(|| "The browser dock is not open.".to_string())?;
+    let view =
+        browser_active_view(&app).ok_or_else(|| "The browser dock is not open.".to_string())?;
     view.reload().map_err(|e| e.to_string())
 }
 
-/// Hide, do not destroy: the next open keeps history and session cookies.
+/// Hide, do not destroy: tabs keep history, scroll position, and cookies.
 #[tauri::command]
 fn browser_dock_hide(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(view) = app.get_webview(BROWSER_DOCK_LABEL) {
-        view.hide().map_err(|e| e.to_string())?;
+    let tab_ids = {
+        let meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        meta.tabs
+            .iter()
+            .map(|tab| tab.id.clone())
+            .collect::<Vec<_>>()
+    };
+    for id in tab_ids {
+        if let Some(view) = browser_tab_view(&app, &id) {
+            let _ = view.hide();
+        }
     }
     set_browser_dock_takeover(false);
     browser_dock_meta()
@@ -795,8 +1537,19 @@ fn browser_dock_hide(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn browser_dock_destroy(app: tauri::AppHandle) -> Result<(), String> {
-    if let Some(view) = app.get_webview(BROWSER_DOCK_LABEL) {
-        view.close().map_err(|e| e.to_string())?;
+    let tab_ids = {
+        let meta = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        meta.tabs
+            .iter()
+            .map(|tab| tab.id.clone())
+            .collect::<Vec<_>>()
+    };
+    for id in tab_ids {
+        if let Some(view) = browser_tab_view(&app, &id) {
+            let _ = view.close();
+        }
     }
     set_browser_dock_takeover(false);
     {
@@ -804,8 +1557,12 @@ fn browser_dock_destroy(app: tauri::AppHandle) -> Result<(), String> {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         meta.visible = false;
-        meta.title.clear();
+        meta.active_tab = None;
+        meta.tabs.clear();
+        let directory = browser_profile_dir(&meta.profile);
+        let _ = std::fs::remove_file(browser_tab_session_path(&directory));
     }
+    let _ = app.emit("browser-dock:closed", serde_json::json!({}));
     Ok(())
 }
 
@@ -874,8 +1631,8 @@ async fn local_skills_marketplace_install(
     let library = ravenbot_skills::local::LocalSkillLibrary::default();
     let view = library.import_document(ravenbot_skills::local::ImportSkillInput {
         id,
-        name: None,
-        description: None,
+        name: Some(document.name.clone()),
+        description: Some(document.description.clone()),
         content: document.content,
         source: document.source.clone(),
         update: update.unwrap_or(false),
@@ -897,12 +1654,15 @@ async fn local_skills_marketplace_install(
 fn browser_dock_eval_blocking(
     app: &tauri::AppHandle,
     script: &str,
+    tab_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     use javascriptcore::ValueExt;
     use webkit2gtk::WebViewExt;
-    let view = app
-        .get_webview(BROWSER_DOCK_LABEL)
-        .ok_or_else(|| "The browser dock is not open.".to_string())?;
+    let view = match tab_id {
+        Some(id) => browser_tab_view(app, id),
+        None => browser_active_view(app),
+    }
+    .ok_or_else(|| "The browser tab is not open.".to_string())?;
     let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
     let script = script.to_string();
     tracing::debug!(script_len = script.len(), "browser dock eval requested");
@@ -942,6 +1702,7 @@ fn browser_dock_eval_blocking(
 fn browser_dock_eval_blocking(
     _app: &tauri::AppHandle,
     _script: &str,
+    _tab_id: Option<&str>,
 ) -> Result<serde_json::Value, String> {
     Err("Browser DOM actions are not available on this platform yet.".to_string())
 }
@@ -963,9 +1724,862 @@ async fn browser_dock_eval(
     // `with_webview` posts to the main thread and waits for it. A synchronous
     // Tauri command can itself be running on that thread, which deadlocks the
     // dispatch; the blocking task keeps the wait off the main thread.
-    tauri::async_runtime::spawn_blocking(move || browser_dock_eval_blocking(&app, &script))
+    tauri::async_runtime::spawn_blocking(move || browser_dock_eval_blocking(&app, &script, None))
         .await
         .map_err(|error| format!("The browser evaluation task failed: {error}"))?
+}
+
+/// Evaluate a user-initiated script while the user has taken over the page.
+///
+/// `browser_dock_eval` is deliberately refused during takeover because it is
+/// the agent path. The browser's own secure-input and cookie controls are user
+/// actions, so they need a path that obeys the user's control rather than
+/// fighting it. The value typed into the secure card is never returned here —
+/// only whether the field was found and filled.
+#[tauri::command]
+async fn browser_dock_user_eval(
+    app: tauri::AppHandle,
+    script: String,
+    tab_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    if script.len() > 256 * 1024 {
+        return Err("The browser script is larger than the 256KB limit".to_string());
+    }
+    let tab_id = tab_id
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty());
+    tauri::async_runtime::spawn_blocking(move || {
+        browser_dock_eval_blocking(&app, &script, tab_id.as_deref())
+    })
+    .await
+    .map_err(|error| format!("The browser evaluation task failed: {error}"))?
+}
+
+fn browser_named_profile_name(raw: &str) -> Result<String, String> {
+    let name = raw.trim();
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err("A browser profile needs a name of at most 60 characters.".to_string());
+    }
+    if name.chars().any(|ch| ch.is_control()) {
+        return Err("The browser profile name contains control characters.".to_string());
+    }
+    Ok(name.to_string())
+}
+
+fn browser_named_profile_id(raw: &str) -> Result<String, String> {
+    let id = browser_profile_id(Some(raw.trim()))?;
+    if !id.starts_with("named-") {
+        return Err("Only named browser profiles can be managed here.".to_string());
+    }
+    Ok(id)
+}
+
+const BROWSER_AUTO_REJECT_COOKIES_KEY: &str = "browser_auto_reject_cookies";
+
+async fn global_browser_cookie_policy(pool: &sqlx::SqlitePool) -> Result<bool, String> {
+    Ok(
+        ravenbot_db::queries::AppSettingsQueries::get(pool, BROWSER_AUTO_REJECT_COOKIES_KEY)
+            .await
+            .map_err(|error| error.to_string())?
+            .as_deref()
+            == Some("1"),
+    )
+}
+
+fn resolve_browser_cookie_policy(policy: &str, global: bool) -> bool {
+    match policy {
+        "always" => true,
+        "never" => false,
+        _ => global,
+    }
+}
+
+#[tauri::command]
+async fn get_browser_cookie_policy(state: State<'_, AppState>) -> Result<bool, String> {
+    global_browser_cookie_policy(state.db.pool()).await
+}
+
+#[tauri::command]
+async fn get_effective_browser_cookie_policy(
+    state: State<'_, AppState>,
+    profile_id: Option<String>,
+) -> Result<bool, String> {
+    let global = global_browser_cookie_policy(state.db.pool()).await?;
+    let Some(profile_id) = profile_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(global);
+    };
+    let profile = ravenbot_db::queries::BrowserProfileQueries::get(state.db.pool(), profile_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(profile
+        .map(|profile| resolve_browser_cookie_policy(&profile.cookie_policy, global))
+        .unwrap_or(global))
+}
+
+#[tauri::command]
+async fn set_browser_profile_cookie_policy(
+    state: State<'_, AppState>,
+    id: String,
+    policy: String,
+) -> Result<String, String> {
+    let id = browser_named_profile_id(&id)?;
+    let policy = policy.trim().to_ascii_lowercase();
+    if !matches!(policy.as_str(), "inherit" | "always" | "never") {
+        return Err("Choose inherit, always, or never.".to_string());
+    }
+    if !ravenbot_db::queries::BrowserProfileQueries::set_cookie_policy(
+        state.db.pool(),
+        &id,
+        &policy,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    {
+        return Err("That browser profile no longer exists.".to_string());
+    }
+    Ok(policy)
+}
+
+#[tauri::command]
+async fn set_browser_cookie_policy(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<bool, String> {
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        BROWSER_AUTO_REJECT_COOKIES_KEY,
+        if enabled { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(enabled)
+}
+
+#[tauri::command]
+async fn list_browser_profiles(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::BrowserProfileRecord>, String> {
+    ravenbot_db::queries::BrowserProfileQueries::list(state.db.pool())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn create_browser_profile(
+    state: State<'_, AppState>,
+    name: String,
+) -> Result<ravenbot_db::queries::BrowserProfileRecord, String> {
+    let name = browser_named_profile_name(&name)?;
+    let id = format!("named-{}", Uuid::new_v4().simple());
+    let directory = ensure_browser_profile_dir(&id)?;
+    if let Err(error) =
+        ravenbot_db::queries::BrowserProfileQueries::create(state.db.pool(), &id, &name).await
+    {
+        let _ = std::fs::remove_dir_all(&directory);
+        return Err(if error.to_string().to_lowercase().contains("unique") {
+            "A browser profile with that name already exists.".to_string()
+        } else {
+            error.to_string()
+        });
+    }
+    ravenbot_db::queries::BrowserProfileQueries::get(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The browser profile could not be read back.".to_string())
+}
+
+#[tauri::command]
+async fn rename_browser_profile(
+    state: State<'_, AppState>,
+    id: String,
+    name: String,
+) -> Result<ravenbot_db::queries::BrowserProfileRecord, String> {
+    let id = browser_named_profile_id(&id)?;
+    let name = browser_named_profile_name(&name)?;
+    let updated = ravenbot_db::queries::BrowserProfileQueries::rename(state.db.pool(), &id, &name)
+        .await
+        .map_err(|error| {
+            if error.to_string().to_lowercase().contains("unique") {
+                "A browser profile with that name already exists.".to_string()
+            } else {
+                error.to_string()
+            }
+        })?;
+    if !updated {
+        return Err("That browser profile no longer exists.".to_string());
+    }
+    ravenbot_db::queries::BrowserProfileQueries::get(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The browser profile could not be read back.".to_string())
+}
+
+#[tauri::command]
+async fn delete_browser_profile(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let id = browser_named_profile_id(&id)?;
+    let active = browser_dock_meta()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .profile
+        .clone();
+    if active == id {
+        return Err("Switch to another browser profile before deleting this one.".to_string());
+    }
+    let deleted = ravenbot_db::queries::BrowserProfileQueries::delete(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !deleted {
+        return Err("That browser profile no longer exists.".to_string());
+    }
+    let root = ravenbot_core::raven_root().join("browser-profiles");
+    let directory = browser_profile_dir(&id);
+    if let (Ok(root), Ok(directory)) = (root.canonicalize(), directory.canonicalize()) {
+        if directory.starts_with(&root) {
+            let _ = std::fs::remove_dir_all(&directory);
+        }
+    }
+    Ok(())
+}
+
+const ATTENTION_WEBHOOK_KEY: &str = "attention_webhook";
+
+fn validate_attention_webhook(raw: &str) -> Result<String, String> {
+    let raw = raw.trim();
+    if raw.is_empty() || raw.len() > 4096 {
+        return Err("A webhook URL must be between 1 and 4,096 characters.".to_string());
+    }
+    let url = reqwest::Url::parse(raw).map_err(|_| "The webhook URL is not valid.".to_string())?;
+    if url.scheme() != "https" {
+        return Err("The attention webhook must use HTTPS.".to_string());
+    }
+    if url.host_str().unwrap_or("").is_empty() {
+        return Err("The webhook URL needs a host.".to_string());
+    }
+    Ok(url.to_string())
+}
+
+async fn read_attention_webhook(pool: &sqlx::SqlitePool) -> Option<String> {
+    let stored = ravenbot_db::queries::AppSettingsQueries::get(pool, ATTENTION_WEBHOOK_KEY)
+        .await
+        .ok()
+        .flatten()?;
+    if stored == ravenbot_db::secrets::KEYCHAIN_MARKER {
+        return ravenbot_db::secrets::get_attention_webhook().await;
+    }
+    let stored = stored.trim();
+    if stored.is_empty() {
+        None
+    } else {
+        Some(stored.to_string())
+    }
+}
+
+async fn post_attention_webhook(url: &str, payload: &serde_json::Value) -> Result<(), String> {
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|error| format!("Could not prepare the webhook request: {error}"))?;
+    let response = client
+        .post(url)
+        .json(payload)
+        .send()
+        .await
+        .map_err(|error| format!("Could not reach the webhook: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "The webhook rejected the alert with HTTP {}.",
+            response.status().as_u16()
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_attention_webhook(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let url = read_attention_webhook(state.db.pool()).await;
+    let host = url
+        .as_deref()
+        .and_then(|value| reqwest::Url::parse(value).ok())
+        .and_then(|url| url.host_str().map(str::to_string));
+    Ok(serde_json::json!({
+        "configured": url.is_some(),
+        "host": host,
+    }))
+}
+
+#[tauri::command]
+async fn set_attention_webhook(
+    state: State<'_, AppState>,
+    url: String,
+) -> Result<serde_json::Value, String> {
+    let url = validate_attention_webhook(&url)?;
+    let stored = if ravenbot_db::secrets::set_attention_webhook(&url).await {
+        ravenbot_db::secrets::KEYCHAIN_MARKER.to_string()
+    } else {
+        url.clone()
+    };
+    ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), ATTENTION_WEBHOOK_KEY, &stored)
+        .await
+        .map_err(|error| error.to_string())?;
+    let host = reqwest::Url::parse(&url)
+        .ok()
+        .and_then(|value| value.host_str().map(str::to_string));
+    Ok(serde_json::json!({ "configured": true, "host": host }))
+}
+
+#[tauri::command]
+async fn clear_attention_webhook(state: State<'_, AppState>) -> Result<(), String> {
+    ravenbot_db::secrets::delete_attention_webhook().await;
+    ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), ATTENTION_WEBHOOK_KEY, "")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn test_attention_webhook(state: State<'_, AppState>) -> Result<(), String> {
+    let url = read_attention_webhook(state.db.pool())
+        .await
+        .ok_or_else(|| "No attention webhook is configured.".to_string())?;
+    post_attention_webhook(
+        &url,
+        &serde_json::json!({
+            "source": "ravenbot",
+            "event": "attention_test",
+            "text": "RAVENBOT test alert",
+            "content": "RAVENBOT test alert",
+            "sent_at": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn deliver_attention_webhook(
+    state: State<'_, AppState>,
+    kind: String,
+    state_name: String,
+    office_name: Option<String>,
+    bot_name: Option<String>,
+) -> Result<(), String> {
+    deliver_attention_webhook_for_pool(
+        state.db.pool(),
+        &kind,
+        &state_name,
+        office_name.as_deref(),
+        bot_name.as_deref(),
+    )
+    .await
+}
+
+pub(crate) async fn deliver_attention_webhook_for_pool(
+    pool: &sqlx::SqlitePool,
+    kind: &str,
+    state_name: &str,
+    office_name: Option<&str>,
+    bot_name: Option<&str>,
+) -> Result<(), String> {
+    let url = match read_attention_webhook(pool).await {
+        Some(url) => url,
+        None => return Ok(()),
+    };
+    let kind = kind.trim().to_lowercase();
+    let state_name = state_name.trim().to_lowercase();
+    if !matches!(kind.as_str(), "approval" | "question" | "queue" | "alert") {
+        return Err("Unknown attention kind.".to_string());
+    }
+    if !matches!(
+        state_name.as_str(),
+        "pending" | "failed" | "warning" | "critical"
+    ) {
+        return Err("Unknown attention state.".to_string());
+    }
+    let office = office_name.map(str::trim).filter(|value| !value.is_empty());
+    let bot = bot_name.map(str::trim).filter(|value| !value.is_empty());
+    let where_ = office.or(bot).unwrap_or("an agent");
+    let text = match kind.as_str() {
+        "approval" => format!("RAVENBOT: Approval needed in {where_}."),
+        "question" => format!("RAVENBOT: A question is waiting in {where_}."),
+        "queue" if state_name == "failed" => {
+            format!("RAVENBOT: An office queue item failed in {where_}.")
+        }
+        "alert" => format!("RAVENBOT: A budget alert is active for {where_}."),
+        _ => return Ok(()),
+    };
+    post_attention_webhook(
+        &url,
+        &serde_json::json!({
+            "source": "ravenbot",
+            "event": "attention",
+            "kind": kind,
+            "state": state_name,
+            "office": office,
+            "agent": bot,
+            "text": text,
+            "content": text,
+            "sent_at": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+    .await
+}
+
+const ATTENTION_EMAIL_HOST_KEY: &str = "attention_email_host";
+const ATTENTION_EMAIL_PORT_KEY: &str = "attention_email_port";
+const ATTENTION_EMAIL_SECURITY_KEY: &str = "attention_email_security";
+const ATTENTION_EMAIL_USERNAME_KEY: &str = "attention_email_username";
+const ATTENTION_EMAIL_PASSWORD_KEY: &str = "attention_email_password";
+const ATTENTION_EMAIL_FROM_KEY: &str = "attention_email_from";
+const ATTENTION_EMAIL_TO_KEY: &str = "attention_email_to";
+
+#[derive(Clone)]
+struct AttentionEmailConfig {
+    host: String,
+    port: u16,
+    security: String,
+    username: String,
+    password: Option<String>,
+    from: String,
+    to: String,
+}
+
+#[derive(serde::Serialize)]
+struct AttentionEmailView {
+    configured: bool,
+    host: String,
+    port: u16,
+    security: String,
+    username: String,
+    from: String,
+    to: String,
+    has_password: bool,
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(
+        host.trim().to_ascii_lowercase().as_str(),
+        "localhost" | "127.0.0.1" | "::1" | "[::1]"
+    )
+}
+
+fn normalize_email_security(raw: &str) -> Result<String, String> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "starttls" => Ok("starttls".to_string()),
+        "none" => Ok("none".to_string()),
+        _ => Err("Choose STARTTLS or a loopback-only unencrypted connection.".to_string()),
+    }
+}
+
+fn validate_smtp_host(raw: &str, security: &str) -> Result<String, String> {
+    let host = raw.trim();
+    if host.is_empty()
+        || host.len() > 255
+        || host.chars().any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err("The SMTP host is not valid.".to_string());
+    }
+    if security == "none" && !is_loopback_host(host) {
+        return Err("Unencrypted SMTP is only allowed for a loopback host.".to_string());
+    }
+    Ok(host.to_string())
+}
+
+fn validate_smtp_port(port: u16) -> Result<u16, String> {
+    if port == 0 {
+        Err("The SMTP port must be between 1 and 65535.".to_string())
+    } else {
+        Ok(port)
+    }
+}
+
+fn parse_email_address(raw: &str, label: &str) -> Result<lettre::Address, String> {
+    let address = raw.trim();
+    if address.is_empty() || address.len() > 320 || address.chars().any(char::is_control) {
+        return Err(format!("The {label} email address is not valid."));
+    }
+    address
+        .parse()
+        .map_err(|_| format!("The {label} email address is not valid."))
+}
+
+fn sanitize_alert_text(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect();
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim();
+    if trimmed.chars().count() > 80 {
+        trimmed.chars().take(80).collect()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+async fn read_attention_email_password(pool: &sqlx::SqlitePool) -> Option<String> {
+    let stored = ravenbot_db::queries::AppSettingsQueries::get(pool, ATTENTION_EMAIL_PASSWORD_KEY)
+        .await
+        .ok()
+        .flatten()?;
+    if stored.is_empty() {
+        None
+    } else if stored == ravenbot_db::secrets::KEYCHAIN_MARKER {
+        ravenbot_db::secrets::get_attention_email_password().await
+    } else {
+        Some(stored)
+    }
+}
+
+async fn write_attention_email_password(
+    pool: &sqlx::SqlitePool,
+    password: &str,
+) -> Result<(), String> {
+    let stored = if ravenbot_db::secrets::set_attention_email_password(password).await {
+        ravenbot_db::secrets::KEYCHAIN_MARKER.to_string()
+    } else {
+        password.to_string()
+    };
+    ravenbot_db::queries::AppSettingsQueries::set(pool, ATTENTION_EMAIL_PASSWORD_KEY, &stored)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn clear_attention_email_password(pool: &sqlx::SqlitePool) -> Result<(), String> {
+    ravenbot_db::secrets::delete_attention_email_password().await;
+    ravenbot_db::queries::AppSettingsQueries::set(pool, ATTENTION_EMAIL_PASSWORD_KEY, "")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn load_attention_email_config(
+    pool: &sqlx::SqlitePool,
+) -> Result<AttentionEmailConfig, String> {
+    let get = |key: &'static str| {
+        let pool = pool.clone();
+        async move {
+            ravenbot_db::queries::AppSettingsQueries::get(&pool, key)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        }
+    };
+    let host = get(ATTENTION_EMAIL_HOST_KEY).await;
+    let port = get(ATTENTION_EMAIL_PORT_KEY)
+        .await
+        .parse::<u16>()
+        .unwrap_or(587);
+    let security = normalize_email_security(&get(ATTENTION_EMAIL_SECURITY_KEY).await)
+        .unwrap_or_else(|_| "starttls".to_string());
+    let username = get(ATTENTION_EMAIL_USERNAME_KEY).await;
+    let from = get(ATTENTION_EMAIL_FROM_KEY).await;
+    let to = get(ATTENTION_EMAIL_TO_KEY).await;
+    let password = read_attention_email_password(pool).await;
+    Ok(AttentionEmailConfig {
+        host,
+        port,
+        security,
+        username,
+        password,
+        from,
+        to,
+    })
+}
+
+fn attention_email_view(config: &AttentionEmailConfig) -> AttentionEmailView {
+    AttentionEmailView {
+        configured: !config.host.is_empty() && !config.from.is_empty() && !config.to.is_empty(),
+        host: config.host.clone(),
+        port: config.port,
+        security: config.security.clone(),
+        username: config.username.clone(),
+        from: config.from.clone(),
+        to: config.to.clone(),
+        has_password: config.password.is_some(),
+    }
+}
+
+fn build_smtp_transport(config: &AttentionEmailConfig) -> Result<lettre::SmtpTransport, String> {
+    use lettre::transport::smtp::authentication::Credentials;
+
+    let mut builder = if config.security == "none" {
+        lettre::SmtpTransport::builder_dangerous(&config.host)
+    } else {
+        lettre::SmtpTransport::starttls_relay(&config.host)
+            .map_err(|error| format!("Could not prepare STARTTLS: {error}"))?
+    };
+    builder = builder
+        .port(config.port)
+        .timeout(Some(std::time::Duration::from_secs(15)));
+    if !config.username.trim().is_empty() {
+        builder = builder.credentials(Credentials::new(
+            config.username.trim().to_string(),
+            config.password.clone().unwrap_or_default(),
+        ));
+    }
+    Ok(builder.build())
+}
+
+fn build_attention_email_message(
+    config: &AttentionEmailConfig,
+    kind: &str,
+    state_name: &str,
+    office_name: Option<&str>,
+    bot_name: Option<&str>,
+) -> Result<lettre::Message, String> {
+    use lettre::message::{header::ContentType, Mailbox};
+
+    let from: lettre::Address = parse_email_address(&config.from, "sender")?;
+    let to: lettre::Address = parse_email_address(&config.to, "recipient")?;
+    let subject = match kind {
+        "approval" => "RAVENBOT: Approval needed",
+        "question" => "RAVENBOT: Question waiting",
+        "queue" => "RAVENBOT: Office queue item failed",
+        "alert" => "RAVENBOT: Budget alert",
+        "test" => "RAVENBOT: Test alert",
+        _ => return Err("Unknown attention email kind.".to_string()),
+    };
+    let where_ = sanitize_alert_text(office_name.or(bot_name).unwrap_or("an agent"));
+    let state = sanitize_alert_text(state_name);
+    let body = format!(
+        "{subject}\n\nOffice/agent: {where_}\nState: {state}\n\nThis is a generic RAVENBOT alert. Open RAVENBOT to review it.\nPrompt text, questions, secrets, and budget amounts are never sent by email."
+    );
+    lettre::Message::builder()
+        .from(Mailbox::new(None, from))
+        .to(Mailbox::new(None, to))
+        .subject(subject)
+        .header(ContentType::TEXT_PLAIN)
+        .body(body)
+        .map_err(|error| format!("Could not build the alert email: {error}"))
+}
+
+fn send_attention_email_blocking(
+    config: &AttentionEmailConfig,
+    kind: &str,
+    state_name: &str,
+    office_name: Option<&str>,
+    bot_name: Option<&str>,
+) -> Result<(), String> {
+    use lettre::Transport;
+
+    let message = build_attention_email_message(config, kind, state_name, office_name, bot_name)?;
+    let transport = build_smtp_transport(config)?;
+    transport
+        .send(&message)
+        .map(|_| ())
+        .map_err(|error| format!("The SMTP server rejected the alert: {error}"))
+}
+
+#[tauri::command]
+async fn get_attention_email(state: State<'_, AppState>) -> Result<AttentionEmailView, String> {
+    let config = load_attention_email_config(state.db.pool()).await?;
+    Ok(attention_email_view(&config))
+}
+
+#[derive(serde::Deserialize)]
+struct AttentionEmailInput {
+    host: String,
+    port: u16,
+    security: String,
+    username: String,
+    password: Option<String>,
+    from: String,
+    to: String,
+}
+
+#[tauri::command]
+async fn set_attention_email(
+    state: State<'_, AppState>,
+    input: AttentionEmailInput,
+) -> Result<AttentionEmailView, String> {
+    let AttentionEmailInput {
+        host,
+        port,
+        security,
+        username,
+        password,
+        from,
+        to,
+    } = input;
+    let security = normalize_email_security(&security)?;
+    let host = validate_smtp_host(&host, &security)?;
+    let port = validate_smtp_port(port)?;
+    let username = username.trim().to_string();
+    if username.len() > 255 || username.chars().any(char::is_control) {
+        return Err("The SMTP username is not valid.".to_string());
+    }
+    let from_address = parse_email_address(&from, "sender")?;
+    let to_address = parse_email_address(&to, "recipient")?;
+    let provided_password = password
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if provided_password
+        .as_deref()
+        .is_some_and(|value| value.len() > 1024 || value.chars().any(char::is_control))
+    {
+        return Err("The SMTP password is not valid.".to_string());
+    }
+    let existing = load_attention_email_config(state.db.pool()).await?;
+    let effective_password = provided_password.clone().or(existing.password);
+    if !username.is_empty() && effective_password.is_none() {
+        return Err("An SMTP password is required when a username is set.".to_string());
+    }
+
+    let pool = state.db.pool();
+    ravenbot_db::queries::AppSettingsQueries::set(pool, ATTENTION_EMAIL_HOST_KEY, &host)
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        ATTENTION_EMAIL_PORT_KEY,
+        &port.to_string(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(pool, ATTENTION_EMAIL_SECURITY_KEY, &security)
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(pool, ATTENTION_EMAIL_USERNAME_KEY, &username)
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        ATTENTION_EMAIL_FROM_KEY,
+        from_address.to_string().as_str(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        ATTENTION_EMAIL_TO_KEY,
+        to_address.to_string().as_str(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if let Some(password) = provided_password {
+        write_attention_email_password(pool, &password).await?;
+    } else if username.is_empty() {
+        clear_attention_email_password(pool).await?;
+    }
+
+    let config = load_attention_email_config(pool).await?;
+    Ok(attention_email_view(&config))
+}
+
+#[tauri::command]
+async fn clear_attention_email(state: State<'_, AppState>) -> Result<(), String> {
+    let pool = state.db.pool();
+    for key in [
+        ATTENTION_EMAIL_HOST_KEY,
+        ATTENTION_EMAIL_PORT_KEY,
+        ATTENTION_EMAIL_SECURITY_KEY,
+        ATTENTION_EMAIL_USERNAME_KEY,
+        ATTENTION_EMAIL_FROM_KEY,
+        ATTENTION_EMAIL_TO_KEY,
+    ] {
+        ravenbot_db::queries::AppSettingsQueries::set(pool, key, "")
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    clear_attention_email_password(pool).await
+}
+
+#[tauri::command]
+async fn test_attention_email(state: State<'_, AppState>) -> Result<(), String> {
+    let config = load_attention_email_config(state.db.pool()).await?;
+    if config.host.is_empty() || config.from.is_empty() || config.to.is_empty() {
+        return Err("No attention email is configured.".to_string());
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        send_attention_email_blocking(&config, "test", "test", None, None)
+    })
+    .await
+    .map_err(|error| format!("The email task failed: {error}"))?
+}
+
+#[tauri::command]
+async fn deliver_attention_email(
+    state: State<'_, AppState>,
+    kind: String,
+    state_name: String,
+    office_name: Option<String>,
+    bot_name: Option<String>,
+) -> Result<(), String> {
+    let config = load_attention_email_config(state.db.pool()).await?;
+    if config.host.is_empty() || config.from.is_empty() || config.to.is_empty() {
+        return Ok(());
+    }
+    let kind = kind.trim().to_lowercase();
+    let state_name = state_name.trim().to_lowercase();
+    if !matches!(kind.as_str(), "approval" | "question" | "queue" | "alert") {
+        return Err("Unknown attention kind.".to_string());
+    }
+    if !matches!(
+        state_name.as_str(),
+        "pending" | "failed" | "warning" | "critical"
+    ) {
+        return Err("Unknown attention state.".to_string());
+    }
+    if kind == "queue" && state_name != "failed" {
+        return Ok(());
+    }
+    let office = office_name
+        .as_deref()
+        .map(sanitize_alert_text)
+        .filter(|value| !value.is_empty());
+    let bot = bot_name
+        .as_deref()
+        .map(sanitize_alert_text)
+        .filter(|value| !value.is_empty());
+    tauri::async_runtime::spawn_blocking(move || {
+        send_attention_email_blocking(
+            &config,
+            &kind,
+            &state_name,
+            office.as_deref(),
+            bot.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| format!("The email task failed: {error}"))?
+}
+
+/// Send a generic attention notification through the OS.
+///
+/// The renderer supplies only short, already-redacted text. Notifications must
+/// never contain prompt text, secrets, or budget amounts because they appear on
+/// lock screens and notification history.
+#[tauri::command]
+fn send_attention_notification(
+    _app: tauri::AppHandle,
+    title: String,
+    body: String,
+) -> Result<(), String> {
+    let title = title.trim();
+    let body = body.trim();
+    if title.is_empty() || title.chars().count() > 120 {
+        return Err("The notification title must be between 1 and 120 characters.".to_string());
+    }
+    if body.is_empty() || body.chars().count() > 500 {
+        return Err("The notification body must be between 1 and 500 characters.".to_string());
+    }
+    // Send directly instead of through the Tauri notification plugin. That
+    // plugin injects a JS boot script which probes permission on every page,
+    // including a webview connection-error page where Tauri cannot parse an
+    // Origin header. We only need the Rust sender.
+    notify_rust::Notification::new()
+        .appname("RAVENBOT")
+        .summary(title)
+        .body(body)
+        .show()
+        .map(|_| ())
+        .map_err(|error| format!("Could not show the notification: {error}"))
 }
 
 #[tauri::command]
@@ -1018,7 +2632,7 @@ async fn focus_desktop_window(window_id: u64) -> Result<String, String> {
 fn browser_dock_set_takeover(app: tauri::AppHandle, taken: bool) -> Result<bool, String> {
     let taken = set_browser_dock_takeover(taken);
     if taken {
-        if let Some(view) = app.get_webview(BROWSER_DOCK_LABEL) {
+        if let Some(view) = browser_active_view(&app) {
             view.set_focus().map_err(|error| error.to_string())?;
         }
     }
@@ -1027,9 +2641,8 @@ fn browser_dock_set_takeover(app: tauri::AppHandle, taken: bool) -> Result<bool,
 
 #[tauri::command]
 fn browser_dock_focus(app: tauri::AppHandle) -> Result<(), String> {
-    let view = app
-        .get_webview(BROWSER_DOCK_LABEL)
-        .ok_or_else(|| "The browser dock is not open.".to_string())?;
+    let view =
+        browser_active_view(&app).ok_or_else(|| "The browser dock is not open.".to_string())?;
     view.set_focus().map_err(|error| error.to_string())
 }
 
@@ -1385,7 +2998,7 @@ async fn create_bot(
 
 /// The app setting that remembers which agent designs offices.
 const DEFAULT_AGENT_SETTING: &str = "default_agent_id";
-const DEFAULT_AGENT_NAME: &str = "Chief of Staff";
+const DEFAULT_AGENT_NAME: &str = "The Raven";
 
 /// The default agent's mandate.
 ///
@@ -1393,7 +3006,7 @@ const DEFAULT_AGENT_NAME: &str = "Chief of Staff";
 /// is an architect, not a worker: it reads the live capability catalog and
 /// writes the charter and roster, then gets out of the way.
 const DEFAULT_AGENT_PROMPT: &str = "\
-You are the Chief of Staff and Office Architect for this RAVENBOT installation.
+You are The Raven, the default agent and Office Architect for this RAVENBOT installation.
 
 You do not do the office's work. You design offices: turn a name and a partial mission into a goal, a binding policy, and the smallest team that can deliver it, using only the tools that exist on this machine.
 
@@ -1426,7 +3039,7 @@ fn default_agent_skills() -> Vec<String> {
     .collect()
 }
 
-/// The installed office architect, if one has been chosen.
+/// The installed default agent, if one has been chosen.
 ///
 /// Falls back to the first orchestrator so an existing fleet does not have to
 /// re-run onboarding; the choice is persisted so the same agent keeps the role.
@@ -1542,7 +3155,7 @@ async fn create_default_agent(
         bot.is_orchestrator = true;
         bot.approval_mode = ravenbot_core::ApprovalMode::Full;
         if bot.rank.as_deref().map(str::trim).unwrap_or("").is_empty() {
-            bot.rank = Some("Chief of Staff".to_string());
+            bot.rank = Some(DEFAULT_AGENT_NAME.to_string());
         }
         if bot
             .specialty
@@ -1571,8 +3184,8 @@ async fn create_default_agent(
             .map_err(|e| e.to_string())?;
         bot
     } else {
-        let mut bot = Bot::new(&name, "Office design and orchestration");
-        bot.rank = Some("Chief of Staff".to_string());
+        let mut bot = Bot::new(&name, "The Raven — default agent and office architect");
+        bot.rank = Some(DEFAULT_AGENT_NAME.to_string());
         bot.specialty = Some("Office design and orchestration".to_string());
         bot.is_orchestrator = true;
         bot.approval_mode = ravenbot_core::ApprovalMode::Full;
@@ -1609,6 +3222,636 @@ async fn get_bot(state: State<'_, AppState>, bot_id: Uuid) -> Result<Option<Bot>
     ravenbot_db::queries::BotQueries::get(state.db.pool(), bot_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// List audit-log entries across every bot, newest first.
+///
+/// Tool arguments never leave the database: the returned rows carry only the
+/// allow-listed fields the audit view displays.
+#[tauri::command]
+async fn list_audit_entries(
+    state: State<'_, AppState>,
+    bot_id: Option<String>,
+    kinds: Option<Vec<String>>,
+    search: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Result<ravenbot_governance::AuditPage, String> {
+    let query = ravenbot_governance::AuditQuery {
+        bot_id,
+        kinds: kinds.unwrap_or_default(),
+        search,
+        since,
+        until,
+        limit,
+        offset,
+    };
+    state.runtime.audit_logger().query(&query).await
+}
+
+/// The maximum size of a signed audit export, in bytes. The entry cap is the
+/// primary bound; this also catches unusually large serialized rows.
+const MAX_AUDIT_EXPORT_BYTES: u64 = 128 * 1024 * 1024;
+
+/// Resolve a user-chosen export path and refuse dangerous targets.
+///
+/// The save dialog normally supplies an absolute path, but IPC callers are not
+/// trusted to do so. An export must be JSON, must not be a directory, and must
+/// never overwrite the live database or its WAL/SHM siblings.
+fn audit_export_path(raw: &str) -> Result<std::path::PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Choose where to save the audit export.".to_string());
+    }
+    if raw.len() > 4096 {
+        return Err("The export path is too long.".to_string());
+    }
+    let path = std::path::PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err("Choose an absolute export path.".to_string());
+    }
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("json"))
+        != Some(true)
+    {
+        return Err("Audit exports must use a .json file name.".to_string());
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| parent.is_dir())
+        .ok_or_else(|| "The export folder does not exist.".to_string())?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the export folder: {error}"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "The export path has no file name.".to_string())?;
+    let path = parent.join(name);
+    if path.is_dir() {
+        return Err("That export path is a directory.".to_string());
+    }
+
+    let root = ravenbot_core::raven_root();
+    let protected = [
+        root.join("ravenbot.db"),
+        root.join("ravenbot.db-wal"),
+        root.join("ravenbot.db-shm"),
+    ];
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+    if protected.iter().any(|candidate| {
+        candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone())
+            == resolved
+    }) {
+        return Err("Refusing to overwrite the RAVENBOT database.".to_string());
+    }
+    Ok(path)
+}
+
+/// Write via a same-directory temporary file so a failed export does not leave
+/// a half-written audit document behind.
+fn write_audit_export(path: &std::path::Path, contents: &[u8]) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "The export path has no usable file name.".to_string())?;
+    let temp = path.with_file_name(format!(".{file_name}.tmp-{}", Uuid::new_v4()));
+    std::fs::write(&temp, contents)
+        .map_err(|error| format!("Could not write the audit export: {error}"))?;
+    #[cfg(windows)]
+    if path.exists() {
+        if let Err(error) = std::fs::remove_file(path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(format!("Could not replace the existing export: {error}"));
+        }
+    }
+    if let Err(error) = std::fs::rename(&temp, path) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(format!("Could not finish the audit export: {error}"));
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct VerifiedAuditExport {
+    count: u64,
+    exported_at: String,
+    public_key: String,
+}
+
+/// Verify a signed audit export without trusting its filename or caller.
+fn verify_audit_export_bytes(bytes: &[u8]) -> Result<VerifiedAuditExport, String> {
+    if bytes.len() as u64 > MAX_AUDIT_EXPORT_BYTES {
+        return Err("The audit export is larger than the 128 MB limit.".to_string());
+    }
+    let export: ravenbot_governance::AuditExport = serde_json::from_slice(bytes)
+        .map_err(|error| format!("This is not a RAVENBOT audit export: {error}"))?;
+    if export.payload.format != ravenbot_governance::AUDIT_EXPORT_FORMAT {
+        return Err("This file is not a RAVENBOT audit export.".to_string());
+    }
+    if export.payload.version != ravenbot_governance::AUDIT_EXPORT_VERSION {
+        return Err(format!(
+            "Unsupported audit export version {}.",
+            export.payload.version
+        ));
+    }
+    if export.signature.algorithm != "ed25519" {
+        return Err("The audit export does not use an Ed25519 signature.".to_string());
+    }
+    if export.payload.count != export.payload.entries.len() as u64 {
+        return Err("The audit export count does not match its entries.".to_string());
+    }
+    let payload_bytes = serde_json::to_vec(&export.payload)
+        .map_err(|error| format!("Could not serialize the audit payload: {error}"))?;
+    if !ravenbot_sync::BundleSigner::verify_with(
+        &payload_bytes,
+        &export.signature.signature,
+        &export.signature.public_key,
+    ) {
+        return Err("The audit export signature does not match its contents.".to_string());
+    }
+    Ok(VerifiedAuditExport {
+        count: export.payload.count,
+        exported_at: export.payload.exported_at,
+        public_key: export.signature.public_key,
+    })
+}
+
+struct BuiltAuditExport {
+    json: String,
+    count: u64,
+    bytes: usize,
+    sha256: String,
+    public_key: String,
+}
+
+/// Build the signed export document shared by the manual and scheduled paths.
+async fn build_audit_export(
+    pool: &sqlx::SqlitePool,
+    filters: ravenbot_governance::AuditExportFilters,
+) -> Result<BuiltAuditExport, String> {
+    let query = ravenbot_governance::AuditQuery {
+        bot_id: filters.bot_id.clone(),
+        kinds: filters.kinds.clone(),
+        search: filters.search.clone(),
+        since: filters.since.clone(),
+        until: filters.until.clone(),
+        limit: None,
+        offset: None,
+    };
+    let entries = ravenbot_governance::AuditLogger::new(pool.clone())
+        .export(&query)
+        .await?;
+    let signer = ravenbot_sync::bundle::open_signer(pool.clone()).await?;
+    let payload = ravenbot_governance::AuditExportPayload {
+        format: ravenbot_governance::AUDIT_EXPORT_FORMAT.to_string(),
+        version: ravenbot_governance::AUDIT_EXPORT_VERSION,
+        exported_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+        filters,
+        count: entries.len() as u64,
+        entries,
+    };
+    let payload_bytes = serde_json::to_vec(&payload)
+        .map_err(|error| format!("Could not serialize the audit export: {error}"))?;
+    let signature = signer.sign(&payload_bytes);
+    let public_key = signer.public_key_b64();
+    let export = ravenbot_governance::AuditExport {
+        payload,
+        signature: ravenbot_governance::AuditExportSignature {
+            algorithm: "ed25519".to_string(),
+            public_key: public_key.clone(),
+            signature,
+        },
+    };
+    let mut json = serde_json::to_string_pretty(&export)
+        .map_err(|error| format!("Could not serialize the audit export: {error}"))?;
+    json.push('\n');
+    let bytes = json.as_bytes();
+    if bytes.len() as u64 > MAX_AUDIT_EXPORT_BYTES {
+        return Err(
+            "The audit export is larger than the 128 MB limit. Narrow the filters.".to_string(),
+        );
+    }
+    Ok(BuiltAuditExport {
+        count: export.payload.count,
+        bytes: bytes.len(),
+        sha256: file_version(bytes),
+        public_key,
+        json,
+    })
+}
+
+/// Export the matching audit entries to a signed JSON document.
+///
+/// The Ed25519 signature covers the serialized payload, including the redacted
+/// entries and the filters that produced them. The returned summary includes a
+/// SHA-256 of the exact file for out-of-band checksum comparison.
+#[tauri::command]
+async fn export_audit_log(
+    state: State<'_, AppState>,
+    path: String,
+    bot_id: Option<String>,
+    kinds: Option<Vec<String>>,
+    search: Option<String>,
+    since: Option<String>,
+    until: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let path = audit_export_path(&path)?;
+    let filters = ravenbot_governance::AuditExportFilters {
+        bot_id,
+        kinds: kinds.unwrap_or_default(),
+        search,
+        since,
+        until,
+    };
+    let export = build_audit_export(state.db.pool(), filters).await?;
+    write_audit_export(&path, export.json.as_bytes())?;
+    Ok(serde_json::json!({
+        "path": path.to_string_lossy(),
+        "count": export.count,
+        "bytes": export.bytes,
+        "sha256": export.sha256,
+        "public_key": export.public_key,
+    }))
+}
+
+/// Verify the Ed25519 signature on a previously exported audit file.
+#[tauri::command]
+async fn verify_audit_export(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<serde_json::Value, String> {
+    let path = audit_export_path(&path)?;
+    let metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not read the audit export: {error}"))?;
+    if metadata.len() > MAX_AUDIT_EXPORT_BYTES {
+        return Err("The audit export is larger than the 128 MB limit.".to_string());
+    }
+    let bytes = std::fs::read(&path)
+        .map_err(|error| format!("Could not read the audit export: {error}"))?;
+    let verified = verify_audit_export_bytes(&bytes)?;
+    let signer = ravenbot_sync::bundle::open_signer(state.db.pool().clone()).await?;
+    let trusted_by_this_installation = verified.public_key == signer.public_key_b64();
+    Ok(serde_json::json!({
+        "valid": true,
+        "trusted": trusted_by_this_installation,
+        "path": path.to_string_lossy(),
+        "count": verified.count,
+        "exported_at": verified.exported_at,
+        "public_key": verified.public_key,
+        "sha256": file_version(&bytes),
+    }))
+}
+
+/// Permanently delete audit entries older than the chosen number of days.
+#[tauri::command]
+async fn prune_audit_log(state: State<'_, AppState>, older_than_days: u32) -> Result<u64, String> {
+    state.runtime.audit_logger().prune(older_than_days).await
+}
+
+const AUDIT_RETENTION_KEY: &str = "audit_retention_days";
+const AUDIT_EXPORT_DIR_KEY: &str = "audit_export_dir";
+const AUDIT_EXPORT_INTERVAL_KEY: &str = "audit_export_interval_hours";
+const AUDIT_EXPORT_LAST_AT_KEY: &str = "audit_export_last_at";
+const AUDIT_EXPORT_LAST_SUCCESS_KEY: &str = "audit_export_last_success_at";
+const AUDIT_EXPORT_LAST_ERROR_KEY: &str = "audit_export_last_error";
+const AUDIT_MAINTENANCE_INTERVAL_SECS: u64 = 15 * 60;
+
+/// A retention window is either "keep forever" (0) or a bounded number of
+/// days. The upper bound keeps a malformed setting from looking like an
+/// accidental request to erase everything.
+fn valid_audit_retention_days(days: u32) -> bool {
+    days == 0 || (1..=3650).contains(&days)
+}
+
+/// Read the persisted policy. Missing, malformed, or out-of-range values mean
+/// "keep forever" — the safe default for an append-only audit trail.
+async fn configured_audit_retention(pool: &sqlx::SqlitePool) -> Option<u32> {
+    let raw = ravenbot_db::queries::AppSettingsQueries::get(pool, AUDIT_RETENTION_KEY)
+        .await
+        .ok()
+        .flatten()?;
+    let days = raw.trim().parse::<u32>().ok()?;
+    valid_audit_retention_days(days).then_some(days)
+}
+
+/// Run one retention pass. Returns `None` when the policy is disabled or
+/// unreadable, and the deleted count otherwise. Errors are logged, not
+/// propagated: a background cleanup must not take the app down.
+async fn run_audit_retention(pool: &sqlx::SqlitePool) -> Option<u64> {
+    let days = configured_audit_retention(pool).await?;
+    if days == 0 {
+        return None;
+    }
+    match ravenbot_governance::AuditLogger::new(pool.clone())
+        .prune(days)
+        .await
+    {
+        Ok(deleted) => Some(deleted),
+        Err(error) => {
+            tracing::warn!(error = %error, "Automatic audit retention failed");
+            None
+        }
+    }
+}
+
+fn valid_audit_export_interval(hours: u32) -> bool {
+    hours == 0 || (1..=168).contains(&hours)
+}
+
+fn audit_export_due(
+    interval_hours: u32,
+    last_at: Option<&str>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> bool {
+    if interval_hours == 0 {
+        return false;
+    }
+    let Some(last_at) = last_at else {
+        return true;
+    };
+    let Ok(last_at) = chrono::DateTime::parse_from_rfc3339(last_at) else {
+        return true;
+    };
+    now.signed_duration_since(last_at.with_timezone(&chrono::Utc))
+        .num_seconds()
+        >= i64::from(interval_hours) * 3600
+}
+
+fn audit_export_directory(raw: &str) -> Result<std::path::PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Choose a folder for scheduled audit exports.".to_string());
+    }
+    if raw.len() > 4096 {
+        return Err("The audit export folder path is too long.".to_string());
+    }
+    let path = std::path::PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err("Choose an absolute audit export folder.".to_string());
+    }
+    if !path.is_dir() {
+        return Err("The audit export folder does not exist.".to_string());
+    }
+    let path = path
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the audit export folder: {error}"))?;
+    let probe = path.join(format!(".ravenbot-export-test-{}", Uuid::new_v4()));
+    std::fs::write(&probe, b"probe")
+        .map_err(|error| format!("The audit export folder is not writable: {error}"))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(path)
+}
+
+fn scheduled_audit_export_path(directory: &std::path::Path) -> std::path::PathBuf {
+    let stamp = chrono::Utc::now().format("%Y%m%dT%H%M%SZ");
+    let mut path = directory.join(format!("ravenbot-audit-{stamp}.json"));
+    if path.exists() {
+        for index in 1..1000 {
+            path = directory.join(format!("ravenbot-audit-{stamp}-{index}.json"));
+            if !path.exists() {
+                return path;
+            }
+        }
+        path = directory.join(format!("ravenbot-audit-{stamp}-{}.json", Uuid::new_v4()));
+    }
+    path
+}
+
+fn clip_audit_export_error(error: &str) -> String {
+    error.chars().take(500).collect()
+}
+
+async fn record_audit_export_attempt(pool: &sqlx::SqlitePool, error: Option<&str>) {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false);
+    let _ =
+        ravenbot_db::queries::AppSettingsQueries::set(pool, AUDIT_EXPORT_LAST_AT_KEY, &now).await;
+    let _ = ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        AUDIT_EXPORT_LAST_ERROR_KEY,
+        error
+            .map(clip_audit_export_error)
+            .unwrap_or_default()
+            .as_str(),
+    )
+    .await;
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ScheduledAuditExport {
+    path: String,
+    count: u64,
+    bytes: usize,
+    sha256: String,
+    public_key: String,
+}
+
+/// Write a signed full audit export if the configured interval has elapsed.
+/// The last-attempt timestamp is recorded even on failure so a broken folder
+/// is retried on the normal cadence, not once every maintenance tick.
+async fn run_audit_export_if_due(
+    pool: &sqlx::SqlitePool,
+) -> Option<Result<ScheduledAuditExport, String>> {
+    let interval_hours =
+        ravenbot_db::queries::AppSettingsQueries::get(pool, AUDIT_EXPORT_INTERVAL_KEY)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|hours| valid_audit_export_interval(*hours))
+            .unwrap_or(0);
+    if interval_hours == 0 {
+        return None;
+    }
+    let directory = ravenbot_db::queries::AppSettingsQueries::get(pool, AUDIT_EXPORT_DIR_KEY)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let last_at = ravenbot_db::queries::AppSettingsQueries::get(pool, AUDIT_EXPORT_LAST_AT_KEY)
+        .await
+        .ok()
+        .flatten();
+    if !audit_export_due(interval_hours, last_at.as_deref(), chrono::Utc::now()) {
+        return None;
+    }
+
+    let directory = match audit_export_directory(&directory) {
+        Ok(directory) => directory,
+        Err(error) => {
+            record_audit_export_attempt(pool, Some(&error)).await;
+            return Some(Err(error));
+        }
+    };
+    let path = scheduled_audit_export_path(&directory);
+    // The first scheduled backup is a full snapshot. Later backups are
+    // incremental from the last successful attempt, which keeps files bounded
+    // and avoids a 50k-entry cap deadlock while retention is paused on failure.
+    let last_success =
+        ravenbot_db::queries::AppSettingsQueries::get(pool, AUDIT_EXPORT_LAST_SUCCESS_KEY)
+            .await
+            .ok()
+            .flatten()
+            .filter(|value| !value.trim().is_empty());
+    let export = match build_audit_export(
+        pool,
+        ravenbot_governance::AuditExportFilters {
+            since: last_success,
+            ..Default::default()
+        },
+    )
+    .await
+    {
+        Ok(export) => export,
+        Err(error) => {
+            record_audit_export_attempt(pool, Some(&error)).await;
+            return Some(Err(error));
+        }
+    };
+    if let Err(error) = write_audit_export(&path, export.json.as_bytes()) {
+        record_audit_export_attempt(pool, Some(&error)).await;
+        return Some(Err(error));
+    }
+    record_audit_export_attempt(pool, None).await;
+    let _ = ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        AUDIT_EXPORT_LAST_SUCCESS_KEY,
+        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, false),
+    )
+    .await;
+    Some(Ok(ScheduledAuditExport {
+        path: path.to_string_lossy().to_string(),
+        count: export.count,
+        bytes: export.bytes,
+        sha256: export.sha256,
+        public_key: export.public_key,
+    }))
+}
+
+async fn audit_export_schedule_json(pool: &sqlx::SqlitePool) -> Result<serde_json::Value, String> {
+    let directory = ravenbot_db::queries::AppSettingsQueries::get(pool, AUDIT_EXPORT_DIR_KEY)
+        .await
+        .map_err(|error| error.to_string())?
+        .filter(|value| !value.trim().is_empty());
+    let interval_hours =
+        ravenbot_db::queries::AppSettingsQueries::get(pool, AUDIT_EXPORT_INTERVAL_KEY)
+            .await
+            .map_err(|error| error.to_string())?
+            .and_then(|value| value.trim().parse::<u32>().ok())
+            .filter(|hours| valid_audit_export_interval(*hours))
+            .unwrap_or(0);
+    let last_at = ravenbot_db::queries::AppSettingsQueries::get(pool, AUDIT_EXPORT_LAST_AT_KEY)
+        .await
+        .map_err(|error| error.to_string())?;
+    let last_error =
+        ravenbot_db::queries::AppSettingsQueries::get(pool, AUDIT_EXPORT_LAST_ERROR_KEY)
+            .await
+            .map_err(|error| error.to_string())?
+            .filter(|value| !value.trim().is_empty());
+    Ok(serde_json::json!({
+        "directory": directory,
+        "interval_hours": interval_hours,
+        "last_at": last_at,
+        "last_error": last_error,
+    }))
+}
+
+#[tauri::command]
+async fn get_audit_export_schedule(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    audit_export_schedule_json(state.db.pool()).await
+}
+
+#[tauri::command]
+async fn set_audit_export_schedule(
+    state: State<'_, AppState>,
+    directory: Option<String>,
+    interval_hours: u32,
+) -> Result<serde_json::Value, String> {
+    if !valid_audit_export_interval(interval_hours) {
+        return Err("Scheduled exports must be off or between 1 and 168 hours.".to_string());
+    }
+    let directory = match directory
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(raw) => Some(audit_export_directory(raw)?.to_string_lossy().to_string()),
+        None if interval_hours > 0 => {
+            return Err("Choose a folder for scheduled audit exports.".to_string())
+        }
+        None => None,
+    };
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        AUDIT_EXPORT_INTERVAL_KEY,
+        &interval_hours.to_string(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        AUDIT_EXPORT_DIR_KEY,
+        directory.as_deref().unwrap_or(""),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    let exported = if interval_hours > 0 {
+        run_audit_export_if_due(state.db.pool()).await
+    } else {
+        None
+    };
+    if let Some(Err(error)) = &exported {
+        return Err(error.clone());
+    }
+    let mut schedule = audit_export_schedule_json(state.db.pool()).await?;
+    schedule["exported"] = match exported {
+        Some(Ok(export)) => serde_json::to_value(export).map_err(|error| error.to_string())?,
+        _ => serde_json::Value::Null,
+    };
+    Ok(schedule)
+}
+
+#[tauri::command]
+async fn get_audit_retention(state: State<'_, AppState>) -> Result<u32, String> {
+    Ok(configured_audit_retention(state.db.pool())
+        .await
+        .unwrap_or(0))
+}
+
+/// Save the automatic-retention policy and prune immediately.
+///
+/// The UI warns that saving a finite window is destructive. Doing the first
+/// pass here means the user sees the effect (and the deleted count) instead of
+/// waiting up to six hours for the background loop.
+#[tauri::command]
+async fn set_audit_retention(
+    state: State<'_, AppState>,
+    days: u32,
+) -> Result<serde_json::Value, String> {
+    if !valid_audit_retention_days(days) {
+        return Err("Audit retention must be 0 (forever) or between 1 and 3650 days.".to_string());
+    }
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        AUDIT_RETENTION_KEY,
+        &days.to_string(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let deleted = if days > 0 {
+        state.runtime.audit_logger().prune(days).await?
+    } else {
+        0
+    };
+    Ok(serde_json::json!({ "days": days, "deleted": deleted }))
 }
 
 /// List recent runs for diagnostics, newest first.
@@ -1655,6 +3898,37 @@ async fn get_usage_summary(
     let rows = ravenbot_db::queries::UsageQueries::summary(state.db.pool(), days)
         .await
         .map_err(|e| e.to_string())?;
+    let office_rows = ravenbot_db::queries::UsageQueries::office_summary(state.db.pool(), days)
+        .await
+        .map_err(|e| e.to_string())?;
+    let (total_model_cost, total_tool_cost) =
+        ravenbot_db::queries::UsageQueries::spend_breakdown(state.db.pool(), days)
+            .await
+            .map_err(|e| e.to_string())?;
+    let (total_utility_tokens, total_utility_cost) =
+        ravenbot_db::queries::UtilityUsageQueries::total(state.db.pool(), days)
+            .await
+            .map_err(|e| e.to_string())?;
+    let user_prices = ravenbot_db::queries::AppSettingsQueries::get(state.db.pool(), "tool_prices")
+        .await
+        .map_err(|e| e.to_string())?
+        .and_then(|raw| serde_json::from_str::<std::collections::BTreeMap<String, f64>>(&raw).ok())
+        .unwrap_or_default();
+    let tool_pricing: Vec<serde_json::Value> =
+        ravenbot_core::tool_pricing::price_status(&user_prices, |name| {
+            std::env::var_os(name).is_some_and(|value| !value.to_string_lossy().trim().is_empty())
+        })
+        .into_iter()
+        .map(|price| {
+            serde_json::json!({
+                "id": price.id,
+                "label": price.label,
+                "price_usd": price.price_usd,
+                "source": price.source,
+                "note": price.note,
+            })
+        })
+        .collect();
 
     let mut agents: Vec<serde_json::Value> = rows
         .into_iter()
@@ -1677,22 +3951,67 @@ async fn get_usage_summary(
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let total_runs: i64 = agents.iter().filter_map(|agent| agent["runs"].as_i64()).sum();
-    let total_tokens: i64 = agents.iter().filter_map(|agent| agent["tokens"].as_i64()).sum();
-    let total_cost: f64 = agents.iter().filter_map(|agent| agent["cost"].as_f64()).sum();
-    let failed_runs: i64 = agents.iter().filter_map(|agent| agent["failed"].as_i64()).sum();
+    let total_runs: i64 = agents
+        .iter()
+        .filter_map(|agent| agent["runs"].as_i64())
+        .sum();
+    let total_tokens: i64 = agents
+        .iter()
+        .filter_map(|agent| agent["tokens"].as_i64())
+        .sum();
+    let total_cost: f64 = agents
+        .iter()
+        .filter_map(|agent| agent["cost"].as_f64())
+        .sum();
+    let failed_runs: i64 = agents
+        .iter()
+        .filter_map(|agent| agent["failed"].as_i64())
+        .sum();
     let completed_runs: i64 = agents
         .iter()
         .filter_map(|agent| agent["completed"].as_i64())
         .sum();
+
+    let mut offices: Vec<serde_json::Value> = office_rows
+        .into_iter()
+        .map(
+            |(office_id, name, budget, runs, tokens, cost, failed, completed)| {
+                serde_json::json!({
+                    "office_id": office_id,
+                    "name": name,
+                    "budget": budget,
+                    "runs": runs,
+                    "tokens": tokens,
+                    "cost": cost,
+                    "failed": failed,
+                    "completed": completed,
+                })
+            },
+        )
+        .collect();
+    offices.sort_by(|left, right| {
+        right["cost"]
+            .as_f64()
+            .unwrap_or(0.0)
+            .partial_cmp(&left["cost"].as_f64().unwrap_or(0.0))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     Ok(serde_json::json!({
         "days": days,
         "total_runs": total_runs,
         "total_tokens": total_tokens,
         "total_cost": total_cost,
+        "total_spend": total_cost + total_utility_cost,
+        "total_model_cost": total_model_cost,
+        "total_tool_cost": total_tool_cost,
+        "total_utility_cost": total_utility_cost,
+        "total_utility_tokens": total_utility_tokens,
         "failed_runs": failed_runs,
         "completed_runs": completed_runs,
         "agents": agents,
+        "offices": offices,
+        "tool_pricing": tool_pricing,
     }))
 }
 
@@ -1850,6 +4169,36 @@ async fn list_messages(
         .map_err(|e| e.to_string())
 }
 
+/// Resolve reply targets that are older than the loaded transcript page.
+#[tauri::command]
+async fn get_messages_by_ids(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+    ids: Vec<Uuid>,
+) -> Result<Vec<Message>, String> {
+    ravenbot_db::queries::MessageQueries::list_by_ids(state.db.pool(), thread_id, &ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// One page of a thread, newest page first when `before_id` is absent.
+#[tauri::command]
+async fn list_messages_page(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+    before_id: Option<Uuid>,
+    limit: Option<u32>,
+) -> Result<ravenbot_db::queries::MessagePage, String> {
+    ravenbot_db::queries::MessageQueries::list_page(
+        state.db.pool(),
+        thread_id,
+        before_id,
+        limit.unwrap_or(50) as usize,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn toggle_message_reaction(
     state: State<'_, AppState>,
@@ -1945,12 +4294,36 @@ fn make_stream_emitter(app: tauri::AppHandle) -> ravenbot_runtime::StreamEmitter
     })
 }
 
+/// Event delivery for the fleet. The desktop publishes to the Tauri webview;
+/// the headless daemon has no window and simply persists state, which the
+/// remote API and the next UI launch can read.
+#[derive(Clone)]
+pub(crate) enum HostEvents {
+    Tauri(tauri::AppHandle),
+    Headless,
+}
+
+impl HostEvents {
+    fn emit(&self, event: &str, payload: serde_json::Value) {
+        if let Self::Tauri(app) = self {
+            let _ = app.emit(event, payload);
+        }
+    }
+
+    fn stream_emitter(&self) -> Option<ravenbot_runtime::StreamEmitter> {
+        match self {
+            Self::Tauri(app) => Some(make_stream_emitter(app.clone())),
+            Self::Headless => None,
+        }
+    }
+}
+
 /// Execute a routine instruction: create a thread, insert the instruction
 /// as the user turn, and run the bot with streaming wired for that thread.
-pub async fn execute_routine_instruction(
+pub(crate) async fn execute_routine_instruction(
     db: &Database,
     runtime: &Arc<ravenbot_runtime::Runtime>,
-    app: &tauri::AppHandle,
+    events: &HostEvents,
     routine: &ravenbot_core::Routine,
 ) -> Result<(), String> {
     let thread = Thread::new(routine.bot_id, format!("Routine: {}", routine.name));
@@ -1968,16 +4341,16 @@ pub async fn execute_routine_instruction(
         .await
         .map_err(|e| e.to_string())?;
 
-    runtime.set_thread_emitter(thread.id, Some(make_stream_emitter(app.clone())));
-    // Routines run unattended: auto-allow approval gates for THIS run (audited)
-    // rather than parking for 10 minutes and denying.
-    runtime.allow_approvals_for_run(run.id, true);
+    runtime.set_thread_emitter(thread.id, events.stream_emitter());
+    // Routines run unattended under Review: low/read-only tools proceed and
+    // high-risk tools park on a card in the attention inbox.
+    runtime.review_approvals_for_run(run.id, true);
     let result = runtime.execute_run(&mut run).await;
-    runtime.allow_approvals_for_run(run.id, false);
+    runtime.review_approvals_for_run(run.id, false);
     runtime.set_thread_emitter(thread.id, None);
     result.map_err(|e| e.to_string())?;
 
-    let _ = app.emit(
+    events.emit(
         "routine-executed",
         serde_json::json!({
             "routine_id": routine.id.to_string(),
@@ -2039,6 +4412,9 @@ async fn edit_and_resend(
 
     // Insert the edited user turn (with any new inline image attachments)
     let mut user_msg = Message::user(thread_id, &content);
+    if state.account.id != state.workspace.id {
+        user_msg.sender_name = Some(state.account.username.clone());
+    }
     if let Some(atts) = attachments {
         user_msg.attachments = build_attachments(atts);
     }
@@ -2182,7 +4558,13 @@ async fn run_routine_now(
         .get(routine_id)
         .await?
         .ok_or_else(|| "Routine not found".to_string())?;
-    execute_routine_instruction(&state.db, &state.runtime, &app, &routine).await
+    execute_routine_instruction(
+        &state.db,
+        &state.runtime,
+        &HostEvents::Tauri(app.clone()),
+        &routine,
+    )
+    .await
 }
 
 // ---- Webhook triggers ----
@@ -2289,7 +4671,13 @@ async fn fetch_and_preview_team(url: String) -> Result<serde_json::Value, String
         .text()
         .await
         .map_err(|e| e.to_string())?;
-    preview_team(body).await
+    let mut preview = preview_team(body.clone()).await?;
+    // The preview is also the import source: return the fetched Markdown so
+    // the URL mode does not silently import an empty paste buffer.
+    if let Some(object) = preview.as_object_mut() {
+        object.insert("markdown".to_string(), serde_json::Value::String(body));
+    }
+    Ok(preview)
 }
 
 /// Create the team: bots, an optional office, and paused routines.
@@ -2717,9 +5105,9 @@ async fn start_channel_task_inner(
     let query_db = db.clone();
     tauri::async_runtime::spawn(async move {
         spawn_runtime.set_thread_emitter(thread.id, Some(make_stream_emitter(spawn_app.clone())));
-        spawn_runtime.allow_approvals_for_run(run.id, true);
+        spawn_runtime.review_approvals_for_run(run.id, true);
         let result = spawn_runtime.execute_run(&mut run).await;
-        spawn_runtime.allow_approvals_for_run(run.id, false);
+        spawn_runtime.review_approvals_for_run(run.id, false);
         spawn_runtime.set_thread_emitter(thread.id, None);
 
         // The user may have stopped the task while the model was still
@@ -2950,14 +5338,13 @@ async fn message_in_thread(
     message_id: Uuid,
     thread_id: Uuid,
 ) -> Result<bool, String> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM messages WHERE id = ? AND thread_id = ?",
-    )
-    .bind(message_id.to_string())
-    .bind(thread_id.to_string())
-    .fetch_one(pool)
-    .await
-    .map_err(|e| e.to_string())?;
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE id = ? AND thread_id = ?")
+            .bind(message_id.to_string())
+            .bind(thread_id.to_string())
+            .fetch_one(pool)
+            .await
+            .map_err(|e| e.to_string())?;
     Ok(count > 0)
 }
 
@@ -3124,12 +5511,296 @@ async fn execute_run_with_stream(
             "run_id": run.id.to_string(),
         }),
     );
+    let _ = ravenbot_db::queries::RunQueries::set_actor(
+        state.db.pool(),
+        run.id,
+        &state.account.id,
+        &state.account.username,
+        &state.role,
+        &state.workspace.id,
+    )
+    .await;
     state
         .runtime
         .set_thread_emitter(run.thread_id, Some(make_stream_emitter(app.clone())));
     let result = state.runtime.execute_run(run).await;
     state.runtime.set_thread_emitter(run.thread_id, None);
     result.map_err(|e| e.to_string())
+}
+
+/// Resume the 1:1 runs that startup reconciliation parked after a quit.
+///
+/// The worker is deliberately after window setup: the frontend needs a moment
+/// to attach its `agent-stream` listener, otherwise the resumed turn would run
+/// with no visible progress. The transcript is persisted either way, so a run
+/// that finishes before the user opens its thread is not lost.
+async fn resume_interrupted_runs(app: tauri::AppHandle) {
+    let enabled = std::env::var("RAVENBOT_RESUME_ON_START")
+        .map(|value| {
+            !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "0" | "false" | "no"
+            )
+        })
+        .unwrap_or(true);
+    if !enabled {
+        tracing::info!("Startup resume disabled by RAVENBOT_RESUME_ON_START");
+        return;
+    }
+    let state = app.state::<AppState>();
+    if state.runtime.is_paused().await {
+        tracing::info!("Startup resume skipped while the kill switch is active");
+        return;
+    }
+    loop {
+        let mut run =
+            match ravenbot_db::queries::RunQueries::claim_resumable_run(state.db.pool()).await {
+                Ok(Some(run)) => run,
+                Ok(None) => break,
+                Err(error) => {
+                    tracing::warn!(%error, "Could not claim an interrupted run for resume");
+                    break;
+                }
+            };
+        if run.state != ravenbot_core::RunState::Paused {
+            continue;
+        }
+        tracing::info!(
+            run_id = %run.id,
+            thread_id = %run.thread_id,
+            "Resuming interrupted run after restart"
+        );
+        // Keep the parked run intact so a failed automatic attempt cannot
+        // throw away the checkpoint the user may still resume manually. The
+        // runtime marks a failed execution terminal and drops its checkpoint,
+        // so restore the original paused object on the error path.
+        let parked = run.clone();
+        if let Err(error) = execute_run_with_stream(&state, &app, &mut run).await {
+            tracing::warn!(
+                run_id = %run.id,
+                %error,
+                "Interrupted run could not be resumed; leaving it paused"
+            );
+            let mut paused = parked;
+            paused.state = ravenbot_core::RunState::Paused;
+            paused.updated_at = chrono::Utc::now();
+            let _ = ravenbot_db::queries::RunQueries::update(state.db.pool(), &paused).await;
+        } else {
+            tracing::info!(run_id = %run.id, "Interrupted run resumed to completion");
+        }
+        if state.runtime.is_paused().await {
+            break;
+        }
+    }
+}
+
+/// Restart office turns that were active when the app quit.
+///
+/// Office turns are graph executions, not one resumable run. Replaying the
+/// individual node runs out of graph order would duplicate work, so the turn is
+/// restarted from the last user request instead. The request is already in the
+/// transcript and is not inserted a second time.
+async fn resume_interrupted_offices(app: tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    let rooms = match ravenbot_db::queries::ChatRoomQueries::list(state.db.pool()).await {
+        Ok(rooms) => rooms,
+        Err(error) => {
+            tracing::warn!(%error, "Could not list offices for startup resume");
+            return;
+        }
+    };
+    for room in rooms {
+        // Leave everything in place while the kill switch is on; the next
+        // launch that is allowed to work should still see the interrupted work.
+        if state.runtime.is_paused().await {
+            continue;
+        }
+        let key = format!("office_resume:{}", room.id);
+        let flagged = ravenbot_db::queries::AppSettingsQueries::get(state.db.pool(), &key)
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|value| value == "1");
+
+        // A saved graph is more precise than "restart the last user request":
+        // completed nodes keep their outputs and only unfinished nodes run.
+        let graph_record =
+            ravenbot_db::queries::OfficeGraphQueries::latest_running(state.db.pool(), room.id)
+                .await
+                .ok()
+                .flatten();
+        if let Some(record) = graph_record {
+            match serde_json::from_str::<TaskGraph>(&record.graph) {
+                Ok(graph) => {
+                    let labels: std::collections::HashMap<Uuid, String> =
+                        serde_json::from_str(&record.labels).unwrap_or_default();
+                    let request = if record.request.trim().is_empty() {
+                        "Continue the office goal.".to_string()
+                    } else {
+                        record.request
+                    };
+                    let visible = if record.visible.trim().is_empty() {
+                        request.clone()
+                    } else {
+                        record.visible
+                    };
+                    let autonomous = request.starts_with("[Autonomous cycle]");
+                    let cycle = record.cycle.max(0) as u32;
+                    // Reconcile startup left this item running because the
+                    // graph is resumable. Pass its id through so the turn that
+                    // finishes the graph also finishes the queue ledger row.
+                    let queue_item_id: Option<Uuid> = sqlx::query_scalar::<_, String>(
+                        "SELECT id FROM office_queue
+                         WHERE chatroom_id = ? AND state = 'running'
+                         ORDER BY started_at DESC LIMIT 1",
+                    )
+                    .bind(room.id.to_string())
+                    .fetch_optional(state.db.pool())
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|value| Uuid::parse_str(&value).ok());
+                    let mut resume_runs = std::collections::HashMap::new();
+                    for (node_id, run_id) in graph.running_node_runs() {
+                        if let Ok(Some(mut run)) =
+                            ravenbot_db::queries::RunQueries::get(state.db.pool(), run_id).await
+                        {
+                            if run.checkpoint.is_some()
+                                && !matches!(
+                                    run.state,
+                                    ravenbot_core::RunState::Completed
+                                        | ravenbot_core::RunState::Cancelled
+                                )
+                            {
+                                // Startup reconciliation marks office-node runs
+                                // failed. A checkpoint proves this one can
+                                // continue, so reopen it for the executor.
+                                run.state = ravenbot_core::RunState::Paused;
+                                run.outcome = None;
+                                run.completed_at = None;
+                                run.updated_at = chrono::Utc::now();
+                                let _ =
+                                    ravenbot_db::queries::RunQueries::update(state.db.pool(), &run)
+                                        .await;
+                                resume_runs.insert(node_id, run);
+                            }
+                        }
+                    }
+                    let _ =
+                        ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), &key, "0")
+                            .await;
+                    tracing::info!(
+                        office_id = %room.id,
+                        graph_id = %record.id,
+                        cycle,
+                        "Resuming interrupted office graph"
+                    );
+                    if let Err(error) = start_office_turn(
+                        &state.db,
+                        &state.runtime,
+                        HostEvents::Tauri(app.clone()),
+                        room.id,
+                        request,
+                        visible,
+                        None,
+                        autonomous,
+                        queue_item_id,
+                        None,
+                        None,
+                        false,
+                        Some(OfficeGraphResume {
+                            graph,
+                            labels,
+                            cycle,
+                            resume_runs,
+                        }),
+                    )
+                    .await
+                    {
+                        // Leave the graph marked running: the cause may be
+                        // transient (provider blip, still-held guard), and the
+                        // next launch should be allowed to try again. A new
+                        // manual turn abandons it explicitly.
+                        tracing::warn!(
+                            office_id = %room.id,
+                            graph_id = %record.id,
+                            %error,
+                            "Interrupted office graph could not resume"
+                        );
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        office_id = %room.id,
+                        graph_id = %record.id,
+                        %error,
+                        "Saved office graph is unreadable; falling back to the last request"
+                    );
+                    let _ = ravenbot_db::queries::OfficeGraphQueries::mark_status(
+                        state.db.pool(),
+                        &record.id,
+                        "failed",
+                    )
+                    .await;
+                }
+            }
+        }
+
+        if !flagged {
+            continue;
+        }
+        let _ = ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), &key, "0").await;
+        let Some(thread_id) = chatroom_thread_id(&state.db, room.id).await else {
+            continue;
+        };
+        let messages = match ravenbot_db::queries::MessageQueries::list_by_thread(
+            state.db.pool(),
+            thread_id,
+        )
+        .await
+        {
+            Ok(messages) => messages,
+            Err(error) => {
+                tracing::warn!(%error, office_id = %room.id, "Could not read the interrupted office turn");
+                continue;
+            }
+        };
+        let Some(last_user) = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == ravenbot_core::MessageRole::User)
+        else {
+            continue;
+        };
+        let text = match &last_user.content {
+            ravenbot_core::MessageContent::Text { text, .. } => text.trim().to_string(),
+            _ => continue,
+        };
+        if text.is_empty() || text.starts_with("[Autonomous cycle]") {
+            continue;
+        }
+        tracing::info!(office_id = %room.id, "Restarting interrupted office turn");
+        if let Err(error) = start_office_turn(
+            &state.db,
+            &state.runtime,
+            HostEvents::Tauri(app.clone()),
+            room.id,
+            text.clone(),
+            text,
+            None,
+            false,
+            None,
+            None,
+            None,
+            false,
+            None,
+        )
+        .await
+        {
+            tracing::warn!(office_id = %room.id, %error, "Interrupted office turn could not restart");
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -3790,8 +6461,6 @@ pub struct CustomProviderInfo {
     pub supports_tools: bool,
     pub enabled: bool,
     pub has_key: bool,
-    #[serde(default)]
-    pub headers_json: Option<String>,
 }
 
 /// Custom ids must be lowercase slugs and must never shadow a built-in.
@@ -3844,7 +6513,7 @@ async fn list_custom_providers(
                 default_model,
                 supports_tools,
                 enabled,
-                headers_json,
+                _headers_json,
             )| {
                 CustomProviderInfo {
                     has_key: manager.has_key(&id),
@@ -3855,7 +6524,6 @@ async fn list_custom_providers(
                     default_model,
                     supports_tools,
                     enabled,
-                    headers_json,
                 }
             },
         )
@@ -4145,6 +6813,9 @@ async fn decide_approval(
     allowed: bool,
     note: Option<String>,
 ) -> Result<bool, String> {
+    let request = ravenbot_db::queries::ApprovalQueries::get(state.db.pool(), approval_id)
+        .await
+        .map_err(|e| e.to_string())?;
     let decided = ravenbot_db::queries::ApprovalQueries::decide(
         state.db.pool(),
         approval_id,
@@ -4153,6 +6824,25 @@ async fn decide_approval(
     )
     .await
     .map_err(|e| e.to_string())?;
+    if decided {
+        if let Some(request) = request {
+            let permission = format!("tool:{}", request.tool_name);
+            let event = if allowed {
+                ravenbot_core::AuditEventType::PermissionGranted { permission }
+            } else {
+                ravenbot_core::AuditEventType::PermissionDenied {
+                    permission,
+                    reason: note
+                        .filter(|note| !note.trim().is_empty())
+                        .unwrap_or_else(|| "Denied by the user".to_string()),
+                }
+            };
+            let entry = ravenbot_core::AuditEntry::new(request.bot_id, event)
+                .with_run_id(request.run_id)
+                .with_thread_id(request.thread_id);
+            let _ = state.runtime.audit_logger().log(&entry).await;
+        }
+    }
     Ok(decided)
 }
 
@@ -4308,6 +6998,37 @@ async fn pause_run(state: State<'_, AppState>, run_id: Uuid) -> Result<(), Strin
     Ok(())
 }
 
+/// Stop the office's active turn: every non-terminal run attached to the
+/// office conversation or one of its node threads receives a cancel request.
+/// The office queue is paused first so the worker does not immediately start
+/// the next item behind the user's back.
+#[tauri::command]
+async fn cancel_office_turn(state: State<'_, AppState>, chatroom_id: Uuid) -> Result<u32, String> {
+    persist_office_queue_paused(&state.db, chatroom_id, true).await?;
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT r.id FROM runs r
+         WHERE r.state NOT IN ('completed','failed','cancelled')
+           AND r.thread_id IN (
+             SELECT thread_id FROM chatroom_threads WHERE chatroom_id = ?
+             UNION
+             SELECT thread_id FROM chatroom_office_threads WHERE chatroom_id = ?
+           )",
+    )
+    .bind(chatroom_id.to_string())
+    .bind(chatroom_id.to_string())
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut cancelled = 0u32;
+    for (id,) in rows {
+        if let Ok(id) = Uuid::parse_str(&id) {
+            state.runtime.request_cancel(id);
+            cancelled += 1;
+        }
+    }
+    Ok(cancelled)
+}
+
 /// Resume a paused run from its checkpoint, streaming as it re-enters the loop.
 #[tauri::command]
 async fn resume_run(
@@ -4404,6 +7125,7 @@ async fn get_input_backend() -> Result<InputBackendInfo, String> {
 /// where the browser Web Speech API is not available.
 #[tauri::command]
 async fn transcribe_audio(
+    state: State<'_, AppState>,
     audio_base64: String,
     format: Option<String>,
 ) -> Result<serde_json::Value, String> {
@@ -4416,7 +7138,16 @@ async fn transcribe_audio(
         .map(str::trim)
         .filter(|f| !f.is_empty())
         .unwrap_or("webm");
+    // Prefer the owner's saved OpenAI key, like TTS already does. The env
+    // fallback remains for headless/development runs.
+    let openai_key = ravenbot_db::queries::ProviderKeyQueries::get(state.db.pool(), "openai")
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        .filter(|key| !key.trim().is_empty());
     let result = ravenbot_vision::AudioTranscriber::new()
+        .with_openai_key(openai_key)
         .transcribe(&bytes, fmt)
         .await
         .map_err(|e| e.to_string())?;
@@ -5319,6 +8050,44 @@ fn error_hint(err: &str) -> &'static str {
 
 /// Re-run the last user message: removes the trailing assistant message
 /// (if any) and executes a fresh run without duplicating the user turn.
+/// Inject a text message into the active run at its next tool boundary.
+///
+/// This is deliberately narrower than a normal send: the message joins the
+/// running model's next prompt, so the run can change course without waiting
+/// for the current turn to finish. The run only accepts it while a tool is
+/// executing; after the tools finish the next model call drains it.
+#[tauri::command]
+async fn steer_thread(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+    content: String,
+) -> Result<Message, String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("A steering message cannot be empty.".to_string());
+    }
+    if content.chars().count() > 20_000 {
+        return Err("A steering message is limited to 20,000 characters.".to_string());
+    }
+    let Some(run_id) = state.runtime.steerable_run(thread_id) else {
+        return Err(
+            "The active turn is not at a steerable step. Send this as a normal message when it finishes."
+                .to_string(),
+        );
+    };
+
+    let user_msg = Message::user(thread_id, &content);
+    ravenbot_db::queries::MessageQueries::insert(state.db.pool(), &user_msg)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if !state.runtime.queue_steering(run_id, user_msg.id, content) {
+        let _ = ravenbot_db::queries::MessageQueries::delete(state.db.pool(), user_msg.id).await;
+        return Err("The active turn just finished. Send this as a normal message.".to_string());
+    }
+    Ok(user_msg)
+}
+
 #[tauri::command]
 async fn regenerate_message(
     state: State<'_, AppState>,
@@ -5390,10 +8159,1314 @@ async fn regenerate_message(
         .ok_or_else(|| "No response generated".to_string())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WorkflowTaskInput {
+    bot_id: Uuid,
+    label: String,
+    depends_on: Vec<usize>,
+    #[serde(default)]
+    condition: Option<ravenbot_db::queries::WorkflowCondition>,
+    #[serde(default)]
+    data_from: Option<Vec<usize>>,
+    #[serde(default)]
+    retries: u8,
+    #[serde(default)]
+    output_schema: Option<String>,
+    #[serde(default = "default_loop_iterations")]
+    loop_iterations: u8,
+    #[serde(default)]
+    loop_until: Option<ravenbot_db::queries::WorkflowLoopStop>,
+    #[serde(default)]
+    loop_group: Option<String>,
+    #[serde(default)]
+    loop_group_terminal: bool,
+    #[serde(default = "default_loop_iterations")]
+    loop_group_iterations: u8,
+    #[serde(default)]
+    loop_group_stop: Option<ravenbot_db::queries::WorkflowLoopStop>,
+    #[serde(default)]
+    node_type: Option<String>,
+}
+
+fn default_loop_iterations() -> u8 {
+    1
+}
+
+fn validate_loop_until(
+    iterations: u8,
+    stop: &Option<ravenbot_db::queries::WorkflowLoopStop>,
+) -> Result<Option<ravenbot_db::queries::WorkflowLoopStop>, String> {
+    if !(1..=10).contains(&iterations) {
+        return Err("Workflow loops must run between 1 and 10 times.".to_string());
+    }
+    if iterations == 1 {
+        return Ok(None);
+    }
+    let Some(stop) = stop else {
+        return Ok(None);
+    };
+    let operator = stop.operator.trim().to_ascii_lowercase();
+    if !matches!(operator.as_str(), "contains" | "not_contains") {
+        return Err("A loop stop must use contains or not_contains.".to_string());
+    }
+    let value = stop.value.trim();
+    if value.is_empty() {
+        // A blank early-stop phrase means "run every iteration"; it is the
+        // default state of the editor, not an error.
+        return Ok(None);
+    }
+    if value.chars().count() > 500 {
+        return Err("A loop stop phrase is limited to 500 characters.".to_string());
+    }
+    Ok(Some(ravenbot_db::queries::WorkflowLoopStop {
+        operator,
+        value: value.to_string(),
+    }))
+}
+
+fn validate_output_schema(raw: &Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = raw
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    if raw.chars().count() > 8192 {
+        return Err("A workflow output schema is limited to 8,192 characters.".to_string());
+    }
+    let schema: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|error| format!("The output schema is not valid JSON: {error}"))?;
+    if !schema.is_object() {
+        return Err("The output schema must be a JSON object.".to_string());
+    }
+    jsonschema::validator_for(&schema)
+        .map_err(|error| format!("The output schema is invalid: {error}"))?;
+    Ok(Some(
+        serde_json::to_string(&schema).unwrap_or_else(|_| raw.to_string()),
+    ))
+}
+
+fn validate_workflow_definition(
+    name: &str,
+    goal: &str,
+    tasks: &[WorkflowTaskInput],
+) -> Result<Vec<ravenbot_db::queries::WorkflowTaskRecord>, String> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err("A workflow needs a name of at most 120 characters.".to_string());
+    }
+    let goal = goal.trim();
+    if goal.is_empty() || goal.chars().count() > 4000 {
+        return Err("A workflow needs a goal of at most 4,000 characters.".to_string());
+    }
+    if tasks.is_empty() || tasks.len() > 50 {
+        return Err("A workflow needs between 1 and 50 tasks.".to_string());
+    }
+    let mut records = Vec::with_capacity(tasks.len());
+    for (index, task) in tasks.iter().enumerate() {
+        let label = task.label.trim();
+        let node_type = ravenbot_runtime::graph::WorkflowNodeType::parse(
+            task.node_type.as_deref().unwrap_or("agent"),
+        )
+        .ok_or_else(|| {
+            "Workflow node type must be trigger, agent, llm, approval, or output.".to_string()
+        })?;
+        if node_type == ravenbot_runtime::graph::WorkflowNodeType::Trigger
+            && !task.depends_on.is_empty()
+        {
+            return Err("A trigger node must not depend on earlier tasks.".to_string());
+        }
+        if label.is_empty() || label.chars().count() > 2000 {
+            return Err(
+                "Every workflow task needs a label of at most 2,000 characters.".to_string(),
+            );
+        }
+        let mut seen = std::collections::HashSet::new();
+        for dependency in &task.depends_on {
+            if *dependency >= index {
+                return Err("Workflow dependencies must refer to an earlier task.".to_string());
+            }
+            if !seen.insert(*dependency) {
+                return Err("A workflow task has a duplicate dependency.".to_string());
+            }
+        }
+        let condition = match &task.condition {
+            None => None,
+            Some(condition) => {
+                if condition.source >= index || !task.depends_on.contains(&condition.source) {
+                    return Err(
+                        "A workflow condition must reference one of that task's earlier dependencies."
+                            .to_string(),
+                    );
+                }
+                let operator = condition.operator.trim().to_ascii_lowercase();
+                if operator != "contains" && operator != "not_contains" {
+                    return Err(
+                        "A workflow condition must use contains or not_contains.".to_string()
+                    );
+                }
+                let value = condition.value.trim();
+                if value.is_empty() || value.chars().count() > 500 {
+                    return Err(
+                        "A workflow condition needs a phrase of at most 500 characters."
+                            .to_string(),
+                    );
+                }
+                Some(ravenbot_db::queries::WorkflowCondition {
+                    source: condition.source,
+                    operator,
+                    value: value.to_string(),
+                })
+            }
+        };
+        let data_from = match &task.data_from {
+            None => None,
+            Some(indices) => {
+                let mut seen = std::collections::HashSet::new();
+                for index in indices {
+                    if !task.depends_on.contains(index) {
+                        return Err(
+                            "Workflow inputs must reference one of the task's dependencies."
+                                .to_string(),
+                        );
+                    }
+                    if !seen.insert(*index) {
+                        return Err("A workflow task has a duplicate input dependency.".to_string());
+                    }
+                }
+                Some(indices.clone())
+            }
+        };
+        if task.retries > 3 {
+            return Err("Workflow retries are limited to 3 per task.".to_string());
+        }
+        let output_schema = validate_output_schema(&task.output_schema)?;
+        let loop_until = validate_loop_until(task.loop_iterations, &task.loop_until)?;
+        let loop_group = task
+            .loop_group
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string);
+        if let Some(name) = &loop_group {
+            if name.chars().count() > 64
+                || !name
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+            {
+                return Err(
+                    "A loop group name must be 1-64 letters, digits, dots, dashes, or underscores."
+                        .to_string(),
+                );
+            }
+        }
+        if task.loop_group_terminal && loop_group.is_none() {
+            return Err("A loop group terminal must belong to a group.".to_string());
+        }
+        if task.loop_group_terminal && !(1..=10).contains(&task.loop_group_iterations) {
+            return Err("A loop group must run between 1 and 10 times.".to_string());
+        }
+        let loop_group_stop = if loop_group.is_some() && task.loop_group_terminal {
+            validate_loop_until(task.loop_group_iterations, &task.loop_group_stop)?
+        } else {
+            None
+        };
+        records.push(ravenbot_db::queries::WorkflowTaskRecord {
+            bot_id: task.bot_id.to_string(),
+            label: label.to_string(),
+            node_type: node_type.as_str().to_string(),
+            depends_on: task.depends_on.clone(),
+            condition,
+            data_from,
+            retries: task.retries,
+            output_schema,
+            loop_iterations: task.loop_iterations,
+            loop_until,
+            loop_group,
+            loop_group_terminal: task.loop_group_terminal,
+            loop_group_iterations: task.loop_group_iterations,
+            loop_group_stop,
+        });
+    }
+    let mut group_terminals = std::collections::HashMap::new();
+    for record in &records {
+        if let Some(name) = &record.loop_group {
+            if record.loop_group_terminal {
+                if group_terminals.get(name).copied().unwrap_or(false) {
+                    return Err(format!(
+                        "Loop group '{name}' has more than one terminal task."
+                    ));
+                }
+                group_terminals.insert(name.clone(), true);
+            } else {
+                group_terminals.entry(name.clone()).or_insert(false);
+            }
+        }
+    }
+    for (name, terminal) in &group_terminals {
+        if !terminal {
+            return Err(format!("Loop group '{name}' has no terminal task."));
+        }
+    }
+    Ok(records)
+}
+
 #[tauri::command]
-async fn execute_graph(
+async fn list_workflows(
+    state: State<'_, AppState>,
+    office_id: Option<Uuid>,
+) -> Result<Vec<ravenbot_db::queries::WorkflowRecord>, String> {
+    ravenbot_db::queries::WorkflowQueries::list(state.db.pool(), office_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn save_workflow(
+    state: State<'_, AppState>,
+    id: Option<String>,
+    name: String,
+    goal: String,
+    tasks: Vec<WorkflowTaskInput>,
+    office_id: Option<Uuid>,
+) -> Result<serde_json::Value, String> {
+    let tasks = validate_workflow_definition(&name, &goal, &tasks)?;
+    let id = match id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => Uuid::parse_str(value)
+            .map_err(|_| "The workflow id is not valid.".to_string())?
+            .to_string(),
+        None => Uuid::new_v4().to_string(),
+    };
+    let tasks_json = serde_json::to_string(&tasks)
+        .map_err(|error| format!("Could not serialize the workflow: {error}"))?;
+    let version = ravenbot_db::queries::WorkflowQueries::upsert(
+        state.db.pool(),
+        &id,
+        name.trim(),
+        goal.trim(),
+        &tasks_json,
+        office_id,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({ "id": id, "version": version }))
+}
+
+#[tauri::command]
+async fn get_workflow_schedule(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<Option<ravenbot_db::queries::WorkflowScheduleRecord>, String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    ravenbot_db::queries::WorkflowQueries::get_schedule(state.db.pool(), &workflow_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn set_workflow_schedule(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    interval_hours: u32,
+) -> Result<Option<ravenbot_db::queries::WorkflowScheduleRecord>, String> {
+    if interval_hours > 168 {
+        return Err("Workflow schedules support at most 168 hours.".to_string());
+    }
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    let office: Option<Option<String>> =
+        sqlx::query_scalar::<_, Option<String>>("SELECT office_id FROM workflows WHERE id = ?")
+            .bind(&workflow_id)
+            .fetch_optional(state.db.pool())
+            .await
+            .map_err(|error| error.to_string())?;
+    let Some(office) = office else {
+        return Err("That workflow no longer exists.".to_string());
+    };
+    if interval_hours > 0 && office.is_none() {
+        return Err("Only office-scoped workflows can be scheduled.".to_string());
+    }
+    let next_run_at = if interval_hours > 0 {
+        Some((chrono::Utc::now() + chrono::Duration::hours(i64::from(interval_hours))).to_rfc3339())
+    } else {
+        None
+    };
+    ravenbot_db::queries::WorkflowQueries::set_schedule(
+        state.db.pool(),
+        &workflow_id,
+        i64::from(interval_hours),
+        interval_hours > 0,
+        next_run_at.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::WorkflowQueries::get_schedule(state.db.pool(), &workflow_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn mark_workflow_schedule_error(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    error: Option<String>,
+) -> Result<(), String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    let error = error.map(|value| value.chars().take(2000).collect::<String>());
+    ravenbot_db::queries::WorkflowQueries::mark_schedule_error(
+        state.db.pool(),
+        &workflow_id,
+        error.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn claim_due_workflow(
+    state: State<'_, AppState>,
+) -> Result<Option<ravenbot_db::queries::ClaimedWorkflow>, String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    ravenbot_db::queries::WorkflowQueries::claim_due(state.db.pool(), &now)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_workflow_versions(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<ravenbot_db::queries::WorkflowVersionRecord>, String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    ravenbot_db::queries::WorkflowQueries::list_versions(
+        state.db.pool(),
+        &workflow_id,
+        i64::from(limit.unwrap_or(20).clamp(1, 50)),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_workflow_version(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    version: i64,
+) -> Result<Option<ravenbot_db::queries::WorkflowVersionRecord>, String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    ravenbot_db::queries::WorkflowQueries::get_version(state.db.pool(), &workflow_id, version)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_workflow(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<Option<ravenbot_db::queries::WorkflowRecord>, String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    ravenbot_db::queries::WorkflowQueries::get(state.db.pool(), &workflow_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+fn workflow_webhook_base(state: &AppState) -> String {
+    state
+        .webhook_base_url
+        .read()
+        .map(|url| url.clone())
+        .unwrap_or_else(|_| "http://127.0.0.1:8800".to_string())
+}
+
+#[tauri::command]
+async fn enable_workflow_webhook(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<serde_json::Value, String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    let workflow = ravenbot_db::queries::WorkflowQueries::get(state.db.pool(), &workflow_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "That workflow no longer exists.".to_string())?;
+    if workflow.office_id.is_none() {
+        return Err("Only office-scoped workflows can be triggered.".to_string());
+    }
+    let secret = format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple());
+    ravenbot_db::queries::WorkflowWebhookQueries::enable(
+        state.db.pool(),
+        Uuid::parse_str(&workflow_id).map_err(|_| "Invalid workflow id.".to_string())?,
+        &secret,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let base = workflow_webhook_base(&state);
+    Ok(serde_json::json!({
+        "url": format!("{}/workflows/{}", base, secret),
+        "secret": secret,
+        "header": format!("Bearer {}", secret),
+    }))
+}
+
+#[tauri::command]
+async fn disable_workflow_webhook(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<(), String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?;
+    ravenbot_db::queries::WorkflowWebhookQueries::disable(state.db.pool(), workflow_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_workflow_webhook_status(
+    state: State<'_, AppState>,
+    workflow_id: String,
+) -> Result<serde_json::Value, String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?;
+    let enabled =
+        ravenbot_db::queries::WorkflowWebhookQueries::is_enabled(state.db.pool(), workflow_id)
+            .await
+            .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "enabled": enabled,
+        "base_url": workflow_webhook_base(&state),
+    }))
+}
+
+#[tauri::command]
+async fn begin_workflow_run(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    workflow_version: i64,
+    goal: String,
+) -> Result<String, String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    let goal = goal.trim();
+    if goal.is_empty() || goal.chars().count() > 4000 {
+        return Err("The workflow run goal is invalid.".to_string());
+    }
+    ravenbot_db::queries::WorkflowQueries::get_version(
+        state.db.pool(),
+        &workflow_id,
+        workflow_version,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "That workflow version no longer exists.".to_string())?;
+    ravenbot_db::queries::WorkflowQueries::begin_run(
+        state.db.pool(),
+        &workflow_id,
+        workflow_version,
+        None,
+        goal,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn finish_workflow_run(
+    state: State<'_, AppState>,
+    run_id: String,
+    state_name: String,
+    thread_id: Option<String>,
+    detail: Option<String>,
+) -> Result<(), String> {
+    let run_id = Uuid::parse_str(run_id.trim())
+        .map_err(|_| "The workflow run id is not valid.".to_string())?
+        .to_string();
+    let state_name = state_name.trim().to_lowercase();
+    if !matches!(state_name.as_str(), "completed" | "failed" | "cancelled") {
+        return Err("Workflow run state must be completed, failed, or cancelled.".to_string());
+    }
+    let thread_id = match thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => Some(
+            Uuid::parse_str(value)
+                .map_err(|_| "The workflow run thread id is invalid.".to_string())?
+                .to_string(),
+        ),
+        None => None,
+    };
+    let detail = detail.map(|value| value.chars().take(2000).collect::<String>());
+    let updated = ravenbot_db::queries::WorkflowQueries::finish_run(
+        state.db.pool(),
+        &run_id,
+        &state_name,
+        thread_id.as_deref(),
+        detail.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if !updated {
+        return Err("That workflow run is no longer running.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn record_workflow_run(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    workflow_version: i64,
+    thread_id: Option<String>,
+    goal: String,
+    state_name: String,
+    detail: Option<String>,
+) -> Result<String, String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    let state_name = state_name.trim().to_lowercase();
+    if !matches!(state_name.as_str(), "completed" | "failed" | "cancelled") {
+        return Err("Workflow run state must be completed, failed, or cancelled.".to_string());
+    }
+    let goal = goal.trim();
+    if goal.is_empty() || goal.chars().count() > 4000 {
+        return Err("The workflow run goal is invalid.".to_string());
+    }
+    let thread_id = match thread_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        Some(value) => Some(
+            Uuid::parse_str(value)
+                .map_err(|_| "The workflow run thread id is invalid.".to_string())?
+                .to_string(),
+        ),
+        None => None,
+    };
+    ravenbot_db::queries::WorkflowQueries::get_version(
+        state.db.pool(),
+        &workflow_id,
+        workflow_version,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "That workflow version no longer exists.".to_string())?;
+    let detail = detail.map(|value| value.chars().take(2000).collect::<String>());
+    ravenbot_db::queries::WorkflowQueries::record_run(
+        state.db.pool(),
+        &workflow_id,
+        workflow_version,
+        thread_id.as_deref(),
+        goal,
+        &state_name,
+        detail.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct GoalGateInput {
+    command: String,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    timeout_secs: Option<u64>,
+    #[serde(default)]
+    required: Option<bool>,
+}
+
+/// The office's persisted completion contract, if one exists.
+#[tauri::command]
+async fn get_office_goal(
+    state: State<'_, AppState>,
+    office_id: String,
+) -> Result<Option<ravenbot_db::queries::GoalDetail>, String> {
+    let office_id =
+        Uuid::parse_str(office_id.trim()).map_err(|_| "The office id is not valid.".to_string())?;
+    ravenbot_db::queries::GoalQueries::office_detail(state.db.pool(), office_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Create or update the office's completion contract.
+///
+/// The objective is the office's existing goal (or description), so the user
+/// edits the mission in one place. Custom verification commands are validated
+/// here, before they can ever run unattended.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn update_office_goal(
+    state: State<'_, AppState>,
+    office_id: String,
+    outcome: String,
+    constraints: Option<Vec<String>>,
+    boundaries: Option<Vec<String>>,
+    stop_when: String,
+    gates: Option<Vec<GoalGateInput>>,
+    max_turns: Option<u32>,
+    max_tokens: Option<u64>,
+    max_wall_seconds: Option<u64>,
+) -> Result<ravenbot_db::queries::GoalDetail, String> {
+    let office_id =
+        Uuid::parse_str(office_id.trim()).map_err(|_| "The office id is not valid.".to_string())?;
+    let room = ravenbot_db::queries::ChatRoomQueries::get(state.db.pool(), office_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The office was not found.".to_string())?;
+    let objective = room
+        .goal
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| room.description.trim())
+        .to_string();
+    if objective.is_empty() {
+        return Err("Set the office goal before adding a completion contract.".to_string());
+    }
+    let roots: Vec<std::path::PathBuf> = office_root(Some(&room)).into_iter().collect();
+
+    let existing = ravenbot_db::queries::GoalQueries::get_by_office(state.db.pool(), office_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut contract = existing
+        .as_ref()
+        .map(|goal| goal.contract.clone())
+        .unwrap_or_else(|| ravenbot_core::GoalContract::for_objective(&objective));
+    contract.objective = objective;
+    contract.outcome = outcome;
+    contract.constraints = constraints.unwrap_or_default();
+    contract.boundaries = boundaries.unwrap_or_default();
+    contract.stop_when = stop_when;
+    contract.max_turns = max_turns.unwrap_or(contract.max_turns).clamp(1, 64);
+    contract.max_tokens = max_tokens.unwrap_or(contract.max_tokens);
+    contract.max_wall_seconds = max_wall_seconds.unwrap_or(contract.max_wall_seconds);
+
+    let requested_gates = gates.unwrap_or_default();
+    if requested_gates.len() > 4 {
+        return Err("At most 4 verification commands can be attached to a goal.".to_string());
+    }
+    let mut built = Vec::new();
+    for (position, input) in requested_gates.into_iter().enumerate() {
+        let command = input.command.trim();
+        if command.is_empty() {
+            continue;
+        }
+        if command.chars().count() > 500 {
+            return Err("A verification command must be at most 500 characters.".to_string());
+        }
+        if let Some(reason) = ravenbot_skills::safety::dangerous_command_reason(command, &roots) {
+            return Err(format!("The verification command is blocked: {reason}"));
+        }
+        let cwd = input
+            .cwd
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if let (Some(cwd), Some(root)) = (cwd.as_deref(), roots.first()) {
+            let path = std::path::Path::new(cwd);
+            if path
+                .components()
+                .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(
+                    "A verification command's working directory must stay inside the office workspace."
+                        .to_string(),
+                );
+            }
+            let joined = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                root.join(path)
+            };
+            if !joined.starts_with(root) {
+                return Err(
+                    "A verification command's working directory must stay inside the office workspace."
+                        .to_string(),
+                );
+            }
+        }
+        built.push(ravenbot_core::GoalGate {
+            id: Uuid::new_v4(),
+            command: command.to_string(),
+            cwd,
+            timeout_secs: input.timeout_secs.unwrap_or(600).clamp(1, 3_600),
+            required: input.required.unwrap_or(true),
+            position: position as u32,
+        });
+    }
+    contract.gates = built;
+    contract.normalize();
+
+    let goal = if let Some(existing) = existing {
+        ravenbot_db::queries::GoalQueries::update_contract(
+            state.db.pool(),
+            Uuid::parse_str(&existing.id)
+                .map_err(|_| "The saved goal id is not valid.".to_string())?,
+            &contract,
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The goal was not found.".to_string())?
+    } else {
+        ravenbot_db::queries::GoalQueries::create(state.db.pool(), Some(office_id), None, &contract)
+            .await
+            .map_err(|error| error.to_string())?
+    };
+    ravenbot_db::queries::GoalQueries::detail(
+        state.db.pool(),
+        Uuid::parse_str(&goal.id).map_err(|_| "The saved goal id is not valid.".to_string())?,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| "The goal was not found.".to_string())
+}
+
+/// Pause the office goal. The current cycle may finish, but no new cycle starts.
+#[tauri::command]
+async fn pause_office_goal(
+    state: State<'_, AppState>,
+    office_id: String,
+) -> Result<ravenbot_db::queries::GoalDetail, String> {
+    let office_id =
+        Uuid::parse_str(office_id.trim()).map_err(|_| "The office id is not valid.".to_string())?;
+    let goal = ravenbot_db::queries::GoalQueries::get_by_office(state.db.pool(), office_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "This office has no completion contract yet.".to_string())?;
+    if goal.status != "active" {
+        return Err(format!(
+            "Only an active goal can be paused; this goal is '{}'.",
+            goal.status
+        ));
+    }
+    let goal_id =
+        Uuid::parse_str(&goal.id).map_err(|_| "The saved goal id is not valid.".to_string())?;
+    ravenbot_db::queries::GoalQueries::set_status(
+        state.db.pool(),
+        goal_id,
+        ravenbot_core::GoalStatus::Paused,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::GoalQueries::detail(state.db.pool(), goal_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The goal was not found.".to_string())
+}
+
+/// Resume a paused or blocked office goal.
+#[tauri::command]
+async fn resume_office_goal(
+    state: State<'_, AppState>,
+    office_id: String,
+) -> Result<ravenbot_db::queries::GoalDetail, String> {
+    let office_id =
+        Uuid::parse_str(office_id.trim()).map_err(|_| "The office id is not valid.".to_string())?;
+    let goal = ravenbot_db::queries::GoalQueries::get_by_office(state.db.pool(), office_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "This office has no completion contract yet.".to_string())?;
+    if !matches!(goal.status.as_str(), "paused" | "blocked") {
+        return Err(format!(
+            "A goal in '{}' state cannot be resumed. Only paused or blocked goals can resume.",
+            goal.status
+        ));
+    }
+    let goal_id =
+        Uuid::parse_str(&goal.id).map_err(|_| "The saved goal id is not valid.".to_string())?;
+    ravenbot_db::queries::GoalQueries::set_status(
+        state.db.pool(),
+        goal_id,
+        ravenbot_core::GoalStatus::Active,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::GoalQueries::detail(state.db.pool(), goal_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The goal was not found.".to_string())
+}
+
+/// Reopen a completed, failed, or cancelled goal for a new mission.
+#[tauri::command]
+async fn reopen_office_goal(
+    state: State<'_, AppState>,
+    office_id: String,
+) -> Result<ravenbot_db::queries::GoalDetail, String> {
+    let office_id =
+        Uuid::parse_str(office_id.trim()).map_err(|_| "The office id is not valid.".to_string())?;
+    let goal = ravenbot_db::queries::GoalQueries::get_by_office(state.db.pool(), office_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "This office has no completion contract yet.".to_string())?;
+    if !matches!(goal.status.as_str(), "done" | "failed" | "cancelled") {
+        return Err(format!(
+            "A goal in '{}' state cannot be reopened. Only done, failed, or cancelled goals can reopen.",
+            goal.status
+        ));
+    }
+    let goal_id =
+        Uuid::parse_str(&goal.id).map_err(|_| "The saved goal id is not valid.".to_string())?;
+    ravenbot_db::queries::GoalQueries::reopen(state.db.pool(), goal_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::GoalQueries::detail(state.db.pool(), goal_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The goal was not found.".to_string())
+}
+
+/// List the durable work items for one office.
+#[tauri::command]
+async fn list_work_items(
+    state: State<'_, AppState>,
+    office_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<ravenbot_db::queries::WorkItem>, String> {
+    let office_id =
+        Uuid::parse_str(office_id.trim()).map_err(|_| "The office id is not valid.".to_string())?;
+    ravenbot_db::queries::WorkItemQueries::list_by_office(
+        state.db.pool(),
+        office_id,
+        limit.unwrap_or(200),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// One work item with its comments, artifacts, and event history.
+#[tauri::command]
+async fn get_work_item(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ravenbot_db::queries::WorkItemDetail, String> {
+    ravenbot_db::queries::WorkItemQueries::detail(state.db.pool(), id.trim())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The work item was not found.".to_string())
+}
+
+/// Append a human comment to a work item. The ledger remains append-only:
+/// comments never rewrite the task's instruction or result.
+#[tauri::command]
+async fn add_work_comment(
+    state: State<'_, AppState>,
+    id: String,
+    body: String,
+    author: Option<String>,
+) -> Result<ravenbot_db::queries::WorkComment, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("A work item id is required.".to_string());
+    }
+    let body = body.trim();
+    if body.is_empty() {
+        return Err("A comment cannot be empty.".to_string());
+    }
+    if body.chars().count() > 10_000 {
+        return Err("A comment must be at most 10,000 characters.".to_string());
+    }
+    let author = author
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("user");
+    ravenbot_db::queries::WorkItemQueries::add_comment(state.db.pool(), id, author, body)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Reset a node and every dependent for another run.
+///
+/// A retry of a failed task and a change requested on a completed task both
+/// invalidate everything downstream: those tasks consumed the old output. The
+/// thread is intentionally kept, so the new run inherits the conversation and
+/// the reviewer's note.
+fn reset_graph_for_rerun(graph: &mut TaskGraph, node_id: Uuid) -> Vec<Uuid> {
+    let mut stack = vec![node_id];
+    let mut seen = std::collections::HashSet::new();
+    let mut reset = Vec::new();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(node) = graph.nodes.get_mut(&id) {
+            node.state = NodeState::Pending;
+            node.output = None;
+            node.attempts = 0;
+            node.iterations = 0;
+            node.loop_pending = false;
+            node.condition_skipped = false;
+            reset.push(id);
+        }
+        for (from, to) in &graph.edges {
+            if *from == id {
+                stack.push(*to);
+            }
+        }
+    }
+    for id in &reset {
+        graph.blackboard.data.remove(&id.to_string());
+    }
+    reset
+}
+
+/// Reopen a work item's saved office graph and start a resume turn.
+///
+/// This is the action behind Retry, Unblock, and Request changes. It is
+/// deliberately graph-based: the ledger records the decision, but the graph is
+/// what knows the dependencies, so completed upstream work is kept and only
+/// the invalidated branch runs again.
+async fn rerun_work_item_graph(
+    state: &AppState,
+    app: &tauri::AppHandle,
+    item: &ravenbot_db::queries::WorkItem,
+    reason: &str,
+    feedback: Option<&str>,
+) -> Result<(), String> {
+    let graph_id_text = item
+        .metadata
+        .get("graph_id")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| {
+            "This task is not linked to a saved office plan. Start a new office turn to run it."
+                .to_string()
+        })?;
+    let graph_id = Uuid::parse_str(graph_id_text)
+        .map_err(|_| "The saved plan id is not valid.".to_string())?;
+    let record = ravenbot_db::queries::OfficeGraphQueries::get(state.db.pool(), graph_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The saved office plan for this task is no longer available.".to_string())?;
+    let chatroom_id = Uuid::parse_str(&record.chatroom_id)
+        .map_err(|_| "The saved office id is not valid.".to_string())?;
+
+    // Refuse before resetting anything if the office is already mid-turn.
+    let active = ravenbot_db::queries::AppSettingsQueries::get(
+        state.db.pool(),
+        &office_active_key(chatroom_id),
+    )
+    .await
+    .ok()
+    .flatten()
+    .is_some_and(|value| value == "1");
+    if active {
+        return Err(
+            "This office is already working on a turn. Wait for it to finish, then retry."
+                .to_string(),
+        );
+    }
+
+    let mut graph: TaskGraph = serde_json::from_str(&record.graph)
+        .map_err(|error| format!("The saved office plan is unreadable: {error}"))?;
+    let node_id =
+        Uuid::parse_str(&item.id).map_err(|_| "The work item id is not valid.".to_string())?;
+    if !graph.nodes.contains_key(&node_id) {
+        return Err("This task is not part of the saved office plan.".to_string());
+    }
+    let reset = reset_graph_for_rerun(&mut graph, node_id);
+
+    // Persist the reset before starting. A crash after this point resumes the
+    // rerun instead of leaving a running graph with no writer.
+    let thread_id = Uuid::parse_str(&record.thread_id)
+        .map_err(|_| "The saved office thread is not valid.".to_string())?;
+    let graph_json = serde_json::to_string(&graph)
+        .map_err(|error| format!("Could not serialize the resumed plan: {error}"))?;
+    ravenbot_db::queries::OfficeGraphQueries::save(
+        state.db.pool(),
+        graph_id,
+        chatroom_id,
+        thread_id,
+        record.cycle.max(0) as u32,
+        &record.request,
+        &record.visible,
+        &record.goal,
+        &record.labels,
+        &graph_json,
+        "running",
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    for id in &reset {
+        let _ = ravenbot_db::queries::WorkItemQueries::reset_for_rerun(
+            state.db.pool(),
+            &id.to_string(),
+            reason,
+        )
+        .await;
+    }
+
+    if let (Some(feedback), Some(thread_id)) = (
+        feedback.map(str::trim).filter(|text| !text.is_empty()),
+        item.thread_id
+            .as_deref()
+            .and_then(|value| Uuid::parse_str(value).ok()),
+    ) {
+        let note = Message::user(thread_id, format!("[Rework requested] {feedback}"));
+        let _ = ravenbot_db::queries::MessageQueries::insert(state.db.pool(), &note).await;
+    }
+
+    let labels: std::collections::HashMap<Uuid, String> =
+        serde_json::from_str(&record.labels).unwrap_or_default();
+    let request = if record.request.trim().is_empty() {
+        "Continue the office goal.".to_string()
+    } else {
+        record.request.clone()
+    };
+    let visible = if record.visible.trim().is_empty() {
+        request.clone()
+    } else {
+        record.visible.clone()
+    };
+    let autonomous = request.starts_with("[Autonomous cycle]");
+    let cycle = record.cycle.max(0) as u32;
+    let resume = OfficeGraphResume {
+        graph,
+        labels,
+        cycle,
+        resume_runs: std::collections::HashMap::new(),
+    };
+    if let Err(error) = start_office_turn(
+        &state.db,
+        &state.runtime,
+        HostEvents::Tauri(app.clone()),
+        chatroom_id,
+        request,
+        visible,
+        None,
+        autonomous,
+        None,
+        None,
+        None,
+        false,
+        Some(resume),
+    )
+    .await
+    {
+        let _ = ravenbot_db::queries::OfficeGraphQueries::mark_status(
+            state.db.pool(),
+            &graph_id.to_string(),
+            &record.status,
+        )
+        .await;
+        let _ = ravenbot_db::queries::WorkItemQueries::mark_failed(
+            state.db.pool(),
+            &item.id,
+            None,
+            &error,
+        )
+        .await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Retry a failed, skipped, blocked, or in-review task by resuming its plan.
+#[tauri::command]
+async fn retry_work_item(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
+    id: String,
+) -> Result<(), String> {
+    let item = ravenbot_db::queries::WorkItemQueries::get(state.db.pool(), id.trim())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The work item was not found.".to_string())?;
+    if !matches!(
+        item.status.as_str(),
+        "failed" | "skipped" | "blocked" | "review"
+    ) {
+        return Err(format!(
+            "A task in '{}' state cannot be retried. Only failed, skipped, blocked, or in-review tasks can run again.",
+            item.status
+        ));
+    }
+    rerun_work_item_graph(&state, &app, &item, "manual retry", None).await
+}
+
+/// Block a task that cannot continue until a person or another task resolves it.
+#[tauri::command]
+async fn block_work_item(
+    state: State<'_, AppState>,
+    id: String,
+    reason: String,
+) -> Result<(), String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        return Err("A block needs a reason.".to_string());
+    }
+    let item = ravenbot_db::queries::WorkItemQueries::get(state.db.pool(), id.trim())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The work item was not found.".to_string())?;
+    if item.status == "running" {
+        return Err(
+            "This task is still running. Wait for it to stop or pause the office, then block it."
+                .to_string(),
+        );
+    }
+    ravenbot_db::queries::WorkItemQueries::mark_blocked(state.db.pool(), &item.id, reason)
+        .await
+        .map_err(|error| error.to_string())?
+        .then_some(())
+        .ok_or_else(|| "This task is already done or blocked.".to_string())
+}
+
+/// Unblock a blocked task and resume its plan.
+#[tauri::command]
+async fn unblock_work_item(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+) -> Result<(), String> {
+    let item = ravenbot_db::queries::WorkItemQueries::get(state.db.pool(), id.trim())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The work item was not found.".to_string())?;
+    if item.status != "blocked" {
+        return Err("Only a blocked task can be unblocked.".to_string());
+    }
+    rerun_work_item_graph(&state, &app, &item, "unblocked", None).await
+}
+
+/// Ask for human review of completed work.
+#[tauri::command]
+async fn request_work_review(
+    state: State<'_, AppState>,
+    id: String,
+    reviewer: Option<String>,
+) -> Result<(), String> {
+    let item = ravenbot_db::queries::WorkItemQueries::get(state.db.pool(), id.trim())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The work item was not found.".to_string())?;
+    if item.status != "done" {
+        return Err("Only completed work can be sent to review.".to_string());
+    }
+    let reviewer = reviewer
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("user");
+    ravenbot_db::queries::WorkItemQueries::mark_review(state.db.pool(), &item.id, reviewer)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Send reviewed work back for changes. The comment is preserved and becomes
+/// part of the implementer's next run.
+#[tauri::command]
+async fn request_work_changes(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    id: String,
+    comment: String,
+) -> Result<(), String> {
+    let comment = comment.trim();
+    if comment.is_empty() {
+        return Err("Explain what needs to change.".to_string());
+    }
+    let item = ravenbot_db::queries::WorkItemQueries::get(state.db.pool(), id.trim())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The work item was not found.".to_string())?;
+    if !matches!(item.status.as_str(), "review" | "done") {
+        return Err("Only completed or in-review work can be sent back for changes.".to_string());
+    }
+    ravenbot_db::queries::WorkItemQueries::add_comment(
+        state.db.pool(),
+        &item.id,
+        "reviewer",
+        comment,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    rerun_work_item_graph(&state, &app, &item, "changes requested", Some(comment)).await
+}
+
+/// Approve reviewed work, optionally with a closing comment.
+#[tauri::command]
+async fn approve_work_review(
+    state: State<'_, AppState>,
+    id: String,
+    comment: Option<String>,
+) -> Result<(), String> {
+    let item = ravenbot_db::queries::WorkItemQueries::get(state.db.pool(), id.trim())
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The work item was not found.".to_string())?;
+    if item.status != "review" {
+        return Err("This task is not waiting for review.".to_string());
+    }
+    let approved = ravenbot_db::queries::WorkItemQueries::approve_review(
+        state.db.pool(),
+        &item.id,
+        "reviewer",
+        comment.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if !approved {
+        return Err("This task is not waiting for review.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_workflow_runs(
+    state: State<'_, AppState>,
+    workflow_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<ravenbot_db::queries::WorkflowRunRecord>, String> {
+    let workflow_id = Uuid::parse_str(workflow_id.trim())
+        .map_err(|_| "The workflow id is not valid.".to_string())?
+        .to_string();
+    ravenbot_db::queries::WorkflowQueries::list_runs(
+        state.db.pool(),
+        &workflow_id,
+        i64::from(limit.unwrap_or(20).clamp(1, 100)),
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn delete_workflow(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let id = Uuid::parse_str(id.trim()).map_err(|_| "The workflow id is not valid.".to_string())?;
+    ravenbot_db::queries::WorkflowQueries::delete(state.db.pool(), &id.to_string())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) async fn execute_graph_for_host(
+    db: &ravenbot_db::Database,
+    runtime: &Arc<ravenbot_runtime::Runtime>,
+    events: &HostEvents,
     orchestrator_bot_id: Uuid,
     goal: String,
     tasks: Vec<GraphTask>,
@@ -5403,13 +9476,11 @@ async fn execute_graph(
     // posted as a genuine, attributed office conversation. A standalone graph
     // (no chatroom) keeps the old headless behaviour.
     let roster = match chatroom_id {
-        Some(cid) => Some(load_office_roster(state.db.pool(), cid).await?),
+        Some(cid) => Some(load_office_roster(db.pool(), cid).await?),
         None => None,
     };
     let thread_id = match (&roster, chatroom_id) {
-        (Some(r), Some(cid)) => {
-            Some(ensure_chatroom_thread(state.db.pool(), cid, r.bots[0].1.id).await?)
-        }
+        (Some(r), Some(cid)) => Some(ensure_chatroom_thread(db.pool(), cid, r.bots[0].1.id).await?),
         _ => None,
     };
 
@@ -5432,7 +9503,7 @@ async fn execute_graph(
     // brief the team in the room.
     if let (Some(r), Some(tid)) = (&roster, thread_id) {
         let directive = Message::user(tid, format!("🎯 **Plan Mode** — goal: {}", goal.trim()));
-        let _ = ravenbot_db::queries::MessageQueries::insert(state.db.pool(), &directive).await;
+        let _ = ravenbot_db::queries::MessageQueries::insert(db.pool(), &directive).await;
         let items: Vec<(String, String, Vec<usize>)> = tasks
             .iter()
             .map(|t| {
@@ -5445,7 +9516,7 @@ async fn execute_graph(
             .collect();
         if !items.is_empty() {
             let _ = post_bot_message(
-                state.db.pool(),
+                db.pool(),
                 tid,
                 lead_id,
                 lead_name.clone(),
@@ -5460,11 +9531,164 @@ async fn execute_graph(
     let mut node_ids: Vec<Uuid> = Vec::new();
     for task in &tasks {
         let node_id = graph.add_node(task.bot_id, &task.instruction);
+        let node_type = ravenbot_runtime::graph::WorkflowNodeType::parse(
+            task.node_type.as_deref().unwrap_or("agent"),
+        )
+        .ok_or_else(|| {
+            "Workflow node type must be trigger, agent, llm, approval, or output.".to_string()
+        })?;
+        graph
+            .set_node_type(node_id, node_type)
+            .map_err(|error| error.to_string())?;
         node_ids.push(node_id);
         for &dep_idx in &task.depends_on {
             if dep_idx < node_ids.len() {
                 graph.add_edge(node_ids[dep_idx], node_id);
             }
+        }
+        if let Some(condition) = &task.condition {
+            if condition.source >= node_ids.len() - 1
+                || !task.depends_on.contains(&condition.source)
+            {
+                return Err(
+                    "A workflow condition must reference one of that task's earlier dependencies."
+                        .to_string(),
+                );
+            }
+            let operator = match condition.operator.trim().to_ascii_lowercase().as_str() {
+                "contains" => ConditionOperator::Contains,
+                "not_contains" => ConditionOperator::NotContains,
+                _ => {
+                    return Err(
+                        "A workflow condition must use contains or not_contains.".to_string()
+                    )
+                }
+            };
+            let value = condition.value.trim();
+            if value.is_empty() || value.chars().count() > 500 {
+                return Err(
+                    "A workflow condition needs a phrase of at most 500 characters.".to_string(),
+                );
+            }
+            graph
+                .set_condition(
+                    node_id,
+                    NodeCondition {
+                        source: node_ids[condition.source],
+                        operator,
+                        value: value.to_string(),
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        if let Some(data_from) = &task.data_from {
+            let mut seen = std::collections::HashSet::new();
+            for index in data_from {
+                if *index >= node_ids.len() - 1 || !task.depends_on.contains(index) {
+                    return Err(
+                        "Workflow inputs must reference one of that task's earlier dependencies."
+                            .to_string(),
+                    );
+                }
+                if !seen.insert(*index) {
+                    return Err("A workflow task has a duplicate input dependency.".to_string());
+                }
+            }
+            graph
+                .set_data_from(
+                    node_id,
+                    data_from.iter().map(|index| node_ids[*index]).collect(),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+        if task.retries > 3 {
+            return Err("Workflow retries are limited to 3 per task.".to_string());
+        }
+        graph
+            .set_retries(node_id, u32::from(task.retries))
+            .map_err(|error| error.to_string())?;
+        if let Some(raw_schema) = validate_output_schema(&task.output_schema)? {
+            let schema: serde_json::Value = serde_json::from_str(&raw_schema)
+                .map_err(|error| format!("The output schema is not valid JSON: {error}"))?;
+            graph
+                .set_output_schema(node_id, schema)
+                .map_err(|error| error.to_string())?;
+        }
+        let loop_until = validate_loop_until(task.loop_iterations, &task.loop_until)?;
+        let loop_stop = loop_until.map(|stop| {
+            let operator = match stop.operator.as_str() {
+                "contains" => ConditionOperator::Contains,
+                "not_contains" => ConditionOperator::NotContains,
+                _ => unreachable!("validated above"),
+            };
+            LoopStop {
+                operator,
+                value: stop.value,
+            }
+        });
+        graph
+            .set_loop(node_id, u32::from(task.loop_iterations), loop_stop)
+            .map_err(|error| error.to_string())?;
+    }
+
+    // Multi-task groups are built after node ids exist. Validation is repeated
+    // here because execute_graph is also called directly by the scheduler.
+    type GroupInput = (
+        Vec<Uuid>,
+        Option<Uuid>,
+        u8,
+        Option<ravenbot_db::queries::WorkflowLoopStop>,
+    );
+    let mut groups: std::collections::HashMap<String, GroupInput> =
+        std::collections::HashMap::new();
+    for (index, task) in tasks.iter().enumerate() {
+        let Some(name) = task
+            .loop_group
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        else {
+            continue;
+        };
+        let entry = groups.entry(name.to_string()).or_insert((
+            Vec::new(),
+            None,
+            task.loop_group_iterations,
+            None,
+        ));
+        entry.0.push(node_ids[index]);
+        if task.loop_group_terminal {
+            entry.1 = Some(node_ids[index]);
+            entry.2 = task.loop_group_iterations;
+            entry.3 = validate_loop_until(task.loop_group_iterations, &task.loop_group_stop)?;
+        }
+    }
+    for (name, (members, terminal, iterations, stop)) in groups {
+        let terminal =
+            terminal.ok_or_else(|| format!("Loop group '{name}' has no terminal task."))?;
+        let loop_stop = stop.map(|stop| {
+            let operator = match stop.operator.as_str() {
+                "contains" => ConditionOperator::Contains,
+                "not_contains" => ConditionOperator::NotContains,
+                _ => unreachable!("validated above"),
+            };
+            LoopStop {
+                operator,
+                value: stop.value,
+            }
+        });
+        graph
+            .add_loop_group(&name, members, terminal, u32::from(iterations), loop_stop)
+            .map_err(|error| error.to_string())?;
+    }
+
+    // A workflow that runs inside an office also gets durable work items.
+    if let Some(office_id) = chatroom_id {
+        if let Err(error) = ravenbot_runtime::work::WorkLedger::new(db.pool().clone(), office_id)
+            .seed(&graph, 0)
+            .await
+        {
+            tracing::warn!(%error, "Could not seed the workflow work ledger");
         }
     }
 
@@ -5474,8 +9698,8 @@ async fn execute_graph(
     // is closed because only the frontend used to write it.
     let (board_tx, mut board_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     if let Some(tid) = thread_id {
-        let board_db = state.db.clone();
-        tauri::async_runtime::spawn(async move {
+        let board_db = db.clone();
+        tokio::spawn(async move {
             while let Some(event) = board_rx.recv().await {
                 apply_office_board_event(&board_db, tid, &event).await;
             }
@@ -5507,11 +9731,11 @@ async fn execute_graph(
             "nodes": nodes,
         });
         let _ = board_tx.send(payload.clone());
-        let _ = app.emit("agent-stream", payload);
+        events.emit("agent-stream", payload);
     }
     // Project folders for every node in this office (same rule as send_to_chatroom).
     let office_dirs: Vec<String> = match chatroom_id {
-        Some(cid) => match ravenbot_db::queries::ChatRoomQueries::get(state.db.pool(), cid).await {
+        Some(cid) => match ravenbot_db::queries::ChatRoomQueries::get(db.pool(), cid).await {
             Ok(Some(r)) if !r.project_folders.is_empty() => r.project_folders.clone(),
             Ok(Some(r)) => vec![ravenbot_runtime::default_project_dir(&r.name)
                 .to_string_lossy()
@@ -5520,25 +9744,29 @@ async fn execute_graph(
         },
         None => Vec::new(),
     };
-    let node_event_app = app.clone();
+    let node_events = events.clone();
     let node_event_board = board_tx.clone();
-    let emitter_app = app.clone();
-    let executor =
-        ravenbot_runtime::executor::GraphExecutor::new(state.runtime.clone(), state.db.clone())
-            .with_working_dirs(office_dirs)
-            .with_thread_emitter(Arc::new(move |_thread_id| {
-                Some(make_stream_emitter(emitter_app.clone()))
-            }))
-            .with_node_events(Arc::new(move |v| {
-                let _ = node_event_board.send(v.clone());
-                let _ = node_event_app.emit("agent-stream", v);
-            }));
+    let stream_events = events.clone();
+    let executor = ravenbot_runtime::executor::GraphExecutor::new(runtime.clone(), db.clone());
+    let executor = match chatroom_id {
+        Some(id) => executor.with_office(id),
+        None => executor,
+    };
+    let executor = executor
+        .with_working_dirs(office_dirs)
+        .with_thread_emitter(Arc::new(move |_thread_id| stream_events.stream_emitter()))
+        .with_node_events(Arc::new(move |v| {
+            let _ = node_event_board.send(v.clone());
+            node_events.emit("agent-stream", v);
+        }));
 
     let exec_result = executor.execute(graph.clone()).await;
 
     let blackboard = exec_result.map_err(|e| e.to_string())?;
     let graph_snapshot = graph.lock().await.clone();
     let checklist = graph_snapshot.to_checklist();
+    let failed_tasks = graph_failures(&graph_snapshot);
+    let status = checklist_status(&failed_tasks).to_string();
 
     // Post each node's real output + the lead's synthesis into the room.
     let summary = if let (Some(r), Some(tid)) = (&roster, thread_id) {
@@ -5552,42 +9780,25 @@ async fn execute_graph(
             // Pure conversation: the bubble carries only the agent's reply;
             // author identity lives in the row gutter, task text on the board.
             let body = output.trim().to_string();
-            let _ = post_bot_message(state.db.pool(), tid, node.bot_id, name.clone(), body).await;
+            let _ = post_bot_message(db.pool(), tid, node.bot_id, name.clone(), body).await;
             outputs.push((name, output.clone()));
         }
 
-        // Surface failed and skipped nodes so a provider error or a blocked
-        // dependency is visible and actionable.
-        let failures: Vec<String> = checklist
-            .iter()
-            .filter(|c| {
-                matches!(
-                    c.status,
-                    ravenbot_core::ChecklistStatus::Failed
-                        | ravenbot_core::ChecklistStatus::Skipped
-                )
-            })
-            .map(|c| {
-                let who = c
-                    .bot_id
-                    .map(|id| roster_name(r, id))
-                    .unwrap_or_else(|| "Teammate".to_string());
-                let detail = match c.status {
-                    ravenbot_core::ChecklistStatus::Skipped => {
-                        "skipped because a dependency did not complete".to_string()
-                    }
-                    _ => c
-                        .result
-                        .clone()
-                        .unwrap_or_else(|| "unknown error".to_string()),
-                };
+        // Surface failed and dependency-blocked nodes so a provider error is
+        // visible and actionable. A branch skipped by its own condition is an
+        // intentional plan outcome and must not be reported as a failure.
+        let failures: Vec<String> = graph_snapshot
+            .incomplete_nodes()
+            .into_iter()
+            .map(|(_, bot_id, _, detail)| {
+                let who = roster_name(r, bot_id);
                 format!("• **{}** — {}", who, detail)
             })
             .collect();
         if !failures.is_empty() {
             let hint = error_hint(failures.first().map(|s| s.as_str()).unwrap_or(""));
             let _ = post_bot_message(
-                state.db.pool(),
+                db.pool(),
                 tid,
                 lead_id,
                 lead_name.clone(),
@@ -5628,13 +9839,12 @@ async fn execute_graph(
                 .collect::<Vec<_>>()
                 .join("\n")
         } else {
-            state
-                .runtime
+            runtime
                 .synthesize_office(lead_id, &goal, &synthesis_results)
                 .await
         };
         let _ = post_bot_message(
-            state.db.pool(),
+            db.pool(),
             tid,
             lead_id,
             lead_name.clone(),
@@ -5649,7 +9859,7 @@ async fn execute_graph(
     // Close the run only after the room holds the full persisted conversation
     // (matches send_to_chatroom; the UI holds live lanes until this arrives).
     if let Some(tid) = thread_id {
-        let _ = app.emit(
+        events.emit(
             "agent-stream",
             serde_json::json!({ "kind": "done", "thread_id": tid.to_string() }),
         );
@@ -5661,7 +9871,30 @@ async fn execute_graph(
         checklist,
         blackboard_data: blackboard.data,
         summary,
+        status,
+        failures: failed_tasks,
     })
+}
+
+#[tauri::command]
+async fn execute_graph(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    orchestrator_bot_id: Uuid,
+    goal: String,
+    tasks: Vec<GraphTask>,
+    chatroom_id: Option<Uuid>,
+) -> Result<GraphResult, String> {
+    execute_graph_for_host(
+        &state.db,
+        &state.runtime,
+        &HostEvents::Tauri(app),
+        orchestrator_bot_id,
+        goal,
+        tasks,
+        chatroom_id,
+    )
+    .await
 }
 
 /// Ask the room's lead to draft a task plan for a goal, so Plan mode can be
@@ -5938,10 +10171,7 @@ async fn sync_plugins(
                 plugin_id,
                 error: "The spec contains no operations.".to_string(),
             }),
-            Err(error) => failed.push(ravenbot_plugins::store::SyncFailure {
-                plugin_id,
-                error,
-            }),
+            Err(error) => failed.push(ravenbot_plugins::store::SyncFailure { plugin_id, error }),
         }
     }
     Ok(ravenbot_plugins::store::SyncReport {
@@ -6265,9 +10495,13 @@ async fn get_mcp_server_env(
     state: State<'_, AppState>,
     server_id: String,
 ) -> Result<std::collections::HashMap<String, String>, String> {
+    // Write-only credentials: return known key names with empty values. The UI
+    // renders blank inputs; `save_server_env` keeps an existing value when the
+    // field is left blank. Secret values never cross the IPC boundary.
     let reg = ravenbot_mcp::McpRegistry::new(state.db.pool().clone());
     reg.ensure_tables().await?;
-    reg.get_server_env(&server_id).await
+    let keys = reg.get_server_env_keys(&server_id).await?;
+    Ok(keys.into_iter().map(|key| (key, String::new())).collect())
 }
 #[tauri::command]
 async fn save_mcp_server_env(
@@ -6341,6 +10575,11 @@ async fn get_bot_budget(
                 ravenbot_core::BudgetPeriod::Monthly => "monthly",
                 ravenbot_core::BudgetPeriod::Total => "total",
             },
+            "behavior": match b.behavior {
+                ravenbot_core::BudgetBehavior::HardStop => "hard_stop",
+                ravenbot_core::BudgetBehavior::Warn => "warn",
+                ravenbot_core::BudgetBehavior::AskUser => "ask_user",
+            },
         })),
         "tokens_used": tokens_used,
         "cost_used": cost_used,
@@ -6357,6 +10596,7 @@ async fn set_bot_budget(
     kind: String,
     max: f64,
     period: String,
+    behavior: Option<String>,
 ) -> Result<(), String> {
     let limit = match kind.as_str() {
         "tokens" => ravenbot_core::BudgetLimit::Tokens { max: max as u64 },
@@ -6370,10 +10610,66 @@ async fn set_bot_budget(
         "monthly" => ravenbot_core::BudgetPeriod::Monthly,
         _ => ravenbot_core::BudgetPeriod::Total,
     };
+    let behavior = match behavior
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or("hard_stop")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "warn" => ravenbot_core::BudgetBehavior::Warn,
+        "ask_user" => ravenbot_core::BudgetBehavior::AskUser,
+        _ => ravenbot_core::BudgetBehavior::HardStop,
+    };
+    let mut budget = ravenbot_core::Budget::new(bot_id, limit, budget_period);
+    budget.behavior = behavior;
     let budgets = ravenbot_governance::BudgetManager::new(state.db.pool().clone());
-    budgets
-        .set_budget(&ravenbot_core::Budget::new(bot_id, limit, budget_period))
+    budgets.set_budget(&budget).await
+}
+
+#[tauri::command]
+async fn get_tool_prices(
+    state: State<'_, AppState>,
+) -> Result<std::collections::HashMap<String, f64>, String> {
+    let raw = ravenbot_db::queries::AppSettingsQueries::get(state.db.pool(), "tool_prices")
         .await
+        .map_err(|error| error.to_string())?;
+    Ok(raw
+        .as_deref()
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_default())
+}
+
+#[tauri::command]
+async fn set_tool_prices(
+    state: State<'_, AppState>,
+    prices: std::collections::HashMap<String, f64>,
+) -> Result<(), String> {
+    if prices.len() > 100 {
+        return Err("At most 100 tool prices can be configured.".to_string());
+    }
+    let mut clean = std::collections::HashMap::new();
+    for (tool, price) in prices {
+        let tool = tool.trim().to_string();
+        if tool.is_empty()
+            || tool.chars().count() > 64
+            || !tool
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        {
+            return Err(format!("Invalid tool id: {tool}"));
+        }
+        if !price.is_finite() || !(0.0..=1000.0).contains(&price) {
+            return Err(format!("Price for {tool} must be between 0 and 1000."));
+        }
+        if price > 0.0 {
+            clean.insert(tool, price);
+        }
+    }
+    let encoded = serde_json::to_string(&clean).map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), "tool_prices", &encoded)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -6563,16 +10859,8 @@ async fn add_member_to_chatroom(
     ravenbot_db::queries::ChatRoomQueries::add_member(state.db.pool(), &member)
         .await
         .map_err(|e| e.to_string())?;
-    // Any agent added to an office is now part of autonomous office work.
-    if let Ok(Some(mut bot)) = ravenbot_db::queries::BotQueries::get(state.db.pool(), bot_id).await
-    {
-        if !matches!(bot.approval_mode, ravenbot_core::ApprovalMode::Full) {
-            bot.approval_mode = ravenbot_core::ApprovalMode::Full;
-            ravenbot_db::queries::BotQueries::update(state.db.pool(), &bot)
-                .await
-                .map_err(|e| e.to_string())?;
-        }
-    }
+    // Office membership no longer rewrites the agent's approval mode. Office
+    // runs get Review at the run level regardless of the interactive setting.
     refresh_office_workspace(&state, chatroom_id).await;
     Ok(())
 }
@@ -6664,7 +10952,8 @@ async fn create_bot_for_office(
     bot.config.model_id = default_model;
     bot.rank = Some(rank.clone());
     bot.specialty = Some(specialty.clone());
-    // This bot is being created directly into an office.
+    // Created directly into an office: Review by default. Office runs still
+    // enforce Review at the run level even if the user later selects Full.
     bot.approval_mode = ravenbot_core::ApprovalMode::Full;
     ravenbot_db::queries::BotQueries::insert(state.db.pool(), &bot)
         .await
@@ -6696,6 +10985,7 @@ async fn default_office_org(office_template: String) -> Result<Vec<office_org::R
 struct ProvisionOutcome {
     created: Vec<Bot>,
     reused: Vec<Bot>,
+    removed: Vec<Uuid>,
 }
 
 /// Find an existing fleet agent that should fill a role instead of creating a
@@ -6738,6 +11028,92 @@ fn find_reusable_agent(
         .cloned()
 }
 
+/// Decide which fleet agents fill each role. The `used` set starts empty so an
+/// existing office member can fill its own role again on re-provisioning; it
+/// only stops one agent from being assigned to two roles in the same run.
+fn plan_role_assignments(bots: &[Bot], roles: &[office_org::RoleSpec]) -> Vec<Option<Bot>> {
+    let mut used = std::collections::HashSet::new();
+    roles
+        .iter()
+        .map(|role| {
+            let found = find_reusable_agent(bots, &used, role);
+            if let Some(bot) = &found {
+                used.insert(bot.id);
+            }
+            found
+        })
+        .collect()
+}
+
+/// Existing members whose roles are not in the new blueprint. Removing them is
+/// always an explicit user decision; this only computes the diff.
+fn stale_office_members(members: &[ChatRoomMember], assignments: &[Option<Bot>]) -> Vec<Uuid> {
+    let kept: std::collections::HashSet<Uuid> =
+        assignments.iter().flatten().map(|bot| bot.id).collect();
+    members
+        .iter()
+        .filter(|member| !kept.contains(&member.bot_id))
+        .map(|member| member.bot_id)
+        .collect()
+}
+
+#[derive(serde::Serialize)]
+struct ProvisionPreview {
+    create: Vec<String>,
+    reuse: Vec<String>,
+    remove: Vec<ProvisionMember>,
+}
+
+#[derive(serde::Serialize)]
+struct ProvisionMember {
+    bot_id: Uuid,
+    name: String,
+}
+
+/// Preview how a role blueprint would change the office without writing
+/// anything: new roles, reusable agents, and current members the blueprint
+/// would leave behind.
+#[tauri::command]
+async fn preview_office_provisioning(
+    state: State<'_, AppState>,
+    chatroom_id: Uuid,
+    roles: Vec<office_org::RoleSpec>,
+) -> Result<ProvisionPreview, String> {
+    let bots = ravenbot_db::queries::BotQueries::list(state.db.pool())
+        .await
+        .map_err(|e| e.to_string())?;
+    let members = ravenbot_db::queries::ChatRoomQueries::list_members(state.db.pool(), chatroom_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    let assignments = plan_role_assignments(&bots, &roles);
+    let remove_ids = stale_office_members(&members, &assignments);
+    let name_for = |id: Uuid| {
+        bots.iter()
+            .find(|bot| bot.id == id)
+            .map(|bot| bot.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+    let mut create = Vec::new();
+    let mut reuse = Vec::new();
+    for (role, assignment) in roles.iter().zip(assignments.iter()) {
+        match assignment {
+            Some(bot) => reuse.push(bot.name.clone()),
+            None => create.push(role.name.clone()),
+        }
+    }
+    Ok(ProvisionPreview {
+        create,
+        reuse,
+        remove: remove_ids
+            .into_iter()
+            .map(|id| ProvisionMember {
+                bot_id: id,
+                name: name_for(id),
+            })
+            .collect(),
+    })
+}
+
 /// Staff an office from a role blueprint. Existing fleet agents that match a
 /// role are reused (added to the office) instead of being duplicated; only
 /// genuinely new roles create new agents. Each bot keeps its own model, skills,
@@ -6752,6 +11128,9 @@ async fn provision_office_org(
     // instead of re-resolving to a different configured provider.
     provider: Option<String>,
     model: Option<String>,
+    // Removing current members is destructive (office membership only, not the
+    // agent) and must be requested explicitly after the preview.
+    remove_missing: Option<bool>,
 ) -> Result<ProvisionOutcome, String> {
     if roles.is_empty() {
         return Err("No roles to provision".to_string());
@@ -6767,8 +11146,8 @@ async fn provision_office_org(
         ravenbot_db::queries::ChatRoomQueries::list_members(state.db.pool(), chatroom_id)
             .await
             .map_err(|e| e.to_string())?;
-    let mut used: std::collections::HashSet<Uuid> =
-        existing_members.iter().map(|m| m.bot_id).collect();
+    let assignments = plan_role_assignments(&all_bots, &roles);
+    let mut kept_ids = std::collections::HashSet::new();
 
     // ── The office half of every brief ──
     //
@@ -6822,13 +11201,13 @@ async fn provision_office_org(
     let mut created = Vec::new();
     let mut reused = Vec::new();
 
-    for raw_role in roles {
+    for (index, raw_role) in roles.into_iter().enumerate() {
         // Common skills and the office context are attached before the brief is
         // written, so the stored prompt matches what the agent can actually do.
         let role = office_org::with_common_skills(raw_role);
         let brief = office_org::compose_system_prompt(&office, &role);
 
-        let bot = if let Some(mut existing) = find_reusable_agent(&all_bots, &used, &role) {
+        let bot = if let Some(mut existing) = assignments.get(index).cloned().flatten() {
             // Fill only what's missing — never clobber the owner's settings.
             let mut changed = false;
             // A provider with no key at all is not a setting worth preserving:
@@ -6883,13 +11262,8 @@ async fn provision_office_org(
                 existing.is_orchestrator = true;
                 changed = true;
             }
-            // Office work is autonomous. The hard denylist in
-            // `ravenbot_skills::safety` blocks machine-destructive commands;
-            // approvals are not the boundary here.
-            if !matches!(existing.approval_mode, ravenbot_core::ApprovalMode::Full) {
-                existing.approval_mode = ravenbot_core::ApprovalMode::Full;
-                changed = true;
-            }
+            // Keep the owner's interactive approval mode. Office runs use the
+            // run-level Review policy, so a Full setting cannot bypass gates.
             if changed {
                 ravenbot_db::queries::BotQueries::update(state.db.pool(), &existing)
                     .await
@@ -7014,7 +11388,7 @@ async fn provision_office_org(
             bot
         };
 
-        used.insert(bot.id);
+        kept_ids.insert(bot.id);
         let member = ChatRoomMember {
             chatroom_id,
             bot_id: bot.id,
@@ -7027,12 +11401,32 @@ async fn provision_office_org(
             .map_err(|e| e.to_string())?;
     }
 
+    let mut removed = Vec::new();
+    if remove_missing.unwrap_or(false) {
+        for member in existing_members {
+            if !kept_ids.contains(&member.bot_id) {
+                ravenbot_db::queries::ChatRoomQueries::remove_member(
+                    state.db.pool(),
+                    chatroom_id,
+                    member.bot_id,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+                removed.push(member.bot_id);
+            }
+        }
+    }
+
     // Rewrite OFFICE.md now that the roster exists. The charter was seeded at
     // room creation with an empty team; an agent that reads it first would
     // otherwise be told it has no colleagues and no handoff targets.
     refresh_office_workspace(&state, chatroom_id).await;
 
-    Ok(ProvisionOutcome { created, reused })
+    Ok(ProvisionOutcome {
+        created,
+        reused,
+        removed,
+    })
 }
 
 /// Build the capability list the office designer is allowed to assign.
@@ -7547,6 +11941,121 @@ async fn get_chatroom_thread(
             .map_err(|e| e.to_string())?;
     Ok(row.and_then(|r| Uuid::parse_str(&r.0).ok()))
 }
+/// A memory row as the management UI sees it. Embeddings never cross IPC:
+/// they are an internal retrieval detail and can be tens of kilobytes per row.
+#[derive(serde::Serialize)]
+struct MemoryView {
+    id: String,
+    content: String,
+    category: Option<String>,
+    importance: f32,
+    access_count: u32,
+    last_accessed: String,
+    created_at: String,
+    source: String,
+    source_thread_id: Option<String>,
+    source_run_id: Option<String>,
+    updated_at: String,
+}
+
+fn memory_view_from_fact(fact: MemoryFact) -> MemoryView {
+    MemoryView {
+        id: fact.id.to_string(),
+        content: fact.content,
+        category: None,
+        importance: fact.importance,
+        access_count: fact.access_count,
+        last_accessed: fact.last_accessed.to_rfc3339(),
+        created_at: fact.created_at.to_rfc3339(),
+        source: fact.source,
+        source_thread_id: fact.source_thread_id.map(|id| id.to_string()),
+        source_run_id: fact.source_run_id.map(|id| id.to_string()),
+        updated_at: fact.updated_at.to_rfc3339(),
+    }
+}
+
+fn memory_view_from_office(memory: OfficeMemory) -> MemoryView {
+    MemoryView {
+        id: memory.id.to_string(),
+        content: memory.content,
+        category: Some(memory.category),
+        importance: memory.importance,
+        access_count: memory.access_count,
+        last_accessed: memory.last_accessed.to_rfc3339(),
+        created_at: memory.created_at.to_rfc3339(),
+        source: memory.source,
+        source_thread_id: memory.source_thread_id.map(|id| id.to_string()),
+        source_run_id: memory.source_run_id.map(|id| id.to_string()),
+        updated_at: memory.updated_at.to_rfc3339(),
+    }
+}
+
+fn validate_memory_content(content: &str) -> Result<String, String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("Memory content cannot be empty.".to_string());
+    }
+    if content.chars().count() > 2000 {
+        return Err("Memory content is limited to 2,000 characters.".to_string());
+    }
+    Ok(content.to_string())
+}
+
+fn validate_memory_category(category: &str) -> Result<String, String> {
+    let category = category.trim();
+    if category.is_empty() {
+        return Ok("general".to_string());
+    }
+    if category.chars().count() > 40 {
+        return Err("Memory categories are limited to 40 characters.".to_string());
+    }
+    Ok(category.to_string())
+}
+
+fn validate_memory_importance(importance: f32) -> Result<f32, String> {
+    if !importance.is_finite() || !(0.0..=1.0).contains(&importance) {
+        return Err("Memory importance must be between 0 and 1.".to_string());
+    }
+    Ok(importance)
+}
+
+async fn require_bot(pool: &sqlx::SqlitePool, bot_id: Uuid) -> Result<(), String> {
+    match ravenbot_db::queries::BotQueries::get(pool, bot_id).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err("That agent no longer exists.".to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+async fn require_office(pool: &sqlx::SqlitePool, office_id: Uuid) -> Result<(), String> {
+    match ravenbot_db::queries::ChatRoomQueries::get(pool, office_id).await {
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => Err("That office no longer exists.".to_string()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Record a memory change without putting the memory's text into the audit log.
+async fn audit_memory_change(
+    runtime: &ravenbot_runtime::Runtime,
+    bot_id: Uuid,
+    scope: &str,
+    action: &str,
+    memory_id: Uuid,
+    category: &str,
+    office_id: Option<Uuid>,
+) {
+    let event = AuditEventType::MemoryChanged {
+        scope: scope.to_string(),
+        action: action.to_string(),
+        memory_id: memory_id.to_string(),
+        category: category.to_string(),
+        office_id: office_id.map(|id| id.to_string()),
+    };
+    let entry = AuditEntry::new(bot_id, event);
+    let _ = runtime.audit_logger().log(&entry).await;
+}
+
 #[tauri::command]
 async fn add_office_memory(
     state: State<'_, AppState>,
@@ -7554,32 +12063,1251 @@ async fn add_office_memory(
     content: String,
     category: String,
     created_by: Option<Uuid>,
-) -> Result<OfficeMemory, String> {
-    state
+) -> Result<MemoryView, String> {
+    require_office(state.db.pool(), chatroom_id).await?;
+    let content = validate_memory_content(&content)?;
+    let category = validate_memory_category(&category)?;
+    let memory = state
         .runtime
         .office_memory()
-        .add(chatroom_id, &content, &category, created_by, 0.7)
-        .await
+        .add_with_provenance(
+            chatroom_id,
+            &content,
+            &category,
+            created_by,
+            0.7,
+            "user",
+            None,
+            None,
+        )
+        .await?;
+    audit_memory_change(
+        &state.runtime,
+        Uuid::nil(),
+        "office",
+        "created",
+        memory.id,
+        &memory.category,
+        Some(chatroom_id),
+    )
+    .await;
+    Ok(memory_view_from_office(memory))
 }
+
+#[tauri::command]
+async fn update_office_memory(
+    state: State<'_, AppState>,
+    chatroom_id: Uuid,
+    memory_id: Uuid,
+    content: String,
+    category: String,
+    importance: f32,
+) -> Result<MemoryView, String> {
+    require_office(state.db.pool(), chatroom_id).await?;
+    let content = validate_memory_content(&content)?;
+    let category = validate_memory_category(&category)?;
+    let importance = validate_memory_importance(importance)?;
+    let memory = state
+        .runtime
+        .office_memory()
+        .update(chatroom_id, memory_id, &content, &category, importance)
+        .await?
+        .ok_or_else(|| "That office memory no longer exists.".to_string())?;
+    audit_memory_change(
+        &state.runtime,
+        Uuid::nil(),
+        "office",
+        "updated",
+        memory.id,
+        &memory.category,
+        Some(chatroom_id),
+    )
+    .await;
+    Ok(memory_view_from_office(memory))
+}
+
+async fn delete_office_memory_inner(
+    state: &AppState,
+    chatroom_id: Uuid,
+    memory_id: Uuid,
+) -> Result<bool, String> {
+    let Some(memory) = state
+        .runtime
+        .office_memory()
+        .get(chatroom_id, memory_id)
+        .await?
+    else {
+        return Ok(false);
+    };
+    if !state
+        .runtime
+        .office_memory()
+        .delete(chatroom_id, memory_id)
+        .await?
+    {
+        return Ok(false);
+    }
+    audit_memory_change(
+        &state.runtime,
+        Uuid::nil(),
+        "office",
+        "deleted",
+        memory.id,
+        &memory.category,
+        Some(chatroom_id),
+    )
+    .await;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn delete_office_memory(
+    state: State<'_, AppState>,
+    chatroom_id: Uuid,
+    memory_id: Uuid,
+) -> Result<bool, String> {
+    require_office(state.db.pool(), chatroom_id).await?;
+    delete_office_memory_inner(&state, chatroom_id, memory_id).await
+}
+
 #[tauri::command]
 async fn list_office_memories(
     state: State<'_, AppState>,
     chatroom_id: Uuid,
-) -> Result<Vec<OfficeMemory>, String> {
-    state.runtime.office_memory().list(chatroom_id).await
+) -> Result<Vec<MemoryView>, String> {
+    require_office(state.db.pool(), chatroom_id).await?;
+    Ok(state
+        .runtime
+        .office_memory()
+        .list(chatroom_id)
+        .await?
+        .into_iter()
+        .map(memory_view_from_office)
+        .collect())
 }
+
 #[tauri::command]
 async fn search_office_memories(
     state: State<'_, AppState>,
     chatroom_id: Uuid,
     query: String,
-) -> Result<Vec<(OfficeMemory, f32)>, String> {
-    state
+) -> Result<Vec<(MemoryView, f32)>, String> {
+    require_office(state.db.pool(), chatroom_id).await?;
+    Ok(state
         .runtime
         .office_memory()
         .retrieve(chatroom_id, &query, 10, 0.3)
-        .await
+        .await?
+        .into_iter()
+        .map(|(memory, score)| (memory_view_from_office(memory), score))
+        .collect())
 }
+
+#[tauri::command]
+async fn list_bot_memories(
+    state: State<'_, AppState>,
+    bot_id: Uuid,
+) -> Result<Vec<MemoryView>, String> {
+    require_bot(state.db.pool(), bot_id).await?;
+    Ok(state
+        .runtime
+        .memory_store()
+        .list_limited(bot_id, 200)
+        .await?
+        .into_iter()
+        .map(memory_view_from_fact)
+        .collect())
+}
+
+#[tauri::command]
+async fn add_bot_memory(
+    state: State<'_, AppState>,
+    bot_id: Uuid,
+    content: String,
+    importance: f32,
+) -> Result<MemoryView, String> {
+    require_bot(state.db.pool(), bot_id).await?;
+    let content = validate_memory_content(&content)?;
+    let importance = validate_memory_importance(importance)?;
+    let fact = state
+        .runtime
+        .memory_store()
+        .add_with_provenance(bot_id, &content, importance, "user", None, None)
+        .await?;
+    audit_memory_change(
+        &state.runtime,
+        bot_id,
+        "agent",
+        "created",
+        fact.id,
+        "",
+        None,
+    )
+    .await;
+    Ok(memory_view_from_fact(fact))
+}
+
+#[tauri::command]
+async fn update_bot_memory(
+    state: State<'_, AppState>,
+    bot_id: Uuid,
+    memory_id: Uuid,
+    content: String,
+    importance: f32,
+) -> Result<MemoryView, String> {
+    require_bot(state.db.pool(), bot_id).await?;
+    let content = validate_memory_content(&content)?;
+    let importance = validate_memory_importance(importance)?;
+    let fact = state
+        .runtime
+        .memory_store()
+        .update(bot_id, memory_id, &content, importance)
+        .await?
+        .ok_or_else(|| "That agent memory no longer exists.".to_string())?;
+    audit_memory_change(
+        &state.runtime,
+        bot_id,
+        "agent",
+        "updated",
+        fact.id,
+        "",
+        None,
+    )
+    .await;
+    Ok(memory_view_from_fact(fact))
+}
+
+async fn delete_bot_memory_inner(
+    state: &AppState,
+    bot_id: Uuid,
+    memory_id: Uuid,
+) -> Result<bool, String> {
+    if !state
+        .runtime
+        .memory_store()
+        .delete_for_bot(bot_id, memory_id)
+        .await?
+    {
+        return Ok(false);
+    }
+    audit_memory_change(
+        &state.runtime,
+        bot_id,
+        "agent",
+        "deleted",
+        memory_id,
+        "",
+        None,
+    )
+    .await;
+    Ok(true)
+}
+
+#[tauri::command]
+async fn delete_bot_memory(
+    state: State<'_, AppState>,
+    bot_id: Uuid,
+    memory_id: Uuid,
+) -> Result<bool, String> {
+    require_bot(state.db.pool(), bot_id).await?;
+    delete_bot_memory_inner(&state, bot_id, memory_id).await
+}
+
+#[tauri::command]
+async fn find_memory_duplicates(
+    state: State<'_, AppState>,
+    scope: String,
+    target_id: Uuid,
+    threshold: Option<f32>,
+) -> Result<Vec<ravenbot_memory::DuplicateGroup>, String> {
+    let threshold = ravenbot_memory::normalize_duplicate_threshold(
+        threshold.unwrap_or(ravenbot_memory::dedupe::DEFAULT_DUPLICATE_THRESHOLD),
+    );
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "agent" => {
+            require_bot(state.db.pool(), target_id).await?;
+            let facts = state
+                .runtime
+                .memory_store()
+                .list_limited(target_id, 2000)
+                .await?;
+            Ok(ravenbot_memory::find_duplicate_groups(&facts, threshold))
+        }
+        "office" => {
+            require_office(state.db.pool(), target_id).await?;
+            let memories = state.runtime.office_memory().list(target_id).await?;
+            if memories.len() > 2000 {
+                return Err(
+                    "This office has too many memories to scan at once (limit 2,000).".to_string(),
+                );
+            }
+            Ok(ravenbot_memory::find_duplicate_groups(&memories, threshold))
+        }
+        _ => Err("Unknown memory scope.".to_string()),
+    }
+}
+
+#[tauri::command]
+async fn remove_memory_duplicates(
+    state: State<'_, AppState>,
+    scope: String,
+    target_id: Uuid,
+    keep_id: Uuid,
+    duplicate_ids: Vec<Uuid>,
+    threshold: Option<f32>,
+) -> Result<u64, String> {
+    if duplicate_ids.is_empty() {
+        return Ok(0);
+    }
+    if duplicate_ids.len() > 200 {
+        return Err("Remove at most 200 duplicates in one action.".to_string());
+    }
+    if duplicate_ids.contains(&keep_id) {
+        return Err("The kept memory cannot also be removed.".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    if duplicate_ids.iter().any(|id| !seen.insert(*id)) {
+        return Err("The duplicate list contains the same memory twice.".to_string());
+    }
+    let threshold = ravenbot_memory::normalize_duplicate_threshold(
+        threshold.unwrap_or(ravenbot_memory::dedupe::DEFAULT_DUPLICATE_THRESHOLD),
+    );
+
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "agent" => {
+            require_bot(state.db.pool(), target_id).await?;
+            let facts = state
+                .runtime
+                .memory_store()
+                .list_limited(target_id, 2000)
+                .await?;
+            let keep = facts
+                .iter()
+                .find(|fact| fact.id == keep_id)
+                .ok_or_else(|| "The kept memory no longer exists.".to_string())?;
+            let keep_embedding = keep.embedding.as_deref().ok_or_else(|| {
+                "Reindex memory embeddings before removing duplicates.".to_string()
+            })?;
+            for id in &duplicate_ids {
+                let duplicate = facts
+                    .iter()
+                    .find(|fact| fact.id == *id)
+                    .ok_or_else(|| "One of those memories no longer exists.".to_string())?;
+                let embedding = duplicate.embedding.as_deref().ok_or_else(|| {
+                    "Reindex memory embeddings before removing duplicates.".to_string()
+                })?;
+                if embedding.len() != keep_embedding.len()
+                    || ravenbot_memory::embedding::cosine_similarity(keep_embedding, embedding)
+                        < threshold
+                {
+                    return Err(
+                        "One of those memories is no longer a duplicate of the kept entry."
+                            .to_string(),
+                    );
+                }
+            }
+            let mut removed = 0;
+            for id in duplicate_ids {
+                if delete_bot_memory_inner(&state, target_id, id).await? {
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        }
+        "office" => {
+            require_office(state.db.pool(), target_id).await?;
+            let memories = state.runtime.office_memory().list(target_id).await?;
+            let keep = memories
+                .iter()
+                .find(|memory| memory.id == keep_id)
+                .ok_or_else(|| "The kept memory no longer exists.".to_string())?;
+            let keep_embedding = keep.embedding.as_deref().ok_or_else(|| {
+                "Reindex memory embeddings before removing duplicates.".to_string()
+            })?;
+            for id in &duplicate_ids {
+                let duplicate = memories
+                    .iter()
+                    .find(|memory| memory.id == *id)
+                    .ok_or_else(|| "One of those memories no longer exists.".to_string())?;
+                let embedding = duplicate.embedding.as_deref().ok_or_else(|| {
+                    "Reindex memory embeddings before removing duplicates.".to_string()
+                })?;
+                if embedding.len() != keep_embedding.len()
+                    || ravenbot_memory::embedding::cosine_similarity(keep_embedding, embedding)
+                        < threshold
+                {
+                    return Err(
+                        "One of those memories is no longer a duplicate of the kept entry."
+                            .to_string(),
+                    );
+                }
+            }
+            let mut removed = 0;
+            for id in duplicate_ids {
+                if delete_office_memory_inner(&state, target_id, id).await? {
+                    removed += 1;
+                }
+            }
+            Ok(removed)
+        }
+        _ => Err("Unknown memory scope.".to_string()),
+    }
+}
+const MEMORY_SUMMARY_SYSTEM: &str =
+    "You consolidate saved memory entries. Return only the JSON object requested by the user.";
+const MEMORY_SUMMARY_MAX_CHARS: usize = 24_000;
+
+#[derive(serde::Serialize)]
+struct MemorySummaryPreview {
+    content: String,
+    importance: f32,
+    source_ids: Vec<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct MemorySummaryOutput {
+    content: String,
+}
+
+fn memory_summary_prompt(entries: &str) -> String {
+    format!(
+        "Merge the following saved memory entries into one concise factual memory.\n\
+         Preserve concrete names, numbers, decisions, preferences, deadlines, and rules. Remove repetition. Do not invent facts or add commentary.\n\
+         Keep it under 800 characters and write in the language of the entries.\n\
+         Return only JSON in this exact shape: {{\"content\":\"...\"}}\n\nEntries:\n{entries}"
+    )
+}
+
+fn parse_memory_summary(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    let without_fence = if trimmed.starts_with("```") {
+        trimmed
+            .lines()
+            .skip(1)
+            .take_while(|line| !line.trim_start().starts_with("```"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        trimmed.to_string()
+    };
+    let start = without_fence
+        .find('{')
+        .ok_or_else(|| "The model did not return a JSON summary.".to_string())?;
+    let end = without_fence
+        .rfind('}')
+        .ok_or_else(|| "The model did not return a JSON summary.".to_string())?;
+    if end <= start {
+        return Err("The model did not return a JSON summary.".to_string());
+    }
+    let parsed: MemorySummaryOutput = serde_json::from_str(&without_fence[start..=end])
+        .map_err(|_| "The model did not return a valid summary.".to_string())?;
+    validate_memory_content(&parsed.content)
+}
+
+fn selected_memories<'a, T>(
+    items: &'a [T],
+    ids: &[Uuid],
+    id: impl Fn(&T) -> Uuid,
+) -> Result<Vec<&'a T>, String> {
+    let mut selected = Vec::with_capacity(ids.len());
+    for wanted in ids {
+        let item = items
+            .iter()
+            .find(|item| id(item) == *wanted)
+            .ok_or_else(|| "One of those memories no longer exists.".to_string())?;
+        selected.push(item);
+    }
+    Ok(selected)
+}
+
+#[tauri::command]
+async fn summarize_memories(
+    state: State<'_, AppState>,
+    scope: String,
+    target_id: Uuid,
+    memory_ids: Vec<Uuid>,
+) -> Result<MemorySummaryPreview, String> {
+    if !(2..=20).contains(&memory_ids.len()) {
+        return Err("Choose between 2 and 20 memories to summarize.".to_string());
+    }
+    let mut seen = std::collections::HashSet::new();
+    if memory_ids.iter().any(|id| !seen.insert(*id)) {
+        return Err("The selection contains the same memory twice.".to_string());
+    }
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "agent" => {
+            require_bot(state.db.pool(), target_id).await?;
+            let facts = state
+                .runtime
+                .memory_store()
+                .list_limited(target_id, 2000)
+                .await?;
+            let selected = selected_memories(&facts, &memory_ids, |fact| fact.id)?;
+            let total: usize = selected
+                .iter()
+                .map(|fact| fact.content.chars().count())
+                .sum();
+            if total > MEMORY_SUMMARY_MAX_CHARS {
+                return Err(
+                    "Select fewer or shorter memories (24,000 character limit).".to_string()
+                );
+            }
+            let entries = selected
+                .iter()
+                .map(|fact| format!("- {}", fact.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let raw = state
+                .runtime
+                .complete_as_bot(
+                    target_id,
+                    MEMORY_SUMMARY_SYSTEM,
+                    &memory_summary_prompt(&entries),
+                    900,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let content = parse_memory_summary(&raw)?;
+            let importance = selected
+                .iter()
+                .map(|fact| fact.importance)
+                .fold(0.0_f32, f32::max);
+            Ok(MemorySummaryPreview {
+                content,
+                importance,
+                source_ids: memory_ids.iter().map(Uuid::to_string).collect(),
+            })
+        }
+        "office" => {
+            require_office(state.db.pool(), target_id).await?;
+            let roster = load_office_roster(state.db.pool(), target_id).await?;
+            let memories = state.runtime.office_memory().list(target_id).await?;
+            let selected = selected_memories(&memories, &memory_ids, |memory| memory.id)?;
+            let total: usize = selected
+                .iter()
+                .map(|memory| memory.content.chars().count())
+                .sum();
+            if total > MEMORY_SUMMARY_MAX_CHARS {
+                return Err(
+                    "Select fewer or shorter memories (24,000 character limit).".to_string()
+                );
+            }
+            let entries = selected
+                .iter()
+                .map(|memory| format!("- [{}] {}", memory.category, memory.content))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let raw = state
+                .runtime
+                .complete_as_bot(
+                    roster.lead_id,
+                    MEMORY_SUMMARY_SYSTEM,
+                    &memory_summary_prompt(&entries),
+                    900,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let content = parse_memory_summary(&raw)?;
+            let importance = selected
+                .iter()
+                .map(|memory| memory.importance)
+                .fold(0.0_f32, f32::max);
+            Ok(MemorySummaryPreview {
+                content,
+                importance,
+                source_ids: memory_ids.iter().map(Uuid::to_string).collect(),
+            })
+        }
+        _ => Err("Unknown memory scope.".to_string()),
+    }
+}
+
+#[tauri::command]
+async fn apply_memory_summary(
+    state: State<'_, AppState>,
+    scope: String,
+    target_id: Uuid,
+    source_ids: Vec<Uuid>,
+    content: String,
+    importance: f32,
+) -> Result<serde_json::Value, String> {
+    if !(2..=20).contains(&source_ids.len()) {
+        return Err("Choose between 2 and 20 memories to summarize.".to_string());
+    }
+    let content = validate_memory_content(&content)?;
+    let importance = validate_memory_importance(importance)?;
+    match scope.trim().to_ascii_lowercase().as_str() {
+        "agent" => {
+            require_bot(state.db.pool(), target_id).await?;
+            let summary = state
+                .runtime
+                .memory_store()
+                .replace_with_summary(target_id, &source_ids, &content, importance)
+                .await?;
+            audit_memory_change(
+                &state.runtime,
+                target_id,
+                "agent",
+                "created",
+                summary.id,
+                "",
+                None,
+            )
+            .await;
+            for id in &source_ids {
+                audit_memory_change(&state.runtime, target_id, "agent", "deleted", *id, "", None)
+                    .await;
+            }
+            Ok(serde_json::json!({
+                "id": summary.id.to_string(),
+                "replaced": source_ids.len(),
+            }))
+        }
+        "office" => {
+            require_office(state.db.pool(), target_id).await?;
+            let memories = state.runtime.office_memory().list(target_id).await?;
+            let selected = selected_memories(&memories, &source_ids, |memory| memory.id)?;
+            let category = selected
+                .iter()
+                .max_by(|a, b| {
+                    a.importance
+                        .partial_cmp(&b.importance)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|memory| memory.category.clone())
+                .unwrap_or_else(|| "general".to_string());
+            let categories: Vec<(Uuid, String)> = selected
+                .iter()
+                .map(|memory| (memory.id, memory.category.clone()))
+                .collect();
+            let summary = state
+                .runtime
+                .office_memory()
+                .replace_with_summary(target_id, &source_ids, &content, importance, &category)
+                .await?;
+            audit_memory_change(
+                &state.runtime,
+                Uuid::nil(),
+                "office",
+                "created",
+                summary.id,
+                &summary.category,
+                Some(target_id),
+            )
+            .await;
+            for (id, source_category) in categories {
+                audit_memory_change(
+                    &state.runtime,
+                    Uuid::nil(),
+                    "office",
+                    "deleted",
+                    id,
+                    &source_category,
+                    Some(target_id),
+                )
+                .await;
+            }
+            Ok(serde_json::json!({
+                "id": summary.id.to_string(),
+                "replaced": source_ids.len(),
+            }))
+        }
+        _ => Err("Unknown memory scope.".to_string()),
+    }
+}
+
+const MEMORY_EMBEDDING_PROVIDER_KEY: &str = "memory_embedding_provider";
+const MEMORY_EMBEDDING_MODEL_KEY: &str = "memory_embedding_model";
+const MEMORY_EMBEDDING_BASE_URL_KEY: &str = "memory_embedding_base_url";
+const MEMORY_EMBEDDING_API_KEY_KEY: &str = "memory_embedding_api_key";
+const DEFAULT_OLLAMA_EMBEDDING_BASE: &str = "http://127.0.0.1:11434";
+const DEFAULT_OPENAI_EMBEDDING_BASE: &str = "https://api.openai.com/v1";
+
+#[derive(Clone)]
+struct SavedMemoryEmbedding {
+    provider: String,
+    model: String,
+    base_url: String,
+    api_key: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct MemoryEmbeddingView {
+    provider: String,
+    model: String,
+    base_url: String,
+    has_api_key: bool,
+    agent_memories: u64,
+    office_memories: u64,
+}
+
+fn normalize_embedding_provider(provider: &str) -> Result<String, String> {
+    let provider = provider.trim().to_ascii_lowercase();
+    match provider.as_str() {
+        "local" => Ok("local".to_string()),
+        "ollama" => Ok("ollama".to_string()),
+        "openai" | "openai-compatible" | "openai_compatible" => Ok("openai".to_string()),
+        _ => Err("Choose local, Ollama, or an OpenAI-compatible embedding endpoint.".to_string()),
+    }
+}
+
+fn default_embedding_base(provider: &str) -> &'static str {
+    match provider {
+        "ollama" => DEFAULT_OLLAMA_EMBEDDING_BASE,
+        "openai" => DEFAULT_OPENAI_EMBEDDING_BASE,
+        _ => "",
+    }
+}
+
+fn default_embedding_model(provider: &str) -> &'static str {
+    match provider {
+        "ollama" => "nomic-embed-text",
+        "openai" => "text-embedding-3-small",
+        _ => "",
+    }
+}
+
+/// Ollama already has a user-configured base URL in Settings → Local. Reuse it
+/// for embeddings unless the memory section sets its own endpoint.
+async fn memory_embedding_default_base(pool: &sqlx::SqlitePool, provider: &str) -> String {
+    if provider == "ollama" {
+        if let Ok(Some(url)) =
+            ravenbot_db::queries::AppSettingsQueries::get(pool, "ollama_url").await
+        {
+            let url = url.trim();
+            if !url.is_empty() {
+                return url.to_string();
+            }
+        }
+    }
+    default_embedding_base(provider).to_string()
+}
+
+async fn read_memory_embedding_key(pool: &sqlx::SqlitePool) -> Option<String> {
+    let stored = ravenbot_db::queries::AppSettingsQueries::get(pool, MEMORY_EMBEDDING_API_KEY_KEY)
+        .await
+        .ok()
+        .flatten()?;
+    let stored = stored.trim().to_string();
+    if stored.is_empty() {
+        None
+    } else if stored == ravenbot_db::secrets::KEYCHAIN_MARKER {
+        ravenbot_db::secrets::get_memory_embedding_key().await
+    } else {
+        Some(stored)
+    }
+}
+
+async fn write_memory_embedding_key(pool: &sqlx::SqlitePool, key: &str) -> Result<(), String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("The embedding API key is empty.".to_string());
+    }
+    let stored = if ravenbot_db::secrets::set_memory_embedding_key(key).await {
+        ravenbot_db::secrets::KEYCHAIN_MARKER.to_string()
+    } else {
+        key.to_string()
+    };
+    ravenbot_db::queries::AppSettingsQueries::set(pool, MEMORY_EMBEDDING_API_KEY_KEY, &stored)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn clear_memory_embedding_key(pool: &sqlx::SqlitePool) -> Result<(), String> {
+    ravenbot_db::secrets::delete_memory_embedding_key().await;
+    ravenbot_db::queries::AppSettingsQueries::set(pool, MEMORY_EMBEDDING_API_KEY_KEY, "")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn load_memory_embedding_config(
+    pool: &sqlx::SqlitePool,
+) -> Result<SavedMemoryEmbedding, String> {
+    let provider =
+        ravenbot_db::queries::AppSettingsQueries::get(pool, MEMORY_EMBEDDING_PROVIDER_KEY)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "local".to_string());
+    let provider = normalize_embedding_provider(&provider).unwrap_or_else(|_| "local".to_string());
+    let mut model = ravenbot_db::queries::AppSettingsQueries::get(pool, MEMORY_EMBEDDING_MODEL_KEY)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let mut base_url =
+        ravenbot_db::queries::AppSettingsQueries::get(pool, MEMORY_EMBEDDING_BASE_URL_KEY)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+    if provider != "local" {
+        if base_url.is_empty() {
+            base_url = memory_embedding_default_base(pool, &provider).await;
+        }
+        if model.is_empty() {
+            model = match provider.as_str() {
+                "ollama" => "nomic-embed-text".to_string(),
+                "openai" => "text-embedding-3-small".to_string(),
+                _ => String::new(),
+            };
+        }
+    }
+    let api_key = read_memory_embedding_key(pool).await;
+    Ok(SavedMemoryEmbedding {
+        provider,
+        model,
+        base_url,
+        api_key,
+    })
+}
+
+async fn build_memory_embedding_provider(
+    config: &SavedMemoryEmbedding,
+) -> Result<Arc<dyn EmbeddingProvider>, String> {
+    match config.provider.as_str() {
+        "local" => Ok(Arc::new(ravenbot_memory::embedding::LocalEmbedding::new(
+            128,
+        ))),
+        "ollama" => {
+            let model = config.model.trim();
+            if model.is_empty() {
+                return Err("Choose an Ollama embedding model.".to_string());
+            }
+            let base_url = if config.base_url.trim().is_empty() {
+                DEFAULT_OLLAMA_EMBEDDING_BASE
+            } else {
+                config.base_url.trim()
+            };
+            let provider =
+                ravenbot_memory::RemoteEmbedding::new(ravenbot_memory::RemoteEmbeddingConfig {
+                    backend: ravenbot_memory::RemoteEmbeddingBackend::Ollama,
+                    base_url: base_url.to_string(),
+                    model: model.to_string(),
+                    api_key: None,
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(Arc::new(provider))
+        }
+        "openai" => {
+            let model = config.model.trim();
+            if model.is_empty() {
+                return Err("Choose an embedding model.".to_string());
+            }
+            let key = config
+                .api_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "This embedding endpoint requires an API key.".to_string())?;
+            let base_url = if config.base_url.trim().is_empty() {
+                DEFAULT_OPENAI_EMBEDDING_BASE
+            } else {
+                config.base_url.trim()
+            };
+            let provider =
+                ravenbot_memory::RemoteEmbedding::new(ravenbot_memory::RemoteEmbeddingConfig {
+                    backend: ravenbot_memory::RemoteEmbeddingBackend::OpenAiCompatible,
+                    base_url: base_url.to_string(),
+                    model: model.to_string(),
+                    api_key: Some(key.to_string()),
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(Arc::new(provider))
+        }
+        _ => Err("Unknown memory embedding provider.".to_string()),
+    }
+}
+
+async fn test_memory_embedding_provider(provider: &dyn EmbeddingProvider) -> Result<(), String> {
+    let vector = provider
+        .embed("RAVENBOT memory embedding check")
+        .await
+        .map_err(|error| error.to_string())?;
+    if vector.is_empty() {
+        return Err("The embedding provider returned an empty vector.".to_string());
+    }
+    Ok(())
+}
+
+async fn memory_row_counts(pool: &sqlx::SqlitePool) -> Result<(u64, u64), String> {
+    let (agent,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memory_facts")
+        .fetch_one(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    let (office,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM office_memories")
+        .fetch_one(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok((agent as u64, office as u64))
+}
+
+async fn memory_embedding_view(pool: &sqlx::SqlitePool) -> Result<MemoryEmbeddingView, String> {
+    let config = load_memory_embedding_config(pool).await?;
+    let (agent_memories, office_memories) = memory_row_counts(pool).await?;
+    Ok(MemoryEmbeddingView {
+        provider: config.provider,
+        model: config.model,
+        base_url: config.base_url,
+        has_api_key: config.api_key.is_some(),
+        agent_memories,
+        office_memories,
+    })
+}
+
+async fn audit_memory_embeddings(
+    runtime: &ravenbot_runtime::Runtime,
+    provider: &str,
+    model: &str,
+    base_url: &str,
+    reindexed: u64,
+) {
+    let event = AuditEventType::MemoryEmbeddingsUpdated {
+        provider: provider.to_string(),
+        model: model.to_string(),
+        base_url: base_url.to_string(),
+        reindexed,
+    };
+    let _ = runtime
+        .audit_logger()
+        .log(&AuditEntry::new(Uuid::nil(), event))
+        .await;
+}
+
+async fn restore_memory_vectors(
+    runtime: Arc<ravenbot_runtime::Runtime>,
+    provider: Arc<dyn EmbeddingProvider>,
+) {
+    let swap = provider.clone();
+    let swap_runtime = runtime.clone();
+    let result = ravenbot_memory::reindex_all(
+        runtime.memory_store(),
+        runtime.office_memory(),
+        &*provider,
+        move || swap_runtime.embedding().replace(swap),
+    )
+    .await;
+    if let Err(error) = result {
+        tracing::warn!(%error, "could not restore memory vectors");
+    }
+}
+
+/// Move a pre-`~/RAVENBOT` database only when the current path does not exist.
+/// The daemon can create the current database first; an unconditional rename
+/// would then replace it with the older one.
+pub(crate) fn migrate_legacy_database() {
+    let db_path = ravenbot_core::default_db_path();
+    let Some(legacy) = ravenbot_core::legacy_db_path() else {
+        return;
+    };
+    if !legacy.exists() || db_path.exists() {
+        if legacy.exists() {
+            tracing::warn!(
+                legacy = %legacy.display(),
+                current = %db_path.display(),
+                "Leaving the pre-~/RAVENBOT database in place because a current database already exists"
+            );
+        }
+        return;
+    }
+    match std::fs::rename(&legacy, &db_path) {
+        Ok(()) => {
+            // `-wal` / `-shm` are named after the database, not derived from
+            // it, so append rather than substitute.
+            for suffix in ["-wal", "-shm"] {
+                let mut side = legacy.clone().into_os_string();
+                side.push(suffix);
+                let _ = std::fs::remove_file(std::path::PathBuf::from(side));
+            }
+            tracing::info!(
+                from = %legacy.display(),
+                to = %db_path.display(),
+                "Moved the existing RAVENBOT database into ~/RAVENBOT"
+            );
+        }
+        Err(error) => tracing::warn!(
+            "Could not move {} to {}: {error}",
+            legacy.display(),
+            db_path.display()
+        ),
+    }
+}
+
+/// Build the runtime every fleet owner needs, with saved provider keys,
+/// custom providers, base URLs and the memory embedding configuration already
+/// applied. Shared by the desktop shell and the headless daemon so a daemon
+/// start does not silently lose the user's providers.
+pub(crate) async fn bootstrap_runtime(db: &Database) -> Arc<ravenbot_runtime::Runtime> {
+    let runtime = Arc::new(ravenbot_runtime::Runtime::new(db.clone()));
+    hydrate_provider_credentials(&runtime, db).await;
+    if let Err(error) = apply_saved_memory_embedding(&runtime, db.pool()).await {
+        tracing::warn!(%error, "memory embeddings fall back to local hashing");
+    }
+    runtime
+}
+
+/// Re-read provider keys, URLs and custom-provider registrations. The headless
+/// daemon calls this periodically: a keychain that unlocks after login (or a
+/// cold boot with linger) is then picked up without restarting the fleet.
+pub(crate) async fn hydrate_provider_credentials(
+    runtime: &ravenbot_runtime::Runtime,
+    db: &Database,
+) {
+    if let Ok(saved_keys) = ravenbot_db::queries::ProviderKeyQueries::list(db.pool()).await {
+        let mut manager = runtime.provider_manager().lock().await;
+        for (provider, key) in saved_keys {
+            if !key.trim().is_empty() {
+                manager.set_api_key(&provider, key);
+            }
+        }
+    }
+    if let Ok(Some(url)) =
+        ravenbot_db::queries::AppSettingsQueries::get(db.pool(), "ollama_url").await
+    {
+        if !url.trim().is_empty() {
+            let mut manager = runtime.provider_manager().lock().await;
+            manager.set_base_url("ollama", url);
+        }
+    }
+    if let Ok(rows) = ravenbot_db::queries::CustomProviderQueries::list(db.pool()).await {
+        let mut manager = runtime.provider_manager().lock().await;
+        for (
+            id,
+            display_name,
+            kind,
+            base_url,
+            default_model,
+            supports_tools,
+            enabled,
+            headers_json,
+        ) in rows
+        {
+            if !enabled {
+                continue;
+            }
+            let headers = headers_json
+                .as_deref()
+                .and_then(|s| serde_json::from_str(s).ok())
+                .unwrap_or_default();
+            manager.register_custom(ravenbot_models::manager::CustomProviderSpec {
+                id,
+                display_name,
+                kind,
+                base_url,
+                default_model,
+                supports_tools,
+                headers,
+            });
+        }
+    }
+    if let Ok(rows) = ravenbot_db::queries::ProviderBaseUrlQueries::list(db.pool()).await {
+        let mut manager = runtime.provider_manager().lock().await;
+        for (provider, url) in rows {
+            manager.set_base_url(&provider, url);
+        }
+    }
+}
+
+async fn apply_saved_memory_embedding(
+    runtime: &ravenbot_runtime::Runtime,
+    pool: &sqlx::SqlitePool,
+) -> Result<(), String> {
+    let config = load_memory_embedding_config(pool).await?;
+    if config.provider == "local" {
+        return Ok(());
+    }
+    let provider = build_memory_embedding_provider(&config).await?;
+    runtime.embedding().replace(provider);
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_memory_embedding_config(
+    state: State<'_, AppState>,
+) -> Result<MemoryEmbeddingView, String> {
+    memory_embedding_view(state.db.pool()).await
+}
+
+#[tauri::command]
+async fn set_memory_embedding_config(
+    state: State<'_, AppState>,
+    provider: String,
+    model: Option<String>,
+    base_url: Option<String>,
+    api_key: Option<String>,
+) -> Result<MemoryEmbeddingView, String> {
+    let provider = normalize_embedding_provider(&provider)?;
+    let saved = load_memory_embedding_config(state.db.pool()).await?;
+    let same_provider = saved.provider == provider;
+    let model = model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if same_provider {
+                saved.model.clone()
+            } else {
+                default_embedding_model(&provider).to_string()
+            }
+        });
+    let mut base_url = base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            if same_provider {
+                saved.base_url.clone()
+            } else {
+                default_embedding_base(&provider).to_string()
+            }
+        });
+    if base_url.is_empty() {
+        base_url = memory_embedding_default_base(state.db.pool(), &provider).await;
+    }
+    let provided_key = api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let saved_key = if same_provider {
+        saved.api_key.clone()
+    } else {
+        None
+    };
+    let config = SavedMemoryEmbedding {
+        provider: provider.clone(),
+        model: model.clone(),
+        base_url: base_url.clone(),
+        api_key: provided_key.clone().or(saved_key.clone()),
+    };
+    let new_provider = build_memory_embedding_provider(&config).await?;
+    test_memory_embedding_provider(&*new_provider).await?;
+
+    // Re-embed both stores and swap the live provider while holding the memory
+    // index write lock, so no write can land between the vectors and the swap.
+    let current = state.runtime.embedding().current();
+    let swap = new_provider.clone();
+    let swap_runtime = state.runtime.clone();
+    let (agent, office) = match ravenbot_memory::reindex_all(
+        state.runtime.memory_store(),
+        state.runtime.office_memory(),
+        &*new_provider,
+        move || swap_runtime.embedding().replace(swap),
+    )
+    .await
+    {
+        Ok(counts) => counts,
+        Err(error) => {
+            restore_memory_vectors(state.runtime.clone(), current).await;
+            return Err(error);
+        }
+    };
+
+    let persist = async {
+        ravenbot_db::queries::AppSettingsQueries::set(
+            state.db.pool(),
+            MEMORY_EMBEDDING_PROVIDER_KEY,
+            &provider,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        ravenbot_db::queries::AppSettingsQueries::set(
+            state.db.pool(),
+            MEMORY_EMBEDDING_MODEL_KEY,
+            &config.model,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        ravenbot_db::queries::AppSettingsQueries::set(
+            state.db.pool(),
+            MEMORY_EMBEDDING_BASE_URL_KEY,
+            &config.base_url,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        if provider == "openai" {
+            if let Some(key) = provided_key.as_deref() {
+                write_memory_embedding_key(state.db.pool(), key).await?;
+            } else if saved_key.is_none() {
+                return Err("This embedding endpoint requires an API key.".to_string());
+            }
+        } else {
+            clear_memory_embedding_key(state.db.pool()).await?;
+        }
+        Ok::<(), String>(())
+    }
+    .await;
+
+    if let Err(error) = persist {
+        // The vectors were rebuilt for the new provider; restore them for the
+        // provider the runtime is still using so retrieval stays coherent.
+        restore_memory_vectors(state.runtime.clone(), current).await;
+        return Err(format!("Could not save the embedding settings: {error}"));
+    }
+
+    audit_memory_embeddings(
+        &state.runtime,
+        &provider,
+        &config.model,
+        &config.base_url,
+        agent + office,
+    )
+    .await;
+    memory_embedding_view(state.db.pool()).await
+}
+
+#[tauri::command]
+async fn reindex_memory_embeddings(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    // Use the saved configuration, not whatever provider happens to be active.
+    // This also recovers a startup where the remote endpoint was unavailable.
+    let config = load_memory_embedding_config(state.db.pool()).await?;
+    let provider = build_memory_embedding_provider(&config).await?;
+    test_memory_embedding_provider(&*provider).await?;
+    let current = state.runtime.embedding().current();
+    let swap = provider.clone();
+    let swap_runtime = state.runtime.clone();
+    let (agent, office) = match ravenbot_memory::reindex_all(
+        state.runtime.memory_store(),
+        state.runtime.office_memory(),
+        &*provider,
+        move || swap_runtime.embedding().replace(swap),
+    )
+    .await
+    {
+        Ok(counts) => counts,
+        Err(error) => {
+            restore_memory_vectors(state.runtime.clone(), current).await;
+            return Err(error);
+        }
+    };
+    audit_memory_embeddings(
+        &state.runtime,
+        &config.provider,
+        &config.model,
+        &config.base_url,
+        agent + office,
+    )
+    .await;
+    Ok(serde_json::json!({ "agent": agent, "office": office }))
+}
+
+#[tauri::command]
+async fn evaluate_memory_retrieval(
+    state: State<'_, AppState>,
+) -> Result<ravenbot_memory::eval::RetrievalEvalReport, String> {
+    let config = load_memory_embedding_config(state.db.pool()).await?;
+    let provider = build_memory_embedding_provider(&config).await?;
+    ravenbot_memory::eval::evaluate_retrieval(&*provider).await
+}
+
 #[tauri::command]
 async fn get_agent_intelligence(
     state: State<'_, AppState>,
@@ -7598,6 +13326,7 @@ async fn list_agent_learnings(
 /// A room's working roster: the member rows, their loaded bots, the
 /// orchestration view, and the resolved lead. Shared by the natural-language
 /// office flow and Plan mode so both attribute work identically.
+#[derive(Clone)]
 struct OfficeRoster {
     bots: Vec<(ravenbot_core::ChatRoomMember, Bot)>,
     members: Vec<ravenbot_runtime::orchestrator::OfficeMember>,
@@ -7703,6 +13432,17 @@ async fn ensure_chatroom_thread(
     Ok(thread.id)
 }
 
+#[derive(Clone, Copy)]
+struct ContextSnapshot {
+    used: u64,
+    window: u64,
+    compacted: bool,
+    system: u64,
+    tool: u64,
+    memory: u64,
+    message: u64,
+}
+
 /// Post an assistant turn attributed to a specific bot (office conversation).
 async fn post_bot_message(
     pool: &sqlx::SqlitePool,
@@ -7711,7 +13451,30 @@ async fn post_bot_message(
     name: String,
     text: String,
 ) -> Result<(), String> {
-    let msg = Message::assistant_from_bot(thread_id, bot_id, name, text);
+    post_bot_message_with_context(pool, thread_id, bot_id, name, text, None).await
+}
+
+/// Post an office message and, when known, the context estimate that produced
+/// it. The room shows the newest node's context; copying it onto the final
+/// summary is what lets the meter survive a reload of the room.
+async fn post_bot_message_with_context(
+    pool: &sqlx::SqlitePool,
+    thread_id: Uuid,
+    bot_id: Uuid,
+    name: String,
+    text: String,
+    context: Option<ContextSnapshot>,
+) -> Result<(), String> {
+    let mut msg = Message::assistant_from_bot(thread_id, bot_id, name, text);
+    if let Some(context) = context {
+        msg.context_used_tokens = Some(context.used);
+        msg.context_window_tokens = Some(context.window);
+        msg.context_compacted = context.compacted;
+        msg.context_system_tokens = Some(context.system);
+        msg.context_tool_tokens = Some(context.tool);
+        msg.context_memory_tokens = Some(context.memory);
+        msg.context_message_tokens = Some(context.message);
+    }
     ravenbot_db::queries::MessageQueries::insert(pool, &msg)
         .await
         .map(|_| ())
@@ -7774,6 +13537,25 @@ fn briefing_label(instruction: &str) -> String {
         .to_string()
 }
 
+/// Tasks that did not complete, in the same shape for plan runs and office
+/// turns. A branch skipped because its condition was false is intentionally not
+/// included; a dependency-blocked task is.
+fn graph_failures(graph: &TaskGraph) -> Vec<String> {
+    graph
+        .incomplete_nodes()
+        .into_iter()
+        .map(|(_, _, label, detail)| format!("{}: {}", briefing_label(&label), detail))
+        .collect()
+}
+
+fn checklist_status(failures: &[String]) -> &'static str {
+    if failures.is_empty() {
+        "completed"
+    } else {
+        "failed"
+    }
+}
+
 /// Render a lead's task briefing: one short line per assignment.
 ///
 /// The node receives the full instruction; the room needs the shape of the
@@ -7824,6 +13606,7 @@ struct OfficeQueueItem {
     visible: String,
     attachments: Vec<AttachmentInput>,
     reply_to_id: Option<Uuid>,
+    recipient_bot_id: Option<Uuid>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -7833,6 +13616,7 @@ struct OfficeQueueRow {
     visible: String,
     attachments: String,
     reply_to_id: Option<String>,
+    recipient_bot_id: Option<String>,
     state: String,
     error: Option<String>,
     created_at: String,
@@ -7851,6 +13635,10 @@ impl OfficeQueueRow {
                 .reply_to_id
                 .as_deref()
                 .and_then(|value| Uuid::parse_str(value).ok()),
+            recipient_bot_id: self
+                .recipient_bot_id
+                .as_deref()
+                .and_then(|value| Uuid::parse_str(value).ok()),
         }
     }
 }
@@ -7865,6 +13653,406 @@ struct OfficeQueueView {
     error: Option<String>,
     created_at: String,
     started_at: Option<String>,
+}
+
+/// One cross-fleet item that needs a person's attention.
+///
+/// The inbox is deliberately a projection, not a new table: approvals,
+/// questions, and office queue rows already have lifecycle state and an owner.
+/// The item carries enough context to open the right surface without a second
+/// round of lookups.
+#[derive(Debug, Clone, serde::Serialize)]
+struct AttentionItem {
+    id: String,
+    /// `approval`, `question`, `queue`, or `alert`.
+    kind: String,
+    bot_id: Option<String>,
+    bot_name: String,
+    thread_id: Option<String>,
+    office_id: Option<String>,
+    office_name: Option<String>,
+    title: String,
+    detail: String,
+    risk: Option<String>,
+    /// `pending`, `running`, or `failed`; approvals/questions are pending.
+    state: String,
+    /// The structured block kind, for a question.
+    question_kind: Option<String>,
+    /// `budget` for an office health alert.
+    alert_kind: Option<String>,
+    /// Budget usage percentage for a budget alert.
+    percent: Option<f64>,
+    budget: Option<f64>,
+    cost: Option<f64>,
+    created_at: String,
+}
+
+#[derive(sqlx::FromRow)]
+struct AttentionApprovalRow {
+    id: String,
+    bot_id: String,
+    thread_id: String,
+    tool_name: String,
+    tool_label: String,
+    arguments: String,
+    risk: String,
+    created_at: String,
+    bot_name: String,
+    office_id: Option<String>,
+    office_name: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct AttentionQuestionRow {
+    id: String,
+    bot_id: String,
+    thread_id: String,
+    header: String,
+    question: String,
+    kind: String,
+    created_at: String,
+    bot_name: String,
+    office_id: Option<String>,
+    office_name: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+struct AttentionQueueRow {
+    id: String,
+    chatroom_id: String,
+    visible: String,
+    content: String,
+    state: String,
+    error: Option<String>,
+    created_at: String,
+    office_name: String,
+}
+
+fn clip_attention_text(text: &str, max: usize) -> String {
+    let mut out = String::new();
+    for (index, ch) in text.chars().enumerate() {
+        if index >= max {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn approval_attention_detail(tool_name: &str, arguments: &str) -> String {
+    let summary = serde_json::from_str::<serde_json::Value>(arguments)
+        .ok()
+        .and_then(|value| {
+            let object = value.as_object()?;
+            let fields: Vec<String> = object
+                .iter()
+                .take(4)
+                .map(|(key, value)| {
+                    let lower = key.to_ascii_lowercase();
+                    let sensitive = ["token", "secret", "password", "authorization", "api_key"]
+                        .iter()
+                        .any(|marker| lower.contains(marker));
+                    let text = if sensitive {
+                        "••••".to_string()
+                    } else {
+                        value
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| value.to_string())
+                    };
+                    format!("{key}: {}", clip_attention_text(&text, 160))
+                })
+                .collect();
+            if fields.is_empty() {
+                None
+            } else {
+                Some(fields.join(" · "))
+            }
+        })
+        .unwrap_or_else(|| clip_attention_text(arguments, 400));
+    format!("{tool_name} — {summary}")
+}
+
+/// Load every pending approval, every pending question, and every queued or
+/// failed office message into one list.
+///
+/// This is the query behind the attention inbox. It is read-only and bounded:
+/// 100 rows per source, newest first, so a stuck office with thousands of old
+/// rows cannot make the shell slow to open.
+fn office_alert_policy_key(chatroom_id: Uuid) -> String {
+    format!("office_alert_policy:{chatroom_id}")
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct OfficeAlertPolicy {
+    enabled: bool,
+    warning_percent: f64,
+    critical_percent: f64,
+}
+
+impl Default for OfficeAlertPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            warning_percent: 90.0,
+            critical_percent: 100.0,
+        }
+    }
+}
+
+fn validate_office_alert_policy(policy: &OfficeAlertPolicy) -> Result<(), String> {
+    for (label, value) in [
+        ("warning", policy.warning_percent),
+        ("critical", policy.critical_percent),
+    ] {
+        if !value.is_finite() || !(1.0..=100.0).contains(&value) {
+            return Err(format!(
+                "The office alert {label} threshold must be between 1 and 100 percent."
+            ));
+        }
+    }
+    if policy.critical_percent < policy.warning_percent {
+        return Err(
+            "The critical alert threshold cannot be below the warning threshold.".to_string(),
+        );
+    }
+    Ok(())
+}
+
+async fn read_office_alert_policy(pool: &sqlx::SqlitePool, chatroom_id: Uuid) -> OfficeAlertPolicy {
+    let raw =
+        ravenbot_db::queries::AppSettingsQueries::get(pool, &office_alert_policy_key(chatroom_id))
+            .await
+            .ok()
+            .flatten();
+    raw.and_then(|value| serde_json::from_str::<OfficeAlertPolicy>(&value).ok())
+        .filter(|policy| validate_office_alert_policy(policy).is_ok())
+        .unwrap_or_default()
+}
+
+async fn load_office_alert_policies(
+    pool: &sqlx::SqlitePool,
+) -> std::collections::HashMap<String, OfficeAlertPolicy> {
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT key, value FROM app_settings WHERE key LIKE 'office_alert_policy:%'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    let mut policies = std::collections::HashMap::new();
+    for (key, value) in rows {
+        let Some(id) = key.strip_prefix("office_alert_policy:") else {
+            continue;
+        };
+        if let Ok(policy) = serde_json::from_str::<OfficeAlertPolicy>(&value) {
+            if validate_office_alert_policy(&policy).is_ok() {
+                policies.insert(id.to_string(), policy);
+            }
+        }
+    }
+    policies
+}
+
+async fn collect_attention(db: &ravenbot_db::Database) -> Result<Vec<AttentionItem>, String> {
+    let approvals: Vec<AttentionApprovalRow> = sqlx::query_as(
+        "SELECT a.id, a.bot_id, a.thread_id, a.tool_name, a.tool_label, a.arguments,
+                a.risk, a.created_at, b.name AS bot_name,
+                COALESCE(ct.chatroom_id, cot.chatroom_id) AS office_id,
+                c.name AS office_name
+         FROM approvals a
+         JOIN bots b ON b.id = a.bot_id
+         LEFT JOIN chatroom_threads ct ON ct.thread_id = a.thread_id
+         LEFT JOIN chatroom_office_threads cot ON cot.thread_id = a.thread_id
+         LEFT JOIN chatrooms c ON c.id = COALESCE(ct.chatroom_id, cot.chatroom_id)
+         WHERE a.status = 'pending'
+         ORDER BY a.created_at DESC
+         LIMIT 100",
+    )
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let questions: Vec<AttentionQuestionRow> = sqlx::query_as(
+        "SELECT q.id, q.bot_id, q.thread_id, q.header, q.question, q.kind, q.created_at,
+                b.name AS bot_name,
+                COALESCE(ct.chatroom_id, cot.chatroom_id) AS office_id,
+                c.name AS office_name
+         FROM questions q
+         JOIN bots b ON b.id = q.bot_id
+         LEFT JOIN chatroom_threads ct ON ct.thread_id = q.thread_id
+         LEFT JOIN chatroom_office_threads cot ON cot.thread_id = q.thread_id
+         LEFT JOIN chatrooms c ON c.id = COALESCE(ct.chatroom_id, cot.chatroom_id)
+         WHERE q.status = 'pending'
+         ORDER BY q.created_at DESC
+         LIMIT 100",
+    )
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let queue: Vec<AttentionQueueRow> = sqlx::query_as(
+        "SELECT q.id, q.chatroom_id, q.visible, q.content, q.state, q.error, q.created_at,
+                c.name AS office_name
+         FROM office_queue q
+         JOIN chatrooms c ON c.id = q.chatroom_id
+         WHERE q.state IN ('pending', 'failed')
+         ORDER BY q.created_at DESC
+         LIMIT 100",
+    )
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut items = Vec::with_capacity(approvals.len() + questions.len() + queue.len());
+    for row in approvals {
+        items.push(AttentionItem {
+            id: row.id,
+            kind: "approval".to_string(),
+            bot_id: Some(row.bot_id),
+            bot_name: row.bot_name,
+            thread_id: Some(row.thread_id),
+            office_id: row.office_id,
+            office_name: row.office_name,
+            title: if row.tool_label.trim().is_empty() {
+                row.tool_name.clone()
+            } else {
+                row.tool_label
+            },
+            detail: approval_attention_detail(&row.tool_name, &row.arguments),
+            risk: Some(row.risk),
+            state: "pending".to_string(),
+            question_kind: None,
+            alert_kind: None,
+            percent: None,
+            budget: None,
+            cost: None,
+            created_at: row.created_at,
+        });
+    }
+    for row in questions {
+        items.push(AttentionItem {
+            id: row.id,
+            kind: "question".to_string(),
+            bot_id: Some(row.bot_id),
+            bot_name: row.bot_name,
+            thread_id: Some(row.thread_id),
+            office_id: row.office_id,
+            office_name: row.office_name,
+            title: if row.header.trim().is_empty() {
+                "Question".to_string()
+            } else {
+                row.header
+            },
+            detail: clip_attention_text(&row.question, 500),
+            risk: None,
+            state: "pending".to_string(),
+            question_kind: Some(row.kind),
+            alert_kind: None,
+            percent: None,
+            budget: None,
+            cost: None,
+            created_at: row.created_at,
+        });
+    }
+    for row in queue {
+        let mut detail = clip_attention_text(
+            if row.visible.trim().is_empty() {
+                &row.content
+            } else {
+                &row.visible
+            },
+            500,
+        );
+        if let Some(error) = row.error.filter(|error| !error.trim().is_empty()) {
+            detail.push_str(" — ");
+            detail.push_str(&clip_attention_text(&error, 300));
+        }
+        items.push(AttentionItem {
+            id: row.id,
+            kind: "queue".to_string(),
+            bot_id: None,
+            bot_name: String::new(),
+            thread_id: None,
+            office_id: Some(row.chatroom_id),
+            office_name: Some(row.office_name),
+            title: if row.state == "failed" {
+                "Office queue failed".to_string()
+            } else {
+                "Queued office message".to_string()
+            },
+            detail,
+            risk: None,
+            state: row.state,
+            question_kind: None,
+            alert_kind: None,
+            percent: None,
+            budget: None,
+            cost: None,
+            created_at: row.created_at,
+        });
+    }
+
+    // Budget health is a projection of the same run ledger as Usage. A
+    // failed usage query must not hide approvals or questions, so this block
+    // is best-effort and logs rather than returning early.
+    let alert_policies = load_office_alert_policies(db.pool()).await;
+    match ravenbot_db::queries::UsageQueries::office_summary(db.pool(), 0).await {
+        Ok(offices) => {
+            for (office_id, office_name, budget, _runs, _tokens, cost, _failed, _completed) in
+                offices
+            {
+                let (Some(office_id), Some(budget)) = (office_id, budget) else {
+                    continue;
+                };
+                if !budget.is_finite() || budget <= 0.0 || !cost.is_finite() || cost < 0.0 {
+                    continue;
+                }
+                let policy = alert_policies.get(&office_id).cloned().unwrap_or_default();
+                if !policy.enabled {
+                    continue;
+                }
+                let percent = cost / budget * 100.0;
+                if percent < policy.warning_percent {
+                    continue;
+                }
+                let critical = percent >= policy.critical_percent;
+                items.push(AttentionItem {
+                    id: format!("office-budget:{office_id}"),
+                    kind: "alert".to_string(),
+                    bot_id: None,
+                    bot_name: String::new(),
+                    thread_id: None,
+                    office_id: Some(office_id),
+                    office_name: Some(office_name.unwrap_or_else(|| "Office".to_string())),
+                    title: if critical {
+                        "Office budget exhausted".to_string()
+                    } else {
+                        "Office budget near limit".to_string()
+                    },
+                    detail: format!("${cost:.4} spent of ${budget:.4} ({percent:.0}%)"),
+                    risk: None,
+                    state: if critical {
+                        "critical".to_string()
+                    } else {
+                        "warning".to_string()
+                    },
+                    question_kind: None,
+                    alert_kind: Some("budget".to_string()),
+                    percent: Some(percent),
+                    budget: Some(budget),
+                    cost: Some(cost),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                });
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Office budget alerts could not be computed");
+        }
+    }
+
+    items.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+    Ok(items)
 }
 
 fn office_queue_paused_key(chatroom_id: Uuid) -> String {
@@ -7901,13 +14089,21 @@ async fn enqueue_office_message(
     visible: String,
     attachments: Vec<AttachmentInput>,
     reply_to_id: Option<Uuid>,
+    recipient_bot_id: Option<Uuid>,
 ) -> Result<OfficeQueueItem, String> {
     let id = Uuid::new_v4();
     let now = chrono::Utc::now().to_rfc3339();
     let attachments_json = serde_json::to_string(&attachments).map_err(|e| e.to_string())?;
+    let position: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(MAX(position), 0) + 1 FROM office_queue WHERE chatroom_id = ?",
+    )
+    .bind(chatroom_id.to_string())
+    .fetch_one(db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
     sqlx::query(
-        "INSERT INTO office_queue (id, chatroom_id, content, visible, attachments, reply_to_id, state, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)",
+        "INSERT INTO office_queue (id, chatroom_id, content, visible, attachments, reply_to_id, recipient_bot_id, state, position, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
     )
     .bind(id.to_string())
     .bind(chatroom_id.to_string())
@@ -7915,6 +14111,8 @@ async fn enqueue_office_message(
     .bind(&visible)
     .bind(&attachments_json)
     .bind(reply_to_id.map(|id| id.to_string()))
+    .bind(recipient_bot_id.map(|id| id.to_string()))
+    .bind(position)
     .bind(&now)
     .execute(db.pool())
     .await
@@ -7925,6 +14123,7 @@ async fn enqueue_office_message(
         visible,
         attachments,
         reply_to_id,
+        recipient_bot_id,
     })
 }
 
@@ -7942,17 +14141,71 @@ async fn office_queue_has_pending(db: &ravenbot_db::Database, chatroom_id: Uuid)
     office_queue_pending_count(db, chatroom_id).await > 0
 }
 
+/// A queued turn owns one running row. If the turn ended (or was superseded)
+/// without finalizing that row, it would sit in `running` forever and the UI
+/// would show an office that never stops working on it. Reconcile only when
+/// the office is idle and no resumable graph still owns the work.
+async fn reconcile_orphaned_queue_items(db: &ravenbot_db::Database, chatroom_id: Uuid) {
+    if office_is_active(chatroom_id) {
+        return;
+    }
+    let resumable =
+        ravenbot_db::queries::OfficeGraphQueries::latest_running(db.pool(), chatroom_id)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+    if resumable {
+        return;
+    }
+    // Re-check after the async graph read: a new turn may have started.
+    if office_is_active(chatroom_id) {
+        return;
+    }
+    // A crashed graph can leave its last node `running` with an expired lease.
+    // Retire it before reading the queue: otherwise the durable backlog shows
+    // open work no executor owns, and a goal review can never see it empty.
+    let now = chrono::Utc::now().to_rfc3339();
+    let _ =
+        ravenbot_db::queries::WorkItemQueries::retire_expired_running(db.pool(), chatroom_id, &now)
+            .await;
+    let running: Vec<String> = match sqlx::query_scalar(
+        "SELECT id FROM office_queue WHERE chatroom_id = ? AND state = 'running'",
+    )
+    .bind(chatroom_id.to_string())
+    .fetch_all(db.pool())
+    .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return,
+    };
+    if running.is_empty() {
+        return;
+    }
+    for id in running {
+        if let Ok(id) = Uuid::parse_str(&id) {
+            finish_office_queue_item(
+                db,
+                id,
+                false,
+                Some("The office turn ended without finalizing this queued message.".to_string()),
+            )
+            .await;
+        }
+    }
+}
+
 async fn claim_next_office_queue_item(
     db: &ravenbot_db::Database,
     chatroom_id: Uuid,
 ) -> Result<Option<OfficeQueueItem>, String> {
     let mut tx = db.pool().begin().await.map_err(|e| e.to_string())?;
     let row: Option<OfficeQueueRow> = sqlx::query_as(
-        "SELECT id, content, visible, attachments, reply_to_id, state, error,
+        "SELECT id, content, visible, attachments, reply_to_id, recipient_bot_id, state, error,
                 created_at, started_at
          FROM office_queue
          WHERE chatroom_id = ? AND state = 'pending'
-         ORDER BY created_at ASC, rowid ASC
+         ORDER BY position ASC, created_at ASC, rowid ASC
          LIMIT 1",
     )
     .bind(chatroom_id.to_string())
@@ -7988,6 +14241,7 @@ async fn finish_office_queue_item(
     error: Option<String>,
 ) {
     let now = chrono::Utc::now().to_rfc3339();
+    let error = error.map(|text| truncate_chars(&text, 1_000));
     let _ = sqlx::query(
         "UPDATE office_queue SET state = ?, error = ?, finished_at = ?
          WHERE id = ? AND state = 'running'",
@@ -8051,16 +14305,68 @@ async fn dismiss_queued_message(
     Ok(())
 }
 
+/// Persist the displayed order of an office queue.
+///
+/// Only the rows the user can see are reordered. A running turn keeps its card
+/// and its position; a message that arrives later is appended, not inserted
+/// ahead of the user's chosen order.
+async fn persist_office_queue_order(
+    db: &ravenbot_db::Database,
+    chatroom_id: Uuid,
+    ordered_ids: &[Uuid],
+) -> Result<(), String> {
+    let mut tx = db.pool().begin().await.map_err(|e| e.to_string())?;
+    for (index, id) in ordered_ids.iter().enumerate() {
+        sqlx::query(
+            "UPDATE office_queue SET position = ?
+             WHERE id = ? AND chatroom_id = ? AND state IN ('pending', 'running', 'failed')",
+        )
+        .bind(index as i64)
+        .bind(id.to_string())
+        .bind(chatroom_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
+async fn promote_queued_message(
+    db: &ravenbot_db::Database,
+    chatroom_id: Uuid,
+    item_id: Uuid,
+) -> Result<(), String> {
+    let ids: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM office_queue
+         WHERE chatroom_id = ? AND state = 'pending'
+         ORDER BY position ASC, created_at ASC, rowid ASC",
+    )
+    .bind(chatroom_id.to_string())
+    .fetch_all(db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut ordered: Vec<Uuid> = ids
+        .iter()
+        .filter_map(|id| Uuid::parse_str(id).ok())
+        .collect();
+    if !ordered.contains(&item_id) {
+        return Err("That message is no longer waiting in the office queue.".to_string());
+    }
+    ordered.retain(|id| *id != item_id);
+    ordered.insert(0, item_id);
+    persist_office_queue_order(db, chatroom_id, &ordered).await
+}
+
 async fn load_office_queue(
     db: &ravenbot_db::Database,
     chatroom_id: Uuid,
 ) -> Result<Vec<OfficeQueueView>, String> {
     let rows: Vec<OfficeQueueRow> = sqlx::query_as(
-        "SELECT id, content, visible, attachments, reply_to_id, state, error,
+        "SELECT id, content, visible, attachments, reply_to_id, recipient_bot_id, state, error,
                 created_at, started_at
          FROM office_queue
          WHERE chatroom_id = ? AND state IN ('pending', 'running', 'failed')
-         ORDER BY created_at ASC, rowid ASC
+         ORDER BY position ASC, created_at ASC, rowid ASC
          LIMIT 50",
     )
     .bind(chatroom_id.to_string())
@@ -8094,7 +14400,7 @@ async fn load_office_queue(
 async fn drain_office_queue(
     db: &ravenbot_db::Database,
     runtime: &Arc<ravenbot_runtime::Runtime>,
-    app: &tauri::AppHandle,
+    events: &HostEvents,
     chatroom_id: Uuid,
 ) -> bool {
     if office_queue_paused(db, chatroom_id).await || runtime.is_paused().await {
@@ -8123,7 +14429,7 @@ async fn drain_office_queue(
     match start_office_turn(
         db,
         runtime,
-        app,
+        events.clone(),
         chatroom_id,
         item.content.clone(),
         item.visible.clone(),
@@ -8131,6 +14437,9 @@ async fn drain_office_queue(
         false,
         Some(item.id),
         item.reply_to_id,
+        item.recipient_bot_id,
+        true,
+        None,
     )
     .await
     {
@@ -8151,6 +14460,1044 @@ async fn drain_office_queue(
     }
 }
 
+/// Is this request a general "keep going" rather than a new deliverable?
+///
+/// The office turn runs more than one plan cycle for these requests. A vague
+/// nudge must not be treated as a fresh product brief that one five-task plan
+/// can satisfy.
+fn office_generic_continue(content: &str) -> bool {
+    let request = content.trim().to_ascii_lowercase();
+    matches!(
+        request.as_str(),
+        "?" | "??" | "continue" | "do next" | "next"
+    ) || request.starts_with("do next ")
+        || request.contains("do next work")
+        || request.contains("continue the office")
+        || request.starts_with("[autonomous cycle]")
+        || request.starts_with("[office continuation")
+}
+
+/// How many plan→execute→synthesize cycles one office turn may run.
+///
+/// One plan is a milestone, not a product. Four cycles is enough for a
+/// substantial increment while remaining bounded; an operator can raise it
+/// with `RAVENBOT_OFFICE_CYCLES` when they want a longer unattended run.
+/// Is an active goal allowed to start its next automatic cycle now?
+///
+/// The scheduler must not run a paused/terminal goal, a goal whose backoff is
+/// still in the future, or a goal that has spent its round budget.
+fn goal_autopilot_due(goal: &ravenbot_db::queries::GoalRecord, now: &str) -> bool {
+    goal.status == "active"
+        && goal.next_run_at.as_deref().is_some_and(|due| due <= now)
+        && goal.rounds_used < goal.max_rounds.max(1)
+}
+
+fn max_office_cycles() -> u32 {
+    std::env::var("RAVENBOT_OFFICE_CYCLES")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .map(|value| value.clamp(1, 16))
+        .unwrap_or(8)
+}
+
+#[derive(Debug, Clone, Default)]
+struct OfficeCycleReview {
+    complete: bool,
+    /// Strict judge verdict. `complete` is the compatibility view used by the
+    /// existing loop; `blocked` and `wait` stop the turn without claiming done.
+    verdict: ravenbot_core::GoalVerdict,
+    reason: String,
+    next_task: String,
+    /// Deterministic gates that were run before this verdict. Empty when no
+    /// recognized test/build command exists.
+    gates: Vec<ravenbot_runtime::quality_gate::GateResult>,
+    /// True when the model review failed and this is the conservative
+    /// fallback. A degraded review can never claim the product is done.
+    degraded: bool,
+}
+
+/// Every top-level `{...}` span in a model response, respecting strings and
+/// escapes. A review can be surrounded by prose, markdown fences, or a second
+/// object; taking the first `{` through the last `}` breaks on all three.
+fn json_object_ranges(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut ranges = Vec::new();
+    let mut start = None;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, byte) in bytes.iter().enumerate() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match *byte {
+            b'"' if depth > 0 => in_string = true,
+            b'{' => {
+                if depth == 0 {
+                    start = Some(index);
+                }
+                depth += 1;
+            }
+            b'}' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(begin) = start.take() {
+                        ranges.push((begin, index + 1));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    ranges
+}
+
+fn review_value(raw: &str) -> Option<serde_json::Value> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if value.is_object() && (value.get("verdict").is_some() || value.get("complete").is_some())
+        {
+            return Some(value);
+        }
+    }
+    for (begin, end) in json_object_ranges(raw) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&raw[begin..end]) {
+            if value.is_object()
+                && (value.get("verdict").is_some() || value.get("complete").is_some())
+            {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+/// Parse the lead's completion review, tolerating prose, code fences, and a
+/// second JSON object after the verdict.
+fn parse_office_cycle_review(raw: &str) -> Option<OfficeCycleReview> {
+    let value = review_value(raw)?;
+    let complete_flag = match value.get("complete") {
+        Some(serde_json::Value::Bool(value)) => *value,
+        Some(serde_json::Value::String(value)) => value.eq_ignore_ascii_case("true"),
+        _ => false,
+    };
+    let explicit_verdict = value
+        .get("verdict")
+        .and_then(serde_json::Value::as_str)
+        .and_then(ravenbot_core::GoalVerdict::parse);
+    let verdict = explicit_verdict.unwrap_or(if complete_flag {
+        ravenbot_core::GoalVerdict::Done
+    } else {
+        ravenbot_core::GoalVerdict::Continue
+    });
+    let complete = explicit_verdict
+        .map(|verdict| verdict == ravenbot_core::GoalVerdict::Done)
+        .unwrap_or(complete_flag);
+    Some(OfficeCycleReview {
+        complete,
+        verdict,
+        reason: value
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        next_task: value
+            .get("next_task")
+            .or_else(|| value.get("nextTask"))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        gates: Vec::new(),
+        degraded: false,
+    })
+}
+
+/// Read one JSON-ish scalar field even when the surrounding object is
+/// malformed (trailing comma, missing brace, literal newline in a string).
+///
+/// The review is a control-plane decision; losing an otherwise valid verdict
+/// to one stray comma is not acceptable. This parser is deliberately narrow:
+/// it only recovers `verdict`, `reason`, `next_task`, and `complete` from text
+/// that already has the right field names.
+fn find_review_field(raw: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\"");
+    let mut search_from = 0usize;
+    while let Some(relative) = raw[search_from..].find(&needle) {
+        let absolute = search_from + relative + needle.len();
+        let after = &raw[absolute..];
+        let Some(colon) = after.find(':') else {
+            search_from = absolute;
+            continue;
+        };
+        let rest = after[colon + 1..].trim_start();
+        if rest.starts_with('"') {
+            if let Some(value) = parse_json_string(rest) {
+                return Some(value);
+            }
+        } else {
+            let token: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+                .collect();
+            if !token.is_empty() {
+                return Some(token);
+            }
+        }
+        search_from = absolute;
+    }
+    None
+}
+
+fn parse_json_string(rest: &str) -> Option<String> {
+    let mut chars = rest.strip_prefix('"')?.chars();
+    let mut out = String::new();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => match chars.next()? {
+                '"' => out.push('"'),
+                '\\' => out.push('\\'),
+                'n' => out.push('\n'),
+                'r' => out.push('\r'),
+                't' => out.push('\t'),
+                other => out.push(other),
+            },
+            other => out.push(other),
+        }
+    }
+    None
+}
+
+/// The review runtime returns either a tool-call object or a `__text`
+/// envelope when the provider rejected tool schemas. Normalize both to text
+/// for the parsers above.
+fn review_text(value: &serde_json::Value) -> String {
+    value
+        .get("__text")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| serde_json::to_string(value).unwrap_or_default())
+}
+
+/// Last-resort parser for a review whose JSON is damaged but whose fields are
+/// still present. A recovered verdict is a real verdict, not a degraded one.
+fn parse_office_cycle_review_lenient(raw: &str) -> Option<OfficeCycleReview> {
+    let complete_flag =
+        find_review_field(raw, "complete").map(|value| value.eq_ignore_ascii_case("true"));
+    let verdict = find_review_field(raw, "verdict")
+        .and_then(|value| ravenbot_core::GoalVerdict::parse(&value))
+        .or_else(|| {
+            complete_flag.map(|complete| {
+                if complete {
+                    ravenbot_core::GoalVerdict::Done
+                } else {
+                    ravenbot_core::GoalVerdict::Continue
+                }
+            })
+        })?;
+    Some(OfficeCycleReview {
+        complete: verdict == ravenbot_core::GoalVerdict::Done,
+        verdict,
+        reason: find_review_field(raw, "reason").unwrap_or_default(),
+        next_task: find_review_field(raw, "next_task")
+            .or_else(|| find_review_field(raw, "nextTask"))
+            .unwrap_or_default(),
+        gates: Vec::new(),
+        degraded: false,
+    })
+}
+
+/// A review that merely echoed the repair prompt's schema is not a verdict.
+///
+/// A small model that cannot produce JSON sometimes copies the example object
+/// back verbatim. That parses as `continue` with the placeholder reason and
+/// next task, which would silently replace the real judge with boilerplate.
+fn office_review_is_schema_echo(review: &OfficeCycleReview) -> bool {
+    let reason = review.reason.trim().to_ascii_lowercase();
+    let next_task = review.next_task.trim().to_ascii_lowercase();
+    reason.is_empty()
+        || reason.starts_with('<')
+        || reason.contains("at most 240 characters")
+        || reason.contains("one milestone or empty")
+        || reason.contains("valid json")
+        || next_task.starts_with('<')
+        || next_task.contains("one milestone or empty")
+        || (review.verdict == ravenbot_core::GoalVerdict::Continue && next_task.is_empty())
+}
+
+/// Parse a review through both parsers, rejecting schema echoes.
+///
+/// A rejected answer falls through to the caller's repair prompt and then to
+/// the one-word judge, which is more reliable than treating boilerplate as a
+/// real `continue` decision.
+fn parse_office_cycle_review_checked(raw: &str) -> Option<OfficeCycleReview> {
+    parse_office_cycle_review(raw)
+        .or_else(|| parse_office_cycle_review_lenient(raw))
+        .filter(|review| !office_review_is_schema_echo(review))
+}
+
+fn parse_binary_review_answer(answer: &str) -> Option<ravenbot_core::GoalVerdict> {
+    let lower = answer.to_ascii_lowercase();
+    let negative = lower.contains("continue")
+        || lower.contains("not done")
+        || lower.contains("not complete")
+        || lower.contains("incomplete")
+        || lower.contains("not finished")
+        || lower.contains("unfinished")
+        || lower.contains("cannot complete")
+        || lower.contains("can't complete")
+        || lower.contains("could not complete")
+        || lower.contains("unable to complete");
+    if negative {
+        return Some(ravenbot_core::GoalVerdict::Continue);
+    }
+    if lower.contains("done") || lower.contains("complete") {
+        return Some(ravenbot_core::GoalVerdict::Done);
+    }
+    None
+}
+
+/// Last-resort one-word judge.
+///
+/// Some provider/model combinations ignore tool schemas and ramble past the
+/// JSON budget. A one-word question still gives the office a real verdict
+/// without depending on structured output. Negative phrases are checked first
+/// so "not done" cannot be read as "done".
+async fn binary_office_review(
+    runtime: &Arc<ravenbot_runtime::Runtime>,
+    lead_id: Uuid,
+    goal: &str,
+    board: &str,
+    cycle_summary: &str,
+    failures: &[String],
+    next_task_if_continue: &str,
+) -> Option<OfficeCycleReview> {
+    let failure_text = if failures.is_empty() {
+        "(none)".to_string()
+    } else {
+        failures.join("\n")
+    };
+    let prompt = format!(
+        "Is the office goal complete? Answer with exactly one word: DONE or CONTINUE.\n\
+         DONE only when the deliverable exists and the latest evidence verifies it. \
+         A plan, design, or promise of future work is not done.\n\n\
+         Goal:\n{goal}\n\n\
+         Durable project backlog:\n{board}\n\n\
+         This cycle's result:\n{cycle_summary}\n\n\
+         Incomplete tasks:\n{failure_text}\n\n\
+         Answer:"
+    );
+    // A stream that ends before completion is usually transient. Try the
+    // one-word judge twice before giving up; a second short call is far
+    // cheaper than another full office cycle.
+    let mut answer = None;
+    for attempt in 0..2 {
+        let generated = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            runtime.complete_as_bot(
+                lead_id,
+                "You are a completion judge. Answer with one word.",
+                &prompt,
+                // A reasoning model can spend its first tokens thinking.
+                // Enough room must remain for the one-word answer.
+                128,
+            ),
+        )
+        .await;
+        match generated {
+            Ok(Ok(text)) if !text.trim().is_empty() => {
+                answer = Some(text);
+                break;
+            }
+            Ok(Ok(_)) => {
+                tracing::warn!(attempt, "One-word completion review returned empty");
+            }
+            Ok(Err(error)) => {
+                tracing::warn!(%error, attempt, "One-word completion review failed");
+            }
+            Err(_) => {
+                tracing::warn!(attempt, "One-word completion review timed out");
+            }
+        }
+        if attempt == 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+    }
+    let Some(answer) = answer else {
+        return None;
+    };
+    match parse_binary_review_answer(&answer) {
+        Some(ravenbot_core::GoalVerdict::Continue) => Some(OfficeCycleReview {
+            complete: false,
+            verdict: ravenbot_core::GoalVerdict::Continue,
+            reason: format!(
+                "Completion judge answered: {}",
+                truncate_chars(answer.trim(), 300)
+            ),
+            next_task: next_task_if_continue.to_string(),
+            gates: Vec::new(),
+            degraded: false,
+        }),
+        Some(ravenbot_core::GoalVerdict::Done) => Some(OfficeCycleReview {
+            complete: true,
+            verdict: ravenbot_core::GoalVerdict::Done,
+            reason: format!(
+                "Completion judge answered: {}",
+                truncate_chars(answer.trim(), 300)
+            ),
+            next_task: String::new(),
+            gates: Vec::new(),
+            degraded: false,
+        }),
+        _ => {
+            tracing::warn!(
+                answer = %truncate_chars(answer.trim(), 200),
+                "One-word completion review did not answer DONE or CONTINUE"
+            );
+            None
+        }
+    }
+}
+
+/// Conservative review used when the judge model fails. It never reports the
+/// product as done: a model outage is not evidence that the work is complete.
+fn office_review_fallback(
+    requires_implementation: bool,
+    has_implementation: bool,
+    why: &str,
+) -> OfficeCycleReview {
+    OfficeCycleReview {
+        complete: false,
+        verdict: ravenbot_core::GoalVerdict::Continue,
+        reason: format!("The completion review {why}; continuing within the cycle budget."),
+        next_task: if requires_implementation && has_implementation {
+            office_verify_and_continue_fallback()
+        } else {
+            office_next_milestone_fallback()
+        },
+        gates: Vec::new(),
+        degraded: true,
+    }
+}
+
+fn office_next_milestone_fallback() -> String {
+    "Continue the office goal. Read Shared/STATUS.md and the workspace, pick the next concrete milestone that is not already done, produce one verified artifact for it, and update Shared/STATUS.md. Do not repeat completed work.".to_string()
+}
+
+fn office_verify_and_continue_fallback() -> String {
+    "Verify the current implementation with the project's test or smoke command, fix any failures, then continue with the next unfinished part of the product. Record the command and result in Shared/STATUS.md. Do not repeat completed work.".to_string()
+}
+
+/// Render the just-finished graph as the board the review should judge.
+///
+/// The persisted board is written by a separate task and can lag the graph by
+/// a few milliseconds. The turn result already carries the authoritative
+/// checklist, so the review uses that instead of racing the projection.
+fn office_cycle_checklist(result: &serde_json::Value) -> String {
+    let Some(items) = result
+        .get("checklist")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return String::new();
+    };
+    items
+        .iter()
+        .map(|item| {
+            let status = item
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Pending");
+            let label = item
+                .get("label")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Task");
+            format!("- [{status}] {}", truncate_chars(label.trim(), 220))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Should this finished cycle be reviewed, or does the turn stop here?
+///
+/// A general "keep going" request is reviewed even when every planned task
+/// completed, because the plan was only one milestone. An explicit new request
+/// stops after its plan unless a task failed.
+fn office_cycle_should_review(allow_continue: bool, status: &str, failures: &[String]) -> bool {
+    allow_continue && !(status == "failed" && failures.is_empty())
+}
+
+/// Failures that another cycle cannot fix: the key, model, provider, or
+/// account is wrong. Replanning only burns the office budget while showing the
+/// same error again.
+fn office_failure_is_permanent(failures: &[String]) -> bool {
+    let text = failures.join(" ").to_ascii_lowercase();
+    [
+        "api key",
+        "invalid api key",
+        "401",
+        "402",
+        "403",
+        "insufficient",
+        "free usage limit",
+        "payment required",
+        "modelprotocolunsupported",
+        "model does not support this protocol",
+        "unknown provider",
+        "not configured",
+    ]
+    .iter()
+    .any(|needle| text.contains(needle))
+}
+
+/// Force a verification/continuation cycle after the first software milestone.
+///
+/// The planner's tasks can all say "done" while the product is still one
+/// milestone. This is the guard that stops a five-task plan from ending the
+/// turn. It applies only to a reviewed, software-shaped goal whose first
+/// milestone actually produced an implementation; non-code work and explicit
+/// one-shot requests are left to the review.
+fn office_first_cycle_needs_verification(
+    allow_continue: bool,
+    cycle: u32,
+    requires_implementation: bool,
+    has_implementation: bool,
+) -> bool {
+    allow_continue && cycle == 0 && requires_implementation && has_implementation
+}
+
+/// Does the goal imply a runnable code artifact?
+///
+/// The completion review must not force every office to produce code: a
+/// research, design, or campaign office can be complete with documents. This
+/// only supplies a hard floor for goals that clearly ask for software. The
+/// review model still decides everything else.
+fn office_goal_requires_implementation(goal: &str) -> bool {
+    let lower = goal.to_ascii_lowercase();
+    let words: std::collections::HashSet<&str> = lower
+        .split(|c: char| !c.is_alphanumeric() && c != '-')
+        .filter(|word| !word.is_empty())
+        .collect();
+    const CODE_WORDS: &[&str] = &[
+        "app",
+        "application",
+        "backend",
+        "bot",
+        "build",
+        "cli",
+        "code",
+        "dashboard",
+        "database",
+        "deploy",
+        "extension",
+        "frontend",
+        "game",
+        "implement",
+        "library",
+        "plugin",
+        "script",
+        "server",
+        "service",
+        "terminal",
+        "tool",
+        "website",
+    ];
+    words.iter().any(|word| CODE_WORDS.contains(word))
+        || lower.contains("web app")
+        || lower.contains("command-line")
+        || lower.contains("command line")
+}
+
+/// Decide whether one office cycle delivered the product.
+///
+/// The planner is intentionally capped to a small milestone. The only reliable
+/// way to know whether the *product* is done is to ask the lead to judge the
+/// goal against the board, the workspace, and the cycle's actual output. A
+/// model failure fails open to another bounded cycle; failed or partial work
+/// still blocks completion deterministically.
+#[allow(clippy::too_many_arguments)]
+async fn office_cycle_review(
+    runtime: &Arc<ravenbot_runtime::Runtime>,
+    lead_id: Uuid,
+    goal: &str,
+    board: &str,
+    workspace: &str,
+    has_implementation: bool,
+    cycle: u32,
+    cycle_history: &[String],
+    cycle_summary: &str,
+    failures: &[String],
+    open_work: usize,
+    allow_continue: bool,
+    gate_root: Option<&std::path::Path>,
+    custom_gates: &[ravenbot_core::GoalGate],
+) -> OfficeCycleReview {
+    let requires_implementation = office_goal_requires_implementation(goal);
+    let history = cycle_history
+        .iter()
+        .rev()
+        .take(4)
+        .rev()
+        .map(|entry| truncate_chars(entry, 1200))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    let failure_text = if failures.is_empty() {
+        "(none)".to_string()
+    } else {
+        failures.join("\n")
+    };
+    let prompt = format!(
+        "You are the lead of an AI office. Decide whether the office has delivered the \
+         product described by its goal, then either stop or name the next milestone.\n\n\
+         Cycle: {cycle_number}\n\n\
+         Office goal:\n{goal}\n\n\
+         Current cycle checklist:\n{board}\n\n\
+         Workspace snapshot:\n{workspace}\n\n\
+         Earlier cycles in this turn:\n{history}\n\n\
+         This cycle's result:\n{cycle_summary}\n\n\
+         This cycle's incomplete tasks:\n{failure_text}\n\n\
+         Rules:\n\
+         - The planner produces ONE milestone per cycle. All planned tasks being done does \
+           NOT prove the product is complete.\n\
+         - Mark complete only when the goal's deliverable exists and the latest evidence \
+           verifies it. A design, plan, or promise of future work is not a complete product.\n\
+         - RAVENBOT runs the workspace's test/build gates after your verdict. A red gate \
+           overrides 'complete'; do not claim done while you know verification is red.\n\
+         - If the goal needs a runnable app and the workspace has no implementation, complete \
+           must be false.\n\
+         - If any task in this cycle or in the durable project backlog failed, was partial, \
+           or was skipped for a failed dependency, complete must be false unless the remaining \
+           work is explicitly out of scope and recorded as such.\n\
+         - If incomplete, next_task must be ONE concrete milestone, self-contained, sized for \
+           at most 20 tool rounds. Do not ask the user a question.\n\
+         - If complete, next_task may be empty.\n\
+         - Use blocked only when a person, credential, or external decision is required.\
+         - Use wait only when a long-running process must finish before more work can start.\n\
+         Call the `submit_review` tool exactly once with the verdict, reason, and next_task.",
+        cycle_number = cycle + 1,
+    );
+
+    let review_max_tokens = 1_600u32;
+    let continue_task = if requires_implementation && has_implementation {
+        office_verify_and_continue_fallback()
+    } else {
+        office_next_milestone_fallback()
+    };
+    let generated = tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        runtime.complete_review_as_bot(
+            lead_id,
+            "You are a precise product completion judge. Use the submit_review tool.",
+            &prompt,
+            review_max_tokens,
+        ),
+    )
+    .await;
+
+    let mut review = match generated {
+        Ok(Ok(value)) => {
+            let text = review_text(&value);
+            match parse_office_cycle_review_checked(&text) {
+                Some(review) => review,
+                None => {
+                    tracing::warn!(
+                        raw = %truncate_chars(&text, 600),
+                        "Office cycle review was unparseable; retrying once with a compact repair prompt"
+                    );
+                    let repair_prompt = format!(
+                        "Your previous office-review answer was not valid JSON. \
+                         Return ONLY one compact JSON object, with no markdown and no explanation:\n\
+                         {{\"verdict\":\"<one of done, continue, blocked, wait>\",\
+                         \"reason\":\"<your one-sentence reason>\",\
+                         \"next_task\":\"<one milestone, or empty only when done>\"}}\n\
+                         Replace every <...> placeholder with your own text; do not copy them.\n\
+                         Cycle: {cycle_number}\n\
+                         Goal: {goal}\n\
+                         Failures: {failures}\n\
+                         Previous answer:\n{previous}\n",
+                        cycle_number = cycle + 1,
+                        goal = truncate_chars(goal, 1200),
+                        failures = truncate_chars(&failure_text, 1000),
+                        previous = truncate_chars(&text, 1600),
+                    );
+                    let repaired = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        runtime.complete_review_as_bot(
+                            lead_id,
+                            "You are a precise product completion judge. Use the submit_review tool.",
+                            &repair_prompt,
+                            500,
+                        ),
+                    )
+                    .await;
+                    match repaired {
+                        Ok(Ok(value)) => {
+                            let text = review_text(&value);
+                            parse_office_cycle_review_checked(&text).unwrap_or_else(|| {
+                                tracing::warn!(
+                                    raw = %truncate_chars(&text, 400),
+                                    "Office cycle review retry was unparseable"
+                                );
+                                office_review_fallback(
+                                    requires_implementation,
+                                    has_implementation,
+                                    &format!(
+                                        "returned invalid JSON twice. Last answer: {}",
+                                        truncate_chars(&text, 800)
+                                    ),
+                                )
+                            })
+                        }
+                        Ok(Err(error)) => {
+                            tracing::warn!(%error, "Office cycle review retry failed; trying the one-word judge");
+                            if let Some(review) = binary_office_review(
+                                runtime,
+                                lead_id,
+                                goal,
+                                board,
+                                cycle_summary,
+                                failures,
+                                &continue_task,
+                            )
+                            .await
+                            {
+                                review
+                            } else {
+                                tracing::warn!("One-word judge unavailable after retry; using the conservative fallback");
+                                office_review_fallback(
+                                    requires_implementation,
+                                    has_implementation,
+                                    &format!(
+                                        "failed on retry: {}",
+                                        truncate_chars(&error.to_string(), 300)
+                                    ),
+                                )
+                            }
+                        }
+                        Err(_) => {
+                            tracing::warn!("Office cycle review retry timed out; using the conservative fallback");
+                            office_review_fallback(
+                                requires_implementation,
+                                has_implementation,
+                                "timed out on retry",
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "Office cycle review failed; trying the one-word judge");
+            if let Some(review) = binary_office_review(
+                runtime,
+                lead_id,
+                goal,
+                board,
+                cycle_summary,
+                failures,
+                &continue_task,
+            )
+            .await
+            {
+                review
+            } else {
+                tracing::warn!("One-word judge unavailable; using the conservative fallback");
+                office_review_fallback(
+                    requires_implementation,
+                    has_implementation,
+                    &format!("failed: {}", truncate_chars(&error.to_string(), 300)),
+                )
+            }
+        }
+        Err(_) => {
+            tracing::warn!("Office cycle review timed out; using the conservative fallback");
+            office_review_fallback(requires_implementation, has_implementation, "timed out")
+        }
+    };
+
+    // The model cannot overrule hard evidence. Failed or partial work is not
+    // a complete product, and a goal that needs code cannot be complete in an
+    // empty workspace.
+    if !failures.is_empty() {
+        review.complete = false;
+        review.verdict = ravenbot_core::GoalVerdict::Continue;
+        if review.reason.trim().is_empty() {
+            review.reason = "One or more tasks did not complete.".to_string();
+        }
+    }
+    if allow_continue && requires_implementation && !has_implementation {
+        review.complete = false;
+        review.verdict = ravenbot_core::GoalVerdict::Continue;
+        if review.reason.trim().is_empty() {
+            review.reason =
+                "The goal needs implementation, but the workspace has none.".to_string();
+        }
+    }
+    // One milestone is not a product. For a software goal, the first cycle is
+    // always followed by a verification/continuation cycle, even when the
+    // planner's tasks all say done. This is the exact failure mode where a
+    // five-task plan was mistaken for the finished product.
+    if office_first_cycle_needs_verification(
+        allow_continue,
+        cycle,
+        requires_implementation,
+        has_implementation,
+    ) {
+        review.complete = false;
+        review.verdict = ravenbot_core::GoalVerdict::Continue;
+        review.reason = "The first milestone exists; the office must verify it and continue the next unfinished part before the product is complete.".to_string();
+        if review.next_task.trim().is_empty() {
+            review.next_task = office_verify_and_continue_fallback();
+        }
+    }
+    if !review.complete
+        && review.verdict == ravenbot_core::GoalVerdict::Continue
+        && review.next_task.trim().is_empty()
+    {
+        review.next_task = office_next_milestone_fallback();
+    }
+    if review.reason.trim().is_empty() {
+        review.reason = if review.complete {
+            "The goal's deliverable exists and the latest cycle verified it.".to_string()
+        } else {
+            "The product is not complete yet.".to_string()
+        };
+    }
+
+    // Verify every completed cycle, not only the cycle that claims the whole
+    // goal is done. A red test caught after one milestone is a small fix; the
+    // same failure discovered five milestones later is a rewrite. The switch
+    // exists for large CI-heavy workspaces that prefer completion-only gates.
+    let gate_every_cycle = std::env::var("RAVENBOT_OFFICE_GATE_EVERY_CYCLE")
+        .map(|value| value.trim() != "0")
+        .unwrap_or(true);
+    let should_verify = review.complete
+        || (gate_every_cycle
+            && review.verdict == ravenbot_core::GoalVerdict::Continue
+            && failures.is_empty()
+            && has_implementation);
+    if should_verify {
+        if let Some(root) = gate_root {
+            let timeout_secs = std::env::var("RAVENBOT_GATE_TIMEOUT_SECS")
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(600);
+            let roots = vec![root.to_path_buf()];
+            let gates = ravenbot_runtime::quality_gate::run_workspace_gates_with_contract(
+                root,
+                custom_gates,
+                &roots,
+                std::time::Duration::from_secs(timeout_secs),
+            )
+            .await;
+            if review.complete
+                && completion_needs_workspace_gate(
+                    requires_implementation,
+                    has_implementation,
+                    &gates,
+                )
+            {
+                review.complete = false;
+                review.verdict = ravenbot_core::GoalVerdict::Continue;
+                review.reason = "The product exists, but the workspace has no recognized test or build command, so completion cannot be verified.".to_string();
+                review.next_task = "Add a runnable test or build command for the workspace (for example a tests/ directory with unittest, or a package manifest script), run it, and record the result in Shared/STATUS.md.".to_string();
+                review.gates = gates;
+            } else {
+                apply_gate_results(&mut review, gates);
+            }
+        } else if review.complete
+            && completion_needs_workspace_gate(requires_implementation, has_implementation, &[])
+        {
+            review.complete = false;
+            review.verdict = ravenbot_core::GoalVerdict::Continue;
+            review.reason = "The product exists, but the office has no workspace root whose tests can verify it.".to_string();
+            review.next_task = "Set the office's project folder, then run its test or build command and record the result in Shared/STATUS.md.".to_string();
+        }
+    }
+
+    // If the judge is unavailable, the workspace can still prove completion:
+    // every required gate passed, the cycle has no failures, and the durable
+    // backlog is empty. This is deliberately narrower than the model review —
+    // it never overrides a red gate, an open task, or the first-cycle
+    // verification rule.
+    if deterministic_completion_ready(
+        &review,
+        failures,
+        open_work,
+        requires_implementation,
+        has_implementation,
+        allow_continue,
+        cycle,
+    ) {
+        review.complete = true;
+        review.verdict = ravenbot_core::GoalVerdict::Done;
+        review.degraded = false;
+        review.reason = "Every required quality gate passed and the durable backlog is empty; the model judge was unavailable, so completion was verified deterministically.".to_string();
+        review.next_task = String::new();
+    }
+    review
+}
+
+/// Deterministic completion when the model judge is unavailable.
+///
+/// This is the safety net for a flaky provider: a green required gate plus an
+/// empty durable backlog is stronger evidence than a prose review, while a
+/// red gate, an open task, or the mandatory first-cycle verification still
+/// blocks completion.
+fn deterministic_completion_ready(
+    review: &OfficeCycleReview,
+    failures: &[String],
+    open_work: usize,
+    requires_implementation: bool,
+    has_implementation: bool,
+    allow_continue: bool,
+    cycle: u32,
+) -> bool {
+    review.degraded
+        && !review.complete
+        && review.verdict == ravenbot_core::GoalVerdict::Continue
+        && failures.is_empty()
+        && open_work == 0
+        && requires_implementation
+        && has_implementation
+        && !office_first_cycle_needs_verification(
+            allow_continue,
+            cycle,
+            requires_implementation,
+            has_implementation,
+        )
+        && review.gates.iter().any(|gate| gate.required)
+        && review
+            .gates
+            .iter()
+            .all(|gate| !gate.required || gate.passed)
+}
+
+/// A code goal with an implementation must have at least one deterministic
+/// verification command before the office may claim it is done. Custom goal
+/// gates count; a workspace with no recognized command does not.
+fn completion_needs_workspace_gate(
+    requires_implementation: bool,
+    has_implementation: bool,
+    gates: &[ravenbot_runtime::quality_gate::GateResult],
+) -> bool {
+    requires_implementation && has_implementation && !gates.iter().any(|gate| gate.required)
+}
+
+/// A failed gate is deterministic evidence the model cannot overrule.
+fn apply_gate_results(
+    review: &mut OfficeCycleReview,
+    gates: Vec<ravenbot_runtime::quality_gate::GateResult>,
+) {
+    if let Some(next_task) = ravenbot_runtime::quality_gate::gate_failure(&gates) {
+        review.complete = false;
+        review.verdict = ravenbot_core::GoalVerdict::Continue;
+        review.reason =
+            "A workspace quality gate failed; the product is not verified complete.".to_string();
+        review.next_task = next_task;
+    }
+    review.gates = gates;
+}
+
+fn office_continuation_prompt(cycle: u32, goal: &str, next_task: &str, board: &str) -> String {
+    let next_task = next_task.trim();
+    let next_task = if next_task.is_empty() {
+        office_next_milestone_fallback()
+    } else {
+        next_task.to_string()
+    };
+    format!(
+        "[Office continuation — cycle {next_cycle}]\n\n\
+         Office goal:\n{goal}\n\n\
+         Current board:\n{board}\n\n\
+         Next milestone chosen by the lead:\n{next_task}\n\n\
+         Plan ONE milestone for this cycle, not the whole product. Use 3-5 tasks and make \
+         each one achievable in about 20 tool rounds. Treat the durable backlog as the \
+         source of truth: resolve failed or blocked tasks before inventing a new milestone. \
+         Do not repeat work already marked done. The office will run another cycle after \
+         this one if the product is still incomplete.",
+        next_cycle = cycle + 1,
+    )
+}
+
+/// The contract state that stops a turn before it spends anything.
+///
+/// Returns the status to record and a sentence for the office conversation.
+fn goal_budget_stop(
+    goal: &ravenbot_db::queries::GoalRecord,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<(ravenbot_core::GoalStatus, String)> {
+    match goal.status.as_str() {
+        "paused" => {
+            return Some((
+                ravenbot_core::GoalStatus::Paused,
+                "The office goal is paused. Resume it in Office settings to continue.".to_string(),
+            ))
+        }
+        "blocked" => {
+            return Some((
+                ravenbot_core::GoalStatus::Blocked,
+                format!("The office goal is blocked: {}", goal.last_reason.trim()),
+            ))
+        }
+        "done" => {
+            return Some((
+                ravenbot_core::GoalStatus::Done,
+                "The office goal is already complete. Update the goal to start a new mission."
+                    .to_string(),
+            ))
+        }
+        "cancelled" => {
+            return Some((
+                ravenbot_core::GoalStatus::Cancelled,
+                "The office goal was cancelled.".to_string(),
+            ))
+        }
+        _ => {}
+    }
+    let contract = &goal.contract;
+    if contract.max_tokens > 0 && goal.tokens_used.max(0) as u64 >= contract.max_tokens {
+        return Some((
+            ravenbot_core::GoalStatus::Paused,
+            format!(
+                "The goal's token budget is exhausted ({} of {} tokens). Raise it in Office settings to continue.",
+                goal.tokens_used.max(0),
+                contract.max_tokens
+            ),
+        ));
+    }
+    if contract.max_wall_seconds > 0 {
+        if let Ok(created) = chrono::DateTime::parse_from_rfc3339(&goal.created_at) {
+            let elapsed = now
+                .signed_duration_since(created.with_timezone(&chrono::Utc))
+                .num_seconds()
+                .max(0);
+            if elapsed >= contract.max_wall_seconds as i64 {
+                return Some((
+                    ravenbot_core::GoalStatus::Paused,
+                    format!(
+                        "The goal's wall-clock budget is exhausted ({}s of {}s). Raise it in Office settings to continue.",
+                        elapsed, contract.max_wall_seconds
+                    ),
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// Start an office turn in the background.
 ///
 /// The UI used to await this entire function — plan, every node, synthesis —
@@ -8159,10 +15506,15 @@ async fn drain_office_queue(
 /// So the command now inserts the user turn, spawns the orchestration, and
 /// returns the room thread immediately. Live progress arrives as
 /// `agent-stream` events, and the board is persisted independently.
+///
+/// A turn is a sequence of bounded plan cycles. One plan is a milestone; the
+/// lead reviews the product after each cycle and either stops or names the
+/// next milestone. This is what prevents a five-task plan from being mistaken
+/// for a finished product.
 async fn start_office_turn(
     db: &ravenbot_db::Database,
     runtime: &Arc<ravenbot_runtime::Runtime>,
-    app: &tauri::AppHandle,
+    events: HostEvents,
     chatroom_id: Uuid,
     content: String,
     visible: String,
@@ -8170,6 +15522,12 @@ async fn start_office_turn(
     autonomous: bool,
     queue_item_id: Option<Uuid>,
     reply_to_id: Option<Uuid>,
+    recipient_bot_id: Option<Uuid>,
+    // False when restarting a turn whose user message is already in the
+    // transcript; the request must not appear twice.
+    insert_user_message: bool,
+    // A saved graph to resume on the first cycle. None means plan a fresh turn.
+    resume: Option<OfficeGraphResume>,
 ) -> Result<Uuid, String> {
     let roster = load_office_roster(db.pool(), chatroom_id).await?;
     let thread_id = ensure_chatroom_thread(db.pool(), chatroom_id, roster.bots[0].1.id).await?;
@@ -8197,14 +15555,63 @@ async fn start_office_turn(
     // Establish the monthly spend baseline before this turn spends anything.
     // The heartbeat also calls this, but a manual turn can be the first one an
     // office ever runs; seeding later would leave its cost uncounted.
-    if let Ok(Some(room)) = ravenbot_db::queries::ChatRoomQueries::get(db.pool(), chatroom_id).await
-    {
+    let office_room = ravenbot_db::queries::ChatRoomQueries::get(db.pool(), chatroom_id)
+        .await
+        .ok()
+        .flatten();
+    if let Some(room) = &office_room {
         let member_ids: Vec<Uuid> = roster
             .bots
             .iter()
             .map(|(member, _)| member.bot_id)
             .collect();
-        let _ = office_budget_spent(db, &room, &member_ids).await;
+        let _ = office_budget_spent(db, room, &member_ids).await;
+    }
+
+    // A persisted completion contract is created once per office from its
+    // mission. Its turn budget caps this turn; the office settings can edit it.
+    let office_goal = if let Some(room) = &office_room {
+        if let Some(existing) =
+            ravenbot_db::queries::GoalQueries::get_by_office(db.pool(), chatroom_id)
+                .await
+                .ok()
+                .flatten()
+        {
+            Some(existing)
+        } else {
+            let objective = room
+                .goal
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| room.description.trim());
+            if objective.is_empty() {
+                None
+            } else {
+                ravenbot_db::queries::GoalQueries::ensure_office_goal(
+                    db.pool(),
+                    chatroom_id,
+                    objective,
+                    max_office_cycles().saturating_mul(2).max(2),
+                )
+                .await
+                .ok()
+            }
+        }
+    } else {
+        None
+    };
+    let contract_max_turns = office_goal
+        .as_ref()
+        .map(|goal| goal.contract.max_turns.max(1));
+    if let Some(goal) = &office_goal {
+        if let Some((status, message)) = goal_budget_stop(goal, chrono::Utc::now()) {
+            if let Ok(goal_id) = Uuid::parse_str(&goal.id) {
+                let _ =
+                    ravenbot_db::queries::GoalQueries::set_status(db.pool(), goal_id, status).await;
+            }
+            return Err(message);
+        }
     }
 
     // Save the turn that started the work (with any attachments). `content` is
@@ -8212,68 +15619,703 @@ async fn start_office_turn(
     // They differ only for a heartbeat, whose internal instruction is not a
     // user request and would otherwise fill the room with a paragraph every
     // few minutes.
-    let mut user_msg = Message::user(thread_id, &visible);
-    if let Some(atts) = attachments {
-        user_msg.attachments = build_attachments(atts);
+    if insert_user_message {
+        let mut user_msg = Message::user(thread_id, &visible);
+        if let Some(atts) = attachments {
+            user_msg.attachments = build_attachments(atts);
+        }
+        user_msg.reply_to_id = reply_to_id;
+        ravenbot_db::queries::MessageQueries::insert(db.pool(), &user_msg)
+            .await
+            .map_err(|e| e.to_string())?;
     }
-    user_msg.reply_to_id = reply_to_id;
-    ravenbot_db::queries::MessageQueries::insert(db.pool(), &user_msg)
-        .await
-        .map_err(|e| e.to_string())?;
 
     let db_task = db.clone();
     let runtime_task = runtime.clone();
-    let app_task = app.clone();
+    let events_task = events.clone();
     mark_office_active(db, chatroom_id, true).await;
     mark_office_phase(db, chatroom_id, "planning").await;
     mark_office_last(db, chatroom_id).await;
 
-    tauri::async_runtime::spawn(async move {
+    let max_cycles = max_office_cycles()
+        .min(contract_max_turns.unwrap_or(u32::MAX))
+        .max(1);
+    let generic_request = office_generic_continue(&content);
+    let initial_cycle = resume.as_ref().map(|resume| resume.cycle).unwrap_or(0);
+    // A fresh turn supersedes any graph left running by a failed resume or by
+    // a crash after the office was already restarted. A resumed turn owns its
+    // graph and must not abandon it.
+    if resume.is_none() {
+        if let Err(error) =
+            ravenbot_db::queries::OfficeGraphQueries::abandon_running(db.pool(), chatroom_id).await
+        {
+            tracing::warn!(%error, chatroom_id = %chatroom_id, "Could not abandon stale office graphs");
+        }
+    }
+    let mut pending_resume = resume;
+    tokio::spawn(async move {
         let _run_counter = run_counter;
-        let turn_result = office_turn(
-            &db_task,
-            &runtime_task,
-            &app_task,
-            chatroom_id,
-            thread_id,
-            content,
-            roster,
-            autonomous,
-        )
-        .await;
-        match &turn_result {
-            Ok(_) => {
-                if let Some(item_id) = queue_item_id {
-                    finish_office_queue_item(&db_task, item_id, true, None).await;
+        let mut cycle = initial_cycle;
+        let mut content = content;
+        let mut cycle_history: Vec<String> = Vec::new();
+        let mut last_result: Option<serde_json::Value> = None;
+        let mut last_error: Option<String> = None;
+        let mut last_review: Option<OfficeCycleReview> = None;
+        let mut last_fingerprint: Option<String> = None;
+        let mut no_progress_cycles = 0u32;
+        let mut degraded_reviews = 0u32;
+        let mut stop_reason: Option<String> = None;
+        let mut verified_complete = false;
+
+        loop {
+            // A pause, block, or contract budget can arrive between cycles.
+            // Re-read it here so an autonomous office cannot spend past a
+            // limit the user just set.
+            if let Ok(Some(goal)) =
+                ravenbot_db::queries::GoalQueries::get_by_office(db_task.pool(), chatroom_id).await
+            {
+                if let Some((status, message)) = goal_budget_stop(&goal, chrono::Utc::now()) {
+                    if let Ok(goal_id) = Uuid::parse_str(&goal.id) {
+                        let _ = ravenbot_db::queries::GoalQueries::set_status(
+                            db_task.pool(),
+                            goal_id,
+                            status,
+                        )
+                        .await;
+                    }
+                    if autonomous {
+                        pause_autonomous_office(&db_task, chatroom_id, message.clone()).await;
+                    } else {
+                        let _ = post_bot_message(
+                            db_task.pool(),
+                            thread_id,
+                            lead_id,
+                            lead_name.clone(),
+                            message.clone(),
+                        )
+                        .await;
+                    }
+                    stop_reason = Some(message);
+                    break;
                 }
             }
-            Err(error) => {
-                if let Some(item_id) = queue_item_id {
-                    finish_office_queue_item(&db_task, item_id, false, Some(error.clone())).await;
+            let turn_resume = if cycle == initial_cycle {
+                pending_resume.take()
+            } else {
+                None
+            };
+            let turn_result = office_turn(
+                &db_task,
+                &runtime_task,
+                &events_task,
+                chatroom_id,
+                thread_id,
+                content.clone(),
+                visible.clone(),
+                roster.clone(),
+                autonomous,
+                recipient_bot_id,
+                cycle,
+                turn_resume,
+            )
+            .await;
+
+            let result = match turn_result {
+                Ok(result) => result,
+                Err(error) => {
+                    last_error = Some(error);
+                    break;
                 }
-                tracing::error!(chatroom_id = %chatroom_id, error = %error, "Office turn failed");
+            };
+            let awaiting_answer = result
+                .get("awaiting_answer")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let status = result
+                .get("status")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("failed")
+                .to_string();
+            let failures: Vec<String> = result
+                .get("failures")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|item| item.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let summary = result
+                .get("summary")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let cycle_checklist = office_cycle_checklist(&result);
+            cycle_history.push(format!(
+                "Cycle {} ({status}): {}",
+                cycle + 1,
+                truncate_chars(summary.trim(), 1200)
+            ));
+            last_result = Some(result);
+            last_review = None;
+
+            if awaiting_answer {
+                break;
+            }
+
+            // The budget, pause/cancel, and queued-user checks happen before
+            // spending another cycle. A queued user message owns the next
+            // turn; yielding here is the difference between a long office run
+            // and a run that starves the person watching it.
+            if office_queue_paused(&db_task, chatroom_id).await
+                || office_queue_has_pending(&db_task, chatroom_id).await
+                || runtime_task.is_paused().await
+            {
+                break;
+            }
+
+            let room = ravenbot_db::queries::ChatRoomQueries::get(db_task.pool(), chatroom_id)
+                .await
+                .ok()
+                .flatten();
+            let member_ids: Vec<Uuid> = roster
+                .bots
+                .iter()
+                .map(|(member, _)| member.bot_id)
+                .collect();
+            if let Some(room) = room.as_ref() {
+                if let Some((spent, limit)) =
+                    office_budget_exceeded(&db_task, room, &member_ids).await
+                {
+                    let message = format!(
+                        "⏸ **Office paused — monthly budget reached.** This office has spent ${spent:.2} of its ${limit:.2} ceiling. Raise the ceiling in Office settings, then continue."
+                    );
+                    if autonomous {
+                        pause_autonomous_office(&db_task, chatroom_id, message.clone()).await;
+                    } else {
+                        let _ = post_bot_message(
+                            db_task.pool(),
+                            thread_id,
+                            lead_id,
+                            lead_name.clone(),
+                            message.clone(),
+                        )
+                        .await;
+                    }
+                    stop_reason = Some(message);
+                    break;
+                }
+            }
+
+            // Record progress before the review, but do not let a no-progress
+            // cycle pre-empt a completion the review can prove.
+            if let Some(fingerprint) = office_workspace_fingerprint(room.as_ref()) {
+                if last_fingerprint.as_ref() == Some(&fingerprint) {
+                    no_progress_cycles += 1;
+                } else {
+                    no_progress_cycles = 0;
+                }
+                last_fingerprint = Some(fingerprint);
+            }
+
+            let allow_continue = autonomous || generic_request || !failures.is_empty();
+            if status == "failed" && office_failure_is_permanent(&failures) {
+                tracing::warn!(
+                    chatroom_id = %chatroom_id,
+                    "Office cycle stopped on a permanent provider/configuration failure"
+                );
+                break;
+            }
+            if !office_cycle_should_review(allow_continue, &status, &failures) {
+                break;
+            }
+
+            let goal = room
+                .as_ref()
+                .and_then(|room| room.goal.as_deref())
+                .map(str::trim)
+                .filter(|goal| !goal.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    room.as_ref()
+                        .map(|room| room.description.trim().to_string())
+                        .unwrap_or_default()
+                });
+            let durable_board = office_board_summary(&db_task, chatroom_id).await;
+            let board = if cycle_checklist.is_empty() {
+                durable_board
+            } else {
+                format!(
+                    "This cycle:\n{cycle_checklist}\n\nDurable project backlog:\n{durable_board}"
+                )
+            };
+            let workspace = office_workspace_snapshot(room.as_ref());
+            let has_implementation = office_has_implementation(room.as_ref());
+            // A condition-skipped branch is not open work; a failed or
+            // blocked one is. The graph failures already cover dependency
+            // skips, so only count actionable backlog rows here.
+            let open_work = ravenbot_db::queries::WorkItemQueries::list_open_by_office(
+                db_task.pool(),
+                chatroom_id,
+                200,
+            )
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|item| item.status != "skipped")
+            .count();
+            let gate_root = office_root(room.as_ref());
+            let office_goal =
+                ravenbot_db::queries::GoalQueries::get_by_office(db_task.pool(), chatroom_id)
+                    .await
+                    .ok()
+                    .flatten();
+            let goal_id = office_goal
+                .as_ref()
+                .and_then(|goal| Uuid::parse_str(&goal.id).ok());
+            let custom_gates = match goal_id {
+                Some(id) => ravenbot_db::queries::GoalQueries::get_gates(db_task.pool(), id)
+                    .await
+                    .unwrap_or_default(),
+                None => Vec::new(),
+            };
+            let review = office_cycle_review(
+                &runtime_task,
+                lead_id,
+                &goal,
+                &board,
+                &workspace,
+                has_implementation,
+                cycle,
+                &cycle_history,
+                &summary,
+                &failures,
+                open_work,
+                allow_continue,
+                gate_root.as_deref(),
+                &custom_gates,
+            )
+            .await;
+
+            if !review.gates.is_empty() {
+                for gate in &review.gates {
+                    let _ = ravenbot_db::queries::QualityGateQueries::record(
+                        db_task.pool(),
+                        chatroom_id,
+                        Some(thread_id),
+                        cycle,
+                        &gate.command,
+                        &gate.cwd,
+                        gate.exit_code,
+                        gate.passed,
+                        gate.timed_out,
+                        gate.duration_ms,
+                        &gate.output_tail,
+                        goal_id,
+                    )
+                    .await;
+                }
+                let report = ravenbot_runtime::quality_gate::gate_report_markdown(&review.gates);
                 let _ = post_bot_message(
                     db_task.pool(),
                     thread_id,
                     lead_id,
-                    lead_name,
-                    format!("⚠️ **Office run failed:** {error}"),
+                    lead_name.clone(),
+                    report,
                 )
                 .await;
-                let _ = app_task.emit(
-                    "agent-stream",
-                    serde_json::json!({ "kind": "done", "thread_id": thread_id.to_string() }),
+            }
+            if review.degraded {
+                degraded_reviews += 1;
+            } else {
+                degraded_reviews = 0;
+            }
+
+            if let Some(goal_id) = goal_id {
+                if let Some(goal) = office_goal.as_ref() {
+                    let tokens = ravenbot_db::queries::GoalQueries::tokens_for_office_since(
+                        db_task.pool(),
+                        chatroom_id,
+                        &goal.created_at,
+                    )
+                    .await
+                    .unwrap_or(goal.tokens_used.max(0) as u64);
+                    let _ = ravenbot_db::queries::GoalQueries::set_tokens_used(
+                        db_task.pool(),
+                        goal_id,
+                        tokens,
+                    )
+                    .await;
+                }
+                let cycle_failed = status == "failed"
+                    || !failures.is_empty()
+                    || review
+                        .gates
+                        .iter()
+                        .any(|gate| gate.required && !gate.passed);
+                let recorded_goal = ravenbot_db::queries::GoalQueries::record_verdict(
+                    db_task.pool(),
+                    goal_id,
+                    review.verdict,
+                    &review.reason,
+                    0,
+                    cycle_failed,
+                )
+                .await
+                .ok()
+                .flatten();
+
+                // A continue verdict that exhausted its automatic rounds is a
+                // hard stop. Park the goal and stop the autonomy loop that
+                // would otherwise bypass the goal budget.
+                if review.verdict == ravenbot_core::GoalVerdict::Continue
+                    && recorded_goal
+                        .as_ref()
+                        .is_some_and(|goal| goal.status == "paused")
+                {
+                    let reason = recorded_goal
+                        .as_ref()
+                        .map(|goal| goal.last_reason.clone())
+                        .filter(|reason| !reason.trim().is_empty())
+                        .unwrap_or_else(|| review.reason.clone());
+                    let message = format!("⏸ **Office paused.** {}", reason);
+                    pause_autonomous_office(&db_task, chatroom_id, message.clone()).await;
+                    last_review = Some(review);
+                    stop_reason = Some(message);
+                    break;
+                }
+
+                if review.verdict == ravenbot_core::GoalVerdict::Blocked {
+                    let parked = recorded_goal
+                        .as_ref()
+                        .is_some_and(|goal| goal.status == "blocked");
+                    if parked {
+                        let message = format!("🚧 **Office blocked.** {}", review.reason);
+                        if autonomous {
+                            pause_autonomous_office(&db_task, chatroom_id, message.clone()).await;
+                        } else {
+                            let _ = post_bot_message(
+                                db_task.pool(),
+                                thread_id,
+                                lead_id,
+                                lead_name.clone(),
+                                message.clone(),
+                            )
+                            .await;
+                        }
+                        last_review = Some(review);
+                        stop_reason = Some(message);
+                        break;
+                    }
+                    // The same blocker has not persisted long enough to park
+                    // the goal. Keep it active and let the scheduler retry
+                    // after the backoff instead of abandoning the project on
+                    // one bad cycle.
+                    let round = recorded_goal
+                        .as_ref()
+                        .map(|goal| goal.blocked_rounds)
+                        .unwrap_or(1);
+                    let message = format!(
+                        "🚧 **Office blocker recorded ({round}/3).** {} The goal stays active and will retry automatically.",
+                        review.reason
+                    );
+                    let _ = post_bot_message(
+                        db_task.pool(),
+                        thread_id,
+                        lead_id,
+                        lead_name.clone(),
+                        message.clone(),
+                    )
+                    .await;
+                    last_review = Some(review);
+                    stop_reason = Some(message);
+                    break;
+                }
+
+                if review.verdict == ravenbot_core::GoalVerdict::Wait {
+                    let message = format!(
+                        "⏸ **Office waiting.** {} The goal will check again automatically.",
+                        review.reason
+                    );
+                    let _ = post_bot_message(
+                        db_task.pool(),
+                        thread_id,
+                        lead_id,
+                        lead_name.clone(),
+                        message.clone(),
+                    )
+                    .await;
+                    last_review = Some(review);
+                    stop_reason = Some(message);
+                    break;
+                }
+            }
+
+            // Goal-less offices still need honest blocked/wait handling.
+            if matches!(
+                review.verdict,
+                ravenbot_core::GoalVerdict::Blocked | ravenbot_core::GoalVerdict::Wait
+            ) {
+                let label = if review.verdict == ravenbot_core::GoalVerdict::Blocked {
+                    "🚧 **Office blocked.**"
+                } else {
+                    "⏸ **Office waiting.**"
+                };
+                let message = format!("{label} {}", review.reason);
+                if autonomous && review.verdict == ravenbot_core::GoalVerdict::Blocked {
+                    pause_autonomous_office(&db_task, chatroom_id, message.clone()).await;
+                } else {
+                    let _ = post_bot_message(
+                        db_task.pool(),
+                        thread_id,
+                        lead_id,
+                        lead_name.clone(),
+                        message.clone(),
+                    )
+                    .await;
+                }
+                last_review = Some(review);
+                stop_reason = Some(message);
+                break;
+            }
+
+            // A judge outage is not evidence of completion, and repeating it
+            // every cycle only burns the office budget. Stop after two
+            // consecutive degraded reviews and leave the work resumable.
+            if degraded_reviews >= 2 {
+                let message = "⏸ **Office paused for this turn — completion judge unavailable.** The goal stays active and will retry after a backoff; no completion is being claimed.".to_string();
+                if let Some(goal) = office_goal.as_ref() {
+                    if let Ok(id) = Uuid::parse_str(&goal.id) {
+                        let _ = ravenbot_db::queries::GoalQueries::postpone(
+                            db_task.pool(),
+                            id,
+                            300,
+                            "Completion judge unavailable; retrying after backoff.",
+                        )
+                        .await;
+                    }
+                    let _ = post_bot_message(
+                        db_task.pool(),
+                        thread_id,
+                        lead_id,
+                        lead_name.clone(),
+                        message.clone(),
+                    )
+                    .await;
+                } else if autonomous {
+                    pause_autonomous_office(&db_task, chatroom_id, message.clone()).await;
+                } else {
+                    let _ = post_bot_message(
+                        db_task.pool(),
+                        thread_id,
+                        lead_id,
+                        lead_name.clone(),
+                        message.clone(),
+                    )
+                    .await;
+                }
+                last_review = Some(review);
+                stop_reason = Some(message);
+                break;
+            }
+
+            if review.complete {
+                verified_complete = true;
+                stop_reason = Some(format!("✅ **Office check:** {}", review.reason));
+                last_review = Some(review);
+                break;
+            }
+
+            // The last cycle still gets a completion review. Only after it
+            // says the product is incomplete do we stop for the cycle cap.
+            if cycle + 1 >= max_cycles {
+                let next_step = if office_goal.is_some() {
+                    "The active goal will start another bounded turn automatically."
+                } else {
+                    "Review `Shared/STATUS.md` and press Continue to run another cycle."
+                };
+                last_review = Some(review);
+                stop_reason = Some(format!(
+                    "⏸ **Office cycle limit reached ({max_cycles}).** The current plan is finished, but the product is not verified complete. {next_step}"
+                ));
+                break;
+            }
+
+            // A cycle that changes no file is not progress, even if it wrote a
+            // long status update. Two such cycles stop the turn instead of
+            // spending the office budget on the same briefing again.
+            if no_progress_cycles >= 2 {
+                let message = "⏸ **Office paused — no workspace progress.** Two continuation cycles did not add or change a file. Read `Shared/STATUS.md`, write the blocker or the next concrete change, then continue.".to_string();
+                if autonomous {
+                    pause_autonomous_office(&db_task, chatroom_id, message.clone()).await;
+                } else {
+                    let _ = post_bot_message(
+                        db_task.pool(),
+                        thread_id,
+                        lead_id,
+                        lead_name.clone(),
+                        message.clone(),
+                    )
+                    .await;
+                }
+                last_review = Some(review);
+                stop_reason = Some(message);
+                break;
+            }
+
+            last_review = Some(review.clone());
+            let next_task = if review.next_task.trim().is_empty() {
+                office_next_milestone_fallback()
+            } else {
+                review.next_task.trim().to_string()
+            };
+            cycle += 1;
+            content = office_continuation_prompt(cycle, &goal, &next_task, &board);
+            let _ = post_bot_message(
+                db_task.pool(),
+                thread_id,
+                lead_id,
+                lead_name.clone(),
+                format!(
+                    "🔁 **Office cycle {}** — {}\n\n{}",
+                    cycle + 1,
+                    truncate_chars(&review.reason, 300),
+                    truncate_chars(&next_task, 900)
+                ),
+            )
+            .await;
+        }
+
+        // Record usage even when the turn ended without a review (an explicit
+        // one-shot request or a paused cycle). The next turn's budget check
+        // must see what this one spent.
+        if let Ok(Some(goal)) =
+            ravenbot_db::queries::GoalQueries::get_by_office(db_task.pool(), chatroom_id).await
+        {
+            if let Ok(goal_id) = Uuid::parse_str(&goal.id) {
+                let tokens = ravenbot_db::queries::GoalQueries::tokens_for_office_since(
+                    db_task.pool(),
+                    chatroom_id,
+                    &goal.created_at,
+                )
+                .await
+                .unwrap_or(goal.tokens_used.max(0) as u64);
+                let _ = ravenbot_db::queries::GoalQueries::set_tokens_used(
+                    db_task.pool(),
+                    goal_id,
+                    tokens,
+                )
+                .await;
+            }
+        }
+
+        // Final queue/outcome handling is based on the last completed cycle.
+        let failed = last_result
+            .as_ref()
+            .map(|result| {
+                result.get("status").and_then(serde_json::Value::as_str) == Some("failed")
+            })
+            .unwrap_or(true);
+        if let Some(item_id) = queue_item_id {
+            let detail = failed.then(|| {
+                last_result
+                    .as_ref()
+                    .and_then(|result| result.get("failures"))
+                    .and_then(serde_json::Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str())
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    })
+                    .filter(|text| !text.is_empty())
+                    .map(|text| truncate_chars(&text, 500))
+                    .unwrap_or_else(|| "One or more tasks did not complete.".to_string())
+            });
+            finish_office_queue_item(&db_task, item_id, !failed, detail).await;
+        }
+
+        if let Some(error) = last_error {
+            tracing::error!(chatroom_id = %chatroom_id, error = %error, "Office turn failed");
+            let _ = post_bot_message(
+                db_task.pool(),
+                thread_id,
+                lead_id,
+                lead_name.clone(),
+                format!("⚠️ **Office run failed:** {error}"),
+            )
+            .await;
+            // A failed turn must not be retried on every 15s scheduler tick.
+            // Back off, and park the goal after three consecutive failures so
+            // a permanent configuration error cannot burn the whole budget.
+            if let Ok(Some(goal)) =
+                ravenbot_db::queries::GoalQueries::get_by_office(db_task.pool(), chatroom_id).await
+            {
+                if let Ok(id) = Uuid::parse_str(&goal.id) {
+                    let failures = goal.consecutive_failures.saturating_add(1);
+                    if failures >= 3 {
+                        let _ = ravenbot_db::queries::GoalQueries::pause_with_reason(
+                            db_task.pool(),
+                            id,
+                            &format!(
+                                "Office turn failed three times: {}",
+                                truncate_chars(&error, 300)
+                            ),
+                        )
+                        .await;
+                    } else {
+                        let _ = ravenbot_db::queries::GoalQueries::postpone(
+                            db_task.pool(),
+                            id,
+                            60 * failures,
+                            &format!("Office turn failed: {}", truncate_chars(&error, 300)),
+                        )
+                        .await;
+                    }
+                }
+            }
+        } else if let Some(reason) = stop_reason {
+            // Budget/no-progress already posted their message when they
+            // paused autonomy. A completion or cycle limit is posted here.
+            if verified_complete || reason.starts_with("⏸ **Office cycle limit") {
+                let _ = post_bot_message(
+                    db_task.pool(),
+                    thread_id,
+                    lead_id,
+                    lead_name.clone(),
+                    reason,
+                )
+                .await;
+            }
+        }
+
+        if let Some(review) = last_review {
+            if !review.complete && !verified_complete {
+                tracing::info!(
+                    chatroom_id = %chatroom_id,
+                    cycles = cycle + 1,
+                    reason = %review.reason,
+                    "Office turn paused before the product was verified complete"
                 );
             }
         }
+
         mark_office_active(&db_task, chatroom_id, false).await;
         clear_office_phase(&db_task, chatroom_id).await;
         // A completed run is a natural pause point: give the office time to be
         // read (or for the user to redirect it) before the next heartbeat.
         mark_office_last(&db_task, chatroom_id).await;
-        // Release the office. The queue worker starts the next pending user
-        // message; doing it here would make start_office_turn recursive.
+        // Release the office before announcing `done`: a user who reacts to
+        // the event must not be told the office is still busy. The queue
+        // worker starts the next pending message; doing it here would make
+        // start_office_turn recursive.
         drop(_run_counter);
+        events_task.emit(
+            "agent-stream",
+            serde_json::json!({ "kind": "done", "thread_id": thread_id.to_string() }),
+        );
     });
 
     Ok(thread_id)
@@ -8281,15 +16323,101 @@ async fn start_office_turn(
 
 /// The orchestration half of an office turn. Called from a spawned task so no
 /// window, route, or component owns the run's lifetime.
+/// A one-task plan for an explicitly addressed specialist.
+///
+/// The planner is bypassed for this turn because the client already chose the
+/// assignee. The lead still writes the final synthesis, so the office remains
+/// a team rather than becoming a hidden direct-message channel.
+fn directed_office_plan(
+    member: &ravenbot_runtime::orchestrator::OfficeMember,
+    request: &str,
+) -> ravenbot_runtime::orchestrator::OfficePlan {
+    ravenbot_runtime::orchestrator::OfficePlan {
+        tasks: vec![ravenbot_runtime::orchestrator::PlannedTask {
+            bot: member.name.clone(),
+            instruction: request.trim().to_string(),
+            depends_on: Vec::new(),
+        }],
+        final_summary_from: None,
+        question: None,
+    }
+}
+
+#[derive(Clone)]
+struct OfficeGraphResume {
+    graph: TaskGraph,
+    labels: std::collections::HashMap<Uuid, String>,
+    cycle: u32,
+    /// Interrupted node runs whose checkpoints can be replayed, keyed by node.
+    resume_runs: std::collections::HashMap<Uuid, Run>,
+}
+
+/// Persist one graph snapshot. Failures are logged, never fatal: the office
+/// must keep working even if the projection cannot be written.
+#[allow(clippy::too_many_arguments)]
+async fn save_office_graph(
+    db: &ravenbot_db::Database,
+    graph_id: Uuid,
+    chatroom_id: Uuid,
+    thread_id: Uuid,
+    cycle: u32,
+    request: &str,
+    visible: &str,
+    goal: &str,
+    labels: &std::collections::HashMap<Uuid, String>,
+    graph: &TaskGraph,
+    status: &str,
+) {
+    let labels = serde_json::to_string(labels).unwrap_or_else(|_| "{}".to_string());
+    let graph = match serde_json::to_string(graph) {
+        Ok(graph) => graph,
+        Err(error) => {
+            tracing::warn!(%error, "Could not serialize the office graph");
+            return;
+        }
+    };
+    if let Err(error) = ravenbot_db::queries::OfficeGraphQueries::save(
+        db.pool(),
+        graph_id,
+        chatroom_id,
+        thread_id,
+        cycle,
+        request,
+        visible,
+        goal,
+        &labels,
+        &graph,
+        status,
+    )
+    .await
+    {
+        tracing::warn!(%error, graph_id = %graph_id, "Could not persist the office graph");
+    }
+}
+
+fn office_node_state_label(state: &NodeState) -> &'static str {
+    match state {
+        NodeState::Pending => "pending",
+        NodeState::Running(_) => "running",
+        NodeState::Done(_) => "done",
+        NodeState::Failed(_) => "failed",
+        NodeState::Skipped => "skipped",
+    }
+}
+
 async fn office_turn(
     db: &ravenbot_db::Database,
     runtime: &Arc<ravenbot_runtime::Runtime>,
-    app: &tauri::AppHandle,
+    events: &HostEvents,
     chatroom_id: Uuid,
     thread_id: Uuid,
     content: String,
+    visible: String,
     roster: OfficeRoster,
     autonomous: bool,
+    recipient_bot_id: Option<Uuid>,
+    cycle: u32,
+    resume: Option<OfficeGraphResume>,
 ) -> Result<serde_json::Value, String> {
     // ── Orchestrate the office with a real planner ────────────────────────
     // A lead bot decomposes the request into a task DAG (who does what, in
@@ -8304,156 +16432,16 @@ async fn office_turn(
     let goal = room.as_ref().and_then(|r| r.goal.clone());
     let policy = room.as_ref().and_then(|r| r.policy.clone());
 
-    let planning_request = build_planning_request(db.pool(), thread_id, &content).await;
-    let planning_request = format!(
-        "{}\n\nWorkspace snapshot:\n{}",
-        planning_request,
-        office_workspace_snapshot(room.as_ref())
-    );
+    let direct_member = recipient_bot_id.and_then(|id| {
+        roster
+            .members
+            .iter()
+            .find(|member| member.bot_id == id)
+            .cloned()
+    });
 
-    let mut plan = runtime
-        .plan_office(
-            roster.lead_id,
-            goal.as_deref(),
-            policy.as_deref(),
-            &roster.members,
-            &planning_request,
-        )
-        .await
-        .or_else(|| {
-            tracing::warn!(
-                lead = %roster.lead_name,
-                "Office plan unavailable; using the deterministic role plan"
-            );
-            let plan = ravenbot_runtime::orchestrator::fallback_plan(
-                goal.as_deref(),
-                &content,
-                &roster.members,
-                roster.lead_id,
-            );
-            if plan.tasks.is_empty() {
-                None
-            } else {
-                Some(plan)
-            }
-        });
-
-    // A workspace with no code cannot be advanced by another inspection plan.
-    // Use a deterministic, creation-first bootstrap instead of asking the lead
-    // to re-read the same design docs for the sixth time.
-    let continuation = content.trim().to_ascii_lowercase();
-    let generic_continue = autonomous
-        || continuation.starts_with("[autonomous cycle]")
-        || continuation.contains("do next work")
-        || continuation == "continue"
-        || continuation.contains("continue the office");
-    if generic_continue && !office_has_implementation(room.as_ref()) {
-        tracing::info!(
-            lead = %roster.lead_name,
-            "Office workspace has no implementation; using the bootstrap plan"
-        );
-        plan = Some(ravenbot_runtime::orchestrator::bootstrap_plan(
-            goal.as_deref().unwrap_or(content.trim()),
-            &roster.members,
-            roster.lead_id,
-        ));
-        let attempts = bump_bootstrap_attempts(db, chatroom_id).await;
-        tracing::warn!(
-            chatroom_id = %chatroom_id,
-            attempts,
-            "Bootstrap plan selected because the workspace has no implementation"
-        );
-    }
-
-    // An autonomous cycle cannot wait for an answer. If the planner returned
-    // only a question, use the deterministic role plan and keep moving; a
-    // question attached to a usable plan is simply ignored.
-    if autonomous && plan.as_ref().map(|p| p.tasks.is_empty()).unwrap_or(true) {
-        let fallback = ravenbot_runtime::orchestrator::fallback_plan(
-            goal.as_deref(),
-            &content,
-            &roster.members,
-            roster.lead_id,
-        );
-        tracing::info!(
-            lead = %roster.lead_name,
-            "Autonomous office has no usable plan; using the deterministic role plan"
-        );
-        plan = if fallback.tasks.is_empty() {
-            None
-        } else {
-            Some(fallback)
-        };
-    }
-
-    // ── CEO clarification loop ────────────────────────────────────────────
-    // If the lead lacks enough information, it asks the client directly. We
-    // post its question into the room and stop; the client's next message is
-    // the answer, and the lead plans from there. A heartbeat never asks: no
-    // one is there to answer.
-    if !autonomous {
-        if let Some(question) = plan
-            .as_ref()
-            .and_then(|p| p.question.clone())
-            .filter(|q| !q.trim().is_empty())
-        {
-            let _ = post_bot_message(
-                db.pool(),
-                thread_id,
-                roster.lead_id,
-                roster.lead_name.clone(),
-                format!(
-                    "❓ I need one thing before I brief the team:\n\n{}",
-                    question.trim()
-                ),
-            )
-            .await;
-            let _ = app.emit(
-                "agent-stream",
-                serde_json::json!({ "kind": "done", "thread_id": thread_id.to_string() }),
-            );
-            return Ok(serde_json::json!({
-                "thread_id": thread_id,
-                "awaiting_answer": true,
-                "question": question,
-                "checklist": [],
-                "blackboard": {},
-                "summary": question,
-            }));
-        }
-    }
-
-    // The lead briefs the team in the room before work starts, so the client
-    // sees the breakdown the moment it happens.
-    if let Some(p) = &plan {
-        if !p.tasks.is_empty() {
-            let items: Vec<(String, String, Vec<usize>)> = p
-                .tasks
-                .iter()
-                .map(|t| {
-                    let who =
-                        ravenbot_runtime::orchestrator::resolve_member(&roster.members, &t.bot)
-                            .map(|m| m.name.clone())
-                            .unwrap_or_else(|| t.bot.clone());
-                    (who, briefing_label(&t.instruction), t.depends_on.clone())
-                })
-                .collect();
-            let _ = post_bot_message(
-                db.pool(),
-                thread_id,
-                roster.lead_id,
-                roster.lead_name.clone(),
-                briefing_markdown(&items),
-            )
-            .await;
-        }
-    }
-
-    mark_office_phase(db, chatroom_id, "executing").await;
-
-    // Build the graph from the plan (or the fan-out fallback), keeping a
-    // local node→label map so synthesis can name each contributor without
-    // polluting the instructions the bots actually receive.
+    let mut resumed = false;
+    let mut plan: Option<ravenbot_runtime::orchestrator::OfficePlan> = None;
     let mut graph = TaskGraph::new(&content);
     let mut node_ids: Vec<uuid::Uuid> = Vec::new();
     let mut label_for_node: std::collections::HashMap<uuid::Uuid, String> =
@@ -8461,39 +16449,296 @@ async fn office_turn(
     // (node_id, bot_id, board label, dependency task indices) for the live
     // planner board — emitted as `plan_ready` before execution starts.
     let mut board_nodes: Vec<(uuid::Uuid, uuid::Uuid, String, Vec<usize>)> = Vec::new();
+    let mut resume_runs = std::collections::HashMap::new();
+    // Threads of interrupted nodes whose task instruction is already present.
+    let mut resume_threads = std::collections::HashSet::new();
 
-    if let Some(plan) = &plan {
-        for task in &plan.tasks {
-            let assignee =
-                ravenbot_runtime::orchestrator::resolve_member(&roster.members, &task.bot)
-                    .map(|m| m.bot_id)
-                    .unwrap_or(roster.lead_id);
-            let nid = graph.add_node(assignee, task.instruction.clone());
-            label_for_node.insert(nid, task.bot.clone());
-            node_ids.push(nid);
-            board_nodes.push((
-                nid,
-                assignee,
-                briefing_label(&task.instruction),
-                task.depends_on.clone(),
-            ));
+    if let Some(resume) = resume {
+        // ── Resume the saved graph, not the whole turn ───────────────────
+        // Completed nodes keep their outputs and are never re-run. A node that
+        // was running when the process stopped is reset to pending and gets a
+        // short note in its existing thread, so it continues from the workspace
+        // instead of starting from a fresh conversation.
+        resumed = true;
+        graph = resume.graph;
+        label_for_node = resume.labels;
+        resume_runs = resume.resume_runs;
+        let interrupted_threads = graph.prepare_resume();
+        node_ids = graph.ordered_node_ids();
+        for nid in &node_ids {
+            let Some(node) = graph.nodes.get(nid) else {
+                continue;
+            };
+            let deps = graph
+                .edges
+                .iter()
+                .filter(|(_, to)| to == nid)
+                .filter_map(|(from, _)| node_ids.iter().position(|id| id == from))
+                .collect();
+            let label = label_for_node
+                .get(nid)
+                .cloned()
+                .unwrap_or_else(|| roster_name(&roster, node.bot_id));
+            board_nodes.push((*nid, node.bot_id, label, deps));
         }
-        // Wire dependencies after all nodes exist.
-        for (i, task) in plan.tasks.iter().enumerate() {
-            for dep in &task.depends_on {
-                if *dep < node_ids.len() && *dep < i {
-                    graph.add_edge(node_ids[*dep], node_ids[i]);
-                }
+        for thread in interrupted_threads {
+            resume_threads.insert(thread);
+            let note = Message::user(
+                thread,
+                "[Resume] This task was interrupted by a process restart. \
+                 Inspect the workspace and Shared/STATUS.md, continue from the \
+                 last completed step, and do not repeat side effects that are \
+                 already recorded.",
+            );
+            let _ = ravenbot_db::queries::MessageQueries::insert(db.pool(), &note).await;
+        }
+        let _ = post_bot_message(
+            db.pool(),
+            thread_id,
+            roster.lead_id,
+            roster.lead_name.clone(),
+            "🔁 **Resuming the interrupted office plan.** Completed tasks are kept; only the unfinished tasks will run."
+                .to_string(),
+        )
+        .await;
+    } else {
+        plan = if let Some(member) = direct_member.as_ref() {
+            // A mention is a request for that specialist, not a hint the planner
+            // may ignore. The lead still synthesizes the final answer, but the
+            // work starts with the person the client addressed.
+            tracing::info!(
+                office = %chatroom_id,
+                recipient = %member.name,
+                "Direct specialist dispatch"
+            );
+            Some(directed_office_plan(member, &visible))
+        } else {
+            let planning_request = build_planning_request(db.pool(), thread_id, &content).await;
+            let planning_request = format!(
+                "{}\n\nCurrent office board:\n{}\n\nWorkspace snapshot:\n{}",
+                planning_request,
+                office_board_summary(db, chatroom_id).await,
+                office_workspace_snapshot(room.as_ref())
+            );
+            runtime
+                .plan_office(
+                    roster.lead_id,
+                    goal.as_deref(),
+                    policy.as_deref(),
+                    &roster.members,
+                    &planning_request,
+                )
+                .await
+                .or_else(|| {
+                    tracing::warn!(
+                        lead = %roster.lead_name,
+                        "Office plan unavailable; using the deterministic role plan"
+                    );
+                    let plan = ravenbot_runtime::orchestrator::fallback_plan(
+                        goal.as_deref(),
+                        &content,
+                        &roster.members,
+                        roster.lead_id,
+                    );
+                    if plan.tasks.is_empty() {
+                        None
+                    } else {
+                        Some(plan)
+                    }
+                })
+        };
+
+        // A workspace with no code cannot be advanced by another inspection plan.
+        // Use a deterministic, creation-first bootstrap instead of asking the lead
+        // to re-read the same design docs for the sixth time.
+        let generic_continue = cycle > 0 || autonomous || office_generic_continue(&content);
+        let goal_text = goal.as_deref().unwrap_or(content.as_str());
+        if direct_member.is_none()
+            && generic_continue
+            && office_goal_requires_implementation(goal_text)
+            && !office_has_implementation(room.as_ref())
+        {
+            tracing::info!(
+                lead = %roster.lead_name,
+                "Office workspace has no implementation; using the bootstrap plan"
+            );
+            plan = Some(ravenbot_runtime::orchestrator::bootstrap_plan(
+                goal.as_deref().unwrap_or(content.trim()),
+                &roster.members,
+                roster.lead_id,
+            ));
+            let attempts = bump_bootstrap_attempts(db, chatroom_id).await;
+            tracing::warn!(
+                chatroom_id = %chatroom_id,
+                attempts,
+                "Bootstrap plan selected because the workspace has no implementation"
+            );
+        }
+
+        // An autonomous cycle cannot wait for an answer. If the planner returned
+        // only a question, use the deterministic role plan and keep moving; a
+        // question attached to a usable plan is simply ignored.
+        if direct_member.is_none()
+            && autonomous
+            && plan.as_ref().map(|p| p.tasks.is_empty()).unwrap_or(true)
+        {
+            let fallback = ravenbot_runtime::orchestrator::fallback_plan(
+                goal.as_deref(),
+                &content,
+                &roster.members,
+                roster.lead_id,
+            );
+            tracing::info!(
+                lead = %roster.lead_name,
+                "Autonomous office has no usable plan; using the deterministic role plan"
+            );
+            plan = if fallback.tasks.is_empty() {
+                None
+            } else {
+                Some(fallback)
+            };
+        }
+
+        // ── CEO clarification loop ────────────────────────────────────────────
+        // If the lead lacks enough information, it asks the client directly. We
+        // post its question into the room and stop; the client's next message is
+        // the answer, and the lead plans from there. A heartbeat never asks: no
+        // one is there to answer.
+        if !autonomous {
+            if let Some(question) = plan
+                .as_ref()
+                .and_then(|p| p.question.clone())
+                .filter(|q| !q.trim().is_empty())
+            {
+                let _ = post_bot_message(
+                    db.pool(),
+                    thread_id,
+                    roster.lead_id,
+                    roster.lead_name.clone(),
+                    format!(
+                        "❓ I need one thing before I brief the team:\n\n{}",
+                        question.trim()
+                    ),
+                )
+                .await;
+                return Ok(serde_json::json!({
+                    "thread_id": thread_id,
+                    "awaiting_answer": true,
+                    "question": question,
+                    "checklist": [],
+                    "blackboard": {},
+                    "summary": question,
+                }));
             }
         }
-    } else {
-        for (m, bot) in &roster.bots {
-            let instruction = format!("[{} - {}] {}", m.rank, m.specialty, content);
-            let nid = graph.add_node(bot.id, instruction.clone());
-            label_for_node.insert(nid, bot.name.clone());
-            node_ids.push(nid);
-            board_nodes.push((nid, bot.id, truncate_chars(&instruction, 120), Vec::new()));
+
+        // The lead briefs the team in the room before work starts, so the client
+        // sees the breakdown the moment it happens.
+        if let Some(p) = &plan {
+            if !p.tasks.is_empty() {
+                let items: Vec<(String, String, Vec<usize>)> = p
+                    .tasks
+                    .iter()
+                    .map(|t| {
+                        let who =
+                            ravenbot_runtime::orchestrator::resolve_member(&roster.members, &t.bot)
+                                .map(|m| m.name.clone())
+                                .unwrap_or_else(|| t.bot.clone());
+                        (who, briefing_label(&t.instruction), t.depends_on.clone())
+                    })
+                    .collect();
+                let _ = post_bot_message(
+                    db.pool(),
+                    thread_id,
+                    roster.lead_id,
+                    roster.lead_name.clone(),
+                    briefing_markdown(&items),
+                )
+                .await;
+            }
         }
+
+        if let Some(plan) = &plan {
+            for task in &plan.tasks {
+                let assignee =
+                    ravenbot_runtime::orchestrator::resolve_member(&roster.members, &task.bot)
+                        .map(|m| m.bot_id)
+                        .unwrap_or(roster.lead_id);
+                let nid = graph.add_node(assignee, task.instruction.clone());
+                // One retry lets a provider blip or an incomplete progress
+                // report recover in the same cycle. A permanent failure still
+                // stops after the second attempt and reaches the review.
+                let _ = graph.set_retries(nid, 1);
+                label_for_node.insert(nid, task.bot.clone());
+                node_ids.push(nid);
+                board_nodes.push((
+                    nid,
+                    assignee,
+                    briefing_label(&task.instruction),
+                    task.depends_on.clone(),
+                ));
+            }
+            // Wire dependencies after all nodes exist.
+            for (i, task) in plan.tasks.iter().enumerate() {
+                for dep in &task.depends_on {
+                    if *dep < node_ids.len() && *dep < i {
+                        graph.add_edge(node_ids[*dep], node_ids[i]);
+                    }
+                }
+            }
+        } else {
+            for (m, bot) in &roster.bots {
+                let instruction = format!("[{} - {}] {}", m.rank, m.specialty, content);
+                let nid = graph.add_node(bot.id, instruction.clone());
+                let _ = graph.set_retries(nid, 1);
+                label_for_node.insert(nid, bot.name.clone());
+                node_ids.push(nid);
+                board_nodes.push((nid, bot.id, truncate_chars(&instruction, 120), Vec::new()));
+            }
+        }
+    }
+
+    mark_office_phase(db, chatroom_id, "executing").await;
+
+    // Failed attempts from earlier plans are history, not a permanent open
+    // backlog. Retire the ones the new plan does not include; the current
+    // graph's own failed nodes stay visible for review/retry.
+    if let Ok(retired) = ravenbot_db::queries::WorkItemQueries::retire_stale_failures(
+        db.pool(),
+        chatroom_id,
+        &node_ids,
+    )
+    .await
+    {
+        if retired > 0 {
+            tracing::info!(chatroom_id = %chatroom_id, retired, "Retired stale failed work items");
+        }
+    }
+
+    let graph_id = graph.id;
+    let graph_goal = goal.clone().unwrap_or_default();
+    save_office_graph(
+        db,
+        graph_id,
+        chatroom_id,
+        thread_id,
+        cycle,
+        &content,
+        &visible,
+        &graph_goal,
+        &label_for_node,
+        &graph,
+        "running",
+    )
+    .await;
+
+    // Seed the ledger before execution so even a process that dies during the
+    // first node leaves a readable plan. Seeding is idempotent on resume.
+    if let Err(error) = ravenbot_runtime::work::WorkLedger::new(db.pool().clone(), chatroom_id)
+        .seed(&graph, cycle)
+        .await
+    {
+        tracing::warn!(%error, "Could not seed the office work ledger");
     }
 
     let graph = Arc::new(tokio::sync::Mutex::new(graph));
@@ -8505,7 +16750,7 @@ async fn office_turn(
     let (board_tx, mut board_rx) = tokio::sync::mpsc::unbounded_channel::<serde_json::Value>();
     {
         let board_db = db.clone();
-        tauri::async_runtime::spawn(async move {
+        tokio::spawn(async move {
             while let Some(event) = board_rx.recv().await {
                 apply_office_board_event(&board_db, thread_id, &event).await;
             }
@@ -8534,7 +16779,10 @@ async fn office_turn(
         // A heartbeat's prompt is an instruction, not the office's mission;
         // showing it in the board header would replace the goal with a
         // paragraph of housekeeping every few minutes.
-        let board_goal = if autonomous {
+        let board_goal = if autonomous || office_generic_continue(&visible) {
+            // A generic nudge describes no deliverable. Show the office's
+            // standing mission instead of putting "??" at the top of the
+            // board and in the next planner prompt.
             goal.as_deref()
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -8546,7 +16794,7 @@ async fn office_turn(
                 })
                 .unwrap_or_else(|| content.trim())
         } else {
-            content.trim()
+            visible.trim()
         };
         let payload = serde_json::json!({
             "kind": "plan_ready",
@@ -8555,7 +16803,33 @@ async fn office_turn(
             "nodes": nodes,
         });
         let _ = board_tx.send(payload.clone());
-        let _ = app.emit("agent-stream", payload);
+        events.emit("agent-stream", payload);
+    }
+    // A resumed graph already has terminal nodes. `plan_ready` seeds every
+    // card as pending, and those nodes will not emit another `node_finished`;
+    // replay their current states so the board does not show completed work as
+    // waiting.
+    if resumed {
+        let states: Vec<serde_json::Value> = {
+            let graph = graph.lock().await;
+            graph
+                .nodes
+                .values()
+                .map(|node| {
+                    serde_json::json!({
+                        "node_id": node.id.to_string(),
+                        "bot_id": node.bot_id.to_string(),
+                        "state": office_node_state_label(&node.state),
+                    })
+                })
+                .collect()
+        };
+        let payload = serde_json::json!({
+            "kind": "graph_status",
+            "nodes": states,
+        });
+        let _ = board_tx.send(payload.clone());
+        events.emit("agent-stream", payload);
     }
     // Project folders for every node in this office: configured folders, or an
     // auto-created default named after the office.
@@ -8576,27 +16850,84 @@ async fn office_turn(
             configured
         }
     };
-    let node_event_app = app.clone();
+    let node_events = events.clone();
     let node_event_board = board_tx.clone();
-    let emitter_app = app.clone();
+    let stream_events = events.clone();
     let executor = ravenbot_runtime::executor::GraphExecutor::new(runtime.clone(), db.clone())
+        .with_office(chatroom_id)
         .with_working_dirs(office_dirs)
-        .with_thread_emitter(Arc::new(move |_thread_id| {
-            Some(make_stream_emitter(emitter_app.clone()))
-        }))
+        .with_resume_runs(resume_runs)
+        .with_resume_threads(resume_threads)
+        .with_thread_emitter(Arc::new(move |_thread_id| stream_events.stream_emitter()))
         .with_node_events(Arc::new(move |v| {
             let _ = node_event_board.send(v.clone());
-            let _ = node_event_app.emit("agent-stream", v);
+            node_events.emit("agent-stream", v);
         }));
 
+    // Snapshot the graph while it runs. A crash loses at most one second of
+    // node state, and the final write below marks the graph terminal. The
+    // snapshot is what lets the next launch resume the unfinished nodes instead
+    // of replanning completed work.
+    let persist_graph = graph.clone();
+    let persist_db = db.clone();
+    let persist_labels = label_for_node.clone();
+    let persist_request = content.clone();
+    let persist_visible = visible.clone();
+    let persist_goal = graph_goal.clone();
+    let persist_task = tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(std::time::Duration::from_secs(1));
+        loop {
+            ticker.tick().await;
+            let snapshot = persist_graph.lock().await.clone();
+            save_office_graph(
+                &persist_db,
+                graph_id,
+                chatroom_id,
+                thread_id,
+                cycle,
+                &persist_request,
+                &persist_visible,
+                &persist_goal,
+                &persist_labels,
+                &snapshot,
+                "running",
+            )
+            .await;
+        }
+    });
+
     let exec_result = executor.execute(graph.clone()).await;
+    persist_task.abort();
+    let _ = persist_task.await;
+    let final_graph = graph.lock().await.clone();
+    save_office_graph(
+        db,
+        graph_id,
+        chatroom_id,
+        thread_id,
+        cycle,
+        &content,
+        &visible,
+        &graph_goal,
+        &label_for_node,
+        &final_graph,
+        if exec_result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        },
+    )
+    .await;
     mark_office_phase(db, chatroom_id, "summarizing").await;
     // NOTE: `done` is emitted only after the final posts below, so the room
     // never blanks between the last token and the persisted conversation.
 
     match exec_result {
         Ok(blackboard) => {
-            let checklist = graph.lock().await.clone().to_checklist();
+            let graph_snapshot = graph.lock().await.clone();
+            let checklist = graph_snapshot.to_checklist();
+            let turn_failures = graph_failures(&graph_snapshot);
+            let turn_status = checklist_status(&turn_failures);
             // Pull each node's real output (in dependency order), with the bot
             // that produced it, so the room shows a genuine conversation.
             let node_results: Vec<(uuid::Uuid, String, String, String)> = {
@@ -8621,6 +16952,50 @@ async fn office_turn(
                 out
             };
 
+            // The newest node thread holds the context estimate the live meter
+            // was showing. Copy it onto the final summary so the room can restore
+            // the meter on reload; each node runs on its own thread.
+            let node_threads: Vec<Uuid> = {
+                let g = graph.lock().await;
+                g.nodes.values().filter_map(|node| node.thread_id).collect()
+            };
+            let mut latest_context: Option<(i64, ContextSnapshot)> = None;
+            for node_thread in node_threads {
+                let Ok(node_messages) =
+                    ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), node_thread)
+                        .await
+                else {
+                    continue;
+                };
+                let Some(message) = node_messages
+                    .iter()
+                    .rev()
+                    .find(|message| message.context_window_tokens.is_some())
+                else {
+                    continue;
+                };
+                let at = message.created_at.timestamp_millis();
+                if latest_context
+                    .as_ref()
+                    .map(|(best, ..)| at > *best)
+                    .unwrap_or(true)
+                {
+                    latest_context = Some((
+                        at,
+                        ContextSnapshot {
+                            used: message.context_used_tokens.unwrap_or(0),
+                            window: message.context_window_tokens.unwrap_or(0),
+                            compacted: message.context_compacted,
+                            system: message.context_system_tokens.unwrap_or(0),
+                            tool: message.context_tool_tokens.unwrap_or(0),
+                            memory: message.context_memory_tokens.unwrap_or(0),
+                            message: message.context_message_tokens.unwrap_or(0),
+                        },
+                    ));
+                }
+            }
+            let office_context = latest_context.map(|(_, snapshot)| snapshot);
+
             // Post every specialist's work into the group thread, attributed to
             // the bot that did it (this is what makes the office "talk").
             // Pure conversation: the bubble carries only the agent's reply —
@@ -8639,31 +17014,13 @@ async fn office_turn(
 
             // Surface failed teammates instead of failing silently: a node
             // that hit a provider error leaves no output, which used to look
-            // like the task simply never ran. Skipped dependents matter too:
-            // the lead must not present a blocked branch as completed work.
-            let failures: Vec<String> = checklist
-                .iter()
-                .filter(|c| {
-                    matches!(
-                        c.status,
-                        ravenbot_core::ChecklistStatus::Failed
-                            | ravenbot_core::ChecklistStatus::Skipped
-                    )
-                })
-                .map(|c| {
-                    let who = c
-                        .bot_id
-                        .map(|id| roster_name(&roster, id))
-                        .unwrap_or_else(|| "Teammate".to_string());
-                    let detail = match c.status {
-                        ravenbot_core::ChecklistStatus::Skipped => {
-                            "skipped because a dependency did not complete".to_string()
-                        }
-                        _ => c
-                            .result
-                            .clone()
-                            .unwrap_or_else(|| "unknown error".to_string()),
-                    };
+            // like the task simply never ran. Dependency-blocked tasks matter
+            // too, but a branch that was not selected is not a failure.
+            let failures: Vec<String> = graph_snapshot
+                .incomplete_nodes()
+                .into_iter()
+                .map(|(_, bot_id, _, detail)| {
+                    let who = roster_name(&roster, bot_id);
                     format!("• **{}** — {}", who, detail)
                 })
                 .collect();
@@ -8719,29 +17076,33 @@ async fn office_turn(
                     .collect::<Vec<_>>()
                     .join("\n")
             } else {
+                // Synthesize against the office's standing goal, not the
+                // synthetic continuation prompt. Intermediate cycles should
+                // still read as progress toward the same product.
+                let synthesis_request = goal.as_deref().unwrap_or(content.as_str());
                 runtime
-                    .synthesize_office(roster.lead_id, &content, &synthesis_results)
+                    .synthesize_office(roster.lead_id, synthesis_request, &synthesis_results)
                     .await
             };
 
-            let _ = post_bot_message(
+            let _ = post_bot_message_with_context(
                 db.pool(),
                 thread_id,
                 roster.lead_id,
                 roster.lead_name.clone(),
                 final_summary.clone(),
+                office_context,
             )
             .await;
-            let _ = app.emit(
-                "agent-stream",
-                serde_json::json!({ "kind": "done", "thread_id": thread_id.to_string() }),
-            );
             Ok(serde_json::json!({
                 "thread_id": thread_id,
                 "checklist": checklist,
                 "blackboard": blackboard.data,
                 "summary": final_summary,
-                "planned": plan.is_some(),
+                "planned": plan.is_some() || resumed,
+                "resumed": resumed,
+                "status": turn_status,
+                "failures": turn_failures,
             }))
         }
         Err(err) => {
@@ -8761,13 +17122,17 @@ async fn office_turn(
                 error_summary.clone(),
             )
             .await;
-            let _ = app.emit(
-                "agent-stream",
-                serde_json::json!({ "kind": "done", "thread_id": thread_id.to_string() }),
-            );
-            Ok(
-                serde_json::json!({ "thread_id": thread_id, "checklist": [], "blackboard": {}, "summary": error_summary }),
-            )
+            // A failure must reach the queue/board as a failure. Returning Ok
+            // here used to mark the queue item done while the room contained an
+            // error message.
+            Ok(serde_json::json!({
+                "thread_id": thread_id,
+                "checklist": [],
+                "blackboard": {},
+                "summary": error_summary,
+                "status": "failed",
+                "failures": [err_str],
+            }))
         }
     }
 }
@@ -8776,6 +17141,390 @@ async fn office_turn(
 async fn compact_thread_context(state: State<'_, AppState>, thread_id: Uuid) -> Result<(), String> {
     state.runtime.request_compaction(thread_id);
     Ok(())
+}
+
+/// Every pending approval/question and queued office message, across the fleet.
+#[tauri::command]
+async fn list_attention_items(state: State<'_, AppState>) -> Result<Vec<AttentionItem>, String> {
+    collect_attention(&state.db).await
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct VaultSaveInput {
+    id: Option<String>,
+    kind: String,
+    name: String,
+    username: Option<String>,
+    website: Option<String>,
+    last4: Option<String>,
+    secret: serde_json::Value,
+}
+
+/// Metadata only. Secrets are never included in a list response.
+#[tauri::command]
+async fn list_vault_items(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::VaultItemMeta>, String> {
+    ravenbot_db::queries::VaultQueries::list(state.db.pool())
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn save_vault_item(
+    state: State<'_, AppState>,
+    item: VaultSaveInput,
+) -> Result<String, String> {
+    let kind = item.kind.trim().to_lowercase();
+    if !matches!(kind.as_str(), "login" | "card" | "contact") {
+        return Err("Vault kind must be login, card, or contact.".to_string());
+    }
+    let name = item.name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err("A vault item needs a name of at most 120 characters.".to_string());
+    }
+    if !item.secret.is_object() {
+        return Err("The vault secret must be a JSON object.".to_string());
+    }
+    let secret = serde_json::to_string(&item.secret).map_err(|e| e.to_string())?;
+    if secret.len() > 16 * 1024 {
+        return Err("The vault secret is larger than 16KB.".to_string());
+    }
+    let id = item
+        .id
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok())
+        .unwrap_or_else(Uuid::new_v4);
+    let last4 = item
+        .last4
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    ravenbot_db::queries::VaultQueries::upsert(
+        state.db.pool(),
+        &id.to_string(),
+        &kind,
+        name,
+        item.username.as_deref().unwrap_or("").trim(),
+        item.website.as_deref().unwrap_or("").trim(),
+        last4,
+        &secret,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(id.to_string())
+}
+
+fn browser_save_origin(current: &tauri::Url, expected_origin: &str) -> Result<String, String> {
+    let expected = tauri::Url::parse(expected_origin.trim())
+        .map_err(|_| "The secure card has an invalid origin.".to_string())?;
+    if !matches!(current.scheme(), "http" | "https")
+        || !matches!(expected.scheme(), "http" | "https")
+    {
+        return Err("Only HTTP and HTTPS logins can be saved to the vault.".to_string());
+    }
+    if current.origin() != expected.origin() {
+        return Err(
+            "The page changed while the secure card was open. Reopen it and try again.".to_string(),
+        );
+    }
+    Ok(current.origin().ascii_serialization())
+}
+
+fn normalized_vault_origin(value: &str) -> String {
+    tauri::Url::parse(value.trim())
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .map(|url| url.origin().ascii_serialization())
+        .unwrap_or_else(|| value.trim().trim_end_matches('/').to_lowercase())
+}
+
+fn find_existing_login<'a>(
+    items: &'a [ravenbot_db::queries::VaultItemMeta],
+    website: &str,
+    username: &str,
+    name: &str,
+) -> Option<&'a ravenbot_db::queries::VaultItemMeta> {
+    let origin = normalized_vault_origin(website);
+    let username = username.trim().to_lowercase();
+    let name = name.trim().to_lowercase();
+    items.iter().find(|item| {
+        if item.kind != "login" || normalized_vault_origin(&item.website) != origin {
+            return false;
+        }
+        if username.is_empty() {
+            item.username.trim().is_empty() && item.name.trim().to_lowercase() == name
+        } else {
+            item.username.trim().to_lowercase() == username
+        }
+    })
+}
+
+/// Save a password typed into the browser's secure-input card.
+///
+/// The origin is checked against the live webview, not trusted from the
+/// renderer. Re-saving the same username for the same origin updates the
+/// existing login instead of creating a duplicate.
+#[tauri::command]
+async fn save_browser_secret_to_vault(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    name: String,
+    username: String,
+    website: String,
+    secret: String,
+) -> Result<serde_json::Value, String> {
+    let view =
+        browser_active_view(&app).ok_or_else(|| "The browser dock is not open.".to_string())?;
+    let current = view
+        .url()
+        .map_err(|error| format!("Could not read the current page: {error}"))?;
+    let origin = browser_save_origin(&current, &website)?;
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 120 {
+        return Err("A vault item needs a name of at most 120 characters.".to_string());
+    }
+    let username = username.trim();
+    if username.chars().count() > 300 {
+        return Err("The username is longer than 300 characters.".to_string());
+    }
+    if secret.is_empty() || secret.len() > 4096 {
+        return Err("The password must be between 1 and 4096 bytes.".to_string());
+    }
+    let secret = serde_json::json!({ "password": secret }).to_string();
+    if secret.len() > 16 * 1024 {
+        return Err("The vault secret is larger than 16KB.".to_string());
+    }
+    let items = ravenbot_db::queries::VaultQueries::list(state.db.pool())
+        .await
+        .map_err(|error| error.to_string())?;
+    let existing = find_existing_login(&items, &origin, username, name).map(|item| item.id.clone());
+    let updated = existing.is_some();
+    let id = existing.unwrap_or_else(|| Uuid::new_v4().to_string());
+    ravenbot_db::queries::VaultQueries::upsert(
+        state.db.pool(),
+        &id,
+        "login",
+        name,
+        username,
+        &origin,
+        None,
+        &secret,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "id": id,
+        "updated": updated,
+        "website": origin,
+    }))
+}
+
+#[tauri::command]
+async fn reveal_vault_item(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<serde_json::Value, String> {
+    let secret = ravenbot_db::queries::VaultQueries::get_secret(state.db.pool(), &id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "That vault item no longer exists.".to_string())?;
+    serde_json::from_str(&secret).map_err(|_| "That vault item is corrupt.".to_string())
+}
+
+#[tauri::command]
+async fn delete_vault_item(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    ravenbot_db::queries::VaultQueries::delete(state.db.pool(), &id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+const MAX_VAULT_IMPORT_BYTES: u64 = ravenbot_db::vault_import::MAX_IMPORT_BYTES as u64;
+
+/// Resolve a user-chosen password-manager export.
+///
+/// Import is read-only, but the path is still constrained to a real JSON, CSV
+/// or 1PUX file, under the size limit, and never the live database. The actual
+/// parse happens in the database crate; secrets never cross IPC.
+fn vault_import_path(raw: &str) -> Result<std::path::PathBuf, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("Choose a vault export file.".to_string());
+    }
+    if raw.len() > 4096 {
+        return Err("The import path is too long.".to_string());
+    }
+    let path = std::path::PathBuf::from(raw);
+    if !path.is_absolute() {
+        return Err("Choose an absolute import path.".to_string());
+    }
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    if !matches!(extension.as_str(), "json" | "csv" | "1pux") {
+        return Err("Choose a .json, .csv, or .1pux vault export.".to_string());
+    }
+    let parent = path
+        .parent()
+        .filter(|parent| parent.is_dir())
+        .ok_or_else(|| "The import folder does not exist.".to_string())?;
+    let parent = parent
+        .canonicalize()
+        .map_err(|error| format!("Could not resolve the import folder: {error}"))?;
+    let name = path
+        .file_name()
+        .ok_or_else(|| "The import path has no file name.".to_string())?;
+    let path = parent.join(name);
+    if path.is_dir() {
+        return Err("That import path is a directory.".to_string());
+    }
+    let metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not read the vault export: {error}"))?;
+    if !metadata.is_file() {
+        return Err("The vault export is not a file.".to_string());
+    }
+    if metadata.len() > MAX_VAULT_IMPORT_BYTES {
+        return Err(format!(
+            "The vault export is larger than the {} MB import limit.",
+            MAX_VAULT_IMPORT_BYTES / (1024 * 1024)
+        ));
+    }
+
+    let root = ravenbot_core::raven_root();
+    let protected = [
+        root.join("ravenbot.db"),
+        root.join("ravenbot.db-wal"),
+        root.join("ravenbot.db-shm"),
+    ];
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.clone());
+    if protected.iter().any(|candidate| {
+        candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.clone())
+            == resolved
+    }) {
+        return Err("Refusing to import from the RAVENBOT database.".to_string());
+    }
+    Ok(path)
+}
+
+/// Parse a vault export and return metadata plus duplicate counts, without
+/// saving anything or returning any secret.
+#[tauri::command]
+async fn preview_vault_import(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ravenbot_db::vault_import::VaultImportPreview, String> {
+    let path = vault_import_path(&path)?;
+    let bytes = std::fs::read(&path)
+        .map_err(|error| format!("Could not read the vault export: {error}"))?;
+    if bytes.len() as u64 > MAX_VAULT_IMPORT_BYTES {
+        return Err("The vault export is larger than the 8 MB import limit.".to_string());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("vault-export");
+    ravenbot_db::vault_import::preview_vault_import(state.db.pool(), &bytes, filename).await
+}
+
+/// Commit the non-duplicate entries from a previously previewed export.
+#[tauri::command]
+async fn import_vault_items(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<ravenbot_db::vault_import::VaultImportResult, String> {
+    let path = vault_import_path(&path)?;
+    let bytes = std::fs::read(&path)
+        .map_err(|error| format!("Could not read the vault export: {error}"))?;
+    if bytes.len() as u64 > MAX_VAULT_IMPORT_BYTES {
+        return Err("The vault export is larger than the 8 MB import limit.".to_string());
+    }
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("vault-export");
+    ravenbot_db::vault_import::import_vault_items(state.db.pool(), &bytes, filename).await
+}
+
+/// Fill the current browser page from a vault login.
+///
+/// The password travels from the keychain into the page script and is never
+/// returned to the model or written into the transcript. The item's website
+/// must match the page host (ignoring `www.`), so a phishing page cannot ask
+/// the user to autofill another origin's credentials.
+#[tauri::command]
+async fn fill_browser_from_vault(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    vault_item_id: String,
+) -> Result<serde_json::Value, String> {
+    let items = ravenbot_db::queries::VaultQueries::list(state.db.pool())
+        .await
+        .map_err(|e| e.to_string())?;
+    let item = items
+        .into_iter()
+        .find(|item| item.id == vault_item_id)
+        .ok_or_else(|| "That vault item no longer exists.".to_string())?;
+    if item.kind != "login" {
+        return Err("Only a login can be filled into a browser page.".to_string());
+    }
+    if item.website.trim().is_empty() {
+        return Err("This vault item has no website, so it cannot be safely filled.".to_string());
+    }
+    let secret = ravenbot_db::queries::VaultQueries::get_secret(state.db.pool(), &vault_item_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "The vault secret could not be read.".to_string())?;
+    let secret: serde_json::Value =
+        serde_json::from_str(&secret).map_err(|_| "The vault secret is corrupt.".to_string())?;
+    let password = secret
+        .get("password")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "This login has no password.".to_string())?;
+    let website = serde_json::to_string(&item.website).unwrap_or_else(|_| "\"\"".into());
+    let username = serde_json::to_string(&item.username).unwrap_or_else(|_| "\"\"".into());
+    let password = serde_json::to_string(password).unwrap_or_else(|_| "\"\"".into());
+    let label = serde_json::to_string(&item.name).unwrap_or_else(|_| "\"vault login\"".into());
+    let script = format!(
+        r#"(() => {{
+  const website = {website};
+  const username = {username};
+  const password = {password};
+  const label = {label};
+  let expected = "";
+  try {{ expected = new URL(website).hostname.replace(/^www\./u, ""); }} catch {{}}
+  const host = location.hostname.replace(/^www\./u, "");
+  if (expected && host !== expected && !host.endsWith("." + expected)) {{
+    return {{ ok: false, error: "This vault item belongs to " + expected + ", but the page is " + host + "." }};
+  }}
+  const visible = (el) => {{
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 1 && rect.height > 1 && style.visibility !== "hidden" && style.display !== "none";
+  }};
+  const setValue = (el, value) => {{
+    el.focus();
+    const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+    if (setter) setter.call(el, value); else el.value = value;
+    el.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  }};
+  const userEl = [...document.querySelectorAll('input[autocomplete="username"], input[type="email"], input[name*="user" i], input[name*="email" i]')].find(visible);
+  const passEl = [...document.querySelectorAll('input[type="password"]')].find(visible);
+  if (!passEl) return {{ ok: false, error: "No password field was found on this page." }};
+  if (username && userEl) setValue(userEl, username);
+  setValue(passEl, password);
+  return {{ ok: true, item: label, origin: location.origin, filledUsername: Boolean(username && userEl) }};
+}})()"#
+    );
+    tauri::async_runtime::spawn_blocking(move || browser_dock_eval_blocking(&app, &script, None))
+        .await
+        .map_err(|error| format!("The browser evaluation task failed: {error}"))?
 }
 
 #[tauri::command]
@@ -8805,12 +17554,43 @@ async fn set_office_queue_paused(
     if !paused {
         let db = state.db.clone();
         let runtime = state.runtime.clone();
-        let app = app.clone();
+        let events = HostEvents::Tauri(app.clone());
         tauri::async_runtime::spawn(async move {
-            drain_office_queue(&db, &runtime, &app, chatroom_id).await;
+            drain_office_queue(&db, &runtime, &events, chatroom_id).await;
         });
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn reorder_office_queue(
+    state: State<'_, AppState>,
+    chatroom_id: Uuid,
+    ordered_ids: Vec<Uuid>,
+) -> Result<(), String> {
+    persist_office_queue_order(&state.db, chatroom_id, &ordered_ids).await
+}
+
+/// Move one pending message to the front and start it if the office is idle.
+/// An active turn keeps running; the promoted message is next.
+#[tauri::command]
+async fn run_office_queue_item_next(
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+    chatroom_id: Uuid,
+    id: Uuid,
+) -> Result<bool, String> {
+    promote_queued_message(&state.db, chatroom_id, id).await?;
+    if office_is_active(chatroom_id) || office_queue_paused(&state.db, chatroom_id).await {
+        return Ok(false);
+    }
+    Ok(drain_office_queue(
+        &state.db,
+        &state.runtime,
+        &HostEvents::Tauri(app.clone()),
+        chatroom_id,
+    )
+    .await)
 }
 
 #[tauri::command]
@@ -8839,20 +17619,47 @@ async fn send_to_chatroom(
     content: String,
     attachments: Option<Vec<AttachmentInput>>,
     reply_to_id: Option<Uuid>,
+    recipient_bot_id: Option<Uuid>,
 ) -> Result<serde_json::Value, String> {
     let visible = content.clone();
     let queue_attachments = attachments.clone().unwrap_or_default();
     if let Some(reply_id) = reply_to_id {
         let thread = chatroom_thread_id(&state.db, chatroom_id).await;
         let valid = match thread {
-            Some(thread_id) => {
-                message_in_thread(state.db.pool(), reply_id, thread_id).await?
-            }
+            Some(thread_id) => message_in_thread(state.db.pool(), reply_id, thread_id).await?,
             None => false,
         };
         if !valid {
             return Err("The quoted message is not part of this office conversation.".to_string());
         }
+    }
+    // A mention addresses the message to one member, but the office remains a
+    // team: the lead plans, delegates the first task to that member, and
+    // synthesizes the final answer. The directive is model context only; the
+    // visible transcript keeps the text the user actually typed.
+    let mut content = content;
+    if let Some(recipient_id) = recipient_bot_id {
+        let recipient: Option<(String, String)> = sqlx::query_as(
+            "SELECT b.name, COALESCE(cm.rank, b.rank, '')
+             FROM chatroom_members cm JOIN bots b ON b.id = cm.bot_id
+             WHERE cm.chatroom_id = ? AND cm.bot_id = ?",
+        )
+        .bind(chatroom_id.to_string())
+        .bind(recipient_id.to_string())
+        .fetch_optional(state.db.pool())
+        .await
+        .map_err(|e| e.to_string())?;
+        let Some((name, rank)) = recipient else {
+            return Err("That agent is not a member of this office.".to_string());
+        };
+        let label = if rank.trim().is_empty() {
+            name
+        } else {
+            format!("{name} ({rank})")
+        };
+        content = format!(
+            "[The user addressed this message to {label}. Give this member the first task; the lead still plans, coordinates, and synthesizes the final answer.]\n{content}"
+        );
     }
     let paused = office_queue_paused(&state.db, chatroom_id).await;
     let pending = office_queue_has_pending(&state.db, chatroom_id).await;
@@ -8862,13 +17669,26 @@ async fn send_to_chatroom(
     // message joins the queue rather than jumping ahead of it. A paused queue
     // accepts the message but starts nothing.
     if paused || pending || active {
-        let item =
-            enqueue_office_message(&state.db, chatroom_id, content, visible, queue_attachments, reply_to_id)
-                .await?;
+        let item = enqueue_office_message(
+            &state.db,
+            chatroom_id,
+            content,
+            visible,
+            queue_attachments,
+            reply_to_id,
+            recipient_bot_id,
+        )
+        .await?;
         let started = if paused || active {
             false
         } else {
-            drain_office_queue(&state.db, &state.runtime, &app, chatroom_id).await
+            drain_office_queue(
+                &state.db,
+                &state.runtime,
+                &HostEvents::Tauri(app.clone()),
+                chatroom_id,
+            )
+            .await
         };
         let position = office_queue_pending_count(&state.db, chatroom_id).await;
         return Ok(serde_json::json!({
@@ -8891,7 +17711,7 @@ async fn send_to_chatroom(
     match start_office_turn(
         &state.db,
         &state.runtime,
-        &app,
+        HostEvents::Tauri(app.clone()),
         chatroom_id,
         direct_content,
         direct_visible,
@@ -8899,6 +17719,9 @@ async fn send_to_chatroom(
         false,
         None,
         reply_to_id,
+        recipient_bot_id,
+        true,
+        None,
     )
     .await
     {
@@ -8913,9 +17736,16 @@ async fn send_to_chatroom(
         })),
         Err(error) if error.contains("already working") => {
             // A heartbeat claimed the office between the check and the call.
-            let item =
-                enqueue_office_message(&state.db, chatroom_id, content, visible, queue_attachments, reply_to_id)
-                    .await?;
+            let item = enqueue_office_message(
+                &state.db,
+                chatroom_id,
+                content,
+                visible,
+                queue_attachments,
+                reply_to_id,
+                recipient_bot_id,
+            )
+            .await?;
             let position = office_queue_pending_count(&state.db, chatroom_id).await;
             Ok(serde_json::json!({
                 "thread_id": chatroom_thread_id(&state.db, chatroom_id).await.map(|id| id.to_string()),
@@ -9120,7 +17950,9 @@ async fn office_budget_spent(
     let budgets = ravenbot_governance::BudgetManager::new(db.pool().clone());
     let mut spent = 0.0;
     for bot_id in member_ids {
-        let (_, cost) = budgets.get_usage(*bot_id).await.unwrap_or((0, 0.0));
+        // Office budgets baseline lifetime spend, not the member's current
+        // daily/hourly window.
+        let (_, cost) = budgets.get_total_usage(*bot_id).await.unwrap_or((0, 0.0));
         match state.baseline.get(&bot_id.to_string()).copied() {
             Some(base) if cost < base => {
                 // Usage was reset (or the provider corrected its accounting).
@@ -9285,9 +18117,10 @@ async fn office_autonomy_enabled(db: &ravenbot_db::Database, chatroom_id: Uuid) 
     .flatten()
     {
         Some(value) => value != "0" && !value.eq_ignore_ascii_case("false"),
-        // Existing offices were sold as autonomous. A missing toggle means on;
-        // the header lets the owner pause it.
-        None => true,
+        // Fail closed. An office without an explicit toggle does not spend
+        // money or take autonomous actions after launch; the owner turns it on
+        // in the header.
+        None => false,
     }
 }
 
@@ -9506,6 +18339,63 @@ async fn office_has_pending(db: &ravenbot_db::Database, chatroom_id: Uuid) -> bo
 }
 
 async fn office_board_summary(db: &ravenbot_db::Database, chatroom_id: Uuid) -> String {
+    // The board is a project backlog, not the last graph's checklist. Reading
+    // the durable ledger is what lets the next planner see a failed QA task or
+    // an open acceptance report from an earlier cycle instead of replanning it
+    // from scratch (or declaring the milestone complete because the last graph
+    // happened to finish).
+    let open =
+        ravenbot_db::queries::WorkItemQueries::list_open_by_office(db.pool(), chatroom_id, 80)
+            .await
+            .unwrap_or_default();
+    let done =
+        ravenbot_db::queries::WorkItemQueries::list_done_by_office(db.pool(), chatroom_id, 8)
+            .await
+            .unwrap_or_default();
+
+    if open.is_empty() && done.is_empty() {
+        return office_last_graph_summary(db, chatroom_id).await;
+    }
+
+    let mut lines = Vec::new();
+    if !open.is_empty() {
+        lines.push(format!("Open tasks ({}):", open.len()));
+        for item in open.iter().take(30) {
+            let mut line = format!(
+                "- [{}] {} (attempt {}/{})",
+                item.status,
+                truncate_chars(item.title.trim(), 180),
+                item.attempts.max(0),
+                item.max_attempts.max(1)
+            );
+            if let Some(error) = item
+                .error
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+            {
+                line.push_str(&format!(" — {}", truncate_chars(error, 180)));
+            }
+            lines.push(line);
+        }
+        if open.len() > 30 {
+            lines.push(format!("… and {} more open tasks", open.len() - 30));
+        }
+    }
+    if !done.is_empty() {
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push(format!("Recently completed ({} shown):", done.len()));
+        for item in &done {
+            lines.push(format!("- {}", truncate_chars(item.title.trim(), 180)));
+        }
+    }
+    lines.join("\n")
+}
+
+/// Fallback for a brand-new office that has no work ledger yet.
+async fn office_last_graph_summary(db: &ravenbot_db::Database, chatroom_id: Uuid) -> String {
     let Some(thread_id) = chatroom_thread_id(db, chatroom_id).await else {
         return "No plan yet.".to_string();
     };
@@ -9537,7 +18427,7 @@ async fn office_board_summary(db: &ravenbot_db::Database, chatroom_id: Uuid) -> 
                 .get("label")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("Task");
-            format!("- [{state}] {label}")
+            format!("- [{state}] {}", truncate_chars(label, 220))
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -9653,15 +18543,13 @@ fn office_workspace_snapshot(room: Option<&ravenbot_core::ChatRoom>) -> String {
     )
 }
 
-async fn autonomous_prompt(db: &ravenbot_db::Database, room: &ravenbot_core::ChatRoom) -> String {
+async fn autonomous_prompt(
+    db: &ravenbot_db::Database,
+    room: &ravenbot_core::ChatRoom,
+    mission: &str,
+) -> String {
     let summary = office_board_summary(db, room.id).await;
     let snapshot = office_workspace_snapshot(Some(room));
-    let mission = room
-        .goal
-        .as_deref()
-        .map(str::trim)
-        .filter(|goal| !goal.is_empty())
-        .unwrap_or_else(|| room.description.trim());
     format!(
         "[Autonomous cycle — no user is present]\n\n\
 Office: {name}\n\
@@ -9669,7 +18557,7 @@ Goal: {goal}\n\n\
 Current board:\n{summary}\n\n\
 Workspace snapshot:\n{snapshot}\n\n\
 Continue the mission from the board above:\n\
-- Finish any task that is not done. Do not redo completed work.\n\
+- Finish any task that is not done. Work failed or blocked backlog items before starting a new milestone. Do not redo completed work.\n\
 - If every planned task is done, choose the next concrete step toward the goal and execute it.\n\
 - Read Shared/STATUS.md and the workspace before changing anything.\n\
 - If the snapshot says Implementation is MISSING, do not spend this cycle reading docs. The first task must create the minimal runnable skeleton (entrypoint, one module, one test, manifest) and then verify it.\n\
@@ -9714,7 +18602,7 @@ async fn pause_autonomous_office(db: &ravenbot_db::Database, chatroom_id: Uuid, 
 async fn office_queue_loop(
     db: ravenbot_db::Database,
     runtime: Arc<ravenbot_runtime::Runtime>,
-    app: tauri::AppHandle,
+    events: HostEvents,
 ) {
     loop {
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -9725,13 +18613,16 @@ async fn office_queue_loop(
             .await
             .unwrap_or_default();
         for room in rooms {
+            if !office_is_active(room.id) {
+                reconcile_orphaned_queue_items(&db, room.id).await;
+            }
             if office_is_active(room.id) {
                 continue;
             }
             if !office_queue_has_pending(&db, room.id).await {
                 continue;
             }
-            if drain_office_queue(&db, &runtime, &app, room.id).await {
+            if drain_office_queue(&db, &runtime, &events, room.id).await {
                 tracing::info!(chatroom_id = %room.id, "Queued office message started");
                 break;
             }
@@ -9749,13 +18640,14 @@ async fn office_queue_loop(
 async fn office_autonomy_loop(
     db: ravenbot_db::Database,
     runtime: Arc<ravenbot_runtime::Runtime>,
-    app: tauri::AppHandle,
+    events: HostEvents,
 ) {
     // Let startup, model discovery, and any restored run settle before
-    // spending a token on a heartbeat.
-    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    // spending a token on a heartbeat. The goal scheduler's next_run_at is
+    // the actual gate; this tick only decides how quickly a due goal is seen.
+    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
         if runtime.is_paused().await {
             continue;
         }
@@ -9764,22 +18656,72 @@ async fn office_autonomy_loop(
             .await
             .unwrap_or_default();
         for room in rooms {
-            let mission = room
-                .goal
-                .as_deref()
-                .map(str::trim)
+            let goal = ravenbot_db::queries::GoalQueries::get_by_office(db.pool(), room.id)
+                .await
+                .ok()
+                .flatten();
+            let mission = goal
+                .as_ref()
+                .map(|goal| goal.objective.trim().to_string())
                 .filter(|goal| !goal.is_empty())
-                .or_else(|| Some(room.description.trim()).filter(|desc| !desc.is_empty()));
-            if mission.is_none() {
+                .or_else(|| {
+                    room.goal
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|goal| !goal.is_empty())
+                        .map(str::to_string)
+                })
+                .or_else(|| {
+                    Some(room.description.trim().to_string())
+                        .filter(|description| !description.is_empty())
+                });
+            let Some(mission) = mission else {
                 continue;
-            }
+            };
             // A queued user message owns the next turn. The queue worker
             // starts it (or the user has paused it); autonomy must not jump
             // ahead of a person's instruction.
             if !office_is_active(room.id) && office_queue_has_pending(&db, room.id).await {
                 continue;
             }
-            if !office_autonomy_enabled(&db, room.id).await {
+            let now = chrono::Utc::now().to_rfc3339();
+            if let Some(goal) = goal.as_ref() {
+                if goal.status == "active" && goal.consecutive_failures >= 5 {
+                    if let Ok(id) = Uuid::parse_str(&goal.id) {
+                        let _ = ravenbot_db::queries::GoalQueries::pause_with_reason(
+                            db.pool(),
+                            id,
+                            "Five automatic cycles could not obtain a completion verdict. Check the model/provider, then resume the goal.",
+                        )
+                        .await;
+                    }
+                    tracing::warn!(
+                        chatroom_id = %room.id,
+                        failures = goal.consecutive_failures,
+                        "Goal paused after repeated completion-judge failures"
+                    );
+                    continue;
+                }
+            }
+            let goal_due = goal
+                .as_ref()
+                .is_some_and(|goal| goal_autopilot_due(goal, &now));
+            let autonomy = office_autonomy_enabled(&db, room.id).await;
+            // When a goal exists, it is the scheduler: its next_run_at and
+            // round budget decide when the office may spend. The autonomy
+            // toggle is the scheduler only for offices without a goal, and it
+            // must never override a paused or done goal.
+            if let Some(goal) = goal.as_ref() {
+                if matches!(
+                    goal.status.as_str(),
+                    "paused" | "blocked" | "done" | "cancelled" | "failed"
+                ) {
+                    continue;
+                }
+                if !goal_due {
+                    continue;
+                }
+            } else if !autonomy {
                 continue;
             }
             // Only this room is serialized. Two offices have independent
@@ -9797,9 +18739,12 @@ async fn office_autonomy_loop(
             if office_has_pending(&db, room.id).await {
                 continue;
             }
-            let since = chrono::Utc::now().timestamp() - office_last_seconds(&db, room.id).await;
-            if since < 300 {
-                continue;
+            if !goal_due {
+                let since =
+                    chrono::Utc::now().timestamp() - office_last_seconds(&db, room.id).await;
+                if since < 300 {
+                    continue;
+                }
             }
 
             // A monthly ceiling is only a promise if the unattended loop obeys
@@ -9807,14 +18752,21 @@ async fn office_autonomy_loop(
             // spend in another office does not count against this one.
             let member_ids: Vec<Uuid> = members.iter().map(|member| member.bot_id).collect();
             if let Some((spent, limit)) = office_budget_exceeded(&db, &room, &member_ids).await {
-                pause_autonomous_office(
-                    &db,
-                    room.id,
-                    format!(
-                        "⏸️ **Autonomy paused — monthly budget reached.** This office has spent ${spent:.2} of its ${limit:.2} ceiling. Raise the ceiling in Office settings, then press Autonomous to resume."
-                    ),
-                )
-                .await;
+                let reason = format!(
+                    "Monthly budget reached: this office has spent ${spent:.2} of its ${limit:.2} ceiling. Raise the ceiling, then resume the goal."
+                );
+                pause_autonomous_office(&db, room.id, format!("⏸️ **Autonomy paused — {reason}**"))
+                    .await;
+                if let Some(goal) = goal.as_ref() {
+                    if let Ok(id) = Uuid::parse_str(&goal.id) {
+                        let _ = ravenbot_db::queries::GoalQueries::pause_with_reason(
+                            db.pool(),
+                            id,
+                            &reason,
+                        )
+                        .await;
+                    }
+                }
                 tracing::warn!(
                     chatroom_id = %room.id,
                     spent,
@@ -9846,12 +18798,23 @@ async fn office_autonomy_loop(
                         0
                     };
                     if cycles >= 3 {
+                        let reason = "Three automatic cycles finished without adding or changing a file in the project folder. Write down the blocker or the next concrete change, then resume the goal.";
                         pause_autonomous_office(
                             &db,
                             room.id,
-                            "⏸️ **Autonomy paused — no workspace progress.** Three autonomous cycles finished without adding or changing a file in the project folder. The office is paused so it cannot repeat the same briefing. Read `Shared/STATUS.md`, write down the blocker or the next concrete change, then press Autonomous to resume.".to_string(),
+                            format!("⏸️ **Autonomy paused — no workspace progress.** {reason}"),
                         )
                         .await;
+                        if let Some(goal) = goal.as_ref() {
+                            if let Ok(id) = Uuid::parse_str(&goal.id) {
+                                let _ = ravenbot_db::queries::GoalQueries::pause_with_reason(
+                                    db.pool(),
+                                    id,
+                                    reason,
+                                )
+                                .await;
+                            }
+                        }
                         tracing::warn!(
                             chatroom_id = %room.id,
                             cycles,
@@ -9867,27 +18830,41 @@ async fn office_autonomy_loop(
                     // Repeating a bootstrap that produces no files burns the
                     // owner's budget without changing anything. Stop and say
                     // why; the pause is visible and resumable in the header.
+                    let reason = "Three bootstrap attempts produced no files in the workspace. Check the project folder, model, and tool permissions, then resume the goal.";
                     pause_autonomous_office(
                         &db,
                         room.id,
-                        "⏸️ **Autonomy paused.** Three bootstrap attempts produced no files in the workspace. Check the project folder, model, and tool permissions, then resume with the Autonomous button. The office will not repeat the same inspection again.".to_string(),
+                        format!("⏸️ **Autonomy paused.** {reason}"),
                     )
                     .await;
+                    if let Some(goal) = goal.as_ref() {
+                        if let Ok(id) = Uuid::parse_str(&goal.id) {
+                            let _ = ravenbot_db::queries::GoalQueries::pause_with_reason(
+                                db.pool(),
+                                id,
+                                reason,
+                            )
+                            .await;
+                        }
+                    }
                     tracing::warn!(chatroom_id = %room.id, "Office paused after repeated empty bootstraps");
                     continue;
                 }
             }
-            let prompt = autonomous_prompt(&db, &room).await;
+            let prompt = autonomous_prompt(&db, &room, &mission).await;
             match start_office_turn(
                 &db,
                 &runtime,
-                &app,
+                events.clone(),
                 room.id,
                 prompt,
                 "[Autonomous cycle] Continuing the office mission.".to_string(),
                 None,
                 true,
                 None,
+                None,
+                None,
+                true,
                 None,
             )
             .await
@@ -9921,11 +18898,57 @@ async fn office_autonomy_loop(
                         error = %error,
                         "Autonomous office cycle could not start"
                     );
+                    if goal_due && !error.contains("already working") {
+                        if let Some(goal) = goal.as_ref() {
+                            if let Ok(id) = Uuid::parse_str(&goal.id) {
+                                let _ = ravenbot_db::queries::GoalQueries::postpone(
+                                    db.pool(),
+                                    id,
+                                    60,
+                                    &format!("Automatic cycle could not start: {error}"),
+                                )
+                                .await;
+                            }
+                        }
+                    }
                     mark_office_last(&db, room.id).await;
                 }
             }
         }
     }
+}
+
+#[tauri::command]
+async fn get_office_alert_policy(
+    state: State<'_, AppState>,
+    chatroom_id: Uuid,
+) -> Result<OfficeAlertPolicy, String> {
+    Ok(read_office_alert_policy(state.db.pool(), chatroom_id).await)
+}
+
+#[tauri::command]
+async fn set_office_alert_policy(
+    state: State<'_, AppState>,
+    chatroom_id: Uuid,
+    enabled: bool,
+    warning_percent: f64,
+    critical_percent: f64,
+) -> Result<OfficeAlertPolicy, String> {
+    let policy = OfficeAlertPolicy {
+        enabled,
+        warning_percent,
+        critical_percent,
+    };
+    validate_office_alert_policy(&policy)?;
+    let value = serde_json::to_string(&policy).map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        &office_alert_policy_key(chatroom_id),
+        &value,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(policy)
 }
 
 #[tauri::command]
@@ -9997,10 +19020,39 @@ fn truncate_chars(text: &str, max: usize) -> String {
 // Input types
 
 #[derive(serde::Deserialize)]
+struct GraphCondition {
+    source: usize,
+    operator: String,
+    value: String,
+}
+
+#[derive(serde::Deserialize)]
 struct GraphTask {
     bot_id: Uuid,
     instruction: String,
     depends_on: Vec<usize>,
+    #[serde(default)]
+    condition: Option<GraphCondition>,
+    #[serde(default)]
+    data_from: Option<Vec<usize>>,
+    #[serde(default)]
+    retries: u8,
+    #[serde(default)]
+    output_schema: Option<String>,
+    #[serde(default = "default_loop_iterations")]
+    loop_iterations: u8,
+    #[serde(default)]
+    loop_until: Option<ravenbot_db::queries::WorkflowLoopStop>,
+    #[serde(default)]
+    loop_group: Option<String>,
+    #[serde(default)]
+    loop_group_terminal: bool,
+    #[serde(default = "default_loop_iterations")]
+    loop_group_iterations: u8,
+    #[serde(default)]
+    loop_group_stop: Option<ravenbot_db::queries::WorkflowLoopStop>,
+    #[serde(default)]
+    node_type: Option<String>,
 }
 
 // Output types
@@ -10023,6 +19075,11 @@ struct GraphResult {
     blackboard_data: std::collections::HashMap<String, String>,
     /// Lead's synthesized final answer (None for headless graph runs).
     summary: Option<String>,
+    /// "completed" only when every node finished. A failed or skipped node
+    /// makes the run "failed" even though the executor returned a blackboard.
+    status: String,
+    /// Human-readable failed/skipped tasks, used for run history and alerts.
+    failures: Vec<String>,
 }
 
 /// Enable microphone capture on Linux. WebKitGTK disables media streams by
@@ -10053,6 +19110,1429 @@ fn enable_linux_media_capture(app: &tauri::AppHandle) {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+#[derive(Debug, Default)]
+struct StartupReconciliation {
+    /// Interrupted 1:1 runs parked as paused for the startup resume worker.
+    resumable_runs: u64,
+    /// Office, graph-child, and channel-task runs that cannot resume alone.
+    failed_runs: u64,
+    /// Runs the user had already paused; they stay paused until asked.
+    already_paused_runs: u64,
+    /// Interrupted workflow runs whose schedule was pushed to run now.
+    retried_workflow_runs: u64,
+    /// Offices whose turn was active at quit, queued for a restart.
+    resumed_offices: u64,
+    failed_workflow_runs: u64,
+    expired_approvals: u64,
+    expired_questions: u64,
+    failed_queue_items: u64,
+    reset_channel_tasks: u64,
+    reset_agents: u64,
+}
+
+/// Close state that cannot survive a restart.
+///
+/// Runs are in-memory loops; a non-terminal run without a live process is
+/// orphaned. Paused runs are the exception — they carry a checkpoint and can be
+/// resumed, so they are preserved. Pending HITL rows and queue items tied to a
+/// process that no longer exists would otherwise block the office forever.
+async fn reconcile_startup_state(
+    pool: &sqlx::SqlitePool,
+) -> Result<StartupReconciliation, sqlx::Error> {
+    let now = chrono::Utc::now().to_rfc3339();
+    let already_paused_runs: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM runs WHERE state = 'paused'")
+            .fetch_one(pool)
+            .await?;
+
+    // An interrupted 1:1 run has a checkpoint from its last tool round. Park
+    // it as paused and mark it for the resume worker instead of declaring it
+    // failed; closing the app must not throw the work away.
+    let resumable_runs = ravenbot_db::queries::RunQueries::park_interrupted_runs(pool).await?;
+    // Office graph nodes and delegated children have no independent restart
+    // path, so they are closed honestly rather than resumed out of order.
+    let failed_runs = ravenbot_db::queries::RunQueries::fail_orphaned_runs(pool).await?;
+
+    // The ledger is append-only, so bound it at startup rather than on every
+    // write. 30 days or 100k rows is far more history than the UI reads.
+    match ravenbot_db::queries::RunProgressQueries::prune(pool, 30, 100_000).await {
+        Ok(pruned) if pruned > 0 => {
+            tracing::info!(pruned, "Trimmed old work events");
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(%error, "Could not trim work events"),
+    }
+
+    // A workflow run is claimed by advancing its schedule. Put the schedule
+    // back at "now" so the next scheduler tick retries the interrupted work.
+    let retried_workflow_runs = sqlx::query(
+        "UPDATE workflow_schedules
+         SET next_run_at = ?, last_error = 'Interrupted run will retry after app restart',
+             updated_at = ?
+         WHERE enabled = 1
+           AND workflow_id IN (SELECT workflow_id FROM workflow_runs WHERE state = 'running')",
+    )
+    .bind(&now)
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    let failed_workflow_runs = sqlx::query(
+        "UPDATE workflow_runs SET state = 'failed', finished_at = ?,
+            detail = 'app quit while the workflow was running; re-queued for retry'
+         WHERE state = 'running'",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    let reset_channel_tasks = sqlx::query(
+        "UPDATE channel_tasks SET state = 'pending', updated_at = ?
+         WHERE state = 'running'",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    let expired_approvals = sqlx::query(
+        "UPDATE approvals SET status = 'expired',
+            note = 'app quit while waiting for approval', decided_at = ?
+         WHERE status = 'pending'",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    let expired_questions = sqlx::query(
+        "UPDATE questions SET status = 'expired', answered_at = ?
+         WHERE status = 'pending'",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    // A queue item whose office has a running graph is not dead: the startup
+    // resume worker will continue that graph and finish the same queue item.
+    // Only queue items with no resumable graph are genuinely interrupted.
+    let failed_queue_items = sqlx::query(
+        "UPDATE office_queue SET state = 'failed',
+            error = 'app quit while this office turn was running', finished_at = ?
+         WHERE state = 'running'
+           AND chatroom_id NOT IN (
+               SELECT chatroom_id FROM office_graphs WHERE status = 'running'
+           )",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    // A turn cannot be live before setup finishes. A stale marker makes the
+    // next message wait on an office that will never clear it. Remember which
+    // offices were mid-turn first, so the startup worker can restart the last
+    // user request instead of leaving the office idle.
+    let active_offices: Vec<String> = sqlx::query_scalar(
+        "SELECT key FROM app_settings WHERE key LIKE 'office_active:%' AND value = '1'",
+    )
+    .fetch_all(pool)
+    .await?;
+    let resumed_offices = active_offices.len() as u64;
+    for key in &active_offices {
+        if let Some(id) = key.strip_prefix("office_active:") {
+            ravenbot_db::queries::AppSettingsQueries::set(
+                pool,
+                &format!("office_resume:{id}"),
+                "1",
+            )
+            .await?;
+        }
+    }
+    sqlx::query("UPDATE app_settings SET value = '0' WHERE key LIKE 'office_active:%'")
+        .execute(pool)
+        .await?;
+    sqlx::query("UPDATE app_settings SET value = '' WHERE key LIKE 'office_phase:%'")
+        .execute(pool)
+        .await?;
+
+    // An active goal whose schedule was never armed (legacy row, or a crash
+    // between creation and the first verdict) must get one overdue wakeup.
+    // This is a catch-up, not a replay: the scheduler claims it once and then
+    // record_verdict() owns the next_run_at.
+    let armed_goals = sqlx::query(
+        "UPDATE goals SET next_run_at = ?
+         WHERE status = 'active' AND next_run_at IS NULL",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if armed_goals > 0 {
+        tracing::info!(armed_goals, "Armed active goals for automatic continuation");
+    }
+    // An active goal that already spent its automatic round budget must not
+    // stay "active" with a wakeup that the scheduler will always reject.
+    let exhausted_goals = sqlx::query(
+        "UPDATE goals
+         SET status = 'paused', next_run_at = NULL,
+             last_reason = 'Auto-continuation budget exhausted; raise the goal budget to continue.',
+             updated_at = ?
+         WHERE status = 'active' AND rounds_used >= max_rounds",
+    )
+    .bind(&now)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if exhausted_goals > 0 {
+        tracing::info!(
+            exhausted_goals,
+            "Paused goals whose automatic round budget was already exhausted"
+        );
+    }
+
+    // A crash mid-run leaves agents saying `thinking` with nobody working.
+    let reset_agents = ravenbot_db::queries::BotQueries::mark_all_idle(pool).await?;
+
+    Ok(StartupReconciliation {
+        resumable_runs,
+        failed_runs,
+        already_paused_runs: already_paused_runs as u64,
+        retried_workflow_runs,
+        resumed_offices,
+        failed_workflow_runs,
+        expired_approvals,
+        expired_questions,
+        failed_queue_items,
+        reset_channel_tasks,
+        reset_agents,
+    })
+}
+
+#[tauri::command]
+async fn get_allow_private_tool_network(state: State<'_, AppState>) -> Result<bool, String> {
+    Ok(
+        ravenbot_db::queries::AppSettingsQueries::get(
+            state.db.pool(),
+            "allow_private_tool_network",
+        )
+        .await
+        .map_err(|error| error.to_string())?
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+    )
+}
+
+#[tauri::command]
+async fn set_allow_private_tool_network(
+    state: State<'_, AppState>,
+    allow: bool,
+) -> Result<(), String> {
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        "allow_private_tool_network",
+        if allow { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_service_status() -> Result<service::ServiceStatus, String> {
+    tauri::async_runtime::spawn_blocking(service::status)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn install_background_service(
+    app: tauri::AppHandle,
+) -> Result<service::ServiceStatus, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let status = tauri::async_runtime::spawn_blocking(service::install)
+        .await
+        .map_err(|error| error.to_string())??;
+    // The plain login item and the service would both launch the app. One
+    // instance is enough; the service is the richer replacement.
+    let _ = app.autolaunch().disable();
+    Ok(status)
+}
+
+#[tauri::command]
+async fn uninstall_background_service() -> Result<service::ServiceStatus, String> {
+    tauri::async_runtime::spawn_blocking(service::uninstall)
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn set_background_service_linger(enabled: bool) -> Result<service::ServiceStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || service::set_linger(enabled))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn handoff_to_background_service(app: tauri::AppHandle) -> Result<(), String> {
+    service::handoff()?;
+    // Let the IPC response reach the UI before the window closes. The helper
+    // waits two seconds, so the database and single-instance socket are free.
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+        app.exit(0);
+    });
+    Ok(())
+}
+
+// ── Remote access ───────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+struct RemoteStatus {
+    enabled: bool,
+    running: bool,
+    url: String,
+    port: u16,
+    allow_lan: bool,
+    tls: bool,
+    fingerprint: Option<String>,
+    devices: Vec<ravenbot_db::queries::RemoteDevice>,
+    audit: Vec<ravenbot_db::queries::RemoteAuditEntry>,
+}
+
+async fn remote_enabled_setting(pool: &sqlx::SqlitePool) -> bool {
+    ravenbot_db::queries::AppSettingsQueries::get(pool, "remote_enabled")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+async fn remote_config_from_settings(pool: &sqlx::SqlitePool) -> ravenbot_remote::RemoteConfig {
+    let default_port = std::env::var("RAVENBOT_REMOTE_PORT")
+        .ok()
+        .and_then(|value| value.trim().parse::<u16>().ok())
+        .unwrap_or(ravenbot_remote::DEFAULT_PORT);
+    let port = ravenbot_db::queries::AppSettingsQueries::get(pool, "remote_port")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| value.parse::<u16>().ok())
+        .unwrap_or(default_port);
+    let allow_lan = ravenbot_db::queries::AppSettingsQueries::get(pool, "remote_allow_lan")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    let tls = ravenbot_db::queries::AppSettingsQueries::get(pool, "remote_tls")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    ravenbot_remote::RemoteConfig {
+        port: if port < 1024 {
+            ravenbot_remote::DEFAULT_PORT
+        } else {
+            port
+        },
+        allow_lan,
+        tls,
+        tls_dir: None,
+    }
+}
+
+async fn save_remote_settings(
+    pool: &sqlx::SqlitePool,
+    enabled: bool,
+    config: &ravenbot_remote::RemoteConfig,
+) -> Result<(), String> {
+    ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        "remote_enabled",
+        if enabled { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(pool, "remote_port", &config.port.to_string())
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        "remote_allow_lan",
+        if config.allow_lan { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        "remote_tls",
+        if config.tls { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn remote_status(state: &AppState) -> Result<RemoteStatus, String> {
+    let enabled = remote_enabled_setting(state.db.pool()).await;
+    let config = remote_config_from_settings(state.db.pool()).await;
+    let (running, url, tls, fingerprint) = {
+        let guard = state.remote.lock().await;
+        (
+            guard.is_some(),
+            guard.as_ref().map(|server| server.url()),
+            guard.as_ref().is_some_and(|server| server.tls()),
+            guard
+                .as_ref()
+                .and_then(|server| server.fingerprint().map(str::to_string)),
+        )
+    };
+    let devices = ravenbot_db::queries::RemoteAccessQueries::list_devices(state.db.pool())
+        .await
+        .map_err(|error| error.to_string())?;
+    let audit = ravenbot_db::queries::RemoteAccessQueries::recent_audit(state.db.pool(), 50)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(RemoteStatus {
+        enabled,
+        running,
+        url: url.unwrap_or_else(|| {
+            let scheme = if config.tls { "https" } else { "http" };
+            format!("{scheme}://127.0.0.1:{}", config.port)
+        }),
+        port: config.port,
+        allow_lan: config.allow_lan,
+        tls: tls || (!running && config.tls),
+        fingerprint,
+        devices,
+        audit,
+    })
+}
+
+async fn start_remote_listener(state: &AppState) -> Result<RemoteStatus, String> {
+    let config = remote_config_from_settings(state.db.pool()).await;
+    let mut guard = state.remote.lock().await;
+    if guard.is_some() {
+        drop(guard);
+        return remote_status(state).await;
+    }
+    let server =
+        ravenbot_remote::start(state.db.pool().clone(), state.runtime.clone(), config).await?;
+    *guard = Some(server);
+    drop(guard);
+    remote_status(state).await
+}
+
+async fn stop_remote_listener(state: &AppState) {
+    let server = { state.remote.lock().await.take() };
+    if let Some(server) = server {
+        server.shutdown().await;
+    }
+}
+
+#[tauri::command]
+async fn get_remote_status(state: State<'_, AppState>) -> Result<RemoteStatus, String> {
+    remote_status(&state).await
+}
+
+#[tauri::command]
+async fn configure_remote_access(
+    state: State<'_, AppState>,
+    enabled: bool,
+    port: u16,
+    allow_lan: bool,
+    tls: bool,
+) -> Result<RemoteStatus, String> {
+    if port != 0 && !(1024..=65535).contains(&port) {
+        return Err("Choose a port between 1024 and 65535.".to_string());
+    }
+    let config = ravenbot_remote::RemoteConfig {
+        port: if port == 0 {
+            ravenbot_remote::DEFAULT_PORT
+        } else {
+            port
+        },
+        allow_lan,
+        tls,
+        tls_dir: None,
+    };
+    stop_remote_listener(&state).await;
+    if enabled {
+        // Only persist `enabled` after the listener actually binds, so a port
+        // conflict does not turn into a failed start on every app launch.
+        save_remote_settings(state.db.pool(), true, &config).await?;
+        match start_remote_listener(&state).await {
+            Ok(status) => Ok(status),
+            Err(error) => {
+                save_remote_settings(state.db.pool(), false, &config).await?;
+                Err(error)
+            }
+        }
+    } else {
+        save_remote_settings(state.db.pool(), false, &config).await?;
+        remote_status(&state).await
+    }
+}
+
+#[tauri::command]
+async fn start_remote_access(state: State<'_, AppState>) -> Result<RemoteStatus, String> {
+    save_remote_settings(
+        state.db.pool(),
+        true,
+        &remote_config_from_settings(state.db.pool()).await,
+    )
+    .await?;
+    match start_remote_listener(&state).await {
+        Ok(status) => Ok(status),
+        Err(error) => {
+            save_remote_settings(
+                state.db.pool(),
+                false,
+                &remote_config_from_settings(state.db.pool()).await,
+            )
+            .await?;
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+async fn stop_remote_access(state: State<'_, AppState>) -> Result<RemoteStatus, String> {
+    stop_remote_listener(&state).await;
+    save_remote_settings(
+        state.db.pool(),
+        false,
+        &remote_config_from_settings(state.db.pool()).await,
+    )
+    .await?;
+    remote_status(&state).await
+}
+
+#[tauri::command]
+async fn create_remote_pairing(
+    state: State<'_, AppState>,
+    role: String,
+) -> Result<serde_json::Value, String> {
+    if state.remote.lock().await.is_none() {
+        return Err("Start remote access before generating a pairing code.".to_string());
+    }
+    let role = ravenbot_remote::RemoteRole::parse(&role);
+    let pairing =
+        ravenbot_remote::create_pairing(state.db.pool(), role, std::time::Duration::from_secs(300))
+            .await?;
+    Ok(serde_json::json!({
+        "code": pairing.code,
+        "role": pairing.role,
+        "expires_at": pairing.expires_at,
+    }))
+}
+
+#[tauri::command]
+async fn list_remote_devices(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::RemoteDevice>, String> {
+    ravenbot_db::queries::RemoteAccessQueries::list_devices(state.db.pool())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn revoke_remote_device(state: State<'_, AppState>, device_id: Uuid) -> Result<bool, String> {
+    ravenbot_db::queries::RemoteAccessQueries::revoke_device(state.db.pool(), device_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_telegram_status(
+    state: State<'_, AppState>,
+) -> Result<telegram::TelegramStatus, String> {
+    telegram::status(&state.db).await
+}
+
+#[tauri::command]
+async fn set_telegram_config(
+    state: State<'_, AppState>,
+    enabled: bool,
+    token: Option<String>,
+    default_bot: Option<Uuid>,
+) -> Result<telegram::TelegramStatus, String> {
+    if let Some(token) = token.as_deref() {
+        if token.trim().is_empty() {
+            telegram::clear_token(&state.db).await?;
+        } else {
+            telegram::set_token(&state.db, token).await?;
+        }
+    }
+    if let Some(bot_id) = default_bot {
+        if bot_id.is_nil() {
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                telegram::DEFAULT_BOT_KEY,
+                "",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        } else {
+            if ravenbot_db::queries::BotQueries::get(state.db.pool(), bot_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return Err("That agent does not exist.".to_string());
+            }
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                telegram::DEFAULT_BOT_KEY,
+                &bot_id.to_string(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    if enabled && telegram::read_token(&state.db).await.is_none() {
+        return Err("Add a Telegram bot token before enabling the connector.".to_string());
+    }
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        telegram::ENABLED_KEY,
+        if enabled { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    telegram::status(&state.db).await
+}
+
+#[tauri::command]
+async fn create_telegram_pairing(
+    state: State<'_, AppState>,
+    bot_id: Option<Uuid>,
+) -> Result<telegram::TelegramPairing, String> {
+    if !telegram::enabled(&state.db).await {
+        return Err("Enable the Telegram connector first.".to_string());
+    }
+    if telegram::read_token(&state.db).await.is_none() {
+        return Err("Add a Telegram bot token first.".to_string());
+    }
+    let bot_id = match bot_id {
+        Some(id) => id,
+        None => ravenbot_db::queries::AppSettingsQueries::get(
+            state.db.pool(),
+            telegram::DEFAULT_BOT_KEY,
+        )
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| Uuid::parse_str(value.trim()).ok())
+        .ok_or_else(|| "Choose the agent a paired chat should talk to.".to_string())?,
+    };
+    telegram::create_pairing(&state.db, bot_id, std::time::Duration::from_secs(300)).await
+}
+
+#[tauri::command]
+async fn list_telegram_links(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::TelegramLink>, String> {
+    ravenbot_db::queries::TelegramQueries::list_links(state.db.pool())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn unlink_telegram_chat(state: State<'_, AppState>, chat_id: String) -> Result<bool, String> {
+    ravenbot_db::queries::TelegramQueries::unlink(state.db.pool(), &chat_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_slack_status(state: State<'_, AppState>) -> Result<slack::SlackStatus, String> {
+    slack::status(&state.db).await
+}
+
+#[tauri::command]
+async fn set_slack_config(
+    state: State<'_, AppState>,
+    enabled: bool,
+    app_token: Option<String>,
+    bot_token: Option<String>,
+    default_bot: Option<Uuid>,
+) -> Result<slack::SlackStatus, String> {
+    if let Some(app) = app_token.as_deref() {
+        if app.trim().is_empty() {
+            slack::clear_tokens(&state.db).await?;
+        } else {
+            let bot = bot_token
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "A Slack bot token is required with the app token.".to_string())?;
+            slack::set_tokens(&state.db, app, bot).await?;
+        }
+    } else if let Some(bot) = bot_token.as_deref() {
+        if bot.trim().is_empty() {
+            slack::clear_tokens(&state.db).await?;
+        } else {
+            return Err("Add the Slack app token with the bot token.".to_string());
+        }
+    }
+    if let Some(bot_id) = default_bot {
+        if bot_id.is_nil() {
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                slack::DEFAULT_BOT_KEY,
+                "",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        } else {
+            if ravenbot_db::queries::BotQueries::get(state.db.pool(), bot_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return Err("That agent does not exist.".to_string());
+            }
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                slack::DEFAULT_BOT_KEY,
+                &bot_id.to_string(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    if enabled
+        && (slack::app_token(&state.db).await.is_none()
+            || slack::bot_token(&state.db).await.is_none())
+    {
+        return Err("Add both Slack tokens before enabling the connector.".to_string());
+    }
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        slack::ENABLED_KEY,
+        if enabled { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    slack::status(&state.db).await
+}
+
+#[tauri::command]
+async fn create_slack_pairing(
+    state: State<'_, AppState>,
+    bot_id: Option<Uuid>,
+) -> Result<slack::SlackPairing, String> {
+    if !slack::enabled(&state.db).await {
+        return Err("Enable the Slack connector first.".to_string());
+    }
+    if slack::app_token(&state.db).await.is_none() || slack::bot_token(&state.db).await.is_none() {
+        return Err("Add both Slack tokens first.".to_string());
+    }
+    let bot_id = match bot_id {
+        Some(id) => id,
+        None => {
+            ravenbot_db::queries::AppSettingsQueries::get(state.db.pool(), slack::DEFAULT_BOT_KEY)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|value| Uuid::parse_str(value.trim()).ok())
+                .ok_or_else(|| "Choose the agent a paired channel should talk to.".to_string())?
+        }
+    };
+    slack::create_pairing(&state.db, bot_id, std::time::Duration::from_secs(300)).await
+}
+
+#[tauri::command]
+async fn list_slack_links(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::SlackLink>, String> {
+    ravenbot_db::queries::SlackQueries::list_links(state.db.pool())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn unlink_slack_channel(
+    state: State<'_, AppState>,
+    channel_id: String,
+) -> Result<bool, String> {
+    ravenbot_db::queries::SlackQueries::unlink(state.db.pool(), &channel_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_discord_status(state: State<'_, AppState>) -> Result<discord::DiscordStatus, String> {
+    discord::status(&state.db).await
+}
+
+#[tauri::command]
+async fn set_discord_config(
+    state: State<'_, AppState>,
+    enabled: bool,
+    token: Option<String>,
+    default_bot: Option<Uuid>,
+) -> Result<discord::DiscordStatus, String> {
+    if let Some(token) = token.as_deref() {
+        if token.trim().is_empty() {
+            discord::clear_token(&state.db).await?;
+        } else {
+            discord::set_token(&state.db, token).await?;
+        }
+    }
+    if let Some(bot_id) = default_bot {
+        if bot_id.is_nil() {
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                discord::DEFAULT_BOT_KEY,
+                "",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        } else {
+            if ravenbot_db::queries::BotQueries::get(state.db.pool(), bot_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return Err("That agent does not exist.".to_string());
+            }
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                discord::DEFAULT_BOT_KEY,
+                &bot_id.to_string(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    if enabled && discord::read_token(&state.db).await.is_none() {
+        return Err("Add a Discord bot token before enabling the connector.".to_string());
+    }
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        discord::ENABLED_KEY,
+        if enabled { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    discord::status(&state.db).await
+}
+
+#[tauri::command]
+async fn create_discord_pairing(
+    state: State<'_, AppState>,
+    bot_id: Option<Uuid>,
+) -> Result<discord::DiscordPairing, String> {
+    if !discord::enabled(&state.db).await {
+        return Err("Enable the Discord connector first.".to_string());
+    }
+    if discord::read_token(&state.db).await.is_none() {
+        return Err("Add a Discord bot token first.".to_string());
+    }
+    let bot_id = match bot_id {
+        Some(id) => id,
+        None => {
+            ravenbot_db::queries::AppSettingsQueries::get(state.db.pool(), discord::DEFAULT_BOT_KEY)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|value| Uuid::parse_str(value.trim()).ok())
+                .ok_or_else(|| "Choose the agent a paired channel should talk to.".to_string())?
+        }
+    };
+    discord::create_pairing(&state.db, bot_id, std::time::Duration::from_secs(300)).await
+}
+
+#[tauri::command]
+async fn list_discord_links(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::DiscordLink>, String> {
+    ravenbot_db::queries::DiscordQueries::list_links(state.db.pool())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn unlink_discord_channel(
+    state: State<'_, AppState>,
+    channel_id: String,
+) -> Result<bool, String> {
+    ravenbot_db::queries::DiscordQueries::unlink(state.db.pool(), &channel_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_whatsapp_status(
+    state: State<'_, AppState>,
+) -> Result<whatsapp::WhatsAppStatus, String> {
+    whatsapp::status(&state.db).await
+}
+
+#[tauri::command]
+async fn set_whatsapp_config(
+    state: State<'_, AppState>,
+    enabled: bool,
+    token: Option<String>,
+    app_secret: Option<String>,
+    verify_token: Option<String>,
+    phone_number_id: Option<String>,
+    default_bot: Option<Uuid>,
+) -> Result<whatsapp::WhatsAppStatus, String> {
+    if let Some(token) = token.as_deref() {
+        if token.trim().is_empty() {
+            whatsapp::clear_token(&state.db).await?;
+        } else {
+            whatsapp::set_token(&state.db, token).await?;
+        }
+    }
+    if let Some(secret) = app_secret.as_deref() {
+        if secret.trim().is_empty() {
+            whatsapp::clear_app_secret(&state.db).await?;
+        } else {
+            whatsapp::set_app_secret(&state.db, secret).await?;
+        }
+    }
+    if let Some(token) = verify_token.as_deref() {
+        if token.trim().is_empty() {
+            whatsapp::clear_verify_token(&state.db).await?;
+        } else {
+            whatsapp::set_verify_token(&state.db, token).await?;
+        }
+    }
+    if let Some(phone_id) = phone_number_id.as_deref() {
+        if phone_id.trim().is_empty() {
+            whatsapp::clear_phone_number_id(&state.db).await?;
+        } else {
+            whatsapp::set_phone_number_id(&state.db, phone_id).await?;
+        }
+    }
+    if let Some(bot_id) = default_bot {
+        if bot_id.is_nil() {
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                whatsapp::DEFAULT_BOT_KEY,
+                "",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        } else {
+            if ravenbot_db::queries::BotQueries::get(state.db.pool(), bot_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return Err("That agent does not exist.".to_string());
+            }
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                whatsapp::DEFAULT_BOT_KEY,
+                &bot_id.to_string(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    if enabled
+        && (whatsapp::read_token(&state.db).await.is_none()
+            || whatsapp::read_app_secret(&state.db).await.is_none()
+            || whatsapp::read_verify_token(&state.db).await.is_none()
+            || whatsapp::read_phone_number_id(&state.db).await.is_none())
+    {
+        return Err(
+            "Add the access token, app secret, verify token and phone number id before enabling."
+                .to_string(),
+        );
+    }
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        whatsapp::ENABLED_KEY,
+        if enabled { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    whatsapp::status(&state.db).await
+}
+
+#[tauri::command]
+async fn create_whatsapp_pairing(
+    state: State<'_, AppState>,
+    bot_id: Option<Uuid>,
+) -> Result<whatsapp::WhatsAppPairing, String> {
+    if !whatsapp::enabled(&state.db).await {
+        return Err("Enable the WhatsApp connector first.".to_string());
+    }
+    if whatsapp::read_token(&state.db).await.is_none()
+        || whatsapp::read_phone_number_id(&state.db).await.is_none()
+    {
+        return Err("Configure the WhatsApp access token and phone number id first.".to_string());
+    }
+    let bot_id = match bot_id {
+        Some(id) => id,
+        None => ravenbot_db::queries::AppSettingsQueries::get(
+            state.db.pool(),
+            whatsapp::DEFAULT_BOT_KEY,
+        )
+        .await
+        .ok()
+        .flatten()
+        .and_then(|value| Uuid::parse_str(value.trim()).ok())
+        .ok_or_else(|| "Choose the agent a paired number should talk to.".to_string())?,
+    };
+    whatsapp::create_pairing(&state.db, bot_id, std::time::Duration::from_secs(300)).await
+}
+
+#[tauri::command]
+async fn list_whatsapp_links(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::WhatsAppLink>, String> {
+    ravenbot_db::queries::WhatsAppQueries::list_links(state.db.pool())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn unlink_whatsapp_number(state: State<'_, AppState>, wa_id: String) -> Result<bool, String> {
+    ravenbot_db::queries::WhatsAppQueries::unlink(state.db.pool(), &wa_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_teams_status(state: State<'_, AppState>) -> Result<teams::TeamsStatus, String> {
+    teams::status(&state.db).await
+}
+
+#[tauri::command]
+async fn set_teams_config(
+    state: State<'_, AppState>,
+    enabled: bool,
+    app_id: Option<String>,
+    app_password: Option<String>,
+    tenants: Option<String>,
+    default_bot: Option<Uuid>,
+) -> Result<teams::TeamsStatus, String> {
+    if let Some(app_id) = app_id.as_deref() {
+        if app_id.trim().is_empty() {
+            teams::clear_app_id(&state.db).await?;
+        } else {
+            teams::set_app_id(&state.db, app_id).await?;
+        }
+    }
+    if let Some(password) = app_password.as_deref() {
+        if password.trim().is_empty() {
+            teams::clear_app_password(&state.db).await?;
+        } else {
+            teams::set_app_password(&state.db, password).await?;
+        }
+    }
+    if let Some(tenants) = tenants.as_deref() {
+        if tenants.trim().is_empty() {
+            teams::clear_tenants(&state.db).await?;
+        } else {
+            teams::set_tenants(&state.db, tenants).await?;
+        }
+    }
+    if let Some(bot_id) = default_bot {
+        if bot_id.is_nil() {
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                teams::DEFAULT_BOT_KEY,
+                "",
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        } else {
+            if ravenbot_db::queries::BotQueries::get(state.db.pool(), bot_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .is_none()
+            {
+                return Err("That agent does not exist.".to_string());
+            }
+            ravenbot_db::queries::AppSettingsQueries::set(
+                state.db.pool(),
+                teams::DEFAULT_BOT_KEY,
+                &bot_id.to_string(),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        }
+    }
+    if enabled
+        && (teams::read_app_id(&state.db).await.is_none()
+            || teams::read_app_password(&state.db).await.is_none()
+            || teams::read_tenants(&state.db).await.is_empty())
+    {
+        return Err(
+            "Add the app id, app password and at least one allowed tenant before enabling."
+                .to_string(),
+        );
+    }
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        teams::ENABLED_KEY,
+        if enabled { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    teams::status(&state.db).await
+}
+
+#[tauri::command]
+async fn create_teams_pairing(
+    state: State<'_, AppState>,
+    bot_id: Option<Uuid>,
+) -> Result<teams::TeamsPairing, String> {
+    if !teams::enabled(&state.db).await {
+        return Err("Enable the Teams connector first.".to_string());
+    }
+    if teams::read_app_id(&state.db).await.is_none()
+        || teams::read_app_password(&state.db).await.is_none()
+    {
+        return Err("Configure the Teams app id and password first.".to_string());
+    }
+    let bot_id = match bot_id {
+        Some(id) => id,
+        None => {
+            ravenbot_db::queries::AppSettingsQueries::get(state.db.pool(), teams::DEFAULT_BOT_KEY)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|value| Uuid::parse_str(value.trim()).ok())
+                .ok_or_else(|| {
+                    "Choose the agent a paired conversation should talk to.".to_string()
+                })?
+        }
+    };
+    teams::create_pairing(&state.db, bot_id, std::time::Duration::from_secs(300)).await
+}
+
+#[tauri::command]
+async fn list_teams_links(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::TeamsLink>, String> {
+    ravenbot_db::queries::TeamsQueries::list_links(state.db.pool())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn unlink_teams_conversation(
+    state: State<'_, AppState>,
+    conversation_id: String,
+) -> Result<bool, String> {
+    ravenbot_db::queries::TeamsQueries::unlink(state.db.pool(), &conversation_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn ravenbot_account_mode() -> String {
+    accounts::mode_string()
+}
+
+#[tauri::command]
+fn get_current_account(state: State<'_, AppState>) -> accounts::CurrentAccount {
+    accounts::CurrentAccount {
+        username: state.account.username.clone(),
+        workspace: state.workspace.username.clone(),
+        role: state.role.clone(),
+        workspace_owner: state.workspace.is_owner,
+    }
+}
+
+#[tauri::command]
+async fn get_run_actor(
+    state: State<'_, AppState>,
+    run_id: Uuid,
+) -> Result<Option<ravenbot_db::queries::RunActor>, String> {
+    ravenbot_db::queries::RunQueries::actor_for(state.db.pool(), run_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn list_workspace_grants(
+    state: State<'_, AppState>,
+) -> Result<Vec<(String, String)>, String> {
+    if state.role != "owner" {
+        return Err("Only the workspace owner can manage grants.".to_string());
+    }
+    accounts::list_workspace_grants(&state.account_base, &state.workspace.username).await
+}
+
+#[tauri::command]
+async fn grant_workspace_access(
+    state: State<'_, AppState>,
+    username: String,
+    role: String,
+) -> Result<(), String> {
+    if state.role != "owner" {
+        return Err("Only the workspace owner can manage grants.".to_string());
+    }
+    accounts::grant_workspace(
+        &state.account_base,
+        &state.workspace.username,
+        &username,
+        &role,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn revoke_workspace_access(
+    state: State<'_, AppState>,
+    username: String,
+) -> Result<bool, String> {
+    if state.role != "owner" {
+        return Err("Only the workspace owner can manage grants.".to_string());
+    }
+    accounts::revoke_workspace(&state.account_base, &state.workspace.username, &username).await
+}
+
+#[tauri::command]
+async fn logout_account(state: State<'_, AppState>) -> Result<(), String> {
+    accounts::revoke_session(&state.account_base, &state.account_session).await?;
+    accounts::forget_session(&state.account_base, &state.account_session);
+    if std::env::var("RAVENBOT_DEV_LAUNCHER").ok().as_deref() == Some("1") {
+        // A hidden dev launcher is waiting to show the login screen again.
+        std::process::exit(accounts::LOGOUT_EXIT_CODE);
+    }
+    if tauri::is_dev() {
+        // A dev app reopened from the remembered session has no launcher
+        // parent. Let `tauri dev` stop cleanly; the next start shows login.
+        std::process::exit(0);
+    }
+    accounts::spawn_launcher(&state.account_base)?;
+    std::process::exit(0);
+}
+
+#[tauri::command]
+async fn get_autostart_enabled(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch().is_enabled().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn set_autostart_enabled(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let manager = app.autolaunch();
+    if enabled {
+        manager.enable().map_err(|e| e.to_string())
+    } else {
+        manager.disable().map_err(|e| e.to_string())
+    }
+}
+
+/// Bring the main window back from the tray.
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// A compact, always-on-top attention surface. It is a second webview that
+/// renders the same bundle with `?island=1`; the root page picks the component.
+fn show_attention_island(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if let Some(window) = app.get_webview_window("island") {
+        let _ = window.show();
+        let _ = window.set_always_on_top(true);
+        return Ok(());
+    }
+    let width = 420.0;
+    let height = 64.0;
+    let monitor = app.primary_monitor().ok().flatten();
+    let (x, y) = monitor
+        .as_ref()
+        .map(|monitor| {
+            let size = monitor.size();
+            let position = monitor.position();
+            (
+                position.x as f64 + (size.width as f64 - width) / 2.0,
+                position.y as f64 + 12.0,
+            )
+        })
+        .unwrap_or((120.0, 24.0));
+    tauri::WebviewWindowBuilder::new(
+        app,
+        "island",
+        tauri::WebviewUrl::App("index.html#island".into()),
+    )
+    .title("RAVENBOT attention")
+    .inner_size(width, height)
+    .position(x, y)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .visible_on_all_workspaces(true)
+    .skip_taskbar(true)
+    .focused(false)
+    .build()?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn show_attention_island_command(app: tauri::AppHandle) -> Result<(), String> {
+    show_attention_island(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    show_main_window(&app);
+    Ok(())
+}
+
+/// Counts and the newest items for the island. Bounded; the island is a
+/// glance, not a second inbox.
+#[tauri::command]
+async fn get_attention_summary(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let approvals = ravenbot_db::queries::ApprovalQueries::list_pending_all(state.db.pool(), 5)
+        .await
+        .map_err(|error| error.to_string())?;
+    let questions = ravenbot_db::queries::QuestionQueries::list_pending_all(state.db.pool(), 5)
+        .await
+        .map_err(|error| error.to_string())?;
+    let active_runs: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM runs WHERE state NOT IN ('completed','failed','cancelled')",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .map_err(|error| error.to_string())?;
+    let mut items: Vec<serde_json::Value> = Vec::new();
+    for approval in approvals.iter().take(3) {
+        items.push(serde_json::json!({
+            "kind": "approval",
+            "label": approval.tool_label,
+            "detail": approval.tool_name,
+            "thread_id": approval.thread_id,
+            "risk": approval.risk,
+        }));
+    }
+    for question in questions.iter().take(3) {
+        items.push(serde_json::json!({
+            "kind": "question",
+            "label": question.header,
+            "detail": question.question,
+            "thread_id": question.thread_id,
+        }));
+    }
+    Ok(serde_json::json!({
+        "approvals": approvals.len(),
+        "questions": questions.len(),
+        "active_runs": active_runs,
+        "items": items,
+    }))
+}
+
+/// Install the tray icon and keep the app alive when the window is closed.
+///
+/// Routines, scheduled workflows, offices, and the webhook receiver all live in
+/// this process. Closing the window used to kill them; hiding it keeps the
+/// local fleet running until the user chooses Quit from the tray.
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let open = MenuItem::with_id(app, "open", "Open RAVENBOT", true, None::<&str>)?;
+    let island = MenuItem::with_id(app, "island", "Attention island", true, None::<&str>)?;
+    let pause = MenuItem::with_id(app, "pause", "Pause all agents", true, None::<&str>)?;
+    let resume = MenuItem::with_id(app, "resume", "Resume all agents", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit RAVENBOT", true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &open,
+            &island,
+            &pause,
+            &resume,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+
+    let mut builder = TrayIconBuilder::with_id("ravenbot")
+        .tooltip("RAVENBOT")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "open" => show_main_window(app),
+            "island" => {
+                if let Err(error) = show_attention_island(app) {
+                    tracing::warn!(%error, "Could not show the attention island");
+                }
+            }
+            "pause" => {
+                let runtime = app.state::<AppState>().runtime.clone();
+                tauri::async_runtime::spawn(async move {
+                    runtime
+                        .trigger_kill_switch("Paused from the tray menu")
+                        .await;
+                });
+            }
+            "resume" => {
+                let runtime = app.state::<AppState>().runtime.clone();
+                tauri::async_runtime::spawn(async move {
+                    runtime.release_kill_switch().await;
+                });
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon().cloned() {
+        builder = builder.icon(icon);
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+/// Signed backup before retention, then prune. Shared by the desktop shell and
+/// the headless daemon so audit policy does not depend on a window existing.
+pub(crate) async fn audit_maintenance_loop(pool: sqlx::SqlitePool) {
+    loop {
+        let backup = run_audit_export_if_due(&pool).await;
+        let backup_failed_due = matches!(backup, Some(Err(_)));
+        match backup {
+            Some(Ok(export)) => tracing::info!(
+                path = %export.path,
+                entries = export.count,
+                "Scheduled audit export written"
+            ),
+            Some(Err(error)) => {
+                tracing::warn!(%error, "Scheduled audit export failed; retention paused")
+            }
+            None => {}
+        }
+        if !backup_failed_due {
+            if let Some(deleted) = run_audit_retention(&pool).await {
+                if deleted > 0 {
+                    tracing::info!(deleted, "Automatic audit retention removed entries");
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(
+            AUDIT_MAINTENANCE_INTERVAL_SECS,
+        ))
+        .await;
+    }
+}
+
 pub fn run() {
     // Wayland/WebKitGTK fix for Hyprland/Omarchy (Gdk Error 71: Protocol error)
     // Must be set before any WebKit webview is created.
@@ -10073,48 +20553,412 @@ pub fn run() {
         )
         .init();
 
-    tauri::Builder::default()
+    let full_account = match accounts::detect_startup_blocking() {
+        Ok(accounts::Startup::Launcher) => {
+            // Autostart has no session, so it opens the launcher rather than
+            // silently doing nothing. For always-on work use the daemon
+            // service, which serves the owner workspace without the desktop.
+            accounts::run_launcher();
+            return;
+        }
+        Ok(accounts::Startup::Full(account)) => *account,
+        Err(error) => {
+            fleet::show_error("RAVENBOT account", &error);
+            accounts::run_launcher();
+            return;
+        }
+    };
+    let full_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+        get_model_catalog,
+        get_configured_providers,
+        set_provider_api_key,
+        set_api_key,
+        check_api_key,
+        fetch_provider_models,
+        fetch_all_provider_models,
+        get_ollama_url,
+        set_ollama_url,
+        get_autostart_enabled,
+        set_autostart_enabled,
+        get_service_status,
+        install_background_service,
+        uninstall_background_service,
+        set_background_service_linger,
+        handoff_to_background_service,
+        get_attention_summary,
+        show_attention_island_command,
+        get_telegram_status,
+        set_telegram_config,
+        create_telegram_pairing,
+        list_telegram_links,
+        unlink_telegram_chat,
+        get_slack_status,
+        set_slack_config,
+        create_slack_pairing,
+        list_slack_links,
+        unlink_slack_channel,
+        get_discord_status,
+        set_discord_config,
+        create_discord_pairing,
+        list_discord_links,
+        unlink_discord_channel,
+        get_whatsapp_status,
+        set_whatsapp_config,
+        create_whatsapp_pairing,
+        list_whatsapp_links,
+        unlink_whatsapp_number,
+        get_teams_status,
+        set_teams_config,
+        create_teams_pairing,
+        list_teams_links,
+        unlink_teams_conversation,
+        ravenbot_account_mode,
+        get_current_account,
+        get_run_actor,
+        list_workspace_grants,
+        grant_workspace_access,
+        revoke_workspace_access,
+        logout_account,
+        open_main_window,
+        get_remote_status,
+        configure_remote_access,
+        start_remote_access,
+        stop_remote_access,
+        create_remote_pairing,
+        list_remote_devices,
+        revoke_remote_device,
+        get_allow_private_tool_network,
+        set_allow_private_tool_network,
+        list_custom_providers,
+        upsert_custom_provider,
+        delete_custom_provider,
+        test_custom_provider,
+        set_provider_base_url,
+        get_provider_base_url,
+        probe_ollama,
+        get_default_model,
+        set_default_model,
+        set_approval_mode,
+        get_approval_mode,
+        list_pending_approvals,
+        list_pending_approvals_for_bot,
+        decide_approval,
+        list_bot_todos,
+        save_office_board,
+        get_office_board,
+        list_pending_questions,
+        list_pending_questions_for_bot,
+        answer_question,
+        cancel_run,
+        pause_run,
+        cancel_office_turn,
+        resume_run,
+        get_sandbox_report,
+        computer_capabilities,
+        browse_workspace,
+        summarize_workspace,
+        default_workspace_for,
+        list_projects,
+        file_change_totals,
+        list_file_changes,
+        list_recent_file_changes,
+        file_change_diff,
+        read_workspace_file,
+        read_workspace_media,
+        write_workspace_file,
+        register_visual,
+        release_visual,
+        browser_dock_open,
+        browser_dock_new_tab,
+        browser_dock_activate_tab,
+        browser_dock_close_tab,
+        browser_dock_reorder_tabs,
+        browser_dock_set_bounds,
+        browser_dock_set_zoom,
+        browser_dock_navigate,
+        browser_dock_back,
+        browser_dock_forward,
+        browser_dock_reload,
+        browser_dock_hide,
+        browser_dock_destroy,
+        browser_dock_state,
+        browser_dock_eval,
+        browser_dock_user_eval,
+        browser_dock_takeover,
+        browser_dock_set_takeover,
+        browser_dock_focus,
+        get_browser_cookie_policy,
+        set_browser_cookie_policy,
+        get_effective_browser_cookie_policy,
+        set_browser_profile_cookie_policy,
+        list_browser_profiles,
+        create_browser_profile,
+        rename_browser_profile,
+        delete_browser_profile,
+        send_attention_notification,
+        get_attention_webhook,
+        set_attention_webhook,
+        clear_attention_webhook,
+        test_attention_webhook,
+        deliver_attention_webhook,
+        get_attention_email,
+        set_attention_email,
+        clear_attention_email,
+        test_attention_email,
+        deliver_attention_email,
+        computer_takeover,
+        set_computer_takeover,
+        set_wayland_control_allowed,
+        list_desktop_windows,
+        focus_desktop_window,
+        list_browser_downloads,
+        browser_downloads_dir,
+        local_skills_list,
+        local_skills_read,
+        local_skills_install,
+        local_skills_marketplace_search,
+        local_skills_marketplace_install,
+        open_workspace_in_file_manager,
+        bot_desktop_status,
+        start_bot_desktop,
+        stop_bot_desktop,
+        capture_screen,
+        capture_desktop_window,
+        get_input_backend,
+        transcribe_audio,
+        synthesize_speech,
+        list_tts_voices,
+        create_bot,
+        get_default_agent,
+        set_default_agent,
+        create_default_agent,
+        list_bots,
+        get_bot,
+        list_runs,
+        list_audit_entries,
+        get_audit_retention,
+        set_audit_retention,
+        get_audit_export_schedule,
+        set_audit_export_schedule,
+        export_audit_log,
+        verify_audit_export,
+        prune_audit_log,
+        get_usage_summary,
+        update_bot,
+        delete_bot,
+        list_bot_contacts,
+        set_bot_pinned,
+        set_bot_hidden,
+        mark_bot_read,
+        reorder_bots,
+        get_unread_counts,
+        duplicate_bot,
+        create_thread,
+        list_threads,
+        list_messages,
+        list_messages_page,
+        get_messages_by_ids,
+        toggle_message_reaction,
+        rename_thread,
+        delete_thread,
+        search_messages,
+        send_message,
+        steer_thread,
+        regenerate_message,
+        edit_and_resend,
+        execute_graph,
+        list_workflows,
+        save_workflow,
+        delete_workflow,
+        list_workflow_versions,
+        get_workflow_version,
+        get_workflow,
+        enable_workflow_webhook,
+        disable_workflow_webhook,
+        get_workflow_webhook_status,
+        get_workflow_schedule,
+        set_workflow_schedule,
+        mark_workflow_schedule_error,
+        claim_due_workflow,
+        begin_workflow_run,
+        finish_workflow_run,
+        record_workflow_run,
+        list_workflow_runs,
+        get_office_goal,
+        update_office_goal,
+        pause_office_goal,
+        resume_office_goal,
+        reopen_office_goal,
+        list_work_items,
+        get_work_item,
+        add_work_comment,
+        retry_work_item,
+        block_work_item,
+        unblock_work_item,
+        request_work_review,
+        request_work_changes,
+        approve_work_review,
+        draft_office_plan,
+        pause_all,
+        resume_all,
+        get_status,
+        trigger_kill_switch,
+        release_kill_switch,
+        get_kill_switch_status,
+        create_chatroom,
+        list_chatrooms,
+        get_chatroom,
+        add_member_to_chatroom,
+        list_chatroom_members,
+        get_chatroom_thread,
+        send_to_chatroom,
+        compact_thread_context,
+        list_attention_items,
+        list_vault_items,
+        save_vault_item,
+        save_browser_secret_to_vault,
+        reveal_vault_item,
+        delete_vault_item,
+        preview_vault_import,
+        import_vault_items,
+        fill_browser_from_vault,
+        get_office_queue,
+        get_office_queue_paused,
+        set_office_queue_paused,
+        reorder_office_queue,
+        run_office_queue_item_next,
+        cancel_office_queue_item,
+        dismiss_office_queue_item,
+        get_office_autonomy,
+        get_office_alert_policy,
+        set_office_alert_policy,
+        get_office_active,
+        get_office_phase,
+        set_office_autonomy,
+        list_all_skills,
+        sync_plugins,
+        list_plugins,
+        search_plugin_catalog,
+        install_catalog_plugin,
+        get_plugin_details,
+        set_plugin_credential,
+        set_plugin_base_url,
+        clear_plugin_credential,
+        list_bot_plugins,
+        toggle_bot_plugin,
+        toggle_plugin_global,
+        list_global_plugins,
+        import_openapi_plugin,
+        list_mcp_servers,
+        toggle_mcp_server,
+        toggle_bot_mcp_server,
+        list_bot_mcp_servers,
+        save_custom_mcp_server,
+        delete_mcp_server,
+        get_mcp_server_env,
+        save_mcp_server_env,
+        test_mcp_server,
+        batch_assign_bot_mcp,
+        batch_set_bot_mcp,
+        update_chatroom,
+        delete_chatroom,
+        remove_chatroom_member,
+        update_chatroom_member,
+        create_bot_for_office,
+        default_office_org,
+        preview_office_provisioning,
+        provision_office_org,
+        draft_office_blueprint,
+        draft_office_org,
+        add_office_memory,
+        update_office_memory,
+        delete_office_memory,
+        list_office_memories,
+        search_office_memories,
+        list_bot_memories,
+        add_bot_memory,
+        update_bot_memory,
+        delete_bot_memory,
+        find_memory_duplicates,
+        remove_memory_duplicates,
+        summarize_memories,
+        apply_memory_summary,
+        get_memory_embedding_config,
+        set_memory_embedding_config,
+        reindex_memory_embeddings,
+        evaluate_memory_retrieval,
+        get_agent_intelligence,
+        get_bot_budget,
+        set_bot_budget,
+        reset_bot_budget,
+        get_tool_prices,
+        set_tool_prices,
+        get_session_usage,
+        list_agent_learnings,
+        export_bot_bundle,
+        import_bot_bundle,
+        import_bot_bundle_from_file,
+        create_routine,
+        get_routine,
+        list_routines,
+        update_routine,
+        delete_routine,
+        get_scheduler_status,
+        run_routine_now,
+        enable_routine_webhook,
+        disable_routine_webhook,
+        get_routine_webhook_status,
+        preview_team,
+        fetch_and_preview_team,
+        import_team,
+        list_channels,
+        create_channel,
+        update_channel,
+        delete_channel,
+        set_channel_bots,
+        list_channel_messages,
+        post_channel_message,
+        list_channel_tasks,
+        create_channel_task,
+        start_channel_task,
+        channel_task_action,
+        list_channel_task_events,
+    ];
+    let effective_role = full_account.role.clone();
+
+    let builder = tauri::Builder::default()
         .register_uri_scheme_protocol("ravenvisual", |_ctx, request| {
             visual_protocol_response(&request)
         })
+        .plugin(tauri_plugin_autostart::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_window_state::Builder::new().build())
-        .setup(|app| {
+        .plugin(tauri_plugin_window_state::Builder::new().build());
+    builder
+        .setup(move |app| {
+            // One owner for the scheduler, webhook receiver and SQLite writer.
+            // The single-instance plugin has already had a chance to forward a
+            // second desktop launch; a background daemon still holding the
+            // lock triggers the takeover prompt here.
+            let fleet_lock = match fleet::acquire_for_desktop() {
+                Ok(lock) => lock,
+                Err(message) => {
+                    fleet::show_error("RAVENBOT", &message);
+                    std::process::exit(0);
+                }
+            };
+
             // Everything RAVENBOT owns lives under one folder (`~/RAVENBOT`),
             // resolved by the same helper the CLI and MCP server use. Deriving
             // it from `app.path().app_data_dir()` here is what let the two
             // drift apart into different databases.
             let db_path = ravenbot_core::default_db_path();
 
-            // An install from before the `~/RAVENBOT` layout has its database
-            // in the OS app-data dir. Move it rather than presenting an empty
-            // app — the sidecar -wal / -shm files go with it or the moved
-            // database is missing committed transactions.
-            if let Some(legacy) = ravenbot_core::legacy_db_path() {
-                match std::fs::rename(&legacy, &db_path) {
-                    Ok(()) => {
-                        // `-wal` / `-shm` are named after the database, not
-                        // derived from it, so append rather than substitute.
-                        for suffix in ["-wal", "-shm"] {
-                            let mut side = legacy.clone().into_os_string();
-                            side.push(suffix);
-                            let _ = std::fs::remove_file(std::path::PathBuf::from(side));
-                        }
-                        tracing::info!(
-                            from = %legacy.display(),
-                            to = %db_path.display(),
-                            "Moved the existing RAVENBOT database into ~/RAVENBOT"
-                        );
-                    }
-                    Err(e) => tracing::warn!(
-                        "Could not move {} to {}: {e}",
-                        legacy.display(),
-                        db_path.display()
-                    ),
-                }
+            // Only the owner adopts a database from the pre-account layout.
+            // A new account must start empty, never inherit the owner's data.
+            if full_account.workspace.is_owner {
+                migrate_legacy_database();
             }
 
             // Initialize database + runtime inside Tokio context so Runtime::new can spawn plugin seeding
@@ -10136,112 +20980,38 @@ pub fn run() {
                     );
                 }
 
-                // Runs are in-memory loops: anything still non-terminal at
-                // startup was orphaned by a crash or quit. Close them so
-                // liveness queries (e.g. the office board) tell the truth.
-                let now = chrono::Utc::now().to_rfc3339();
-                match sqlx::query(
-                    "UPDATE runs SET state = 'failed', outcome = ?,
-                        updated_at = ?, completed_at = ?
-                     WHERE state IN ('planning','acting','observing','reflecting','waiting_on_user','paused')",
-                )
-                .bind(r#"{"Failure":{"error":"app quit while the run was active"}}"#)
-                .bind(&now)
-                .bind(&now)
-                .execute(db.pool())
-                .await
-                {
-                    Ok(r) if r.rows_affected() > 0 => {
-                        tracing::warn!(orphaned_runs = r.rows_affected(), "Marked interrupted runs failed at startup");
-                    }
-                    Err(e) => tracing::warn!("Orphaned-run reconciliation failed: {e}"),
-                    _ => {}
+                match reconcile_startup_state(db.pool()).await {
+                    Ok(state) => tracing::info!(
+                        resumable_runs = state.resumable_runs,
+                        failed_runs = state.failed_runs,
+                        already_paused_runs = state.already_paused_runs,
+                        retried_workflow_runs = state.retried_workflow_runs,
+                        resumed_offices = state.resumed_offices,
+                        failed_workflow_runs = state.failed_workflow_runs,
+                        expired_approvals = state.expired_approvals,
+                        expired_questions = state.expired_questions,
+                        failed_queue_items = state.failed_queue_items,
+                        reset_channel_tasks = state.reset_channel_tasks,
+                        reset_agents = state.reset_agents,
+                        "Startup reconciliation complete"
+                    ),
+                    Err(error) => tracing::warn!(%error, "Startup reconciliation failed"),
                 }
 
-                // Clear the per-office active marker. It is written before a
-                // turn and cleared by the spawned task; a quit between those
-                // points leaves it at 1 with no run behind it, and the next
-                // send waits on `get_office_active` for a turn that is not
-                // there. No office turn can be live before setup finishes.
-                if let Ok(rows) = sqlx::query(
-                    "UPDATE app_settings SET value = '0' WHERE key LIKE 'office_active:%'",
-                )
-                .execute(db.pool())
-                .await
-                {
-                    if rows.rows_affected() > 0 {
-                        tracing::warn!(
-                            markers = rows.rows_affected(),
-                            "Cleared stale office-active markers at startup"
-                        );
-                    }
-                }
-                let _ = sqlx::query(
-                    "UPDATE app_settings SET value = '' WHERE key LIKE 'office_phase:%'",
-                )
-                .execute(db.pool())
-                .await;
-
-                // The same reasoning for agents: a crash mid-run leaves rows
-                // saying `thinking`, and the fleet then looks permanently busy
-                // with nobody working.
-                match ravenbot_db::queries::BotQueries::mark_all_idle(db.pool()).await {
-                    Ok(n) if n > 0 => {
-                        tracing::info!(bots = n, "Reset agent status at startup");
-                    }
-                    Ok(_) => {}
-                    Err(e) => tracing::warn!("Agent status reset failed: {e}"),
-                }
-
-                let runtime = Arc::new(ravenbot_runtime::Runtime::new(db.clone()));
-
-                // Pre-populate saved provider API keys from SQLite into Runtime's ProviderManager
-                if let Ok(saved_keys) = ravenbot_db::queries::ProviderKeyQueries::list(db.pool()).await {
-                    let mut manager = runtime.provider_manager().lock().await;
-                    for (provider, key) in saved_keys {
-                        if !key.trim().is_empty() {
-                            manager.set_api_key(&provider, key);
-                        }
-                    }
-                }
-                // Pre-populate saved Ollama URL if saved
-                if let Ok(Some(url)) = ravenbot_db::queries::AppSettingsQueries::get(db.pool(), "ollama_url").await {
-                    if !url.trim().is_empty() {
-                        let mut manager = runtime.provider_manager().lock().await;
-                        manager.set_base_url("ollama", url);
-                    }
-                }
-                // Pre-populate user-defined providers and base URL overrides (P8)
-                if let Ok(rows) = ravenbot_db::queries::CustomProviderQueries::list(db.pool()).await {
-                    let mut manager = runtime.provider_manager().lock().await;
-                    for (id, display_name, kind, base_url, default_model, supports_tools, enabled, headers_json) in rows {
-                        if !enabled {
-                            continue;
-                        }
-                        let headers = headers_json
-                            .as_deref()
-                            .and_then(|s| serde_json::from_str(s).ok())
-                            .unwrap_or_default();
-                        manager.register_custom(ravenbot_models::manager::CustomProviderSpec {
-                            id,
-                            display_name,
-                            kind,
-                            base_url,
-                            default_model,
-                            supports_tools,
-                            headers,
-                        });
-                    }
-                }
-                if let Ok(rows) = ravenbot_db::queries::ProviderBaseUrlQueries::list(db.pool()).await {
-                    let mut manager = runtime.provider_manager().lock().await;
-                    for (provider, url) in rows {
-                        manager.set_base_url(&provider, url);
-                    }
-                }
+                let runtime = bootstrap_runtime(&db).await;
 
                 (db, runtime)
             });
+
+            let access = ravenbot_core::AuditEntry::new(
+                Uuid::nil(),
+                ravenbot_core::AuditEventType::WorkspaceAccess {
+                    actor: full_account.actor.username.clone(),
+                    workspace: full_account.workspace.username.clone(),
+                    role: full_account.role.clone(),
+                },
+            );
+            let _ = rt.block_on(runtime.audit_logger().log(&access));
 
             // Store state
             let routine_manager = Arc::new(ravenbot_scheduler::routine::RoutineManager::new(db.pool().clone()));
@@ -10258,7 +21028,98 @@ pub fn run() {
                     ravenbot_plugins::catalog::CatalogService::default_cached(),
                 ),
                 webhook_base_url: std::sync::RwLock::new("http://127.0.0.1:8800".to_string()),
+                remote: Arc::new(tokio::sync::Mutex::new(None)),
+                fleet: fleet_lock,
+                account: full_account.actor.clone(),
+                workspace: full_account.workspace.clone(),
+                role: full_account.role.clone(),
+                account_base: full_account.base.clone(),
+                account_session: full_account.session_token.clone(),
             });
+            accounts::watch_session(
+                app.handle().clone(),
+                full_account.base.clone(),
+                full_account.session_token.clone(),
+                full_account.actor.id.clone(),
+                full_account.workspace.id.clone(),
+            );
+
+            // Native Telegram polling runs in whichever process owns the
+            // fleet. It is a no-op until the connector is enabled.
+            {
+                let telegram_db = db.clone();
+                let telegram_runtime = runtime.clone();
+                let telegram_events = HostEvents::Tauri(app.handle().clone());
+                tauri::async_runtime::spawn(async move {
+                    telegram::run_loop(telegram_db, telegram_runtime, telegram_events).await;
+                });
+            }
+            {
+                let slack_db = db.clone();
+                let slack_runtime = runtime.clone();
+                let slack_events = HostEvents::Tauri(app.handle().clone());
+                tauri::async_runtime::spawn(async move {
+                    slack::run_loop(slack_db, slack_runtime, slack_events).await;
+                });
+            }
+            {
+                let discord_db = db.clone();
+                let discord_runtime = runtime.clone();
+                let discord_events = HostEvents::Tauri(app.handle().clone());
+                tauri::async_runtime::spawn(async move {
+                    discord::run_loop(discord_db, discord_runtime, discord_events).await;
+                });
+            }
+
+            // Remote access is opt-in and survives restarts. Start it before
+            // the window is shown so a phone can reconnect immediately.
+            tauri::async_runtime::block_on(async {
+                if remote_enabled_setting(db.pool()).await {
+                    let remote_state = app.state::<AppState>();
+                    match start_remote_listener(&remote_state).await {
+                        Ok(status) => {
+                            tracing::info!(url = %status.url, "Remote access started");
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, "Remote access did not start");
+                        }
+                    }
+                }
+            });
+
+            // A release build keeps the local fleet alive in the tray when the
+            // window is closed. In dev, close must actually exit so the
+            // launcher lifecycle is observable and the next launch can resume
+            // the remembered session.
+            let tray_ready = match setup_tray(app.handle()) {
+                Ok(()) => true,
+                Err(error) => {
+                    tracing::warn!(%error, "Tray icon unavailable; window close will quit");
+                    false
+                }
+            };
+            let close_to_tray = std::env::var("RAVENBOT_CLOSE_TO_TRAY")
+                .map(|value| {
+                    !matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "0" | "false" | "no"
+                    )
+                })
+                .unwrap_or(!tauri::is_dev());
+            if tray_ready && close_to_tray {
+                if let Some(window) = app.get_webview_window("main") {
+                    let hide_window = window.clone();
+                    window.on_window_event(move |event| {
+                        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                            api.prevent_close();
+                            let _ = hide_window.hide();
+                            tracing::info!(
+                                "Window hidden; RAVENBOT keeps running in the tray"
+                            );
+                        }
+                    });
+                }
+            }
 
             // Agent tools can ask the UI to show a real page. The callback is
             // just an event: the frontend owns the dock's layout and its
@@ -10280,7 +21141,7 @@ pub fn run() {
                                 .to_string(),
                         );
                     }
-                    let value = browser_dock_eval_blocking(&eval_app, &script)?;
+                    let value = browser_dock_eval_blocking(&eval_app, &script, None)?;
                     Ok(value.to_string())
                 });
             }
@@ -10309,21 +21170,48 @@ pub fn run() {
                 let db = exec_db.clone();
                 let runtime = exec_runtime.clone();
                 Box::pin(async move {
-                    execute_routine_instruction(&db, &runtime, &app, &routine).await
+                    execute_routine_instruction(
+                        &db,
+                        &runtime,
+                        &HostEvents::Tauri(app.clone()),
+                        &routine,
+                    )
+                    .await
                 })
             });
             tauri::async_runtime::block_on(scheduler.set_executor(executor.clone()));
+
+            // Migrate legacy webhook bearer tokens to the keychain and backfill
+            // their hashes before the receiver can route a request.
+            match tauri::async_runtime::block_on(
+                ravenbot_db::queries::WebhookQueries::backfill_legacy(db.pool()),
+            ) {
+                Ok(count) if count > 0 => {
+                    tracing::info!(count, "Migrated routine webhook secrets");
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!(%error, "Webhook secret migration failed"),
+            }
 
             // Start the inbound webhook receiver (loopback only). Best-effort:
             // if the port is taken, the app still runs and the UI shows the
             // trigger as unreachable rather than refusing to start.
             let hook_pool = db.pool().clone();
             let hook_executor = executor.clone();
+            let workflow_trigger_app = app.handle().clone();
+            let workflow_trigger: ravenbot_scheduler::webhook::WorkflowTrigger =
+                std::sync::Arc::new(move |workflow_id| {
+                    let _ = workflow_trigger_app.emit(
+                        "workflow-trigger",
+                        serde_json::json!({ "workflow_id": workflow_id.to_string() }),
+                    );
+                });
             let hook_state = app.state::<AppState>();
             match tauri::async_runtime::block_on(async {
                 ravenbot_scheduler::WebhookServer::start(
                     hook_pool,
                     hook_executor,
+                    Some(workflow_trigger),
                     ravenbot_scheduler::WebhookConfig::default(),
                 )
                 .await
@@ -10340,6 +21228,23 @@ pub fn run() {
                 Err(e) => tracing::warn!("Webhook receiver disabled: {}", e),
             }
 
+            // Signed chat webhooks (WhatsApp today) use their own loopback
+            // listener so the workflow receiver stays small and unauthenticated
+            // only on its own secret routes.
+            match tauri::async_runtime::block_on(chat_webhook::ChatWebhookServer::start(
+                db.clone(),
+                runtime.clone(),
+                HostEvents::Tauri(app.handle().clone()),
+                chat_webhook::ChatWebhookConfig::default(),
+            )) {
+                Ok(server) => {
+                    let (whatsapp_url, teams_url) = server.local_urls();
+                    tracing::info!(%whatsapp_url, %teams_url, "Chat webhook receiver listening");
+                    app.manage(server);
+                }
+                Err(error) => tracing::warn!("Chat webhook receiver disabled: {error}"),
+            }
+
             // Start the scheduler tick loop
             tauri::async_runtime::spawn(async move {
                 scheduler.start().await;
@@ -10351,227 +21256,74 @@ pub fn run() {
             let autonomy_runtime = runtime.clone();
             let autonomy_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                office_autonomy_loop(autonomy_db, autonomy_runtime, autonomy_app).await;
+                office_autonomy_loop(
+                    autonomy_db,
+                    autonomy_runtime,
+                    HostEvents::Tauri(autonomy_app),
+                )
+                .await;
             });
 
             let queue_db = db.clone();
             let queue_runtime = runtime.clone();
             let queue_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                office_queue_loop(queue_db, queue_runtime, queue_app).await;
+                office_queue_loop(queue_db, queue_runtime, HostEvents::Tauri(queue_app)).await;
             });
+
+            // Audit maintenance is a background policy, not a UI timer: it
+            // must still run when the audit pane has never been opened. A
+            // signed backup is attempted before retention; if that backup is
+            // due and fails, pruning is skipped so entries are never deleted
+            // before they have been backed up.
+            let maintenance_pool = db.pool().clone();
+            tauri::async_runtime::spawn(audit_maintenance_loop(maintenance_pool));
+
+            // The window is created hidden so service mode never flashes a
+            // window. An interactive launch reveals it once setup is complete;
+            // a second launch reaches the single-instance callback above.
+            let start_hidden = std::env::var("RAVENBOT_START_HIDDEN")
+                .map(|value| {
+                    !matches!(
+                        value.trim().to_ascii_lowercase().as_str(),
+                        "0" | "false" | "no"
+                    )
+                })
+                .unwrap_or(false);
+            if !start_hidden {
+                show_main_window(app.handle());
+            }
 
             tracing::info!("RAVENBOT initialized, database at: {:?}", db_path);
 
+            // Reopen interrupted 1:1 work after the frontend has attached its
+            // stream listener. Reconciliation already parked these runs and
+            // marked them resumable; this is the hand-off back into the loop.
+            let run_resume_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                resume_interrupted_runs(run_resume_app).await;
+            });
+            let office_resume_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                resume_interrupted_offices(office_resume_app).await;
+            });
+
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
-            get_model_catalog,
-            get_configured_providers,
-            set_provider_api_key,
-            set_api_key,
-            check_api_key,
-            fetch_provider_models,
-            fetch_all_provider_models,
-            get_ollama_url,
-            set_ollama_url,
-            list_custom_providers,
-            upsert_custom_provider,
-            delete_custom_provider,
-            test_custom_provider,
-            set_provider_base_url,
-            get_provider_base_url,
-            probe_ollama,
-            get_default_model,
-            set_default_model,
-            set_approval_mode,
-            get_approval_mode,
-            list_pending_approvals,
-            list_pending_approvals_for_bot,
-            decide_approval,
-            list_bot_todos,
-            save_office_board,
-            get_office_board,
-            list_pending_questions,
-            list_pending_questions_for_bot,
-            answer_question,
-            cancel_run,
-            pause_run,
-            resume_run,
-            get_sandbox_report,
-            computer_capabilities,
-            browse_workspace,
-            summarize_workspace,
-            default_workspace_for,
-            list_projects,
-            file_change_totals,
-            list_file_changes,
-            list_recent_file_changes,
-            file_change_diff,
-            read_workspace_file,
-            read_workspace_media,
-            write_workspace_file,
-            register_visual,
-            release_visual,
-            browser_dock_open,
-            browser_dock_set_bounds,
-            browser_dock_navigate,
-            browser_dock_back,
-            browser_dock_forward,
-            browser_dock_reload,
-            browser_dock_hide,
-            browser_dock_destroy,
-            browser_dock_state,
-            browser_dock_eval,
-            browser_dock_takeover,
-            browser_dock_set_takeover,
-            browser_dock_focus,
-            computer_takeover,
-            set_computer_takeover,
-            set_wayland_control_allowed,
-            list_desktop_windows,
-            focus_desktop_window,
-            list_browser_downloads,
-            browser_downloads_dir,
-            local_skills_list,
-            local_skills_read,
-            local_skills_install,
-            local_skills_marketplace_search,
-            local_skills_marketplace_install,
-            open_workspace_in_file_manager,
-            bot_desktop_status,
-            start_bot_desktop,
-            stop_bot_desktop,
-            capture_screen,
-            capture_desktop_window,
-            get_input_backend,
-            transcribe_audio,
-            synthesize_speech,
-            list_tts_voices,
-            create_bot,
-            get_default_agent,
-            set_default_agent,
-            create_default_agent,
-            list_bots,
-            get_bot,
-            list_runs,
-            get_usage_summary,
-            update_bot,
-            delete_bot,
-            list_bot_contacts,
-            set_bot_pinned,
-            set_bot_hidden,
-            mark_bot_read,
-            reorder_bots,
-            get_unread_counts,
-            duplicate_bot,
-            create_thread,
-            list_threads,
-            list_messages,
-            toggle_message_reaction,
-            rename_thread,
-            delete_thread,
-            search_messages,
-            send_message,
-            regenerate_message,
-            edit_and_resend,
-            execute_graph,
-            draft_office_plan,
-            pause_all,
-            resume_all,
-            get_status,
-            trigger_kill_switch,
-            release_kill_switch,
-            get_kill_switch_status,
-            create_chatroom,
-            list_chatrooms,
-            get_chatroom,
-            add_member_to_chatroom,
-            list_chatroom_members,
-            get_chatroom_thread,
-            send_to_chatroom,
-            compact_thread_context,
-            get_office_queue,
-            get_office_queue_paused,
-            set_office_queue_paused,
-            cancel_office_queue_item,
-            dismiss_office_queue_item,
-            get_office_autonomy,
-            get_office_active,
-            get_office_phase,
-            set_office_autonomy,
-            list_all_skills,
-            sync_plugins,
-            list_plugins,
-            search_plugin_catalog,
-            install_catalog_plugin,
-            get_plugin_details,
-            set_plugin_credential,
-            set_plugin_base_url,
-            clear_plugin_credential,
-            list_bot_plugins,
-            toggle_bot_plugin,
-            toggle_plugin_global,
-            list_global_plugins,
-            import_openapi_plugin,
-            list_mcp_servers,
-            toggle_mcp_server,
-            toggle_bot_mcp_server,
-            list_bot_mcp_servers,
-            save_custom_mcp_server,
-            delete_mcp_server,
-            get_mcp_server_env,
-            save_mcp_server_env,
-            test_mcp_server,
-            batch_assign_bot_mcp,
-            batch_set_bot_mcp,
-            update_chatroom,
-            delete_chatroom,
-            remove_chatroom_member,
-            update_chatroom_member,
-            create_bot_for_office,
-            default_office_org,
-            provision_office_org,
-            draft_office_blueprint,
-            draft_office_org,
-            add_office_memory,
-            list_office_memories,
-            search_office_memories,
-            get_agent_intelligence,
-            get_bot_budget,
-            set_bot_budget,
-            reset_bot_budget,
-            get_session_usage,
-            list_agent_learnings,
-            export_bot_bundle,
-            import_bot_bundle,
-            import_bot_bundle_from_file,
-            create_routine,
-            get_routine,
-            list_routines,
-            update_routine,
-            delete_routine,
-            get_scheduler_status,
-            run_routine_now,
-            enable_routine_webhook,
-            disable_routine_webhook,
-            get_routine_webhook_status,
-            preview_team,
-            fetch_and_preview_team,
-            import_team,
-            list_channels,
-            create_channel,
-            update_channel,
-            delete_channel,
-            set_channel_bots,
-            list_channel_messages,
-            post_channel_message,
-            list_channel_tasks,
-            create_channel_task,
-            start_channel_task,
-            channel_task_action,
-            list_channel_task_events,
-        ])
+        .invoke_handler(move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+            if access::role_allows(&effective_role, invoke.message.command()) {
+                full_handler(invoke)
+            } else {
+                invoke.resolver.respond_async(async {
+                    Err::<(), _>(tauri::ipc::InvokeError::from(
+                        "You do not have permission for this action in this workspace.",
+                    ))
+                });
+                true
+            }
+        })
         .run(tauri::generate_context!())
         .expect("error while running ravenbot");
 }
@@ -10718,6 +21470,72 @@ mod tier4_tests {
             plugins: Vec::new(),
             avatar_style: None,
         }
+    }
+
+    #[test]
+    fn re_provisioning_reuses_an_existing_office_member() {
+        let mut existing = Bot::new("Coder", "Implementation");
+        existing.rank = Some("Developer".into());
+        existing.specialty = Some("Implementation".into());
+        let assignments = plan_role_assignments(
+            &[existing.clone()],
+            &[test_role("Coder", "Developer", "Implementation")],
+        );
+        assert_eq!(
+            assignments[0].as_ref().map(|bot| bot.id),
+            Some(existing.id),
+            "the same agent must fill its role again, not be duplicated"
+        );
+    }
+
+    #[test]
+    fn stale_members_are_only_the_ones_no_role_assigns() {
+        let room = Uuid::new_v4();
+        let kept = Bot::new("Coder", "Implementation");
+        let dropped = Bot::new("Old Role", "Legacy");
+        let member = |bot: &Bot| ChatRoomMember {
+            chatroom_id: room,
+            bot_id: bot.id,
+            rank: "specialist".to_string(),
+            specialty: "test".to_string(),
+            joined_at: chrono::Utc::now(),
+        };
+        let assignments = vec![Some(kept.clone()), None];
+        let stale = stale_office_members(&[member(&kept), member(&dropped)], &assignments);
+        assert_eq!(stale, vec![dropped.id]);
+    }
+
+    #[test]
+    fn one_agent_cannot_fill_two_roles_in_one_provisioning_run() {
+        let mut existing = Bot::new("Coder", "Implementation");
+        existing.rank = Some("Developer".into());
+        existing.specialty = Some("Implementation".into());
+        let role = test_role("Coder", "Developer", "Implementation");
+        let assignments = plan_role_assignments(&[existing], &[role.clone(), role]);
+        assert!(assignments[0].is_some());
+        assert!(
+            assignments[1].is_none(),
+            "the second role needs its own agent"
+        );
+    }
+
+    #[test]
+    fn distinct_roles_take_distinct_reusable_agents() {
+        let mut coder = Bot::new("Coder", "Implementation");
+        coder.rank = Some("Developer".into());
+        coder.specialty = Some("Implementation".into());
+        let mut writer = Bot::new("Writer", "Content");
+        writer.rank = Some("Creator".into());
+        writer.specialty = Some("Content".into());
+        let assignments = plan_role_assignments(
+            &[coder.clone(), writer.clone()],
+            &[
+                test_role("Coder", "Developer", "Implementation"),
+                test_role("Writer", "Creator", "Content"),
+            ],
+        );
+        assert_eq!(assignments[0].as_ref().map(|bot| bot.id), Some(coder.id));
+        assert_eq!(assignments[1].as_ref().map(|bot| bot.id), Some(writer.id));
     }
 
     #[test]
@@ -10890,6 +21708,15 @@ routines:
                 .unwrap(),
             Some(routine.id)
         );
+        let hash: Option<String> =
+            sqlx::query_scalar("SELECT webhook_secret_hash FROM routines WHERE id = ?")
+                .bind(routine.id.to_string())
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+                .flatten();
+        assert_eq!(hash.as_deref().map(str::len), Some(64));
+        assert_ne!(hash.as_deref(), Some("tok"));
         // Disabled → lookup misses even with the secret present.
         ravenbot_db::queries::WebhookQueries::set(&pool, routine.id, Some("tok"), false)
             .await
@@ -10952,12 +21779,10 @@ routines:
             .expect("database");
         let runtime = ravenbot_runtime::Runtime::new(db.clone());
 
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT api_key FROM provider_keys WHERE provider = 'opencode-go'")
-                .fetch_optional(db.pool())
-                .await
-                .expect("provider_keys query");
-        let key = row.expect("opencode-go key must be configured").0;
+        let key = ravenbot_db::queries::ProviderKeyQueries::get(db.pool(), "opencode-go")
+            .await
+            .expect("provider_keys query")
+            .expect("opencode-go key must be configured");
         runtime
             .provider_manager()
             .lock()
@@ -10979,7 +21804,7 @@ routines:
             .complete_with_model(
                 "opencode-go",
                 &test_model,
-                "You are the Chief of Staff and Office Architect. Output only valid JSON.",
+                "You are The Raven, the default agent and Office Architect. Output only valid JSON.",
                 &prompt,
                 6000,
             )
@@ -11489,6 +22314,68 @@ routines:
     }
 
     #[tokio::test]
+    async fn office_final_summary_carries_the_node_context() {
+        let (db, path) = temp_db("office-context").await;
+        let bot = ravenbot_core::Bot::new("Lead", "office context test");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let thread = ravenbot_core::Thread::new(bot.id, "office room");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+
+        post_bot_message_with_context(
+            db.pool(),
+            thread.id,
+            bot.id,
+            bot.name.clone(),
+            "final answer".to_string(),
+            Some(ContextSnapshot {
+                used: 42_000,
+                window: 131_072,
+                compacted: true,
+                system: 4_000,
+                tool: 6_000,
+                memory: 2_000,
+                message: 30_000,
+            }),
+        )
+        .await
+        .expect("post summary");
+
+        let messages = ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), thread.id)
+            .await
+            .unwrap();
+        let summary = messages.last().expect("summary message");
+        assert_eq!(summary.context_used_tokens, Some(42_000));
+        assert_eq!(summary.context_window_tokens, Some(131_072));
+        assert!(summary.context_compacted);
+        assert_eq!(summary.context_system_tokens, Some(4_000));
+        assert_eq!(summary.context_tool_tokens, Some(6_000));
+        assert_eq!(summary.context_memory_tokens, Some(2_000));
+        assert_eq!(summary.context_message_tokens, Some(30_000));
+        cleanup_db(&path);
+    }
+
+    #[test]
+    fn directed_plan_assigns_the_addressed_specialist() {
+        let member = ravenbot_runtime::orchestrator::OfficeMember {
+            bot_id: Uuid::new_v4(),
+            name: "Auditor".to_string(),
+            rank: "Specialist".to_string(),
+            specialty: "review".to_string(),
+        };
+        let plan = directed_office_plan(&member, "  review the ledger  ");
+        assert_eq!(plan.tasks.len(), 1);
+        assert_eq!(plan.tasks[0].bot, "Auditor");
+        assert_eq!(plan.tasks[0].instruction, "review the ledger");
+        assert!(plan.tasks[0].depends_on.is_empty());
+        assert!(plan.question.is_none());
+        assert!(plan.final_summary_from.is_none());
+    }
+
+    #[tokio::test]
     async fn office_queue_is_fifo_and_pausable() {
         let (db, path) = temp_db("office-queue").await;
         let room = ravenbot_core::ChatRoom::new("Queue", "test", "custom");
@@ -11499,6 +22386,7 @@ routines:
         // The reply target must survive the queue: the message it quotes may
         // not exist as part of the transcript until the turn actually starts.
         let reply_id = Uuid::new_v4();
+        let addressed_to = Uuid::new_v4();
         let first = enqueue_office_message(
             &db,
             room.id,
@@ -11506,6 +22394,7 @@ routines:
             "first task".to_string(),
             Vec::new(),
             Some(reply_id),
+            Some(addressed_to),
         )
         .await
         .unwrap();
@@ -11516,6 +22405,7 @@ routines:
             "second task".to_string(),
             Vec::new(),
             None,
+            None,
         )
         .await
         .unwrap();
@@ -11525,6 +22415,13 @@ routines:
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, first.id.to_string());
         assert_eq!(listed[1].id, second.id.to_string());
+        let stored_recipient: Option<String> =
+            sqlx::query_scalar("SELECT recipient_bot_id FROM office_queue WHERE id = ?")
+                .bind(first.id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(stored_recipient, Some(addressed_to.to_string()));
 
         let claimed = claim_next_office_queue_item(&db, room.id)
             .await
@@ -11532,6 +22429,7 @@ routines:
             .expect("first claim");
         assert_eq!(claimed.id, first.id);
         assert_eq!(claimed.reply_to_id, Some(reply_id));
+        assert_eq!(claimed.recipient_bot_id, Some(addressed_to));
         assert_eq!(
             load_office_queue(&db, room.id).await.unwrap()[0].state,
             "running"
@@ -11575,7 +22473,10 @@ routines:
         assert_eq!(
             resolve_catalog_install_url(
                 "stripe",
-                Some("https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json".to_string()),
+                Some(
+                    "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json"
+                        .to_string()
+                ),
                 Some("https://evil.example/spec.json".to_string()),
             )
             .unwrap(),
@@ -11665,7 +22566,10 @@ routines:
             imported.summary.credential_header_hint.as_deref(),
             Some("Authorization")
         );
-        assert_eq!(imported.summary.source_url.as_deref(), Some(spec_url.as_str()));
+        assert_eq!(
+            imported.summary.source_url.as_deref(),
+            Some(spec_url.as_str())
+        );
         assert_eq!(imported.operations.len(), 1);
         assert_eq!(imported.operations[0].method, "GET");
         assert!(imported.operations[0].id.starts_with("billing_api__"));
@@ -11712,7 +22616,11 @@ routines:
         .await
         .expect("notion import");
         assert_eq!(notion.summary.name, "Notion API");
-        assert!(notion.summary.operations > 5, "notion operations: {}", notion.summary.operations);
+        assert!(
+            notion.summary.operations > 5,
+            "notion operations: {}",
+            notion.summary.operations
+        );
         assert_eq!(notion.operations.len(), notion.summary.operations as usize);
         assert_eq!(
             notion.summary.source_url.as_deref(),
@@ -11726,15 +22634,26 @@ routines:
         .await
         .expect("swagger 2 import");
         assert_eq!(legacy.summary.name, "1Forge Finance APIs");
-        assert!(legacy.summary.operations > 0, "1forge operations: {}", legacy.summary.operations);
-        assert!(legacy.operations.iter().any(|operation| operation.method == "GET"));
+        assert!(
+            legacy.summary.operations > 0,
+            "1forge operations: {}",
+            legacy.summary.operations
+        );
+        assert!(legacy
+            .operations
+            .iter()
+            .any(|operation| operation.method == "GET"));
 
         // The imported operations are durable in the store, not just in the
         // returned struct.
         let store = ravenbot_plugins::store::PluginStore::new(db.pool().clone());
         let summaries = store.list_summaries(None).await.expect("summaries");
-        assert!(summaries.iter().any(|summary| summary.name == "Notion API" && summary.operations > 5));
-        assert!(summaries.iter().any(|summary| summary.name == "1Forge Finance APIs" && summary.operations > 0));
+        assert!(summaries
+            .iter()
+            .any(|summary| summary.name == "Notion API" && summary.operations > 5));
+        assert!(summaries
+            .iter()
+            .any(|summary| summary.name == "1Forge Finance APIs" && summary.operations > 0));
 
         drop(store);
         drop(db);
@@ -11940,9 +22859,290 @@ routines:
     }
 
     #[tokio::test]
-    async fn offices_are_autonomous_by_default_and_can_be_paused() {
+    async fn office_queue_reorder_persists_the_displayed_order() {
+        let (db, path) = temp_db("queue-order").await;
+        let room = ravenbot_core::ChatRoom::new("Acme", "test", "custom");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
+        let first = enqueue_office_message(
+            &db,
+            room.id,
+            "first".into(),
+            "first".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let second = enqueue_office_message(
+            &db,
+            room.id,
+            "second".into(),
+            "second".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let third = enqueue_office_message(
+            &db,
+            room.id,
+            "third".into(),
+            "third".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        persist_office_queue_order(&db, room.id, &[third.id, first.id, second.id])
+            .await
+            .unwrap();
+        let queue = load_office_queue(&db, room.id).await.unwrap();
+        let order: Vec<&str> = queue.iter().map(|item| item.content.as_str()).collect();
+        assert_eq!(order, vec!["third", "first", "second"]);
+
+        promote_queued_message(&db, room.id, second.id)
+            .await
+            .unwrap();
+        let queue = load_office_queue(&db, room.id).await.unwrap();
+        let order: Vec<&str> = queue.iter().map(|item| item.content.as_str()).collect();
+        assert_eq!(order, vec!["second", "third", "first"]);
+
+        drop(db);
+        cleanup_db(&path);
+    }
+
+    #[tokio::test]
+    async fn attention_inbox_collects_approvals_questions_and_queue() {
+        let (db, path) = temp_db("attention").await;
+        let bot = ravenbot_core::Bot::new("Scout", "finds things");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let thread = ravenbot_core::Thread::new(bot.id, "main");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+        let room = ravenbot_core::ChatRoom::new("Acme", "test", "custom");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
+        let node_thread = ravenbot_core::Thread::new(bot.id, "node");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &node_thread)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO chatroom_office_threads (chatroom_id, thread_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(room.id.to_string())
+        .bind(node_thread.id.to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let approval = ravenbot_core::ApprovalRequest::pending(
+            bot.id,
+            node_thread.id,
+            Uuid::new_v4(),
+            "shell_exec",
+            "Run a command",
+            serde_json::json!({ "command": "cargo test" }),
+            "high",
+        );
+        ravenbot_db::queries::ApprovalQueries::create(db.pool(), &approval)
+            .await
+            .unwrap();
+        let question = ravenbot_core::QuestionRequest::pending(
+            bot.id,
+            thread.id,
+            Uuid::new_v4(),
+            "Database",
+            "Which database?",
+            vec!["SQLite".into(), "Postgres".into()],
+            true,
+        );
+        ravenbot_db::queries::QuestionQueries::create(db.pool(), &question)
+            .await
+            .unwrap();
+        enqueue_office_message(
+            &db,
+            room.id,
+            "ship it".into(),
+            "ship it".into(),
+            Vec::new(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let items = collect_attention(&db).await.unwrap();
+        assert_eq!(items.len(), 3, "one of each source: {items:?}");
+        let approval_item = items.iter().find(|item| item.kind == "approval").unwrap();
+        assert_eq!(approval_item.office_name.as_deref(), Some("Acme"));
+        assert_eq!(approval_item.risk.as_deref(), Some("high"));
+        assert!(approval_item.detail.contains("cargo test"));
+        let question_item = items.iter().find(|item| item.kind == "question").unwrap();
+        assert!(question_item.office_name.is_none());
+        assert_eq!(question_item.question_kind.as_deref(), Some("question"));
+        let queue_item = items.iter().find(|item| item.kind == "queue").unwrap();
+        assert_eq!(
+            queue_item.office_id.as_deref(),
+            Some(room.id.to_string().as_str())
+        );
+        assert_eq!(queue_item.state, "pending");
+
+        drop(db);
+        cleanup_db(&path);
+    }
+
+    #[tokio::test]
+    async fn attention_inbox_flags_near_and_over_budget_offices() {
+        let (db, path) = temp_db("attention-budget").await;
+        let bot = ravenbot_core::Bot::new("Scout", "budget alert test");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let thread = ravenbot_core::Thread::new(bot.id, "budget office conversation");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+        let mut room = ravenbot_core::ChatRoom::new("Budgeted", "test", "custom");
+        room.budget = Some(2.0);
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO chatroom_threads (chatroom_id, thread_id, created_at) VALUES (?, ?, ?)",
+        )
+        .bind(room.id.to_string())
+        .bind(thread.id.to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO runs (id, bot_id, thread_id, state, tokens_consumed, cost_estimate, created_at, updated_at)
+             VALUES ('r-budget', ?, ?, 'completed', 10, 1.85, ?, ?)",
+        )
+        .bind(bot.id.to_string())
+        .bind(thread.id.to_string())
+        .bind(&now)
+        .bind(&now)
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let items = collect_attention(&db).await.unwrap();
+        let alert = items
+            .iter()
+            .find(|item| item.kind == "alert")
+            .expect("near-budget alert");
+        assert_eq!(alert.alert_kind.as_deref(), Some("budget"));
+        assert_eq!(alert.state, "warning");
+        assert_eq!(alert.office_name.as_deref(), Some("Budgeted"));
+        assert_eq!(
+            alert.office_id.as_deref(),
+            Some(room.id.to_string().as_str())
+        );
+        assert_eq!(alert.budget, Some(2.0));
+        assert!((alert.percent.unwrap() - 92.5).abs() < 0.01);
+        assert_eq!(alert.id, format!("office-budget:{}", room.id));
+
+        sqlx::query("UPDATE runs SET cost_estimate = 2.5 WHERE id = 'r-budget'")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let critical = collect_attention(&db).await.unwrap();
+        let alert = critical
+            .iter()
+            .find(|item| item.kind == "alert")
+            .expect("over-budget alert");
+        assert_eq!(alert.state, "critical");
+        assert!(alert.percent.unwrap() >= 100.0);
+
+        sqlx::query("UPDATE runs SET cost_estimate = 0.5 WHERE id = 'r-budget'")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let quiet = collect_attention(&db).await.unwrap();
+        assert!(
+            quiet.iter().all(|item| item.kind != "alert"),
+            "below 90% there must be no budget alert: {quiet:?}"
+        );
+
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            &office_alert_policy_key(room.id),
+            r#"{"enabled":true,"warning_percent":20.0,"critical_percent":30.0}"#,
+        )
+        .await
+        .unwrap();
+        let custom = collect_attention(&db).await.unwrap();
+        let alert = custom
+            .iter()
+            .find(|item| item.kind == "alert")
+            .expect("custom warning threshold");
+        assert_eq!(alert.state, "warning");
+        sqlx::query("UPDATE runs SET cost_estimate = 1.0 WHERE id = 'r-budget'")
+            .execute(db.pool())
+            .await
+            .unwrap();
+        let critical = collect_attention(&db).await.unwrap();
+        let alert = critical
+            .iter()
+            .find(|item| item.kind == "alert")
+            .expect("custom critical threshold");
+        assert_eq!(alert.state, "critical");
+
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            &office_alert_policy_key(room.id),
+            r#"{"enabled":false,"warning_percent":20.0,"critical_percent":30.0}"#,
+        )
+        .await
+        .unwrap();
+        let disabled = collect_attention(&db).await.unwrap();
+        assert!(disabled.iter().all(|item| item.kind != "alert"));
+
+        assert!(validate_office_alert_policy(&OfficeAlertPolicy {
+            enabled: true,
+            warning_percent: 80.0,
+            critical_percent: 50.0,
+        })
+        .is_err());
+        assert!(validate_office_alert_policy(&OfficeAlertPolicy {
+            enabled: true,
+            warning_percent: 0.0,
+            critical_percent: 50.0,
+        })
+        .is_err());
+
+        drop(db);
+        cleanup_db(&path);
+    }
+
+    #[tokio::test]
+    async fn office_autonomy_is_opt_in_and_can_be_paused() {
         let (db, path) = temp_db("office-autonomy").await;
         let chatroom_id = Uuid::new_v4();
+        // Fail closed: an office must not spend money autonomously until the
+        // owner explicitly turns it on.
+        assert!(!office_autonomy_enabled(&db, chatroom_id).await);
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            &office_autonomy_key(chatroom_id),
+            "1",
+        )
+        .await
+        .unwrap();
         assert!(office_autonomy_enabled(&db, chatroom_id).await);
         ravenbot_db::queries::AppSettingsQueries::set(
             db.pool(),
@@ -11961,6 +23161,19 @@ routines:
 #[cfg(test)]
 mod browser_dock_takeover_tests {
     use super::*;
+
+    #[test]
+    fn browser_profiles_are_single_safe_path_segments() {
+        assert_eq!(browser_profile_id(Some("Agent-ABC")).unwrap(), "agent-abc");
+        assert_eq!(browser_profile_id(None).unwrap(), "shared");
+        assert_eq!(browser_profile_id(Some("  ")).unwrap(), "shared");
+        for bad in ["../escape", "agent/office", "a:b", "profile name"] {
+            assert!(
+                browser_profile_id(Some(bad)).is_err(),
+                "{bad} must be refused"
+            );
+        }
+    }
 
     #[test]
     fn takeover_round_trips_and_starts_released() {
@@ -11987,6 +23200,267 @@ mod browser_dock_tests {
     }
 
     #[test]
+    fn browser_tab_session_restores_urls_and_active_index() {
+        let directory =
+            std::env::temp_dir().join(format!("ravenbot-browser-session-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let tabs = vec![
+            BrowserDockTab {
+                id: "a".to_string(),
+                title: "A".to_string(),
+                url: "https://alpha.example/".to_string(),
+            },
+            BrowserDockTab {
+                id: "b".to_string(),
+                title: "B".to_string(),
+                url: "https://beta.example/".to_string(),
+            },
+        ];
+        persist_browser_tab_session(&directory, &tabs, Some("b"));
+        let (urls, active) = load_browser_tab_session(&directory);
+        assert_eq!(
+            urls,
+            vec!["https://alpha.example/", "https://beta.example/"]
+        );
+        assert_eq!(active, 1);
+
+        std::fs::write(browser_tab_session_path(&directory), b"not-json").unwrap();
+        assert!(load_browser_tab_session(&directory).0.is_empty());
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn browser_tab_reordering_requires_a_permutation() {
+        let tab = |id: &str| BrowserDockTab {
+            id: id.to_string(),
+            title: String::new(),
+            url: format!("https://{id}.example/"),
+        };
+        let mut meta = BrowserDockMeta {
+            tabs: vec![tab("a"), tab("b"), tab("c")],
+            active_tab: Some("a".to_string()),
+            ..Default::default()
+        };
+        reorder_browser_tabs(
+            &mut meta,
+            &["c".to_string(), "a".to_string(), "b".to_string()],
+        )
+        .unwrap();
+        assert_eq!(
+            meta.tabs
+                .iter()
+                .map(|tab| tab.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c", "a", "b"]
+        );
+        assert_eq!(meta.active_tab.as_deref(), Some("a"));
+        assert!(reorder_browser_tabs(&mut meta, &["c".to_string()]).is_err());
+        assert!(reorder_browser_tabs(
+            &mut meta,
+            &["c".to_string(), "a".to_string(), "a".to_string()]
+        )
+        .is_err());
+        assert!(reorder_browser_tabs(
+            &mut meta,
+            &["c".to_string(), "a".to_string(), "missing".to_string()]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn browser_saves_require_the_same_http_origin() {
+        let current = tauri::Url::parse("https://app.example/login?next=1").unwrap();
+        assert_eq!(
+            browser_save_origin(&current, "https://app.example").unwrap(),
+            "https://app.example"
+        );
+        assert!(browser_save_origin(&current, "https://evil.example").is_err());
+        assert!(browser_save_origin(&current, "http://app.example").is_err());
+        let local = tauri::Url::parse("file:///etc/passwd").unwrap();
+        assert!(browser_save_origin(&local, "https://app.example").is_err());
+    }
+
+    #[test]
+    fn existing_login_matching_is_origin_and_username_aware() {
+        let item = |id: &str, name: &str, username: &str, website: &str| {
+            ravenbot_db::queries::VaultItemMeta {
+                id: id.to_string(),
+                kind: "login".to_string(),
+                name: name.to_string(),
+                username: username.to_string(),
+                website: website.to_string(),
+                last4: None,
+                created_at: String::new(),
+                updated_at: String::new(),
+            }
+        };
+        let items = vec![
+            item("a", "GitHub", "ada", "https://github.com/login"),
+            item("b", "GitHub", "grace", "https://github.com"),
+            item("c", "Other", "ada", "https://gitlab.com"),
+        ];
+        assert_eq!(
+            find_existing_login(&items, "https://github.com", "ADA", "GitHub")
+                .unwrap()
+                .id,
+            "a"
+        );
+        assert_eq!(
+            find_existing_login(&items, "https://github.com/", "grace", "GitHub")
+                .unwrap()
+                .id,
+            "b"
+        );
+        assert!(find_existing_login(&items, "https://github.com", "nobody", "GitHub").is_none());
+        assert!(find_existing_login(&items, "https://gitlab.com", "ada", "Other").is_some());
+    }
+
+    #[test]
+    fn browser_cookie_policy_resolution_respects_overrides() {
+        assert!(resolve_browser_cookie_policy("always", false));
+        assert!(!resolve_browser_cookie_policy("never", true));
+        assert!(resolve_browser_cookie_policy("inherit", true));
+        assert!(!resolve_browser_cookie_policy("inherit", false));
+        assert!(resolve_browser_cookie_policy("unknown", true));
+    }
+
+    #[test]
+    fn memory_embedding_provider_names_are_normalized() {
+        assert_eq!(normalize_embedding_provider("local").unwrap(), "local");
+        assert_eq!(normalize_embedding_provider("Ollama").unwrap(), "ollama");
+        assert_eq!(
+            normalize_embedding_provider("openai-compatible").unwrap(),
+            "openai"
+        );
+        assert_eq!(
+            normalize_embedding_provider("openai_compatible").unwrap(),
+            "openai"
+        );
+        assert!(normalize_embedding_provider("made-up").is_err());
+        assert_eq!(
+            default_embedding_base("ollama"),
+            DEFAULT_OLLAMA_EMBEDDING_BASE
+        );
+        assert_eq!(
+            default_embedding_base("openai"),
+            DEFAULT_OPENAI_EMBEDDING_BASE
+        );
+    }
+
+    #[tokio::test]
+    async fn saved_memory_embedding_config_uses_defaults_and_ollama_url() {
+        let path = std::env::temp_dir().join(format!(
+            "ravenbot-embedding-config-{}-{}.db",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let db = Database::new(&path).await.expect("temp db");
+        let config = load_memory_embedding_config(db.pool()).await.unwrap();
+        assert_eq!(config.provider, "local");
+
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            MEMORY_EMBEDDING_PROVIDER_KEY,
+            "ollama",
+        )
+        .await
+        .unwrap();
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            "ollama_url",
+            "http://192.168.1.9:11434",
+        )
+        .await
+        .unwrap();
+        let config = load_memory_embedding_config(db.pool()).await.unwrap();
+        assert_eq!(config.provider, "ollama");
+        assert_eq!(config.model, "nomic-embed-text");
+        assert_eq!(config.base_url, "http://192.168.1.9:11434");
+
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            MEMORY_EMBEDDING_PROVIDER_KEY,
+            "openai",
+        )
+        .await
+        .unwrap();
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            MEMORY_EMBEDDING_API_KEY_KEY,
+            "sk-test",
+        )
+        .await
+        .unwrap();
+        let config = load_memory_embedding_config(db.pool()).await.unwrap();
+        assert_eq!(config.provider, "openai");
+        assert_eq!(config.model, "text-embedding-3-small");
+        assert_eq!(config.base_url, DEFAULT_OPENAI_EMBEDDING_BASE);
+        assert_eq!(config.api_key.as_deref(), Some("sk-test"));
+
+        let local = SavedMemoryEmbedding {
+            provider: "local".to_string(),
+            model: String::new(),
+            base_url: String::new(),
+            api_key: None,
+        };
+        let provider = build_memory_embedding_provider(&local).await.unwrap();
+        assert_eq!(provider.embed("hello").await.unwrap().len(), 128);
+
+        let missing_key = SavedMemoryEmbedding {
+            provider: "openai".to_string(),
+            model: "text-embedding-3-small".to_string(),
+            base_url: DEFAULT_OPENAI_EMBEDDING_BASE.to_string(),
+            api_key: None,
+        };
+        assert!(build_memory_embedding_provider(&missing_key).await.is_err());
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[test]
+    fn memory_inputs_are_bounded_and_trimmed() {
+        assert_eq!(
+            validate_memory_content("  keep this  ").unwrap(),
+            "keep this"
+        );
+        assert!(validate_memory_content("   ").is_err());
+        assert!(validate_memory_content(&"x".repeat(2001)).is_err());
+        assert_eq!(validate_memory_category("  ").unwrap(), "general");
+        assert!(validate_memory_category(&"x".repeat(41)).is_err());
+        assert!(validate_memory_importance(0.5).is_ok());
+        assert!(validate_memory_importance(-0.1).is_err());
+        assert!(validate_memory_importance(1.1).is_err());
+        assert!(validate_memory_importance(f32::NAN).is_err());
+    }
+
+    #[test]
+    fn attention_webhooks_require_https() {
+        assert!(validate_attention_webhook("https://hooks.example/abc").is_ok());
+        assert!(validate_attention_webhook("http://hooks.example/abc").is_err());
+        assert!(validate_attention_webhook("file:///tmp/hook").is_err());
+        assert!(validate_attention_webhook("  ").is_err());
+    }
+
+    #[test]
+    fn browser_tab_ids_are_unique_and_labels_are_safe() {
+        let first = browser_new_tab_id();
+        let second = browser_new_tab_id();
+        assert_ne!(first, second);
+        for id in [&first, &second] {
+            assert!(id.chars().all(|ch| ch.is_ascii_alphanumeric()));
+            let label = browser_tab_label(id);
+            assert!(label.starts_with(BROWSER_DOCK_TAB_PREFIX));
+            assert!(label
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_')));
+        }
+        assert!(MAX_BROWSER_TABS >= 2);
+    }
+
+    #[test]
     fn bounds_are_clamped_to_a_usable_rectangle() {
         let tiny = browser_dock_size(&BrowserDockBounds {
             x: -40.0,
@@ -12006,4 +23480,2002 @@ mod browser_dock_tests {
         assert_eq!(position.x, 0.0);
         assert_eq!(position.y, 0.0);
     }
+}
+
+#[cfg(test)]
+mod audit_export_tests {
+    use super::*;
+    use ravenbot_governance::{
+        AuditExport, AuditExportFilters, AuditExportPayload, AuditExportSignature, AuditLogRow,
+    };
+
+    fn payload() -> AuditExportPayload {
+        AuditExportPayload {
+            format: ravenbot_governance::AUDIT_EXPORT_FORMAT.to_string(),
+            version: ravenbot_governance::AUDIT_EXPORT_VERSION,
+            exported_at: "2026-11-09T08:00:00.000+00:00".to_string(),
+            filters: AuditExportFilters {
+                bot_id: Some("b1".to_string()),
+                kinds: vec!["ToolCall".to_string()],
+                search: None,
+                since: None,
+                until: None,
+            },
+            count: 1,
+            entries: vec![AuditLogRow {
+                id: "a1".to_string(),
+                bot_id: "b1".to_string(),
+                bot_name: Some("Aster".to_string()),
+                run_id: None,
+                thread_id: None,
+                thread_title: None,
+                kind: "ToolCall".to_string(),
+                timestamp: "2026-11-09T07:59:00.000+00:00".to_string(),
+                tool_name: Some("read_file".to_string()),
+                path: None,
+                url: None,
+                method: None,
+                provider: Some("openai".to_string()),
+                model: Some("gpt-5".to_string()),
+                tokens_in: Some(120),
+                tokens_out: Some(30),
+                cost: Some(0.004),
+                size: None,
+                permission: None,
+                reason: None,
+                memory_scope: None,
+                memory_action: None,
+                memory_id: None,
+                category: None,
+                office_id: None,
+            }],
+        }
+    }
+
+    fn signed(payload: AuditExportPayload, seed: u8) -> Vec<u8> {
+        let signer = ravenbot_sync::BundleSigner::from_bytes([seed; 32]);
+        let payload_bytes = serde_json::to_vec(&payload).unwrap();
+        let export = AuditExport {
+            payload,
+            signature: AuditExportSignature {
+                algorithm: "ed25519".to_string(),
+                public_key: signer.public_key_b64(),
+                signature: signer.sign(&payload_bytes),
+            },
+        };
+        serde_json::to_string_pretty(&export).unwrap().into_bytes()
+    }
+
+    #[test]
+    fn export_paths_must_be_absolute_json_files() {
+        assert!(audit_export_path("audit.json")
+            .unwrap_err()
+            .contains("absolute"));
+        let wrong = std::env::temp_dir().join(format!("ravenbot-audit-{}.txt", Uuid::new_v4()));
+        assert!(audit_export_path(wrong.to_str().unwrap())
+            .unwrap_err()
+            .contains(".json"));
+        let good = std::env::temp_dir().join(format!("ravenbot-audit-{}.json", Uuid::new_v4()));
+        assert!(audit_export_path(good.to_str().unwrap()).is_ok());
+    }
+
+    #[test]
+    fn signed_exports_verify_and_tampering_is_rejected() {
+        let bytes = signed(payload(), 9);
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("memory_scope"),
+            "legacy exports must keep their original serialized shape"
+        );
+        let verified = verify_audit_export_bytes(&bytes).expect("valid signed export");
+        assert_eq!(verified.count, 1);
+        assert_eq!(verified.exported_at, "2026-11-09T08:00:00.000+00:00");
+
+        let mut tampered: AuditExport = serde_json::from_slice(&bytes).unwrap();
+        tampered.payload.entries[0].tool_name = Some("write_file".to_string());
+        let tampered = serde_json::to_vec(&tampered).unwrap();
+        assert!(verify_audit_export_bytes(&tampered)
+            .unwrap_err()
+            .contains("signature"));
+    }
+
+    #[test]
+    fn memory_audit_export_fields_round_trip() {
+        let mut payload = payload();
+        payload.entries[0].memory_scope = Some("office".to_string());
+        payload.entries[0].memory_action = Some("updated".to_string());
+        payload.entries[0].memory_id = Some("memory-1".to_string());
+        payload.entries[0].category = Some("rule".to_string());
+        payload.entries[0].office_id = Some("office-1".to_string());
+        let bytes = signed(payload, 9);
+        assert!(String::from_utf8_lossy(&bytes).contains("memory_scope"));
+        verify_audit_export_bytes(&bytes).expect("memory export verifies");
+
+        let export: AuditExport = serde_json::from_slice(&bytes).unwrap();
+        let row = &export.payload.entries[0];
+        assert_eq!(row.memory_scope.as_deref(), Some("office"));
+        assert_eq!(row.memory_action.as_deref(), Some("updated"));
+        assert_eq!(row.memory_id.as_deref(), Some("memory-1"));
+        assert_eq!(row.category.as_deref(), Some("rule"));
+        assert_eq!(row.office_id.as_deref(), Some("office-1"));
+    }
+
+    #[test]
+    fn count_mismatches_are_rejected_before_the_signature() {
+        let mut export: AuditExport = serde_json::from_slice(&signed(payload(), 9)).unwrap();
+        export.payload.count = 2;
+        let bytes = serde_json::to_vec(&export).unwrap();
+        assert!(verify_audit_export_bytes(&bytes)
+            .unwrap_err()
+            .contains("count"));
+    }
+}
+
+#[cfg(test)]
+mod memory_summary_tests {
+    use super::*;
+
+    #[test]
+    fn parses_plain_and_fenced_summary_json() {
+        assert_eq!(
+            parse_memory_summary(r#"{"content":"Combined fact"}"#).unwrap(),
+            "Combined fact"
+        );
+        assert_eq!(
+            parse_memory_summary("```json\n{\"content\":\"Fenced fact\"}\n```").unwrap(),
+            "Fenced fact"
+        );
+        assert_eq!(
+            parse_memory_summary(r#"Here is the result: {"content":"Prefixed fact"}"#).unwrap(),
+            "Prefixed fact"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_or_empty_summaries() {
+        assert!(parse_memory_summary("no json here").is_err());
+        assert!(parse_memory_summary(r#"{"content":"   "}"#).is_err());
+        assert!(parse_memory_summary(r#"{"wrong":"field"}"#).is_err());
+        assert!(parse_memory_summary(r#"{"content":"x"#).is_err());
+    }
+
+    #[test]
+    fn summary_prompt_requests_json_with_the_entries() {
+        let prompt = memory_summary_prompt("- first\n- second");
+        assert!(prompt.contains("Return only JSON"));
+        assert!(prompt.contains("- first"));
+        assert!(prompt.contains("- second"));
+    }
+}
+
+#[cfg(test)]
+mod attention_email_tests {
+    use super::*;
+
+    fn config() -> AttentionEmailConfig {
+        AttentionEmailConfig {
+            host: "127.0.0.1".to_string(),
+            port: 2525,
+            security: "none".to_string(),
+            username: String::new(),
+            password: None,
+            from: "alerts@example.test".to_string(),
+            to: "ops@example.test".to_string(),
+        }
+    }
+
+    #[test]
+    fn email_config_rejects_unsafe_or_invalid_values() {
+        assert!(validate_smtp_host("127.0.0.1", "none").is_ok());
+        assert!(validate_smtp_host("localhost", "none").is_ok());
+        assert!(validate_smtp_host("[::1]", "none").is_ok());
+        assert!(validate_smtp_host("smtp.example.com", "none").is_err());
+        assert!(validate_smtp_host("smtp.example.com", "starttls").is_ok());
+        assert!(validate_smtp_host("bad host", "starttls").is_err());
+        assert!(validate_smtp_port(0).is_err());
+        assert!(validate_smtp_port(587).is_ok());
+        assert_eq!(normalize_email_security("STARTTLS").unwrap(), "starttls");
+        assert!(normalize_email_security("ssl").is_err());
+        assert!(parse_email_address("not-an-address", "sender").is_err());
+        assert!(parse_email_address("ops@example.test", "sender").is_ok());
+        assert_eq!(
+            sanitize_alert_text("Finance\r\nBcc: evil@example.test"),
+            "Finance Bcc: evil@example.test"
+        );
+    }
+
+    #[test]
+    fn alert_messages_are_generic_and_cannot_inject_headers() {
+        let message = build_attention_email_message(
+            &config(),
+            "approval",
+            "pending",
+            Some("Finance\r\nBcc: evil@example.test"),
+            None,
+        )
+        .expect("message");
+        let formatted = String::from_utf8_lossy(&message.formatted()).to_string();
+        assert!(formatted.contains("RAVENBOT: Approval needed"));
+        assert!(formatted.contains("Office/agent: Finance Bcc: evil@example.test"));
+        assert!(!formatted.contains("\r\nBcc:"));
+        assert!(formatted
+            .contains("Prompt text, questions, secrets, and budget amounts are never sent"));
+        assert!(formatted.contains("by email."));
+        assert!(!formatted.contains("sk-"));
+    }
+
+    #[tokio::test]
+    async fn smtp_send_reaches_a_loopback_server() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            write_half
+                .write_all(b"220 localhost ESMTP\r\n")
+                .await
+                .unwrap();
+            let mut body = String::new();
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    break;
+                }
+                let command = line.trim_end();
+                if command.starts_with("EHLO") || command.starts_with("HELO") {
+                    write_half
+                        .write_all(b"250-localhost\r\n250-8BITMIME\r\n250 HELP\r\n")
+                        .await
+                        .unwrap();
+                } else if command.starts_with("MAIL FROM") || command.starts_with("RCPT TO") {
+                    write_half.write_all(b"250 OK\r\n").await.unwrap();
+                } else if command == "DATA" {
+                    write_half
+                        .write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n")
+                        .await
+                        .unwrap();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                            break;
+                        }
+                        if line.trim_end() == "." {
+                            break;
+                        }
+                        body.push_str(&line);
+                    }
+                    write_half.write_all(b"250 OK\r\n").await.unwrap();
+                } else if command == "QUIT" {
+                    write_half.write_all(b"221 Bye\r\n").await.unwrap();
+                    break;
+                } else {
+                    write_half.write_all(b"250 OK\r\n").await.unwrap();
+                }
+            }
+            body
+        });
+
+        let mut config = config();
+        config.port = addr.port();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::task::spawn_blocking(move || {
+                send_attention_email_blocking(
+                    &config,
+                    "approval",
+                    "pending",
+                    Some("Finance"),
+                    Some("Scout"),
+                )
+            }),
+        )
+        .await
+        .expect("send timed out")
+        .expect("send task");
+        assert!(result.is_ok(), "{result:?}");
+
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .expect("server task");
+        assert!(body.contains("Office/agent: Finance"));
+        assert!(body.contains("State: pending"));
+        assert!(body.contains("Prompt text, questions, secrets, and budget amounts are never sent"));
+        assert!(body.contains("by email."));
+    }
+}
+
+#[cfg(test)]
+mod vault_import_path_tests {
+    use super::*;
+
+    #[test]
+    fn vault_imports_require_an_absolute_supported_file() {
+        assert!(vault_import_path("vault.csv")
+            .unwrap_err()
+            .contains("absolute"));
+        assert!(vault_import_path("/tmp/vault.txt")
+            .unwrap_err()
+            .contains(".json"));
+        let path = std::env::temp_dir().join(format!("ravenbot-vault-{}.csv", Uuid::new_v4()));
+        std::fs::write(&path, "Name,Password\nSite,secret\n").unwrap();
+        assert!(vault_import_path(path.to_str().unwrap()).is_ok());
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod audit_retention_tests {
+    use super::*;
+    use chrono::Duration;
+    use ravenbot_core::{AuditEntry, AuditEventType};
+    use ravenbot_db::Database;
+
+    fn entry(age: Duration) -> AuditEntry {
+        AuditEntry {
+            id: Uuid::new_v4(),
+            bot_id: Uuid::new_v4(),
+            run_id: None,
+            thread_id: None,
+            event: AuditEventType::BotStarted,
+            timestamp: chrono::Utc::now() - age,
+        }
+    }
+
+    #[tokio::test]
+    async fn configured_retention_prunes_only_old_entries_and_defaults_safe() {
+        let path =
+            std::env::temp_dir().join(format!("ravenbot-audit-retention-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("temp db");
+        let logger = ravenbot_governance::AuditLogger::new(db.pool().clone());
+        logger.log(&entry(Duration::days(60))).await.unwrap();
+        logger.log(&entry(Duration::days(1))).await.unwrap();
+
+        assert_eq!(configured_audit_retention(db.pool()).await, None);
+        assert_eq!(run_audit_retention(db.pool()).await, None);
+
+        ravenbot_db::queries::AppSettingsQueries::set(db.pool(), AUDIT_RETENTION_KEY, "30")
+            .await
+            .unwrap();
+        assert_eq!(run_audit_retention(db.pool()).await, Some(1));
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit_log")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(count, 1, "the one-day entry must remain");
+
+        ravenbot_db::queries::AppSettingsQueries::set(db.pool(), AUDIT_RETENTION_KEY, "0")
+            .await
+            .unwrap();
+        assert_eq!(run_audit_retention(db.pool()).await, None);
+        ravenbot_db::queries::AppSettingsQueries::set(db.pool(), AUDIT_RETENTION_KEY, "3651")
+            .await
+            .unwrap();
+        assert_eq!(run_audit_retention(db.pool()).await, None);
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            AUDIT_RETENTION_KEY,
+            "not-a-number",
+        )
+        .await
+        .unwrap();
+        assert_eq!(run_audit_retention(db.pool()).await, None);
+
+        assert!(valid_audit_retention_days(0));
+        assert!(valid_audit_retention_days(1));
+        assert!(valid_audit_retention_days(3650));
+        assert!(!valid_audit_retention_days(3651));
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+}
+#[cfg(test)]
+mod audit_schedule_tests {
+    use super::*;
+    use chrono::Duration;
+    use ravenbot_core::{AuditEntry, AuditEventType};
+    use ravenbot_db::Database;
+
+    fn entry(age: Duration) -> AuditEntry {
+        AuditEntry {
+            id: Uuid::new_v4(),
+            bot_id: Uuid::new_v4(),
+            run_id: None,
+            thread_id: None,
+            event: AuditEventType::BotStarted,
+            timestamp: chrono::Utc::now() - age,
+        }
+    }
+
+    #[test]
+    fn export_due_respects_interval_and_bad_timestamps() {
+        let now = chrono::Utc::now();
+        assert!(!audit_export_due(0, None, now));
+        assert!(audit_export_due(24, None, now));
+        assert!(audit_export_due(
+            24,
+            Some(&(now - Duration::hours(25)).to_rfc3339()),
+            now
+        ));
+        assert!(!audit_export_due(
+            24,
+            Some(&(now - Duration::hours(1)).to_rfc3339()),
+            now
+        ));
+        assert!(audit_export_due(24, Some("not-a-timestamp"), now));
+        assert!(valid_audit_export_interval(0));
+        assert!(valid_audit_export_interval(1));
+        assert!(valid_audit_export_interval(168));
+        assert!(!valid_audit_export_interval(169));
+    }
+
+    #[tokio::test]
+    async fn due_backup_is_signed_verifiable_and_gated_by_interval() {
+        std::env::set_var("RAVENBOT_DISABLE_KEYCHAIN", "1");
+        let db_path =
+            std::env::temp_dir().join(format!("ravenbot-audit-schedule-{}.db", Uuid::new_v4()));
+        let export_dir =
+            std::env::temp_dir().join(format!("ravenbot-audit-schedule-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&export_dir).unwrap();
+        let db = Database::new(&db_path).await.expect("temp db");
+        ravenbot_governance::AuditLogger::new(db.pool().clone())
+            .log(&entry(Duration::minutes(5)))
+            .await
+            .unwrap();
+
+        ravenbot_db::queries::AppSettingsQueries::set(db.pool(), AUDIT_EXPORT_INTERVAL_KEY, "24")
+            .await
+            .unwrap();
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            AUDIT_EXPORT_DIR_KEY,
+            &export_dir.to_string_lossy(),
+        )
+        .await
+        .unwrap();
+
+        let exported = run_audit_export_if_due(db.pool())
+            .await
+            .expect("backup due")
+            .expect("backup succeeded");
+        assert_eq!(exported.count, 1);
+        assert!(std::path::Path::new(&exported.path).is_file());
+        let bytes = std::fs::read(&exported.path).unwrap();
+        let verified = verify_audit_export_bytes(&bytes).expect("signed export verifies");
+        assert_eq!(verified.count, 1);
+        assert_eq!(
+            ravenbot_db::queries::AppSettingsQueries::get(db.pool(), AUDIT_EXPORT_LAST_ERROR_KEY)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("")
+        );
+
+        assert!(
+            run_audit_export_if_due(db.pool()).await.is_none(),
+            "a successful backup must not run again before the interval"
+        );
+
+        // Make the next interval due, keep the last-success marker in the
+        // past, and add one new entry. The second backup must contain only the
+        // new entry rather than repeating the full log.
+        let now = chrono::Utc::now();
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            AUDIT_EXPORT_LAST_AT_KEY,
+            &(now - Duration::hours(25)).to_rfc3339(),
+        )
+        .await
+        .unwrap();
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            AUDIT_EXPORT_LAST_SUCCESS_KEY,
+            &(now - Duration::seconds(1)).to_rfc3339(),
+        )
+        .await
+        .unwrap();
+        ravenbot_governance::AuditLogger::new(db.pool().clone())
+            .log(&entry(Duration::seconds(0)))
+            .await
+            .unwrap();
+        let incremental = run_audit_export_if_due(db.pool())
+            .await
+            .expect("incremental backup due")
+            .expect("incremental backup succeeded");
+        assert_eq!(incremental.count, 1, "only new entries are exported");
+
+        ravenbot_db::queries::AppSettingsQueries::set(db.pool(), AUDIT_EXPORT_INTERVAL_KEY, "0")
+            .await
+            .unwrap();
+        assert!(run_audit_export_if_due(db.pool()).await.is_none());
+
+        drop(db);
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+        let _ = std::fs::remove_dir_all(&export_dir);
+        std::env::remove_var("RAVENBOT_DISABLE_KEYCHAIN");
+    }
+}
+#[cfg(test)]
+mod workflow_validation_tests {
+    use super::*;
+
+    fn task(label: &str, depends_on: Vec<usize>) -> WorkflowTaskInput {
+        WorkflowTaskInput {
+            bot_id: Uuid::new_v4(),
+            label: label.to_string(),
+            node_type: None,
+            depends_on,
+            condition: None,
+            data_from: None,
+            retries: 0,
+            output_schema: None,
+            loop_iterations: 1,
+            loop_until: None,
+            loop_group: None,
+            loop_group_terminal: false,
+            loop_group_iterations: 1,
+            loop_group_stop: None,
+        }
+    }
+
+    fn conditioned(
+        label: &str,
+        depends_on: Vec<usize>,
+        source: usize,
+        operator: &str,
+        value: &str,
+    ) -> WorkflowTaskInput {
+        WorkflowTaskInput {
+            bot_id: Uuid::new_v4(),
+            label: label.to_string(),
+            depends_on,
+            condition: Some(ravenbot_db::queries::WorkflowCondition {
+                source,
+                operator: operator.to_string(),
+                value: value.to_string(),
+            }),
+            data_from: None,
+            retries: 0,
+            output_schema: None,
+            loop_iterations: 1,
+            loop_until: None,
+            loop_group: None,
+            loop_group_terminal: false,
+            loop_group_iterations: 1,
+            loop_group_stop: None,
+            node_type: None,
+        }
+    }
+
+    #[test]
+    fn workflow_conditions_must_reference_a_dependency() {
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[
+                task("first", vec![]),
+                conditioned("second", vec![0], 0, "contains", "approved"),
+            ]
+        )
+        .is_ok());
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[
+                task("first", vec![]),
+                conditioned("second", vec![0], 1, "contains", "approved"),
+            ]
+        )
+        .is_err());
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[
+                task("first", vec![]),
+                conditioned("second", vec![0], 0, "matches", "approved"),
+            ]
+        )
+        .is_err());
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[
+                task("first", vec![]),
+                conditioned("second", vec![0], 0, "contains", "   "),
+            ]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn workflow_retries_are_bounded() {
+        let mut bounded = task("first", vec![]);
+        bounded.retries = 3;
+        assert!(validate_workflow_definition("Release", "Audit the release", &[bounded]).is_ok());
+        let mut too_many = task("first", vec![]);
+        too_many.retries = 4;
+        assert!(validate_workflow_definition("Release", "Audit the release", &[too_many]).is_err());
+    }
+
+    #[test]
+    fn workflow_inputs_must_reference_dependencies() {
+        let mut second = task("second", vec![0, 1]);
+        second.data_from = Some(vec![0]);
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[task("first", vec![]), task("second", vec![0]), second]
+        )
+        .is_ok());
+        let mut third = task("third", vec![0, 1]);
+        third.data_from = Some(vec![5]);
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[task("first", vec![]), task("second", vec![0]), third]
+        )
+        .is_err());
+        let mut duplicate = task("duplicate", vec![0, 1]);
+        duplicate.data_from = Some(vec![0, 0]);
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[task("first", vec![]), task("second", vec![0]), duplicate]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn workflow_dependencies_must_point_backwards_and_be_unique() {
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[task("first", vec![]), task("second", vec![0])]
+        )
+        .is_ok());
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[task("first", vec![1])]
+        )
+        .is_err());
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[task("first", vec![]), task("second", vec![0, 0])]
+        )
+        .is_err());
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[task("   ", vec![])]
+        )
+        .is_err());
+        assert!(validate_workflow_definition("", "goal", &[task("first", vec![])]).is_err());
+    }
+
+    #[test]
+    fn workflow_node_types_are_validated_and_persisted() {
+        let mut trigger = task("start", vec![]);
+        trigger.node_type = Some("trigger".to_string());
+        let mut output = task("deliver", vec![0]);
+        output.node_type = Some("output".to_string());
+        let records =
+            validate_workflow_definition("Release", "Audit the release", &[trigger, output])
+                .expect("valid node types");
+        assert_eq!(records[0].node_type, "trigger");
+        assert_eq!(records[1].node_type, "output");
+
+        let mut bad = task("bad", vec![]);
+        bad.node_type = Some("workflow".to_string());
+        assert!(validate_workflow_definition("Release", "Audit the release", &[bad]).is_err());
+
+        let mut dependent_trigger = task("start", vec![0]);
+        dependent_trigger.node_type = Some("trigger".to_string());
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[task("first", vec![]), dependent_trigger]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn workflow_loop_groups_are_validated() {
+        let mut first = task("first", vec![]);
+        first.loop_group = Some("refine".to_string());
+        let mut second = task("second", vec![0]);
+        second.loop_group = Some("refine".to_string());
+        second.loop_group_terminal = true;
+        second.loop_group_iterations = 3;
+        second.loop_group_stop = Some(ravenbot_db::queries::WorkflowLoopStop {
+            operator: "contains".to_string(),
+            value: "APPROVED".to_string(),
+        });
+        let records =
+            validate_workflow_definition("Release", "Audit the release", &[first, second])
+                .expect("valid loop group");
+        assert_eq!(records[0].loop_group.as_deref(), Some("refine"));
+        assert!(records[1].loop_group_terminal);
+        assert_eq!(records[1].loop_group_iterations, 3);
+
+        let mut no_terminal = task("first", vec![]);
+        no_terminal.loop_group = Some("g".to_string());
+        assert!(
+            validate_workflow_definition("Release", "Audit the release", &[no_terminal]).is_err()
+        );
+
+        let mut two_terminals = task("first", vec![]);
+        two_terminals.loop_group = Some("g".to_string());
+        two_terminals.loop_group_terminal = true;
+        let mut second_terminal = task("second", vec![0]);
+        second_terminal.loop_group = Some("g".to_string());
+        second_terminal.loop_group_terminal = true;
+        assert!(validate_workflow_definition(
+            "Release",
+            "Audit the release",
+            &[two_terminals, second_terminal]
+        )
+        .is_err());
+
+        let mut orphan = task("first", vec![]);
+        orphan.loop_group_terminal = true;
+        assert!(validate_workflow_definition("Release", "Audit the release", &[orphan]).is_err());
+
+        let mut too_many = task("first", vec![]);
+        too_many.loop_group = Some("g".to_string());
+        too_many.loop_group_terminal = true;
+        too_many.loop_group_iterations = 11;
+        assert!(validate_workflow_definition("Release", "Audit the release", &[too_many]).is_err());
+    }
+
+    #[test]
+    fn workflow_loop_bounds_and_stops_are_validated() {
+        let mut looped = task("iterate", vec![]);
+        looped.loop_iterations = 3;
+        looped.loop_until = Some(ravenbot_db::queries::WorkflowLoopStop {
+            operator: "Contains".to_string(),
+            value: " APPROVED ".to_string(),
+        });
+        let records = validate_workflow_definition("Release", "Audit the release", &[looped])
+            .expect("valid loop");
+        assert_eq!(records[0].loop_iterations, 3);
+        let stop = records[0].loop_until.as_ref().expect("loop stop");
+        assert_eq!(stop.operator, "contains");
+        assert_eq!(stop.value, "APPROVED");
+
+        let mut too_many = task("iterate", vec![]);
+        too_many.loop_iterations = 11;
+        assert!(validate_workflow_definition("Release", "Audit the release", &[too_many]).is_err());
+
+        let mut zero = task("iterate", vec![]);
+        zero.loop_iterations = 0;
+        assert!(validate_workflow_definition("Release", "Audit the release", &[zero]).is_err());
+
+        let mut bad_operator = task("iterate", vec![]);
+        bad_operator.loop_iterations = 2;
+        bad_operator.loop_until = Some(ravenbot_db::queries::WorkflowLoopStop {
+            operator: "matches".to_string(),
+            value: "APPROVED".to_string(),
+        });
+        assert!(
+            validate_workflow_definition("Release", "Audit the release", &[bad_operator]).is_err()
+        );
+
+        let mut empty_phrase = task("iterate", vec![]);
+        empty_phrase.loop_iterations = 2;
+        empty_phrase.loop_until = Some(ravenbot_db::queries::WorkflowLoopStop {
+            operator: "contains".to_string(),
+            value: "   ".to_string(),
+        });
+        let records = validate_workflow_definition("Release", "Audit the release", &[empty_phrase])
+            .expect("a blank early-stop phrase means run every iteration");
+        assert!(records[0].loop_until.is_none());
+
+        let mut disabled = task("iterate", vec![]);
+        disabled.loop_iterations = 1;
+        disabled.loop_until = Some(ravenbot_db::queries::WorkflowLoopStop {
+            operator: "contains".to_string(),
+            value: "APPROVED".to_string(),
+        });
+        let records = validate_workflow_definition("Release", "Audit the release", &[disabled])
+            .expect("a single run ignores a stop rule");
+        assert!(records[0].loop_until.is_none());
+    }
+
+    #[test]
+    fn workflow_output_schemas_are_validated_and_canonicalized() {
+        let mut typed = task("typed", vec![]);
+        typed.output_schema =
+            Some("{ \"type\": \"object\", \"required\": [\"summary\"] }".to_string());
+        let records =
+            validate_workflow_definition("Release", "Audit the release", &[typed]).unwrap();
+        assert_eq!(
+            records[0].output_schema.as_deref(),
+            Some(r#"{"required":["summary"],"type":"object"}"#)
+        );
+
+        let mut blank = task("blank", vec![]);
+        blank.output_schema = Some("   ".to_string());
+        let records =
+            validate_workflow_definition("Release", "Audit the release", &[blank]).unwrap();
+        assert!(records[0].output_schema.is_none());
+
+        let mut invalid_json = task("bad", vec![]);
+        invalid_json.output_schema = Some("{ not json".to_string());
+        assert!(
+            validate_workflow_definition("Release", "Audit the release", &[invalid_json]).is_err()
+        );
+
+        let mut not_object = task("array", vec![]);
+        not_object.output_schema = Some("[1, 2]".to_string());
+        assert!(
+            validate_workflow_definition("Release", "Audit the release", &[not_object]).is_err()
+        );
+
+        let mut invalid_schema = task("invalid", vec![]);
+        invalid_schema.output_schema = Some(r#"{"type":"not-a-type"}"#.to_string());
+        assert!(
+            validate_workflow_definition("Release", "Audit the release", &[invalid_schema])
+                .is_err()
+        );
+
+        let mut too_long = task("long", vec![]);
+        too_long.output_schema = Some("x".repeat(8193));
+        assert!(validate_workflow_definition("Release", "Audit the release", &[too_long]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod startup_reconciliation_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn restart_parks_interrupted_runs_and_retries_workflows() {
+        let path = std::env::temp_dir().join(format!("ravenbot-reconcile-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("temp db");
+        let bot = Bot::new("Restart Test", "reconciliation");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let thread = ravenbot_core::Thread::new(bot.id, "restart thread");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+
+        let acting_run = Uuid::new_v4();
+        let paused_run = Uuid::new_v4();
+        for (id, state, checkpoint) in [
+            (acting_run, "acting", None),
+            (paused_run, "paused", Some(r#"{"rounds":1}"#)),
+        ] {
+            sqlx::query(
+                "INSERT INTO runs (id, bot_id, thread_id, state, checkpoint, tokens_consumed, cost_estimate, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, 0, 0.0, ?, ?)",
+            )
+            .bind(id.to_string())
+            .bind(bot.id.to_string())
+            .bind(thread.id.to_string())
+            .bind(state)
+            .bind(checkpoint)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(db.pool())
+            .await
+            .unwrap();
+        }
+
+        // A delegated child belongs to its parent's loop; it must be closed,
+        // not resumed on its own.
+        let child_run = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO runs (id, bot_id, thread_id, parent_run_id, state, tokens_consumed, cost_estimate, created_at, updated_at)
+             VALUES (?, ?, ?, ?, 'acting', 0, 0.0, ?, ?)",
+        )
+        .bind(child_run.to_string())
+        .bind(bot.id.to_string())
+        .bind(thread.id.to_string())
+        .bind(acting_run.to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let workflow_id = Uuid::new_v4().to_string();
+        ravenbot_db::queries::WorkflowQueries::upsert(
+            db.pool(),
+            &workflow_id,
+            "Restart workflow",
+            "Finish after restart",
+            "[]",
+            None,
+        )
+        .await
+        .unwrap();
+        let workflow_run = ravenbot_db::queries::WorkflowQueries::begin_run(
+            db.pool(),
+            &workflow_id,
+            1,
+            None,
+            "goal",
+        )
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO workflow_schedules
+             (workflow_id, interval_hours, enabled, next_run_at, last_run_at, updated_at)
+             VALUES (?, 24, 1, ?, NULL, ?)",
+        )
+        .bind(&workflow_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO approvals (id, bot_id, thread_id, run_id, tool_name, status)
+             VALUES (?, ?, ?, ?, 'shell_exec', 'pending')",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(bot.id.to_string())
+        .bind(thread.id.to_string())
+        .bind(acting_run.to_string())
+        .execute(db.pool())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO questions (id, bot_id, thread_id, run_id, question, status)
+             VALUES (?, ?, ?, ?, 'Continue?', 'pending')",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(bot.id.to_string())
+        .bind(thread.id.to_string())
+        .bind(acting_run.to_string())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let room = ChatRoom::new("Restart Office", "restart test", "custom");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
+        let queue_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO office_queue (id, chatroom_id, content, visible, state, started_at)
+             VALUES (?, ?, 'queued work', 'queued work', 'running', ?)",
+        )
+        .bind(queue_id.to_string())
+        .bind(room.id.to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db.pool())
+        .await
+        .unwrap();
+        // This room has a running graph, so its queue item is resumable.
+        ravenbot_db::queries::OfficeGraphQueries::save(
+            db.pool(),
+            Uuid::new_v4(),
+            room.id,
+            thread.id,
+            0,
+            "queued work",
+            "queued work",
+            "restart test",
+            "{}",
+            "{}",
+            "running",
+        )
+        .await
+        .unwrap();
+
+        // An office with no saved graph cannot resume its queue item.
+        let orphan_room = ChatRoom::new("Orphan Office", "no graph", "custom");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &orphan_room)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO office_queue (id, chatroom_id, content, visible, state, started_at)
+             VALUES (?, ?, 'orphaned work', 'orphaned work', 'running', ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(orphan_room.id.to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            &format!("office_active:{}", room.id),
+            "1",
+        )
+        .await
+        .unwrap();
+        sqlx::query("UPDATE bots SET status = 'thinking' WHERE id = ?")
+            .bind(bot.id.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let state = reconcile_startup_state(db.pool())
+            .await
+            .expect("reconciliation");
+        assert_eq!(state.resumable_runs, 1);
+        assert_eq!(state.failed_runs, 1);
+        assert_eq!(state.already_paused_runs, 1);
+        assert_eq!(state.retried_workflow_runs, 1);
+        assert_eq!(state.resumed_offices, 1);
+        assert_eq!(state.failed_workflow_runs, 1);
+        assert_eq!(state.expired_approvals, 1);
+        assert_eq!(state.expired_questions, 1);
+        assert_eq!(state.failed_queue_items, 1);
+        let resumable_queue: String =
+            sqlx::query_scalar("SELECT state FROM office_queue WHERE id = ?")
+                .bind(queue_id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            resumable_queue, "running",
+            "a queue item with a resumable graph must not be failed at startup"
+        );
+        let orphan_queue: String = sqlx::query_scalar(
+            "SELECT state FROM office_queue WHERE content = 'orphaned work' LIMIT 1",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(orphan_queue, "failed");
+        assert_eq!(state.reset_channel_tasks, 0);
+        assert_eq!(state.reset_agents, 1);
+
+        let acting: (String, i64) =
+            sqlx::query_as("SELECT state, resume_on_start FROM runs WHERE id = ?")
+                .bind(acting_run.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(acting.0, "paused");
+        assert_eq!(acting.1, 1, "the interrupted run is marked for resume");
+
+        let child: (String,) = sqlx::query_as("SELECT state FROM runs WHERE id = ?")
+            .bind(child_run.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(child.0, "failed", "a child run is not resumed alone");
+
+        let paused: (String, i64, Option<String>) =
+            sqlx::query_as("SELECT state, resume_on_start, checkpoint FROM runs WHERE id = ?")
+                .bind(paused_run.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(paused.0, "paused");
+        assert_eq!(paused.1, 0, "a user-paused run is not auto-resumed");
+        assert!(paused.2.is_some(), "a paused run keeps its resume point");
+
+        let claimed = ravenbot_db::queries::RunQueries::claim_resumable_run(db.pool())
+            .await
+            .unwrap()
+            .expect("the interrupted run is claimable");
+        assert_eq!(claimed.id, acting_run);
+        assert_eq!(claimed.state, ravenbot_core::RunState::Paused);
+        assert!(
+            ravenbot_db::queries::RunQueries::claim_resumable_run(db.pool())
+                .await
+                .unwrap()
+                .is_none(),
+            "a claimed run is not executed twice"
+        );
+
+        let workflow: (String,) = sqlx::query_as("SELECT state FROM workflow_runs WHERE id = ?")
+            .bind(&workflow_run)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(workflow.0, "failed");
+        let retried: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT next_run_at, last_error FROM workflow_schedules WHERE workflow_id = ?",
+        )
+        .bind(&workflow_id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert!(retried.0.is_some(), "the workflow is queued to retry");
+        assert!(retried
+            .1
+            .unwrap_or_default()
+            .contains("retry after app restart"));
+        let approval: (String,) = sqlx::query_as("SELECT status FROM approvals LIMIT 1")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(approval.0, "expired");
+        let question: (String,) = sqlx::query_as("SELECT status FROM questions LIMIT 1")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(question.0, "expired");
+        let queued: (String, Option<String>) =
+            sqlx::query_as("SELECT state, error FROM office_queue WHERE id = ?")
+                .bind(queue_id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(
+            queued.0, "running",
+            "the graph is resumable, so its queue item stays live"
+        );
+        assert!(queued.1.is_none());
+        let active = ravenbot_db::queries::AppSettingsQueries::get(
+            db.pool(),
+            &format!("office_active:{}", room.id),
+        )
+        .await
+        .unwrap();
+        assert_eq!(active.as_deref(), Some("0"));
+        let resume = ravenbot_db::queries::AppSettingsQueries::get(
+            db.pool(),
+            &format!("office_resume:{}", room.id),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            resume.as_deref(),
+            Some("1"),
+            "the office turn is queued to restart"
+        );
+        let status: (String,) = sqlx::query_as("SELECT status FROM bots WHERE id = ?")
+            .bind(bot.id.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(status.0, "idle");
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod office_cycle_tests {
+    use super::*;
+
+    #[test]
+    fn generic_continue_catches_nudges_but_not_new_deliverables() {
+        for prompt in [
+            "?",
+            "??",
+            "continue",
+            "do next",
+            "do next work",
+            "continue the office",
+            "[Autonomous cycle] continue the mission",
+            "[Office continuation — cycle 2] next milestone",
+        ] {
+            assert!(
+                office_generic_continue(prompt),
+                "should continue for {prompt:?}"
+            );
+        }
+        for prompt in [
+            "Build a login page",
+            "Fix the failing test in auth.rs",
+            "Design a new brand identity",
+            "Summarize this report",
+        ] {
+            assert!(
+                !office_generic_continue(prompt),
+                "should not auto-continue a new request: {prompt:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn completion_review_parser_tolerates_prose_and_fences() {
+        let review = parse_office_cycle_review(
+            "Here is the verdict:\n```json\n{\"complete\":true,\"reason\":\"tests pass\",\"next_task\":\"\"}\n```\nDone.",
+        )
+        .expect("review");
+        assert!(review.complete);
+        assert_eq!(review.reason, "tests pass");
+        assert!(review.next_task.is_empty());
+
+        let review = parse_office_cycle_review(
+            "{\"complete\":\"true\",\"reason\":\"artifact exists\",\"nextTask\":\"ship it\"}",
+        )
+        .expect("review");
+        assert!(review.complete);
+        assert_eq!(review.next_task, "ship it");
+
+        let blocked = parse_office_cycle_review(
+            r#"{"verdict":"blocked","reason":"needs a credential","next_task":""}"#,
+        )
+        .expect("blocked review");
+        assert!(!blocked.complete);
+        assert_eq!(blocked.verdict, ravenbot_core::GoalVerdict::Blocked);
+        assert_eq!(blocked.reason, "needs a credential");
+
+        let waiting = parse_office_cycle_review(
+            r#"{"verdict":"wait","reason":"build is running","next_task":""}"#,
+        )
+        .expect("wait review");
+        assert_eq!(waiting.verdict, ravenbot_core::GoalVerdict::Wait);
+
+        let done =
+            parse_office_cycle_review(r#"{"verdict":"done","reason":"verified","next_task":""}"#)
+                .expect("done review");
+        assert!(done.complete);
+        assert_eq!(done.verdict, ravenbot_core::GoalVerdict::Done);
+
+        assert!(parse_office_cycle_review("not json").is_none());
+    }
+
+    #[test]
+    fn completion_review_parser_ignores_unrelated_objects_and_trailing_prose() {
+        let review = parse_office_cycle_review(
+            "I checked the workspace. {\"note\":\"not the verdict\"}\n             ```json\n{\"verdict\":\"continue\",\"reason\":\"QA report is still missing\",\"next_task\":\"Write QA-002\"}\n```\n             {\"other\":true}",
+        )
+        .expect("review");
+        assert!(!review.complete);
+        assert_eq!(review.verdict, ravenbot_core::GoalVerdict::Continue);
+        assert_eq!(review.reason, "QA report is still missing");
+        assert_eq!(review.next_task, "Write QA-002");
+        assert!(!review.degraded);
+
+        let unverified =
+            parse_office_cycle_review(r#"{"complete":false,"reason":"not yet"}"#).expect("review");
+        assert!(!unverified.complete);
+        assert_eq!(unverified.verdict, ravenbot_core::GoalVerdict::Continue);
+    }
+
+    #[test]
+    fn a_damaged_review_is_recovered_from_its_fields() {
+        let raw = "{\"verdict\":\"continue\",\"reason\":\"QA report is missing\",\"next_task\":\"Write QA-002\",}";
+        assert!(
+            parse_office_cycle_review(raw).is_none(),
+            "the strict parser should reject the trailing comma"
+        );
+        let review = parse_office_cycle_review_lenient(raw).expect("recovered review");
+        assert!(!review.complete);
+        assert_eq!(review.verdict, ravenbot_core::GoalVerdict::Continue);
+        assert_eq!(review.reason, "QA report is missing");
+        assert_eq!(review.next_task, "Write QA-002");
+        assert!(!review.degraded);
+
+        let done = parse_office_cycle_review_lenient(
+            "The answer is {\"verdict\":\"done\",\"reason\":\"all gates pass\"}",
+        )
+        .expect("done review");
+        assert!(done.complete);
+        assert_eq!(done.verdict, ravenbot_core::GoalVerdict::Done);
+    }
+
+    #[test]
+    fn a_schema_echo_is_not_a_completion_verdict() {
+        let echo = r#"{"verdict":"done|continue|blocked|wait","reason":"at most 240 characters","next_task":"one milestone or empty"}"#;
+        assert!(
+            parse_office_cycle_review_checked(echo).is_none(),
+            "the repair prompt's example must not become a verdict"
+        );
+
+        let empty_continue = r#"{"verdict":"continue","reason":"still working","next_task":""}"#;
+        assert!(
+            parse_office_cycle_review_checked(empty_continue).is_none(),
+            "a continue verdict without a next milestone is not actionable"
+        );
+
+        let done = r#"{"verdict":"done","reason":"All required gates pass and the backlog is empty","next_task":""}"#;
+        let review = parse_office_cycle_review_checked(done).expect("real done review");
+        assert!(review.complete);
+        assert_eq!(review.verdict, ravenbot_core::GoalVerdict::Done);
+    }
+
+    #[test]
+    fn a_one_word_review_cannot_turn_not_done_into_done() {
+        assert_eq!(
+            parse_binary_review_answer("DONE."),
+            Some(ravenbot_core::GoalVerdict::Done)
+        );
+        assert_eq!(
+            parse_binary_review_answer("CONTINUE"),
+            Some(ravenbot_core::GoalVerdict::Continue)
+        );
+        assert_eq!(
+            parse_binary_review_answer("not done yet"),
+            Some(ravenbot_core::GoalVerdict::Continue)
+        );
+        assert_eq!(
+            parse_binary_review_answer("the goal is not complete"),
+            Some(ravenbot_core::GoalVerdict::Continue)
+        );
+        assert_eq!(
+            parse_binary_review_answer("the milestone is done"),
+            Some(ravenbot_core::GoalVerdict::Done)
+        );
+        assert_eq!(
+            parse_binary_review_answer("I cannot complete the review"),
+            Some(ravenbot_core::GoalVerdict::Continue)
+        );
+        assert_eq!(parse_binary_review_answer("maybe"), None);
+    }
+
+    fn review_gate(passed: bool, required: bool) -> ravenbot_runtime::quality_gate::GateResult {
+        ravenbot_runtime::quality_gate::GateResult {
+            command: "python3 -m unittest discover -s tests -q".into(),
+            cwd: "/tmp/app".into(),
+            exit_code: Some(if passed { 0 } else { 1 }),
+            passed,
+            timed_out: false,
+            duration_ms: 12,
+            output_tail: String::new(),
+            required,
+        }
+    }
+
+    fn degraded_review_with_gates(
+        gates: Vec<ravenbot_runtime::quality_gate::GateResult>,
+    ) -> OfficeCycleReview {
+        OfficeCycleReview {
+            complete: false,
+            verdict: ravenbot_core::GoalVerdict::Continue,
+            reason: "judge unavailable".into(),
+            next_task: String::new(),
+            gates,
+            degraded: true,
+        }
+    }
+
+    #[test]
+    fn deterministic_completion_requires_green_gates_and_an_empty_backlog() {
+        let green = || degraded_review_with_gates(vec![review_gate(true, true)]);
+        assert!(deterministic_completion_ready(
+            &green(),
+            &[],
+            0,
+            true,
+            true,
+            true,
+            1
+        ));
+        assert!(
+            !deterministic_completion_ready(&green(), &[], 0, true, true, true, 0),
+            "the first milestone still needs a verification cycle"
+        );
+        assert!(
+            !deterministic_completion_ready(&green(), &[], 1, true, true, true, 1),
+            "an open backlog task blocks completion"
+        );
+        assert!(
+            !deterministic_completion_ready(
+                &green(),
+                &["node failed".into()],
+                0,
+                true,
+                true,
+                true,
+                1
+            ),
+            "a failed task blocks completion"
+        );
+        assert!(
+            !deterministic_completion_ready(
+                &degraded_review_with_gates(vec![review_gate(false, true)]),
+                &[],
+                0,
+                true,
+                true,
+                true,
+                1
+            ),
+            "a red required gate blocks completion"
+        );
+        assert!(
+            !deterministic_completion_ready(
+                &degraded_review_with_gates(vec![review_gate(true, false)]),
+                &[],
+                0,
+                true,
+                true,
+                true,
+                1
+            ),
+            "an optional gate is not completion evidence"
+        );
+        assert!(
+            !deterministic_completion_ready(&green(), &[], 0, false, true, true, 1),
+            "non-code goals still need the model judge"
+        );
+        let healthy = OfficeCycleReview {
+            degraded: false,
+            ..green()
+        };
+        assert!(
+            !deterministic_completion_ready(&healthy, &[], 0, true, true, true, 1),
+            "this path only covers a degraded judge"
+        );
+    }
+
+    #[test]
+    fn a_degraded_review_never_claims_completion() {
+        let review = office_review_fallback(true, true, "timed out");
+        assert!(!review.complete);
+        assert_eq!(review.verdict, ravenbot_core::GoalVerdict::Continue);
+        assert!(review.degraded);
+        assert!(review.reason.contains("timed out"));
+        assert!(review.next_task.contains("Verify"));
+    }
+
+    #[test]
+    fn a_code_goal_needs_at_least_one_workspace_gate_to_be_done() {
+        assert!(completion_needs_workspace_gate(true, true, &[]));
+        assert!(!completion_needs_workspace_gate(false, true, &[]));
+        assert!(!completion_needs_workspace_gate(true, false, &[]));
+
+        let passed = ravenbot_runtime::quality_gate::GateResult {
+            command: "python3 -m unittest discover -s tests -q".into(),
+            cwd: "/tmp/app".into(),
+            exit_code: Some(0),
+            passed: true,
+            timed_out: false,
+            duration_ms: 12,
+            output_tail: String::new(),
+            required: true,
+        };
+        let optional = ravenbot_runtime::quality_gate::GateResult {
+            required: false,
+            ..passed.clone()
+        };
+        assert!(!completion_needs_workspace_gate(true, true, &[passed]));
+        assert!(
+            completion_needs_workspace_gate(true, true, &[optional]),
+            "an optional gate is not completion evidence"
+        );
+    }
+
+    #[test]
+    fn a_completed_milestone_is_reviewed_for_generic_requests() {
+        assert!(office_cycle_should_review(true, "completed", &[]));
+        assert!(office_cycle_should_review(
+            true,
+            "completed",
+            &["task failed".to_string()]
+        ));
+        assert!(!office_cycle_should_review(false, "completed", &[]));
+        assert!(office_cycle_should_review(
+            true,
+            "failed",
+            &["task failed".to_string()]
+        ));
+        assert!(!office_cycle_should_review(true, "failed", &[]));
+    }
+
+    #[test]
+    fn saved_graph_labels_round_trip_as_uuid_keys() {
+        let node = Uuid::new_v4();
+        let mut labels = std::collections::HashMap::new();
+        labels.insert(node, "CEO".to_string());
+        let json = serde_json::to_string(&labels).expect("labels");
+        let loaded: std::collections::HashMap<Uuid, String> =
+            serde_json::from_str(&json).expect("labels back");
+        assert_eq!(loaded.get(&node).map(String::as_str), Some("CEO"));
+    }
+
+    #[test]
+    fn configuration_failures_do_not_replan_forever() {
+        assert!(office_failure_is_permanent(&[
+            "API error 401: invalid API key".to_string()
+        ]));
+        assert!(office_failure_is_permanent(&[
+            "model does not support this protocol".to_string()
+        ]));
+        assert!(office_failure_is_permanent(&[
+            "Free usage limit reached".to_string()
+        ]));
+        assert!(!office_failure_is_permanent(&[
+            "connection timed out".to_string()
+        ]));
+        assert!(!office_failure_is_permanent(&[
+            "The node produced a progress report but did not finish the task".to_string()
+        ]));
+    }
+
+    #[test]
+    fn the_first_software_milestone_always_gets_a_verification_cycle() {
+        assert!(office_first_cycle_needs_verification(true, 0, true, true));
+        assert!(!office_first_cycle_needs_verification(false, 0, true, true));
+        assert!(!office_first_cycle_needs_verification(true, 0, false, true));
+        assert!(!office_first_cycle_needs_verification(true, 0, true, false));
+        assert!(!office_first_cycle_needs_verification(true, 1, true, true));
+    }
+
+    #[test]
+    fn a_software_goal_requires_an_implementation_but_other_work_does_not() {
+        assert!(office_goal_requires_implementation(
+            "Pull public API data into a terminal dashboard"
+        ));
+        assert!(office_goal_requires_implementation(
+            "Build a small CLI tool"
+        ));
+        assert!(!office_goal_requires_implementation(
+            "Write a market research report"
+        ));
+        assert!(!office_goal_requires_implementation(
+            "Design a new brand identity"
+        ));
+        // Token matching, not a naive substring: "happy" is not "app".
+        assert!(!office_goal_requires_implementation(
+            "Make the customer happy"
+        ));
+    }
+
+    #[test]
+    fn continuation_prompt_carries_the_goal_and_one_milestone() {
+        let prompt = office_continuation_prompt(
+            1,
+            "Build a dashboard",
+            "Add the first panel",
+            "- [done] scaffold\n- [pending] panel",
+        );
+        assert!(prompt.contains("cycle 2"), "{prompt}");
+        assert!(prompt.contains("Build a dashboard"), "{prompt}");
+        assert!(prompt.contains("Add the first panel"), "{prompt}");
+        assert!(prompt.contains("Plan ONE milestone"), "{prompt}");
+        assert!(prompt.contains("Do not repeat work"), "{prompt}");
+    }
+}
+
+#[cfg(test)]
+mod office_graph_persistence_tests {
+    use super::*;
+
+    async fn temp_db(tag: &str) -> (ravenbot_db::Database, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("ravenbot-{tag}-{}.db", Uuid::new_v4()));
+        let db = ravenbot_db::Database::new(&path).await.expect("temp db");
+        (db, path)
+    }
+
+    fn cleanup(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+    }
+
+    #[tokio::test]
+    async fn a_saved_office_graph_restores_completed_work_and_the_interrupted_node() {
+        let (db, path) = temp_db("office-graph").await;
+        let room = ravenbot_core::ChatRoom::new("ARGUS", "dashboard", "custom");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .expect("room");
+        let bot = ravenbot_core::Bot::new("CEO", "lead");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .expect("bot");
+        let thread = ravenbot_core::Thread::new(bot.id, "Office");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .expect("thread");
+
+        let mut graph = TaskGraph::new("Build the dashboard");
+        let first = graph.add_node(bot.id, "Scaffold");
+        let second = graph.add_node(bot.id, "Implementation");
+        let third = graph.add_node(bot.id, "Verification");
+        graph.add_edge(first, second);
+        graph.add_edge(second, third);
+        graph.mark_running(first, Uuid::new_v4()).unwrap();
+        graph
+            .mark_done(first, "Scaffold complete".to_string())
+            .unwrap();
+        let interrupted_thread = Uuid::new_v4();
+        graph.nodes.get_mut(&second).unwrap().thread_id = Some(interrupted_thread);
+        graph.mark_running(second, Uuid::new_v4()).unwrap();
+
+        let mut labels = std::collections::HashMap::new();
+        labels.insert(first, "CEO".to_string());
+        labels.insert(second, "Coder".to_string());
+        labels.insert(third, "QA".to_string());
+
+        save_office_graph(
+            &db,
+            graph.id,
+            room.id,
+            thread.id,
+            0,
+            "do next",
+            "do next",
+            "Build the dashboard",
+            &labels,
+            &graph,
+            "running",
+        )
+        .await;
+
+        let record = ravenbot_db::queries::OfficeGraphQueries::latest_running(db.pool(), room.id)
+            .await
+            .expect("latest")
+            .expect("running graph");
+        assert_eq!(record.cycle, 0);
+        assert_eq!(record.request, "do next");
+        let mut loaded: TaskGraph = serde_json::from_str(&record.graph).expect("graph");
+        let loaded_labels: std::collections::HashMap<Uuid, String> =
+            serde_json::from_str(&record.labels).expect("labels");
+        assert_eq!(
+            loaded_labels.get(&second).map(String::as_str),
+            Some("Coder")
+        );
+
+        let threads = loaded.prepare_resume();
+        assert_eq!(threads, vec![interrupted_thread]);
+        assert!(matches!(
+            loaded.nodes[&first].state,
+            ravenbot_runtime::graph::NodeState::Done(_)
+        ));
+        assert_eq!(
+            loaded.nodes[&first].output.as_deref(),
+            Some("Scaffold complete")
+        );
+        assert!(matches!(
+            loaded.nodes[&second].state,
+            ravenbot_runtime::graph::NodeState::Pending
+        ));
+        let ready: Vec<Uuid> = loaded.ready_nodes().iter().map(|node| node.id).collect();
+        assert_eq!(ready, vec![second], "only the interrupted node is ready");
+
+        cleanup(&path);
+    }
+}
+
+#[cfg(test)]
+mod notification_transport_tests {
+    /// The Tauri notification plugin injects a JS boot script that calls
+    /// `is_permission_granted` on every page. On a webview connection-error
+    /// page that IPC request has no valid Origin and produced an unhandled
+    /// rejection. RAVENBOT sends notifications through `notify-rust` directly,
+    /// so this dependency must not come back without removing that script.
+    #[test]
+    fn notifications_do_not_reintroduce_the_tauri_plugin_boot_script() {
+        let manifest = include_str!("../Cargo.toml");
+        assert!(
+            !manifest.contains("tauri-plugin-notification"),
+            "use notify-rust directly; the Tauri notification plugin injects an IPC probe into every page"
+        );
+    }
+}
+
+#[cfg(test)]
+mod work_retry_tests {
+    use super::*;
+    use ravenbot_runtime::graph::NodeState;
+    use std::collections::HashSet;
+
+    #[test]
+    fn a_red_quality_gate_blocks_completion_and_names_the_next_fix() {
+        use ravenbot_runtime::quality_gate::GateResult;
+
+        let gate = |passed: bool, output: &str| GateResult {
+            command: "npm test".to_string(),
+            cwd: "/tmp/office".to_string(),
+            exit_code: Some(if passed { 0 } else { 1 }),
+            passed,
+            timed_out: false,
+            duration_ms: 25,
+            output_tail: output.to_string(),
+            required: true,
+        };
+
+        let mut review = OfficeCycleReview {
+            complete: true,
+            verdict: ravenbot_core::GoalVerdict::Done,
+            reason: "looks done".to_string(),
+            next_task: String::new(),
+            gates: Vec::new(),
+            degraded: false,
+        };
+        apply_gate_results(&mut review, vec![gate(false, "FAIL src/app.test.ts")]);
+        assert!(!review.complete);
+        assert!(review.next_task.contains("FAIL src/app.test.ts"));
+        assert_eq!(review.gates.len(), 1);
+
+        let mut passing = OfficeCycleReview {
+            complete: true,
+            verdict: ravenbot_core::GoalVerdict::Done,
+            reason: "looks done".to_string(),
+            next_task: String::new(),
+            gates: Vec::new(),
+            degraded: false,
+        };
+        apply_gate_results(&mut passing, vec![gate(true, "")]);
+        assert!(passing.complete);
+        assert_eq!(passing.gates.len(), 1);
+    }
+
+    fn goal_record(
+        status: &str,
+        tokens_used: i64,
+        max_tokens: u64,
+        max_wall_seconds: u64,
+        created_at: String,
+    ) -> ravenbot_db::queries::GoalRecord {
+        let mut contract = ravenbot_core::GoalContract::for_objective("Ship it");
+        contract.max_tokens = max_tokens;
+        contract.max_wall_seconds = max_wall_seconds;
+        ravenbot_db::queries::GoalRecord {
+            id: Uuid::new_v4().to_string(),
+            office_id: Some(Uuid::new_v4().to_string()),
+            thread_id: None,
+            objective: "Ship it".to_string(),
+            contract,
+            status: status.to_string(),
+            turns_used: 1,
+            tokens_used,
+            last_verdict: None,
+            last_reason: String::new(),
+            next_run_at: None,
+            last_run_at: None,
+            rounds_used: 0,
+            max_rounds: 24,
+            consecutive_failures: 0,
+            blocked_rounds: 0,
+            last_blocker: String::new(),
+            created_at,
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            completed_at: None,
+        }
+    }
+
+    #[test]
+    fn a_goal_is_due_only_when_active_armed_and_with_rounds_left() {
+        let now = chrono::Utc::now();
+        let past = (now - chrono::Duration::seconds(5)).to_rfc3339();
+        let future = (now + chrono::Duration::minutes(5)).to_rfc3339();
+        let now_text = now.to_rfc3339();
+
+        let mut goal = goal_record("active", 0, 0, 0, past.clone());
+        goal.next_run_at = Some(past.clone());
+        assert!(goal_autopilot_due(&goal, &now_text));
+
+        goal.next_run_at = Some(future);
+        assert!(!goal_autopilot_due(&goal, &now_text));
+
+        goal.next_run_at = Some(past.clone());
+        goal.status = "paused".to_string();
+        assert!(!goal_autopilot_due(&goal, &now_text));
+
+        goal.status = "active".to_string();
+        goal.rounds_used = goal.max_rounds;
+        assert!(!goal_autopilot_due(&goal, &now_text));
+    }
+
+    #[test]
+    fn goal_budgets_stop_a_turn_before_it_spends() {
+        let now = chrono::Utc::now();
+        let fresh = now.to_rfc3339();
+
+        let paused = goal_record("paused", 0, 0, 0, fresh.clone());
+        let (status, message) = goal_budget_stop(&paused, now).expect("paused stop");
+        assert_eq!(status, ravenbot_core::GoalStatus::Paused);
+        assert!(message.contains("paused"));
+
+        let tokens = goal_record("active", 10, 10, 0, fresh.clone());
+        let (status, message) = goal_budget_stop(&tokens, now).expect("token stop");
+        assert_eq!(status, ravenbot_core::GoalStatus::Paused);
+        assert!(message.contains("token budget"));
+
+        let old = (now - chrono::Duration::seconds(120)).to_rfc3339();
+        let wall = goal_record("active", 0, 0, 60, old);
+        let (status, message) = goal_budget_stop(&wall, now).expect("wall stop");
+        assert_eq!(status, ravenbot_core::GoalStatus::Paused);
+        assert!(message.contains("wall-clock budget"));
+
+        let active = goal_record("active", 2, 100, 100, fresh);
+        assert!(goal_budget_stop(&active, now).is_none());
+
+        let done = goal_record("done", 0, 0, 0, now.to_rfc3339());
+        let (status, message) = goal_budget_stop(&done, now).expect("done stop");
+        assert_eq!(status, ravenbot_core::GoalStatus::Done);
+        assert!(message.contains("already complete"));
+    }
+
+    #[test]
+    fn rerunning_a_node_invalidates_its_branch_and_keeps_upstream_work() {
+        let mut graph = TaskGraph::new("Build the dashboard");
+        let upstream = graph.add_node(Uuid::new_v4(), "Collect data");
+        let target = graph.add_node(Uuid::new_v4(), "Render charts");
+        let downstream = graph.add_node(Uuid::new_v4(), "Publish report");
+        let other = graph.add_node(Uuid::new_v4(), "Write docs");
+        graph.add_edge(upstream, target);
+        graph.add_edge(target, downstream);
+
+        for id in [upstream, target, downstream, other] {
+            let node = graph.nodes.get_mut(&id).expect("node");
+            node.state = NodeState::Done("old output".to_string());
+            node.thread_id = Some(Uuid::new_v4());
+            graph.blackboard.set(id.to_string(), "old output");
+        }
+
+        let reset: HashSet<Uuid> = reset_graph_for_rerun(&mut graph, target)
+            .into_iter()
+            .collect();
+        assert_eq!(
+            reset,
+            HashSet::from([target, downstream]),
+            "only the target and its descendants are invalidated"
+        );
+        assert!(matches!(graph.nodes[&upstream].state, NodeState::Done(_)));
+        assert!(matches!(graph.nodes[&other].state, NodeState::Done(_)));
+        assert!(matches!(graph.nodes[&target].state, NodeState::Pending));
+        assert!(matches!(graph.nodes[&downstream].state, NodeState::Pending));
+        assert!(graph.blackboard.get(&target.to_string()).is_none());
+        assert!(graph.blackboard.get(&downstream.to_string()).is_none());
+        assert!(graph.blackboard.get(&upstream.to_string()).is_some());
+        assert!(
+            graph.nodes[&target].thread_id.is_some(),
+            "rework keeps the conversation"
+        );
+    }
+}
+
+#[cfg(test)]
+mod queue_reconciliation_tests {
+    use super::*;
+
+    async fn temp_db(tag: &str) -> (Database, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("ravenbot-{tag}-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("temp db");
+        (db, path)
+    }
+
+    async fn seed_room(db: &Database) -> (ravenbot_core::ChatRoom, Uuid) {
+        let bot = ravenbot_core::Bot::new("Queue Test", "queue reconciliation");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let thread = ravenbot_core::Thread::new(bot.id, "queue thread");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .unwrap();
+        let room = ravenbot_core::ChatRoom::new("Queue Office", "test", "custom");
+        ravenbot_db::queries::ChatRoomQueries::create(db.pool(), &room)
+            .await
+            .unwrap();
+        (room, thread.id)
+    }
+
+    async fn insert_running_queue_item(db: &Database, room_id: Uuid) -> Uuid {
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO office_queue (id, chatroom_id, content, visible, state, started_at)
+             VALUES (?, ?, 'queued work', 'queued work', 'running', ?)",
+        )
+        .bind(id.to_string())
+        .bind(room_id.to_string())
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db.pool())
+        .await
+        .unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn an_orphaned_running_queue_item_is_finalized() {
+        let (db, path) = temp_db("queue-orphan").await;
+        let (room, _thread) = seed_room(&db).await;
+        let item = insert_running_queue_item(&db, room.id).await;
+
+        reconcile_orphaned_queue_items(&db, room.id).await;
+
+        let state: String = sqlx::query_scalar("SELECT state FROM office_queue WHERE id = ?")
+            .bind(item.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(state, "failed");
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn a_running_queue_item_with_a_resumable_graph_is_kept() {
+        let (db, path) = temp_db("queue-resume").await;
+        let (room, thread_id) = seed_room(&db).await;
+        let item = insert_running_queue_item(&db, room.id).await;
+        ravenbot_db::queries::OfficeGraphQueries::save(
+            db.pool(),
+            Uuid::new_v4(),
+            room.id,
+            thread_id,
+            0,
+            "queued work",
+            "queued work",
+            "goal",
+            "{}",
+            "{}",
+            "running",
+        )
+        .await
+        .unwrap();
+
+        reconcile_orphaned_queue_items(&db, room.id).await;
+
+        let state: String = sqlx::query_scalar("SELECT state FROM office_queue WHERE id = ?")
+            .bind(item.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(state, "running");
+
+        drop(db);
+        let _ = std::fs::remove_file(path);
+    }
+}
+/// Injected into every dock page: a small toolbar with Back, Forward,
+/// Reload, URL and Close. The native page is composited above the app's own
+/// chrome on Linux, so this keeps the browser usable and closable even when
+/// the app chrome is not visible above it.
+fn is_browser_dock_close_url(url: &tauri::Url) -> bool {
+    url.scheme() == "ravenbot" && url.host_str() == Some("close")
+}
+
+const BROWSER_DOCK_PAGE_TOOLBAR: &str = r#"
+(() => {
+  if (window.__ravenbotDockToolbar) return;
+  window.__ravenbotDockToolbar = true;
+  const bar = document.createElement("div");
+  bar.id = "__ravenbot_dock_toolbar";
+  bar.style.cssText = "position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;gap:3px;padding:0 8px;background:rgba(20,20,20,.92);border-bottom:1px solid rgba(255,255,255,.12);font:12px system-ui,sans-serif;color:#ddd;";
+  const make = (label, title, run) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.title = title;
+    button.setAttribute("aria-label", title);
+    button.style.cssText = "all:unset;cursor:pointer;padding:3px 7px;border-radius:5px;color:#ddd;";
+    button.onmouseenter = () => { button.style.background = "rgba(255,255,255,.1)"; };
+    button.onmouseleave = () => { button.style.background = "transparent"; };
+    button.onclick = (event) => { event.preventDefault(); event.stopPropagation(); run(); };
+    bar.appendChild(button);
+  };
+  make("\u2715", "Close browser", () => { location.href = "ravenbot://close"; });
+  make("URL", "Open a URL", () => {
+    const url = prompt("Open URL");
+    if (url) location.href = /^https?:\/\//i.test(url) ? url : "https://" + url;
+  });
+  make("\u2190", "Back", () => history.back());
+  make("\u2192", "Forward", () => history.forward());
+  make("\u27f3", "Reload", () => location.reload());
+  const address = document.createElement("span");
+  address.textContent = location.host;
+  address.style.cssText = "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#999;padding:0 6px;";
+  bar.appendChild(address);
+  document.documentElement.appendChild(bar);
+  window.addEventListener("keydown", (event) => {
+    if (event.ctrlKey && event.shiftKey && event.key.toLowerCase() === "b") {
+      event.preventDefault();
+      event.stopPropagation();
+      location.href = "ravenbot://close";
+    }
+  }, true);
+})();
+"#;
+#[test]
+fn dock_close_navigation_is_recognised() {
+    assert!(is_browser_dock_close_url(
+        &tauri::Url::parse("ravenbot://close").expect("close url")
+    ));
+    assert!(!is_browser_dock_close_url(
+        &tauri::Url::parse("https://example.com/").expect("http url")
+    ));
 }

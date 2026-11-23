@@ -17,7 +17,8 @@
    */
   import { invoke } from "@tauri-apps/api/core";
   import { t } from "$lib/i18n";
-  import { Loader2, AlertTriangle, CheckCircle2, XCircle, Clock, RefreshCw } from "@lucide/svelte";
+  import { notify } from "$lib/toast";
+  import { Loader2, AlertTriangle, CheckCircle2, XCircle, Clock, Play, RefreshCw } from "@lucide/svelte";
 
   interface Run {
     id: string;
@@ -35,6 +36,7 @@
   let runs = $state<Run[]>([]);
   let isLoading = $state(false);
   let loadError = $state<string | null>(null);
+  let resumingId = $state<string | null>(null);
 
   async function load() {
     isLoading = true;
@@ -51,6 +53,20 @@
 
   // Load on mount.
   $effect(() => { load(); });
+
+  async function resumeRun(id: string) {
+    if (resumingId) return;
+    resumingId = id;
+    try {
+      await invoke("resume_run", { runId: id });
+      notify(t("runs.resumed"), "success");
+      await load();
+    } catch (error) {
+      notify(String(error), "error");
+    } finally {
+      resumingId = null;
+    }
+  }
 
   function stateColor(state: string): string {
     switch (state) {
@@ -121,6 +137,24 @@
             <Icon class="size-3.5 shrink-0 {stateColor(run.state)}" />
             <span class="text-[11px] font-mono text-[var(--text-tertiary)] truncate">{run.id.slice(0, 8)}</span>
             <span class="text-[11px] font-semibold {stateColor(run.state)} capitalize shrink-0">{run.state}</span>
+            {#if run.state === "paused"}
+              <button
+                type="button"
+                class="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-[var(--brand)]/40 bg-[var(--brand-soft)] text-[11px] text-[var(--brand-text)] hover:bg-[var(--brand-soft)] cursor-pointer disabled:opacity-50"
+                onclick={() => resumeRun(run.id)}
+                disabled={resumingId === run.id}
+                aria-label={t("runs.resume")}
+                title={t("runs.resume")}
+              >
+                {#if resumingId === run.id}
+                  <Loader2 class="size-3 animate-spin" />
+                  {t("runs.resuming")}
+                {:else}
+                  <Play class="size-3" />
+                  {t("runs.resume")}
+                {/if}
+              </button>
+            {/if}
             <span class="ml-auto text-[11px] text-[var(--text-faint)] tabular-nums shrink-0">{fmtTime(run.created_at)}</span>
           </div>
           <div class="flex items-center gap-3 text-[11px] font-mono text-[var(--text-muted)]">

@@ -136,6 +136,31 @@ describe("agent builder — the event loop survives opening the dialog", () => {
   });
 
   /**
+   * A bot that actually has capabilities. The hydration effect resets the
+   * toggle map and then reads it back while applying the stored permissions;
+   * an empty permission list never reaches that read, which is why the older
+   * regression test missed it.
+   */
+  it("hydrates a bot with permissions without re-triggering itself", async () => {
+    render(BotSettings, {
+      props: {
+        bot: {
+          ...BOT,
+          permissions: [
+            { FileSystem: { paths: ["/"] } },
+            { Network: { domains: ["*"] } },
+          ],
+        },
+        open: true,
+        onClose: () => {},
+        onUpdated: () => {},
+      },
+    });
+    await settle();
+    expect(tripped, "the loop cap was reached while hydrating permissions").toBe(false);
+  });
+
+  /**
    * The core regression. `list_all_skills` returning `[]` used to spin forever.
    */
   it("asks for the skills list once, even when it comes back empty", async () => {

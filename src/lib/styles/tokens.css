@@ -146,6 +146,7 @@
   --success-wash: rgba(154, 230, 180, 0.05);
   --warning-text: #ffd591;
   --warning-soft: rgba(255, 213, 145, 0.14);
+  --warning-border: rgba(255, 213, 145, 0.42);
   --danger-text: #ff96a0;
   --danger-hover: #ffabb3;
   --danger-soft: rgba(255, 150, 160, 0.16);

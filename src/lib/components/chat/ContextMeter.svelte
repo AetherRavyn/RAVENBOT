@@ -27,6 +27,35 @@
       : 0,
   );
   const level = $derived(percent >= 95 ? "danger" : percent >= 80 ? "warning" : "normal");
+  const breakdown = $derived(
+    [
+      [t("composer.contextSystem"), usage?.systemTokens],
+      [t("composer.contextTools"), usage?.toolTokens],
+      [t("composer.contextMemory"), usage?.memoryTokens],
+      [t("composer.contextMessages"), usage?.messageTokens],
+    ]
+      .filter((entry): entry is [string, number] => typeof entry[1] === "number")
+      .map(([label, value]) => `${label} ${format(value)}`)
+      .join(" · "),
+  );
+  const compaction = $derived(
+    usage?.compacted && typeof usage.beforeTokens === "number"
+      ? t("composer.contextCompactedFrom", {
+          before: format(usage.beforeTokens),
+          after: format(usage.usedTokens),
+        })
+      : "",
+  );
+  const title = $derived(
+    [
+      `${t("composer.contextTitle")} · ${format(usage?.usedTokens ?? 0)} / ${format(usage?.windowTokens ?? 0)} tokens`,
+      breakdown,
+      compaction,
+      t("composer.contextCompact"),
+    ]
+      .filter(Boolean)
+      .join("\n"),
+  );
 
   function compact() {
     if (!threadId) return;
@@ -43,18 +72,26 @@
 </script>
 
 {#if usage}
-  <button
-    type="button"
-    class="context-meter {customClass}"
-    data-level={level}
-    title={`${t("composer.contextTitle")} · ${format(usage.usedTokens)} / ${format(usage.windowTokens)} tokens · ${t("composer.contextCompact")}`}
-    aria-label={`${t("composer.contextTitle")}: ${percent}%`}
-    onclick={compact}
-  >
-    <span class="context-meter-track" aria-hidden="true">
-      <span class="context-meter-fill" style={`width:${percent}%`}></span>
-    </span>
-    <span class="context-meter-label">{percent}%</span>
-    {#if usage.compacted}<span class="context-meter-badge">{t("composer.contextCompacted")}</span>{/if}
-  </button>
+  <span class="context-meter-wrap">
+    <button
+      type="button"
+      class="context-meter {customClass}"
+      data-level={level}
+      title={title}
+      aria-label={`${t("composer.contextTitle")}: ${percent}%`}
+      onclick={compact}
+    >
+      <span class="context-meter-track" aria-hidden="true">
+        <span class="context-meter-fill" style={`width:${percent}%`}></span>
+      </span>
+      <span class="context-meter-label">{percent}%</span>
+      {#if usage.compacted}<span class="context-meter-badge">{t("composer.contextCompacted")}</span>{/if}
+    </button>
+    {#if breakdown || compaction}
+      <span class="context-meter-details" role="tooltip">
+        {#if breakdown}<span>{breakdown}</span>{/if}
+        {#if compaction}<span>{compaction}</span>{/if}
+      </span>
+    {/if}
+  </span>
 {/if}

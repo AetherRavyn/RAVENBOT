@@ -15,23 +15,35 @@
   import { onDestroy, onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-  import { browserDock } from "$lib/browserDock.svelte";
+  import { browserDock, type BrowserProfile } from "$lib/browserDock.svelte";
+  import { COOKIE_REJECT_SCRIPT } from "$lib/browserCookies";
+  import BrowserVaultSave from "./BrowserVaultSave.svelte";
   import { agentActivity } from "$lib/agentActivity.svelte";
   import { t } from "$lib/i18n";
+  import { notify } from "$lib/toast";
   import {
     ArrowLeft,
     ArrowRight,
     Bot,
+    Cookie,
     Download,
     FolderOpen,
     Globe,
     Hand,
     Loader2,
+    Lock,
+    Plus,
     RotateCw,
+    ShieldCheck,
     X,
+    ZoomIn,
+    ZoomOut,
   } from "@lucide/svelte";
 
-  let { bots = [] }: { bots?: any[] } = $props();
+  let {
+    bots = [],
+    onClose,
+  }: { bots?: any[]; onClose?: () => void } = $props();
 
   interface Bounds {
     x: number;
@@ -40,16 +52,53 @@
     height: number;
   }
 
+  interface DockTabStatus {
+    id: string;
+    title: string;
+    url: string;
+  }
+
+  interface DockStatus {
+    url?: string;
+    title?: string;
+    taken_over?: boolean;
+    profile?: string;
+    active_tab?: string;
+    tabs?: DockTabStatus[];
+  }
+
   let viewport = $state<HTMLDivElement | null>(null);
   let body = $state<HTMLDivElement | null>(null);
   let address = $state("");
   let wasOpen = false;
   let lastNonce = 0;
+  let reloadNamedProfiles: (() => void) | null = null;
   let openSeq = 0;
   let lastBounds = "";
   let frame = 0;
   let downloadsDir = $state("");
   let downloadError = $state<string | null>(null);
+  let secureOpen = $state(false);
+  let secureMode = $state<"password" | "otp">("password");
+  let secureValue = $state("");
+  let secureBusy = $state(false);
+  let secureError = $state("");
+  let secureOrigin = $state("");
+  let saveToVaultOpen = $state(false);
+  let saveName = $state("");
+  let saveUsername = $state("");
+  let draggedTabId = $state<string | null>(null);
+  let autoRejectCookies = $state(false);
+  let cookiePolicyListener: ((event: Event) => void) | null = null;
+  const autoRejectTimers = new Map<
+    string,
+    ReturnType<typeof setTimeout>[]
+  >();
+  const autoRejectSeen = new Set<string>();
+  let zoom = $state(0.8);
+  let selectedProfile = $derived(
+    browserDock.profileOverrides[browserDock.scope] ?? "__auto__",
+  );
   let browserActivity = $derived(agentActivity.latest("browser"));
 
   function botName(id: string): string {
@@ -114,6 +163,114 @@
     return null;
   }
 
+  function applyStatus(status: DockStatus | null | undefined) {
+    if (!status) return;
+    if (Array.isArray(status.tabs)) {
+      browserDock.setTabs(status.tabs, status.active_tab || "");
+    }
+    if (status.url) browserDock.currentUrl = status.url;
+    if (status.title) browserDock.setTitle(status.title, status.active_tab);
+    browserDock.takenOver = status.taken_over === true;
+    if (status.profile) browserDock.setProfile(status.profile);
+  }
+
+  function tabLabel(tab: DockTabStatus): string {
+    if (tab.title.trim()) return tab.title.trim();
+    try {
+      return new URL(tab.url).hostname.replace(/^www\./u, "") || t("browser.newTab");
+    } catch {
+      return t("browser.newTab");
+    }
+  }
+
+  async function newTab(raw = "https://duckduckgo.com/") {
+    if (!isTauri()) {
+      browserDock.error = t("browser.desktopOnly");
+      return;
+    }
+    const bounds = measure();
+    if (!bounds) return;
+    const url = normalizeUrl(raw);
+    try {
+      const status = await invoke<DockStatus>("browser_dock_new_tab", {
+        url,
+        bounds,
+        profile: browserDock.profile,
+      });
+      applyStatus(status);
+      address = browserDock.currentUrl || url;
+      await tick();
+      await setZoom(zoom);
+      scheduleBounds();
+    } catch (error) {
+      browserDock.error = String(error);
+    }
+  }
+
+  async function switchTab(tabId: string) {
+    if (!isTauri() || tabId === browserDock.activeTabId) return;
+    const bounds = measure();
+    if (!bounds) return;
+    try {
+      const status = await invoke<DockStatus>("browser_dock_activate_tab", {
+        tabId,
+        bounds,
+      });
+      applyStatus(status);
+      address = browserDock.currentUrl || "";
+      await tick();
+      await setZoom(zoom);
+      scheduleBounds();
+    } catch (error) {
+      browserDock.error = String(error);
+    }
+  }
+
+  function startTabDrag(event: DragEvent, tabId: string) {
+    draggedTabId = tabId;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", tabId);
+    }
+  }
+
+  function dropTab(event: DragEvent, targetId: string) {
+    event.preventDefault();
+    const sourceId = draggedTabId;
+    draggedTabId = null;
+    if (!sourceId || sourceId === targetId || !isTauri()) return;
+    const previousTabs = [...browserDock.tabs];
+    const previousActive = browserDock.activeTabId;
+    const order = browserDock.reorderTabs(sourceId, targetId);
+    if (!order) return;
+    void invoke<DockStatus>("browser_dock_reorder_tabs", { tabIds: order })
+      .then(applyStatus)
+      .catch((error) => {
+        browserDock.setTabs(previousTabs, previousActive);
+        browserDock.error = String(error);
+      });
+  }
+
+  async function closeTab(tabId: string) {
+
+    if (!isTauri()) return;
+    try {
+      const status = await invoke<DockStatus>("browser_dock_close_tab", {
+        tabId,
+      });
+      applyStatus(status);
+      if (browserDock.tabs.length === 0) {
+        close();
+        return;
+      }
+      address = browserDock.currentUrl || "";
+      await tick();
+      scheduleBounds();
+    } catch (error) {
+      browserDock.error = String(error);
+    }
+  }
+
   async function openDock(raw: string) {
     const seq = ++openSeq;
     const url = normalizeUrl(raw);
@@ -132,16 +289,17 @@
     }
     lastBounds = boundsKey(bounds);
     try {
-      const status = await invoke<{
-        url?: string;
-        title?: string;
-        taken_over?: boolean;
-      }>("browser_dock_open", { url, bounds });
+      const status = await invoke<DockStatus>("browser_dock_open", {
+        url,
+        bounds,
+        profile: browserDock.profile,
+        restoreTabs: browserDock.restoreTabs,
+      });
       if (seq !== openSeq) return;
       browserDock.url = url;
-      if (status?.url) browserDock.currentUrl = status.url;
-      if (status?.title) browserDock.setTitle(status.title);
-      browserDock.takenOver = status?.taken_over === true;
+      applyStatus(status);
+      await setZoom(zoom);
+      if (status?.url) address = status.url;
       if (status?.url && status.url === browserDock.currentUrl) {
         // Reopening an unchanged page does not fire a load event, so the
         // spinner would otherwise stay on forever.
@@ -176,10 +334,21 @@
     }
   }
 
+  async function setZoom(next: number) {
+    if (!isTauri()) return;
+    const clamped = Math.min(2, Math.max(0.5, Math.round(next * 100) / 100));
+    try {
+      zoom = await invoke<number>("browser_dock_set_zoom", { zoom: clamped });
+    } catch (error) {
+      browserDock.error = String(error);
+    }
+  }
+
   async function submit(event?: SubmitEvent) {
     event?.preventDefault();
     const url = normalizeUrl(address);
     browserDock.url = url;
+    browserDock.restoreTabs = false;
     await openDock(url);
   }
 
@@ -201,7 +370,247 @@
   }
 
   function close() {
-    browserDock.hide();
+    if (onClose) onClose();
+    else browserDock.hide();
+  }
+
+  function origin(): string {
+    try {
+      return new URL(browserDock.currentUrl || browserDock.url || address).origin;
+    } catch {
+      return browserDock.currentUrl || address || "";
+    }
+  }
+
+  function openSecure() {
+    secureMode = "password";
+    secureValue = "";
+    secureError = "";
+    secureOrigin = origin();
+    saveToVaultOpen = false;
+    secureOpen = true;
+  }
+
+  function closeSecure() {
+    secureOpen = false;
+    secureValue = "";
+    secureError = "";
+    saveToVaultOpen = false;
+    saveName = "";
+    saveUsername = "";
+  }
+
+  function hostnameOf(value: string): string {
+    try {
+      return new URL(value).hostname.replace(/^www\./u, "");
+    } catch {
+      return "";
+    }
+  }
+
+  async function openSaveToVault() {
+    if (secureMode !== "password" || !secureValue) return;
+    saveName =
+      browserDock.title.trim() ||
+      hostnameOf(secureOrigin) ||
+      t("browser.securePassword");
+    saveUsername = "";
+    if (!isTauri()) {
+      saveToVaultOpen = true;
+      return;
+    }
+    const script = `(() => {
+      const visible = (el) => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return rect.width > 1 && rect.height > 1 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const el = [...document.querySelectorAll('input[autocomplete="username"], input[type="email"], input[name*="user" i], input[name*="email" i]')].find(visible);
+      return el ? String(el.value || "") : "";
+    })()`;
+    try {
+      const found = await invoke<string>("browser_dock_user_eval", {
+        script,
+        tabId: browserDock.activeTabId || null,
+      });
+      if (typeof found === "string" && !saveUsername) {
+        saveUsername = found.trim();
+      }
+    } catch {
+      /* username is optional */
+    }
+    if (secureOpen && secureMode === "password") {
+      saveToVaultOpen = true;
+    }
+  }
+
+  function savedToVault(updated: boolean) {
+    const message = updated ? t("browser.vaultUpdated") : t("browser.vaultSaved");
+    closeSecure();
+    notify(message, "success");
+  }
+
+  function secureScript(secret: string, mode: "password" | "otp"): string {
+    return `(() => {
+      const mode = ${JSON.stringify(mode)};
+      const value = ${JSON.stringify(secret)};
+      const selectors = mode === "otp"
+        ? ['input[autocomplete="one-time-code"]', 'input[inputmode="numeric"]', 'input[name*="code" i]', 'input[type="tel"]']
+        : ['input[type="password"]'];
+      const fields = [];
+      for (const selector of selectors) fields.push(...document.querySelectorAll(selector));
+      const unique = [...new Set(fields)];
+      const visible = (el) => {
+        const rect = el.getBoundingClientRect();
+        const style = getComputedStyle(el);
+        return rect.width > 1 && rect.height > 1 && style.visibility !== "hidden" && style.display !== "none";
+      };
+      const el = unique.find((field) => visible(field) && !field.value) || unique.find(visible) || unique[0];
+      if (!el) return { ok: false, error: "No secure field was found on this page." };
+      el.focus();
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+      if (setter) setter.call(el, value); else el.value = value;
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { ok: true, field: el.name || el.id || el.type || "secure field", origin: location.origin };
+    })()`;
+  }
+
+  async function fillSecure() {
+    if (!secureValue || secureBusy || !isTauri()) return;
+    secureBusy = true;
+    secureError = "";
+    try {
+      const result = await invoke<any>("browser_dock_user_eval", {
+        script: secureScript(secureValue, secureMode),
+        tabId: browserDock.activeTabId || null,
+      });
+      if (result?.ok) {
+        closeSecure();
+        notify(t("browser.secureFilled"), "success");
+      } else {
+        secureError = String(result?.error || t("browser.secureNotFound"));
+      }
+    } catch (error) {
+      secureError = String(error);
+    } finally {
+      secureValue = "";
+      secureBusy = false;
+    }
+  }
+
+  async function evaluateCookieScript(tabId: string | null) {
+    return invoke<any>("browser_dock_user_eval", {
+      script: COOKIE_REJECT_SCRIPT,
+      tabId,
+    });
+  }
+
+  async function refuseCookies() {
+    if (!isTauri()) return;
+    try {
+      const result = await evaluateCookieScript(
+        browserDock.activeTabId || null,
+      );
+      notify(
+        result?.clicked ? t("browser.cookieRefused") : t("browser.cookieNone"),
+        result?.clicked ? "success" : "info",
+      );
+    } catch (error) {
+      notify(`${t("browser.cookieFailed")} ${String(error)}`, "error");
+    }
+  }
+
+  async function autoRejectForTab(tabId: string) {
+    try {
+      await evaluateCookieScript(tabId);
+    } catch {
+      /* the tab may have closed or navigated; the next load retries */
+    }
+  }
+
+  function clearCookieTimers() {
+    for (const timers of autoRejectTimers.values()) {
+      for (const timer of timers) clearTimeout(timer);
+    }
+    autoRejectTimers.clear();
+    autoRejectSeen.clear();
+  }
+
+  function scheduleCookieReject(tabId: string, url: string) {
+    if (!autoRejectCookies || !/^https?:/i.test(url)) return;
+    const key = `${tabId}:${url}`;
+    if (autoRejectSeen.has(key)) return;
+    autoRejectSeen.add(key);
+    if (autoRejectSeen.size > 200) {
+      const oldest = autoRejectSeen.values().next().value;
+      if (oldest) autoRejectSeen.delete(oldest);
+    }
+    if (autoRejectTimers.size > 100) {
+      const first = autoRejectTimers.keys().next().value;
+      if (first) {
+        for (const timer of autoRejectTimers.get(first) ?? []) clearTimeout(timer);
+        autoRejectTimers.delete(first);
+      }
+    }
+    // Consent banners often appear after the load event. Two retries catch the
+    // common late-render cases without turning every page into a polling loop.
+    autoRejectTimers.set(key, [
+      setTimeout(() => {
+        if (autoRejectCookies) void autoRejectForTab(tabId);
+      }, 800),
+      setTimeout(() => {
+        if (autoRejectCookies) void autoRejectForTab(tabId);
+      }, 2600),
+    ]);
+  }
+
+  async function refreshCookiePolicy() {
+    if (!isTauri()) return;
+    try {
+      const enabled = await invoke<boolean>(
+        "get_effective_browser_cookie_policy",
+        { profileId: browserDock.profile },
+      );
+      updateCookiePolicy(enabled);
+    } catch {
+      updateCookiePolicy(false);
+    }
+  }
+
+  $effect(() => {
+    browserDock.profile;
+    void refreshCookiePolicy();
+  });
+
+  function updateCookiePolicy(enabled: boolean) {
+    autoRejectCookies = enabled;
+    if (!enabled) {
+      clearCookieTimers();
+      return;
+    }
+    if (browserDock.open && browserDock.activeTabId) {
+      void autoRejectForTab(browserDock.activeTabId);
+    }
+  }
+
+  async function loadNamedProfiles() {
+    if (!isTauri()) return;
+    try {
+      const profiles = await invoke<BrowserProfile[]>("list_browser_profiles");
+      browserDock.setNamedProfiles(profiles);
+    } catch {
+      /* profile management is optional */
+    }
+  }
+
+  function chooseProfile(event: Event) {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    browserDock.setProfileOverride(
+      browserDock.scope,
+      value === "__auto__" ? null : value,
+    );
   }
 
   async function loadDownloads() {
@@ -291,6 +700,19 @@
     }
   });
 
+  // Switching agents/offices changes the persistent browser profile. The old
+  // webview owns the old data directory, so reopen the current page in the new
+  // one rather than leaving the two scopes sharing cookies.
+  let lastProfile = browserDock.profile;
+  $effect(() => {
+    const profile = browserDock.profile;
+    if (profile === lastProfile) return;
+    lastProfile = profile;
+    if (browserDock.open) {
+      void openDock(browserDock.currentUrl || browserDock.url);
+    }
+  });
+
   // A resize observer cannot be created for an element that does not exist
   // yet, so it is tied to the panel's open state rather than to mount.
   $effect(() => {
@@ -303,34 +725,71 @@
 
   onMount(() => {
     window.addEventListener("resize", scheduleBounds);
+    reloadNamedProfiles = () => void loadNamedProfiles();
+    window.addEventListener(
+      "ravenbot:browser-profiles-changed",
+      reloadNamedProfiles,
+    );
+    void loadNamedProfiles();
     if (!isTauri()) return;
+
+    cookiePolicyListener = () => {
+      void refreshCookiePolicy();
+    };
+    window.addEventListener(
+      "ravenbot:browser-cookie-policy-changed",
+      cookiePolicyListener,
+    );
 
     void (async () => {
       try {
         unlisteners.push(
-          await listen<{ url?: string }>("browser-dock:request", (event) => {
-            const url = event.payload?.url;
-            if (url) browserDock.show(url);
-            else browserDock.show();
+          await listen("browser-dock:close", () => {
+            close();
           }),
         );
         unlisteners.push(
-          await listen<{ url?: string; event?: string }>(
+          await listen<{ url?: string; tab_id?: string }>(
+            "browser-dock:request",
+            (event) => {
+              const url = event.payload?.url;
+              const fromPagePopup = Boolean(event.payload?.tab_id);
+              if (!url) {
+                browserDock.show();
+              } else if (fromPagePopup && browserDock.open) {
+                void newTab(url);
+              } else {
+                browserDock.show(url);
+              }
+            },
+          ),
+        );
+        unlisteners.push(
+          await listen<{ url?: string; event?: string; tab_id?: string }>(
             "browser-dock:page-load",
             (event) => {
+              const tabId = event.payload?.tab_id;
               const url = event.payload?.url ?? "";
               const phase = event.payload?.event ?? "finished";
-              browserDock.pageLoad(url, phase);
-              if (url) address = url;
-              if (phase === "started") browserDock.loading = true;
-              if (phase === "finished") {
+              browserDock.pageLoad(url, phase, tabId);
+              const active =
+                !tabId || tabId === browserDock.activeTabId;
+              if (active && url) address = url;
+              if (active && phase === "started") browserDock.loading = true;
+              if (phase === "finished" && tabId && url) {
+                scheduleCookieReject(tabId, url);
+              }
+              if (active && phase === "finished") {
                 // The title signal can arrive before or after load depending
                 // on the engine. One small DOM read makes it deterministic and
                 // also exercises the same evaluator the agent tools use.
                 void invoke<string>("browser_dock_eval", { script: "document.title" })
                   .then((title) => {
                     if (typeof title === "string" && title.trim()) {
-                      browserDock.setTitle(title.trim());
+                      browserDock.setTitle(
+                        title.trim(),
+                        tabId ?? browserDock.activeTabId,
+                      );
                     }
                   })
                   .catch(() => undefined);
@@ -339,9 +798,15 @@
           ),
         );
         unlisteners.push(
-          await listen<{ title?: string }>("browser-dock:title", (event) => {
-            browserDock.setTitle(event.payload?.title ?? "");
-          }),
+          await listen<{ title?: string; tab_id?: string }>(
+            "browser-dock:title",
+            (event) => {
+              browserDock.setTitle(
+                event.payload?.title ?? "",
+                event.payload?.tab_id,
+              );
+            },
+          ),
         );
         unlisteners.push(
           await listen("browser-dock:closed", () => {
@@ -370,7 +835,20 @@
 
   onDestroy(() => {
     window.removeEventListener("resize", scheduleBounds);
+    if (reloadNamedProfiles) {
+      window.removeEventListener(
+        "ravenbot:browser-profiles-changed",
+        reloadNamedProfiles,
+      );
+    }
     if (frame) cancelAnimationFrame(frame);
+    if (cookiePolicyListener) {
+      window.removeEventListener(
+        "ravenbot:browser-cookie-policy-changed",
+        cookiePolicyListener,
+      );
+    }
+    clearCookieTimers();
     for (const unlisten of unlisteners) unlisten();
     if (wasOpen && isTauri()) void invoke("browser_dock_hide").catch(() => undefined);
   });
@@ -425,6 +903,57 @@
         />
       </form>
 
+      <div class="browser-dock__zoom" role="group" aria-label="Page zoom">
+        <button
+          type="button"
+          class="browser-dock__button"
+          title="Zoom out"
+          aria-label="Zoom out"
+          onclick={() => void setZoom(zoom - 0.1)}
+        >
+          <ZoomOut class="size-3.5" />
+        </button>
+        <button
+          type="button"
+          class="browser-dock__zoom-value"
+          title="Reset zoom to 100%"
+          aria-label={`Page zoom ${Math.round(zoom * 100)} percent`}
+          onclick={() => void setZoom(1)}
+        >
+          {Math.round(zoom * 100)}%
+        </button>
+        <button
+          type="button"
+          class="browser-dock__button"
+          title="Zoom in"
+          aria-label="Zoom in"
+          onclick={() => void setZoom(zoom + 0.1)}
+        >
+          <ZoomIn class="size-3.5" />
+        </button>
+      </div>
+
+      <button
+        type="button"
+        class="browser-dock__button"
+        title={t("browser.cookieRefuse")}
+        aria-label={t("browser.cookieRefuse")}
+        onclick={() => void refuseCookies()}
+      >
+        <Cookie class="size-4" />
+      </button>
+
+      <button
+        type="button"
+        class="browser-dock__button"
+        title={t("browser.secureInput")}
+        aria-label={t("browser.secureInput")}
+        onclick={openSecure}
+        disabled={!browserDock.open}
+      >
+        <Lock class="size-4" />
+      </button>
+
       <button
         type="button"
         class="browser-dock__button browser-dock__download-button"
@@ -463,7 +992,69 @@
       </button>
     </header>
 
+    {#if browserDock.tabs.length > 0}
+      <!--
+        A group, not a tablist. Each tab owns a close button, and a tablist's
+        required children are tabs, not wrappers containing two buttons. The
+        invalid roles failed axe; `aria-pressed` still carries the active state.
+      -->
+      <div class="browser-dock__tabs" role="group" aria-label={t("browser.tabs")}>
+        {#each browserDock.tabs as tab (tab.id)}
+          <div
+            class="browser-dock__tab"
+            role="presentation"
+            class:is-active={tab.id === browserDock.activeTabId}
+            draggable="true"
+            ondragstart={(event) => startTabDrag(event, tab.id)}
+            ondragover={(event) => event.preventDefault()}
+            ondrop={(event) => dropTab(event, tab.id)}
+          >
+            <button
+              type="button"
+              aria-pressed={tab.id === browserDock.activeTabId}
+              class="browser-dock__tab-label"
+              title={tab.title || tab.url}
+              onclick={() => void switchTab(tab.id)}
+            >{tabLabel(tab)}</button>
+            <button
+              type="button"
+              class="browser-dock__tab-close"
+              title={t("browser.closeTab")}
+              aria-label={t("browser.closeTab")}
+              onclick={(event) => {
+                event.stopPropagation();
+                void closeTab(tab.id);
+              }}
+            >
+              <X class="size-3" />
+            </button>
+          </div>
+        {/each}
+        <button
+          type="button"
+          class="browser-dock__tab-new"
+          title={t("browser.newTab")}
+          aria-label={t("browser.newTab")}
+          onclick={() => void newTab()}
+        >
+          <Plus class="size-3.5" />
+        </button>
+      </div>
+    {/if}
+
     <div class="browser-dock__caption" title={browserDock.title || address}>
+      <select
+        class="browser-dock__profile"
+        value={selectedProfile}
+        onchange={chooseProfile}
+        aria-label={t("browser.profile")}
+        title={t("browser.profile")}
+      >
+        <option value="__auto__">{t("browser.profileAuto")}</option>
+        {#each browserDock.namedProfiles as profile (profile.id)}
+          <option value={profile.id}>{profile.name}</option>
+        {/each}
+      </select>
       <span class="browser-dock__title">{browserDock.title || t("browser.title")}</span>
       <span class="browser-dock__host">{browserDock.currentUrl || address}</span>
     </div>
@@ -497,6 +1088,92 @@
       {/if}
     </div>
   </aside>
+
+  {#if secureOpen}
+    <div
+      class="downloads-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t("browser.secureTitle")}
+      tabindex="-1"
+      onkeydown={(event) => {
+        if (event.key === "Escape") closeSecure();
+      }}
+      onclick={(event) => {
+        if (event.target === event.currentTarget) closeSecure();
+      }}
+    >
+      <form
+        class="downloads-dialog__panel browser-secret"
+        onsubmit={(event) => {
+          event.preventDefault();
+          void fillSecure();
+        }}
+      >
+        <header class="downloads-dialog__head">
+          <div>
+            <h2><ShieldCheck class="size-4 inline mr-1" />{t("browser.secureTitle")}</h2>
+            <code>{secureOrigin || t("browser.title")}</code>
+          </div>
+          <button type="button" onclick={closeSecure} aria-label={t("ui.close")} title={t("ui.close")}>
+            <X class="size-3.5" />
+          </button>
+        </header>
+        <div class="browser-secret__body">
+          <p>{t("browser.secureDesc")}</p>
+          <div class="browser-secret__modes">
+            <button
+              type="button"
+              class="browser-secret__mode"
+              data-active={secureMode === "password" ? "" : undefined}
+              onclick={() => (secureMode = "password")}
+            >{t("browser.securePassword")}</button>
+            <button
+              type="button"
+              class="browser-secret__mode"
+              data-active={secureMode === "otp" ? "" : undefined}
+              onclick={() => (secureMode = "otp")}
+            >{t("browser.secureCode")}</button>
+          </div>
+          <input
+            class="browser-secret__input"
+            type="password"
+            autocomplete="off"
+            spellcheck="false"
+            bind:value={secureValue}
+            placeholder={secureMode === "otp" ? t("browser.secureCode") : t("browser.securePassword")}
+            aria-label={secureMode === "otp" ? t("browser.secureCode") : t("browser.securePassword")}
+            disabled={secureBusy}
+          />
+          {#if secureError}<p class="browser-secret__error" role="alert">{secureError}</p>{/if}
+          <div class="browser-secret__actions">
+            <button type="button" class="browser-secret__cancel" onclick={closeSecure}>{t("ui.cancel")}</button>
+            {#if secureMode === "password"}
+              <button
+                type="button"
+                class="browser-secret__cancel"
+                onclick={() => void openSaveToVault()}
+                disabled={!secureValue || secureBusy}
+              >{t("browser.saveToVault")}</button>
+            {/if}
+            <button type="submit" class="browser-secret__submit" disabled={!secureValue || secureBusy}>
+              {secureBusy ? t("ui.saving") : t("browser.secureFill")}
+            </button>
+          </div>
+          {#if saveToVaultOpen && secureMode === "password"}
+            <BrowserVaultSave
+              origin={secureOrigin}
+              initialName={saveName}
+              initialUsername={saveUsername}
+              secret={secureValue}
+              onCancel={() => (saveToVaultOpen = false)}
+              onSaved={savedToVault}
+            />
+          {/if}
+        </div>
+      </form>
+    </div>
+  {/if}
 
   {#if browserDock.downloadsOpen}
     <div

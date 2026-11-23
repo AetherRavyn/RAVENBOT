@@ -8,7 +8,7 @@ pub struct YoutubeSkill {
 impl YoutubeSkill {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http::http_client(),
         }
     }
 }
@@ -41,7 +41,7 @@ impl Skill for YoutubeSkill {
 
     async fn execute(
         &self,
-        _ctx: &SkillContext,
+        ctx: &SkillContext,
         args: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let url = args
@@ -54,6 +54,8 @@ impl Skill for YoutubeSkill {
             "https://noembed.com/embed?url=https://www.youtube.com/watch?v={}",
             vid
         );
+        ctx.ensure_network_allowed(&api)
+            .map_err(SkillError::InvalidArguments)?;
         let resp = self.client.get(&api).send().await;
         match resp {
             Ok(r) => {

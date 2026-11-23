@@ -152,7 +152,10 @@ impl TeamPackage {
         let names: Vec<String> = raw.bots.iter().map(|b| b.name.to_lowercase()).collect();
         for (i, routine) in raw.routines.iter().enumerate() {
             if !names.contains(&routine.bot.to_lowercase()) {
-                return Err(TeamParseError::RoutineUnknownBot(i + 1, routine.bot.clone()));
+                return Err(TeamParseError::RoutineUnknownBot(
+                    i + 1,
+                    routine.bot.clone(),
+                ));
             }
         }
 
@@ -239,8 +242,15 @@ Do the work.
         assert_eq!(team.name, "Acme Growth Team");
         assert_eq!(team.bots.len(), 2);
         assert_eq!(team.bots[0].rank.as_deref(), Some("lead"));
-        assert!(team.bots[0].prompt.as_deref().unwrap().contains("chief of staff"));
-        assert_eq!(team.office.as_ref().unwrap().template.as_deref(), Some("marketing"));
+        assert!(team.bots[0]
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("chief of staff"));
+        assert_eq!(
+            team.office.as_ref().unwrap().template.as_deref(),
+            Some("marketing")
+        );
         assert_eq!(team.routines.len(), 1);
         assert!(team.playbook.contains("Do the work."));
     }

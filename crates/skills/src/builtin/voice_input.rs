@@ -63,7 +63,7 @@ impl Skill for VoiceInputSkill {
 
     async fn execute(
         &self,
-        _context: &SkillContext,
+        context: &SkillContext,
         arguments: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let audio_data = arguments
@@ -84,13 +84,15 @@ impl Skill for VoiceInputSkill {
             .decode(audio_data)
             .map_err(|e| SkillError::InvalidArguments(format!("Invalid base64: {}", e)))?;
 
-        let transcriber = ravenbot_vision::AudioTranscriber::new();
-        let result = transcriber
-            .transcribe(&audio_bytes, format)
+        let transcriber = ravenbot_vision::AudioTranscriber::new()
+            .with_openai_key(context.openai_api_key.clone());
+        let (result, provider) = transcriber
+            .transcribe_with_provider(&audio_bytes, format)
             .await
             .map_err(|e| SkillError::Execution(e.to_string()))?;
 
         Ok(SkillResult::success(serde_json::json!({
+            "provider": provider,
             "text": result.text,
             "language": result.language,
             "confidence": result.confidence,

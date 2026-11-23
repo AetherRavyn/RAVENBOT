@@ -1,6 +1,6 @@
 //! Routine definition and management
 
-use chrono::{Utc, Timelike};
+use chrono::{Timelike, Utc};
 use ravenbot_core::Routine;
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -128,7 +128,8 @@ impl RoutineManager {
         .await
         .map_err(|e| e.to_string())?;
 
-        let routines = rows.iter()
+        let routines = rows
+            .iter()
             .filter_map(|row| {
                 Some(Routine {
                     id: Uuid::parse_str(&row.0).ok()?,
@@ -166,7 +167,8 @@ impl RoutineManager {
         .await
         .map_err(|e| e.to_string())?;
 
-        let routines = rows.iter()
+        let routines = rows
+            .iter()
             .filter_map(|row| {
                 Some(Routine {
                     id: Uuid::parse_str(&row.0).ok()?,
@@ -196,15 +198,13 @@ impl RoutineManager {
 
     /// Mark a routine as executed
     pub async fn mark_executed(&self, routine_id: Uuid) -> Result<(), String> {
-        sqlx::query(
-            "UPDATE routines SET last_run_at = ?, updated_at = ? WHERE id = ?"
-        )
-        .bind(Utc::now().to_rfc3339())
-        .bind(Utc::now().to_rfc3339())
-        .bind(routine_id.to_string())
-        .execute(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
+        sqlx::query("UPDATE routines SET last_run_at = ?, updated_at = ? WHERE id = ?")
+            .bind(Utc::now().to_rfc3339())
+            .bind(Utc::now().to_rfc3339())
+            .bind(routine_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| e.to_string())?;
 
         Ok(())
     }
@@ -213,22 +213,27 @@ impl RoutineManager {
     pub async fn check_schedules(&self) -> Result<Vec<Routine>, String> {
         let enabled = self.list_enabled().await?;
         let now = Utc::now();
-        
+
         let mut due = Vec::new();
-        
+
         for routine in enabled {
             if let Ok(expr) = crate::cron::CronParser::parse(&routine.schedule) {
                 // Check if routine was already executed this minute
-                let already_run = routine.last_run_at
-                    .map(|last| last.date_naive() == now.date_naive() && last.hour() == now.hour() && last.minute() == now.minute())
+                let already_run = routine
+                    .last_run_at
+                    .map(|last| {
+                        last.date_naive() == now.date_naive()
+                            && last.hour() == now.hour()
+                            && last.minute() == now.minute()
+                    })
                     .unwrap_or(false);
-                
+
                 if !already_run && crate::cron::CronParser::matches(&expr, &now) {
                     due.push(routine);
                 }
             }
         }
-        
+
         Ok(due)
     }
 }

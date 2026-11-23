@@ -5,6 +5,12 @@ PolyForm Noncommercial source. Each track has a data model, surfaces, acceptance
 tests, and a status. Work lands in dependency order; later tracks reuse the
 contracts from earlier ones.
 
+For the layer above this roadmap — durable per-task execution, structured
+context handoff, completion contracts, background delegation, and curated
+memory/skills — see [`LONG-AGENTIC-WORK-PLAN.md`](LONG-AGENTIC-WORK-PLAN.md).
+That plan is the long-horizon reliability roadmap; this document remains the
+feature-gap tracker.
+
 Legend: **done** means implemented in this repository and covered by tests;
 **next** means designed and ready to implement; **planned** means scoped but not
 started.
@@ -66,8 +72,10 @@ Compaction was silent. A long office could approach the model window with no
 visible signal, and there was no way to request compaction.
 
 ### Data flow
-- `StreamEvent::Context { bot_id, thread_id, used_tokens, window_tokens, compacted }`
-  is emitted after the first and every subsequent compaction in `execute_run`.
+- `StreamEvent::Context` carries `used_tokens`, `before_tokens`, `window_tokens`,
+  `compacted`, and disjoint `system_tokens` / `tool_tokens` / `memory_tokens` /
+  `message_tokens`. It is emitted after the first and every subsequent
+  compaction in `execute_run`.
 - Tokens are an estimate (`estimate_messages_tokens`), not a billing figure;
   the event is labelled as such.
 - `Runtime::request_compaction(thread_id)` records a one-shot request. The next
@@ -76,22 +84,35 @@ visible signal, and there was no way to request compaction.
 
 ### Surfaces
 - `ContextMeter.svelte`: percentage bar, warning at 80%, danger at 95%,
-  compacted badge, click to request compaction on the next turn.
+  compacted badge, a title breakdown (system/tools/memory/messages) and the last
+  `Compacted 84k → 31k` delta, click to request compaction on the next turn.
 - 1:1 threads use the per-thread store. Offices show the latest node's context
   because office nodes run on their own threads.
 - `contextUsage.svelte.ts` keeps the newest value per thread across view changes.
 
 ### Acceptance
 - `manual_compaction_request_is_scoped_to_a_thread` (Rust).
-- `ContextMeter.dom.test.ts`: 42% normal, 85% warning, 96% danger, no-event empty.
+- `ContextMeter.dom.test.ts`: 42% normal, 85% warning, 96% danger, no-event empty,
+  and the meter restores from a persisted message.
 - A compact request is consumed exactly once by the next run.
+- The assistant message stores `context_used_tokens`, `context_window_tokens`
+  and `context_compacted`; the transcript hydrates the meter from the newest
+  one on reload. Simple conversational turns record the same estimate, and an
+  office copies the newest node's values, including all four buckets, onto the
+  final summary message.
+- `contextPersistence.test.ts` covers newest-valid selection, missing values,
+  negative estimates, compaction, and absent timestamps.
+- `estimate_context_breakdown` tests that the four buckets are disjoint and sum
+  to the prompt estimate.
+- `ContextMeter.dom.test.ts` covers the rendered breakdown and the compaction
+  delta, including a live `context` event.
+- The assistant message persists the four buckets (`context_system_tokens`,
+  `context_tool_tokens`, `context_memory_tokens`, `context_message_tokens`)
+  alongside the total, so a reload restores the breakdown too. The DB round-trip
+  and runtime E2E path assert the stored buckets sum to the stored total.
 
 ### Next for this track
-- Persist the last context value on the assistant message so a reload shows the
-  meter before the next run.
-- Show categories (system, tools, memory, messages) once the runtime exposes a
-  breakdown.
-- Add a "Compacted 84k → 31k" confirmation event from the runtime.
+- None; the meter is complete for live and reloaded threads.
 
 ## P1 — Image gallery and audio/video attachments — done (first version)
 
@@ -104,8 +125,10 @@ generated-image cards, and audio/video attachment cards.
   `poster`/`duration_ms`.
 - Add attachment MIME allowlists for `audio/*` and `video/*`; keep the existing
   32 MB preview cap and workspace confinement.
-- Generated images from a tool result become an `Attachment` with
-  `presentation: "generated"`.
+- Generated images from a tool result become an image `Attachment` on the
+  assistant message. Hosted results are downloaded once into
+  `cache/generated-images`; the encoded bytes travel with the message so the
+  image survives URL expiry and can be sent through chat adapters.
 
 ### Surfaces
 1. `ImageGallery.svelte`: justified rows from natural aspect ratios, 2+ images,
@@ -122,13 +145,20 @@ generated-image cards, and audio/video attachment cards.
 - The lightbox steps through a gallery with buttons and arrow keys.
 - `ThreadView` and `ChatRoomView` render audio and video attachments with
   controls; the composer caps inline attachments at 24 MB.
-- Generated-image cards with generating / failed states remain **next**.
+- Generated-image cards are implemented for `image_gen`: a live generating card
+  appears while the tool runs, completed results show the image with prompt,
+  provider, size and an open link, and failures show the provider error instead
+  of a blank box. The component also supports an interrupted state.
+- The skill downloads hosted results into the local image cache, and the runtime
+  turns the cached file into an image attachment on the final assistant message.
 
 ### Acceptance
 - Multiple images keep their aspect ratios and never overflow at 620 px.
 - A failed image tile offers download, not a blank box.
 - Audio/video cards do not autoplay; controls are keyboard reachable.
 - `Visuals.dom.test.ts` covers gallery dispatch and lightbox stepping.
+- `ToolTraceList.dom.test.ts` covers completed, failed and live-generating
+  image cards, and `extract_image` covers hosted `image_gen` URLs.
 
 ## P2 — Agent step list and trace — done (first version)
 

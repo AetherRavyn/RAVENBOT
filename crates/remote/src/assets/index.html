@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0f1115" />
+    <title>RAVENBOT remote</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <span class="mark" aria-hidden="true">R</span>
+        <div>
+          <h1>RAVENBOT</h1>
+          <p id="device-line" class="sub">Remote access</p>
+        </div>
+      </div>
+      <button id="logout" class="ghost hidden" type="button">Forget device</button>
+    </header>
+
+    <main id="app">
+      <section id="pair-view" class="card" aria-labelledby="pair-title">
+        <h2 id="pair-title">Pair this device</h2>
+        <p class="muted">
+          Open RAVENBOT on the host, go to Settings → Remote access, and generate
+          a one-time code.
+        </p>
+        <form id="pair-form">
+          <label for="pair-code">Pairing code</label>
+          <input
+            id="pair-code"
+            inputmode="numeric"
+            pattern="[0-9]*"
+            maxlength="6"
+            autocomplete="one-time-code"
+            required
+          />
+          <label for="pair-name">Device name</label>
+          <input id="pair-name" maxlength="64" placeholder="My phone" required />
+          <button type="submit" class="primary">Pair</button>
+        </form>
+        <p id="pair-error" class="error" role="alert"></p>
+      </section>
+
+      <section id="chat-view" class="hidden" aria-labelledby="view-title">
+        <div class="row">
+          <button id="back" class="ghost hidden" type="button">← Back</button>
+          <h2 id="view-title">Agents</h2>
+          <span id="role-badge" class="badge"></span>
+        </div>
+
+        <div id="bots" class="list" aria-label="Agents"></div>
+        <div id="threads" class="list hidden" aria-label="Conversations"></div>
+
+        <div id="thread-view" class="thread hidden">
+          <div id="messages" class="messages" aria-live="polite"></div>
+          <form id="send-form" class="composer">
+            <label class="sr-only" for="composer">Message</label>
+            <textarea
+              id="composer"
+              rows="2"
+              maxlength="20000"
+              placeholder="Message…"
+              required
+            ></textarea>
+            <button type="submit" class="primary">Send</button>
+          </form>
+        </div>
+
+        <section id="attention" class="attention hidden" aria-label="Needs attention"></section>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>

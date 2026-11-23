@@ -86,8 +86,14 @@ pub struct Workspace {
 /// Stable for a given name: calling this twice returns the same directory, and
 /// a directory RAVENBOT did not create is stepped over rather than adopted.
 pub fn ensure_workspace(name: &str) -> Workspace {
+    // `office_workspace` creates and marks the folder. Remember whether the
+    // expected folder existed first so `created` still means "this call made a
+    // new room" rather than "the marker was written".
+    let expected = ravenbot_core::projects_dir().join(ravenbot_core::slugify(name));
+    let existed = expected.exists();
     let root = ravenbot_core::office_workspace(name);
-    let created = ravenbot_core::mark_office_dir(&root);
+    let created = !existed || root != expected;
+    let _ = ravenbot_core::mark_office_dir(&root);
     let ws = Workspace {
         shared: root.join("Shared"),
         deliverables: root.join("deliverables"),
@@ -111,6 +117,22 @@ pub fn seed(room: &ChatRoom, roster: &[RosterEntry]) -> Workspace {
     let ws = ensure_workspace(&room.name);
     write_charter(&ws, room, roster);
     ws
+}
+
+/// Replace RAVENBOT's generated work-ledger block in an office's
+/// `Shared/STATUS.md`, preserving every note the agents wrote around it.
+///
+/// Best-effort: a read-only workspace must not fail the run. The ledger in
+/// SQLite is authoritative; this file is a projection for the agents and the
+/// human reading the folder.
+pub fn write_status_projection(root: &Path, projection: &str) {
+    let path = root.join("Shared/STATUS.md");
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let merged = crate::work::merge_status_projection(&existing, projection);
+    if merged == existing {
+        return;
+    }
+    write_if_changed(&path, &merged);
 }
 
 /// Write the charter for `room` into a directory the caller chose.
@@ -700,6 +722,39 @@ mod tests {
             assert!(root.join("notes").is_dir());
             assert!(root.join("OFFICE.md").is_file());
         });
+    }
+
+    #[test]
+    fn the_generated_work_ledger_preserves_agent_notes() {
+        let root =
+            std::env::temp_dir().join(format!("ravenbot-ledger-status-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("Shared")).unwrap();
+        let status = root.join("Shared/STATUS.md");
+        std::fs::write(&status, "# Status\n\nAgent note: this must survive.\n").unwrap();
+
+        let first = format!(
+            "{}old row{}\n",
+            crate::work::STATUS_BEGIN,
+            crate::work::STATUS_END
+        );
+        write_status_projection(&root, &first);
+        let body = std::fs::read_to_string(&status).unwrap();
+        assert!(body.contains("Agent note: this must survive."));
+        assert!(body.contains("old row"));
+
+        let second = format!(
+            "{}new row{}\n",
+            crate::work::STATUS_BEGIN,
+            crate::work::STATUS_END
+        );
+        write_status_projection(&root, &second);
+        let body = std::fs::read_to_string(&status).unwrap();
+        assert!(body.contains("Agent note: this must survive."));
+        assert!(body.contains("new row"));
+        assert!(!body.contains("old row"));
+        assert_eq!(body.matches(crate::work::STATUS_BEGIN).count(), 1);
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// The protection must not freeze RAVENBOT's own output.

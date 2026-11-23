@@ -103,6 +103,10 @@ visuals own their own internal layout.
 
 `ApprovalCard.svelte` and `QuestionCard.svelte` are the gate surfaces. They
 share `.chat-interaction` geometry and differ only in tone and controls.
+`InteractionBlock.svelte` sits above `QuestionCard` and adds the structured
+`confirm`, `choice`, and `form` cards. A block is validated in Rust before it is
+stored; a dangerous action requires a timed hold; a multi-select or form answers
+only on Submit. Old rows without a `kind` fall back to the question card.
 
 - The header has an icon badge, a small role label, a title, and a status chip.
 - A high-stakes approval changes the icon, chip, border, and adds the existing
@@ -239,11 +243,18 @@ card in a dark settings page would otherwise be white on white.
 
 ## Verification
 
+- `scripts/check-ui-foundation.mjs` — hard-fails raw hex colors in Svelte
+  styles/inline styles, `!important`, off-scale text, and native `<select>`
+  growth outside `components/ui` beyond the checked-in baseline. It runs as
+  part of `npm run check` and CI.
 - `type-scale.test.ts` — the 11px floor and the allowed size scale.
 - `no-component-styles.test.ts` — all styling stays in global CSS.
 - `no-inline-comments.test.ts` — template comments cannot add stray text.
 - `ApprovalCard.dom.test.ts` — risk tone, summary, allow/deny, busy state.
 - `QuestionCard.dom.test.ts` — chips, typed answer, closed choice, empty submit.
+- `InteractionBlock.dom.test.ts` — fallback question, confirm values, hold,
+  multi-select, required form fields.
+- `blocks.test.ts` — response serialization and required-field checks.
 - `interactionSummary.test.ts` — command/path/query selection and clipping.
 - `theme.test.ts` — catalogue contrast, light canvas, and runtime
   `color-scheme`/role tokens.

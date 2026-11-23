@@ -474,6 +474,11 @@ impl PluginStore {
             .map_err(|_| "That is not a valid HTTP header name.".to_string())?;
         reqwest::header::HeaderValue::from_str(header_value)
             .map_err(|_| "That is not a valid HTTP header value.".to_string())?;
+        let stored = if ravenbot_db::secrets::set_plugin_credential(plugin_id, header_value).await {
+            ravenbot_db::secrets::KEYCHAIN_MARKER
+        } else {
+            header_value
+        };
         sqlx::query(
             r#"INSERT INTO plugin_credentials (plugin_id, header_name, header_value, updated_at)
                VALUES (?, ?, ?, ?)
@@ -484,7 +489,7 @@ impl PluginStore {
         )
         .bind(plugin_id)
         .bind(header_name)
-        .bind(header_value)
+        .bind(stored)
         .bind(Utc::now().to_rfc3339())
         .execute(&self.pool)
         .await
@@ -493,6 +498,7 @@ impl PluginStore {
     }
 
     pub async fn clear_credential(&self, plugin_id: &str) -> Result<(), String> {
+        ravenbot_db::secrets::delete_plugin_credential(plugin_id).await;
         sqlx::query("DELETE FROM plugin_credentials WHERE plugin_id = ?")
             .bind(plugin_id)
             .execute(&self.pool)
@@ -532,7 +538,32 @@ impl PluginStore {
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
-        Ok(row.map(|(header_name, header_value)| PluginCredential {
+        let Some((header_name, stored)) = row else {
+            return Ok(None);
+        };
+        let header_value = if stored == ravenbot_db::secrets::KEYCHAIN_MARKER {
+            ravenbot_db::secrets::get_plugin_credential(plugin_id)
+                .await
+                .unwrap_or_default()
+        } else if stored.trim().is_empty() {
+            String::new()
+        } else {
+            if ravenbot_db::secrets::set_plugin_credential(plugin_id, &stored).await {
+                let _ = sqlx::query(
+                    "UPDATE plugin_credentials SET header_value = ?, updated_at = ? WHERE plugin_id = ?",
+                )
+                .bind(ravenbot_db::secrets::KEYCHAIN_MARKER)
+                .bind(Utc::now().to_rfc3339())
+                .bind(plugin_id)
+                .execute(&self.pool)
+                .await;
+            }
+            stored
+        };
+        if header_value.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(PluginCredential {
             header_name,
             header_value,
         }))

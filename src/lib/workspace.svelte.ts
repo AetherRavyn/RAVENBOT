@@ -7,6 +7,7 @@ import { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
 
 export type RailDest =
   | "home"
+  | "inbox"
   | "agents"
   | "offices"
   | "projects"
@@ -172,6 +173,14 @@ class Workspace {
       this.bots = await invoke("list_bots");
     } catch (e) {
       console.error("Failed to reload bots:", e);
+    }
+  }
+
+  async refreshChatrooms() {
+    try {
+      this.chatrooms = await invoke("list_chatrooms");
+    } catch (e) {
+      console.error("Failed to reload offices:", e);
     }
   }
 

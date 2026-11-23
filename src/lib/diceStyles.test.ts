@@ -160,6 +160,12 @@ describe("getDiceBearUrl", () => {
     expect(url).toContain("scale=200");
   });
 
+  it("repairs an extra background list that the current API would reject", () => {
+    const url = getDiceBearUrl("Ada", "bottts", "backgroundColor=ff0000,00ff00");
+    expect(new URL(url).searchParams.get("backgroundColor")).toBe("ff0000");
+    expect(url).not.toContain("%2C");
+  });
+
   it("returns nothing for a style drawn by this app", () => {
     // "" is the honest answer: there is no remote face to fetch, and storing a
     // stale URL for a locally drawn style is how a local style ends up remote.

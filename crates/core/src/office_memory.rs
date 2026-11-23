@@ -15,10 +15,28 @@ pub struct OfficeMemory {
     pub access_count: u32,
     pub last_accessed: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
+    /// Where the memory came from: user, agent, import, unknown.
+    #[serde(default = "default_office_memory_source")]
+    pub source: String,
+    #[serde(default)]
+    pub source_thread_id: Option<Uuid>,
+    #[serde(default)]
+    pub source_run_id: Option<Uuid>,
+    #[serde(default = "chrono::Utc::now")]
+    pub updated_at: DateTime<Utc>,
+}
+
+fn default_office_memory_source() -> String {
+    "unknown".to_string()
 }
 
 impl OfficeMemory {
-    pub fn new(chatroom_id: Uuid, content: impl Into<String>, category: impl Into<String>, created_by: Option<Uuid>) -> Self {
+    pub fn new(
+        chatroom_id: Uuid,
+        content: impl Into<String>,
+        category: impl Into<String>,
+        created_by: Option<Uuid>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),
@@ -31,6 +49,10 @@ impl OfficeMemory {
             access_count: 0,
             last_accessed: now,
             created_at: now,
+            source: "unknown".to_string(),
+            source_thread_id: None,
+            source_run_id: None,
+            updated_at: now,
         }
     }
 }

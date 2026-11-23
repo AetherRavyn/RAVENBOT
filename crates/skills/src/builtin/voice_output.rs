@@ -88,8 +88,8 @@ impl Skill for VoiceOutputSkill {
             },
         );
 
-        let audio = tts
-            .synthesize(text)
+        let (audio, provider) = tts
+            .synthesize_with_provider(text)
             .await
             .map_err(|e| SkillError::Execution(e.to_string()))?;
 
@@ -98,6 +98,7 @@ impl Skill for VoiceOutputSkill {
         let audio_b64 = base64::engine::general_purpose::STANDARD.encode(&audio);
 
         Ok(SkillResult::success(serde_json::json!({
+            "provider": provider,
             "text": text,
             "voice": voice,
             "rate": rate,

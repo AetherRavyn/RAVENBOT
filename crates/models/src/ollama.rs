@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{StreamChunk, ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming, ToolCall};
+use super::{
+    streaming, DeltaCallback, Message, ModelError, ModelProviderTrait, ModelResponse,
+    StreamAccumulator, StreamChunk, ToolCall, ToolDefinition, Usage,
+};
 
 const BASE_URL: &str = "http://localhost:11434";
 
@@ -103,12 +106,14 @@ impl OllamaProvider {
         Self {
             base_url,
             model_override: None,
-            client: reqwest::Client::new(),
+            client: crate::http_client(),
         }
     }
 
     fn base_url(&self) -> String {
-        self.base_url.clone().unwrap_or_else(|| BASE_URL.to_string())
+        self.base_url
+            .clone()
+            .unwrap_or_else(|| BASE_URL.to_string())
     }
 
     /// Shared send path for both non-streaming and streaming requests
@@ -239,8 +244,12 @@ impl OllamaProvider {
             // Streaming path: Ollama streams NDJSON (one JSON object per line),
             // which consume_sse handles since bare lines are treated as payloads.
             let mut acc = StreamAccumulator::new();
+            let mut completed = false;
             let mut tool_index = 0usize;
-            streaming::consume_sse(response, |json| {
+            let saw_done = streaming::consume_sse(response, |json| {
+                if json.get("done").and_then(|v| v.as_bool()).unwrap_or(false) {
+                    completed = true;
+                }
                 if let Some(text) = json.pointer("/message/content").and_then(|v| v.as_str()) {
                     if !text.is_empty() {
                         acc.push_text(text);
@@ -290,7 +299,10 @@ impl OllamaProvider {
                         tool_index += 1;
                     }
                 }
-                let input = json.get("prompt_eval_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                let input = json
+                    .get("prompt_eval_count")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let output = json.get("eval_count").and_then(|v| v.as_u64()).unwrap_or(0);
                 if input > 0 || output > 0 {
                     acc.set_usage(input, output);
@@ -298,6 +310,11 @@ impl OllamaProvider {
                 Ok(())
             })
             .await?;
+            if !completed && !saw_done {
+                return Err(ModelError::IncompleteStream {
+                    partial: acc.content().to_string(),
+                });
+            }
             Ok(acc.finish())
         } else {
             // Non-streaming path
@@ -330,7 +347,11 @@ impl OllamaProvider {
                 .unwrap_or_default();
 
             Ok(ModelResponse {
-                content: if content.is_empty() { None } else { Some(content) },
+                content: if content.is_empty() {
+                    None
+                } else {
+                    Some(content)
+                },
                 tool_calls,
                 usage: Usage {
                     input_tokens: chat_response.prompt_eval_count,
@@ -380,8 +401,16 @@ impl ModelProviderTrait for OllamaProvider {
         enable_reasoning: bool,
     ) -> Result<ModelResponse, ModelError> {
         let _ = enable_reasoning;
-        self.send_chat(messages, tools, temperature, max_tokens, true, Some(&on_delta), enable_reasoning)
-            .await
+        self.send_chat(
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            true,
+            Some(&on_delta),
+            enable_reasoning,
+        )
+        .await
     }
 
     fn with_model(mut self: Box<Self>, model_id: String) -> Box<dyn ModelProviderTrait> {

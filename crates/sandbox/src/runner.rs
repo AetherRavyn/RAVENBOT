@@ -2,20 +2,21 @@
 //!
 //! [`SandboxRunner`] turns a [`SandboxConfig`] into an actual isolated command:
 //!
-//! * **Filesystem** — bubblewrap (`bwrap`) mounts the system read-only, hides
-//!   the user's home (so `~/.ssh`, `~/.aws`, browser profiles, … are simply not
-//!   present), and bind-mounts only the configured allowed paths plus the
-//!   working directory read-write. Sensitive `/etc` files (`shadow`, sudoers)
-//!   are never bound.
+//! * **Filesystem** — Linux uses bubblewrap (`bwrap`) to mount the system
+//!   read-only, hide the user's home (so `~/.ssh`, `~/.aws`, browser profiles, …
+//!   are simply not present), and bind only the configured allowed paths plus
+//!   the working directory read-write. The Linux Docker tier runs the command
+//!   in a read-only container with the same workspace mounts. macOS uses a
+//!   default-deny Seatbelt profile with the same workspace-only write rule.
 //! * **Namespaces** — PID, UTS, IPC (and network when policy blocks it) are
 //!   unshared, with `--die-with-parent` so no orphan survives the run.
 //! * **Resource limits** — a POSIX `ulimit` shim applies CPU-time, address-space,
 //!   file-size and process-count ceilings, inherited by everything the command
 //!   spawns.
 //!
-//! When bubblewrap is unavailable (or the [`SandboxTier::Host`] escape hatch is
-//! selected) the runner degrades to limits-only and says so — it never claims
-//! isolation it did not apply.
+//! When no backend is available (or the [`SandboxTier::Host`] escape hatch is
+//! selected) agent commands fail closed. The report says exactly what was
+//! applied; it never claims isolation that was not enforced.
 
 use crate::network_policy::NetworkPolicy;
 use crate::resource_limits::ResourceLimits;
@@ -30,7 +31,11 @@ use tokio::process::Command;
 pub enum SandboxBackend {
     /// bubblewrap namespaces (Linux)
     Bubblewrap(PathBuf),
-    /// No OS isolation — limits only (host tier, or bwrap unavailable)
+    /// macOS seatbelt profile (`sandbox-exec`)
+    Seatbelt(PathBuf),
+    /// Linux Docker container (`docker run`)
+    Docker(PathBuf),
+    /// No OS isolation — limits only (host tier, or a backend is unavailable)
     None,
 }
 
@@ -104,6 +109,21 @@ impl SandboxRunner {
         if config.tier == SandboxTier::Host {
             return SandboxBackend::None;
         }
+        #[cfg(target_os = "linux")]
+        if config.tier == SandboxTier::Docker {
+            if let Some(path) = find_on_path("docker") {
+                return SandboxBackend::Docker(path);
+            }
+            return SandboxBackend::None;
+        }
+        #[cfg(not(target_os = "linux"))]
+        if config.tier == SandboxTier::Docker {
+            return SandboxBackend::None;
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(path) = find_on_path("sandbox-exec") {
+            return SandboxBackend::Seatbelt(path);
+        }
         if let Some(path) = find_on_path("bwrap") {
             return SandboxBackend::Bubblewrap(path);
         }
@@ -120,7 +140,10 @@ impl SandboxRunner {
 
     /// True when commands run inside real OS namespaces.
     pub fn is_isolated(&self) -> bool {
-        matches!(self.backend, SandboxBackend::Bubblewrap(_))
+        matches!(
+            self.backend,
+            SandboxBackend::Bubblewrap(_) | SandboxBackend::Seatbelt(_) | SandboxBackend::Docker(_)
+        )
     }
 
     /// Whether network access will be truly blocked.
@@ -153,11 +176,47 @@ impl SandboxRunner {
                     ),
                 }
             }
+            SandboxBackend::Seatbelt(path) => SandboxReport {
+                backend: format!("seatbelt ({})", path.display()),
+                filesystem_isolated: true,
+                network_isolated: !self.config.network_policy.enabled,
+                resource_limits: true,
+                note: if self.config.network_policy.enabled {
+                    "Seatbelt filesystem profile enforced; network shared (domain allowlist applies to HTTP tools).".to_string()
+                } else {
+                    "Seatbelt filesystem and network profile enforced.".to_string()
+                },
+            },
+            SandboxBackend::Docker(path) => SandboxReport {
+                backend: format!("docker ({})", path.display()),
+                filesystem_isolated: true,
+                network_isolated: !self.config.network_policy.enabled,
+                resource_limits: true,
+                note: format!(
+                    "Docker container image {}; read-only root, writable workspace mounts, capabilities dropped, network {}. The image must exist or be pullable.",
+                    self.docker_image(),
+                    if self.config.network_policy.enabled {
+                        "bridge"
+                    } else {
+                        "none"
+                    }
+                ),
+            },
             SandboxBackend::None => {
                 let reason = if self.config.tier == SandboxTier::Host {
                     "host tier selected (explicit opt-in)"
+                } else if cfg!(target_os = "windows") {
+                    "Windows sandbox backend is not implemented; commands are blocked"
+                } else if cfg!(target_os = "macos") {
+                    "sandbox-exec not found on PATH, so commands are blocked"
+                } else if self.config.tier == SandboxTier::Docker {
+                    if cfg!(target_os = "linux") {
+                        "Docker is not installed or not on PATH, so commands are blocked"
+                    } else {
+                        "Docker sandbox tier is only implemented on Linux; commands are blocked"
+                    }
                 } else {
-                    "bubblewrap not found on PATH"
+                    "bubblewrap not found on PATH, so commands are blocked"
                 };
                 SandboxReport {
                     backend: "none".to_string(),
@@ -165,12 +224,50 @@ impl SandboxRunner {
                     network_isolated: false,
                     resource_limits: true,
                     note: format!(
-                        "Running with resource limits only — {} (install bubblewrap for full isolation on Linux).",
+                        "Unsandboxed execution is not allowed: {}. Install bubblewrap on Linux or explicitly select the Host tier for this agent. RAVENBOT_ALLOW_UNSANDBOXED=1 is a deliberate global override.",
                         reason
                     ),
                 }
             }
         }
+    }
+
+    /// Build the macOS seatbelt profile. The default is deny; system libraries
+    /// are readable, and only the workspace paths are writable. Network is
+    /// allowed only when the policy enables it.
+    fn seatbelt_profile(&self, cwd: Option<&Path>) -> String {
+        fn quote(path: &str) -> String {
+            format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+        }
+        let mut writable: Vec<String> = self.config.allowed_paths.clone();
+        if let Some(cwd) = cwd {
+            writable.push(cwd.to_string_lossy().to_string());
+        }
+        // Only this user's temp directory, not the whole /private/var/folders
+        // tree shared by every account.
+        writable.push(std::env::temp_dir().to_string_lossy().to_string());
+        writable.sort();
+        writable.dedup();
+
+        let mut rules = vec![
+            "(version 1)".to_string(),
+            "(deny default)".to_string(),
+            "(allow process*)".to_string(),
+            "(allow signal)".to_string(),
+            "(allow sysctl-read)".to_string(),
+            "(allow mach-lookup)".to_string(),
+            "(allow file-read-metadata)".to_string(),
+            "(allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/Library\") (subpath \"/opt\") (subpath \"/etc\") (subpath \"/private/etc\") (subpath \"/dev\"))".to_string(),
+            "(allow file-write* (subpath \"/tmp\") (subpath \"/private/tmp\") (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))".to_string(),
+        ];
+        for path in writable {
+            let quoted = quote(&path);
+            rules.push(format!("(allow file-read* file-write* (subpath {quoted}))"));
+        }
+        if self.config.network_policy.enabled {
+            rules.push("(allow network*)".to_string());
+        }
+        rules.join("\n")
     }
 
     /// The POSIX `ulimit` shim applied to every sandboxed command. Kept as a
@@ -188,21 +285,29 @@ impl SandboxRunner {
     /// dash has no `-u` either, so the process cap lands only where the shell
     /// implements it (bash); the CPU, memory and file caps apply everywhere.
     fn ulimit_shim(&self) -> String {
+        self.ulimit_shim_with_process_limit(true)
+    }
+
+    /// Docker already enforces its own PID limit. Applying `ulimit -u` inside
+    /// the container counts the image's init and shell against the same small
+    /// budget and makes ordinary commands fail to fork, so that one limit is
+    /// left to `--pids-limit`.
+    fn ulimit_shim_with_process_limit(&self, include_process_limit: bool) -> String {
         let limits = &self.config.resource_limits;
         // -t CPU seconds, -v virtual KB, -f file size (512B blocks), -u procs.
+        let process_limit = if include_process_limit {
+            format!("ulimit -u {} 2>/dev/null; ", limits.max_processes.max(1))
+        } else {
+            String::new()
+        };
         format!(
             "ulimit -t {cpu} 2>/dev/null; \
              ulimit -v {vmem} 2>/dev/null; \
              ulimit -f {fsize} 2>/dev/null; \
-             ulimit -u {nproc} 2>/dev/null; \
-             exec \"$0\" \"$@\"",
+             {process_limit}exec \"$0\" \"$@\"",
             cpu = limits.max_task_duration_secs.max(1),
             vmem = limits.max_memory_mb.saturating_mul(1024).max(1024),
-            fsize = limits
-                .max_disk_write_mb
-                .saturating_mul(2048)
-                .max(2048),
-            nproc = limits.max_processes.max(1),
+            fsize = limits.max_disk_write_mb.saturating_mul(2048).max(2048),
         )
     }
 
@@ -217,7 +322,59 @@ impl SandboxRunner {
         args: &[String],
         cwd: Option<&Path>,
     ) -> Result<Command, String> {
-        let shim = self.ulimit_shim();
+        self.build_command(program, args, cwd, false)
+    }
+
+    /// Build a command for an application-owned renderer (Pandoc, rsvg-convert)
+    /// whose arguments are generated by this app, not by the model. It still
+    /// uses isolation and limits when available; on a host without a backend it
+    /// may fall back to limits-only so document/slide export keeps working.
+    pub fn command_trusted(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+    ) -> Result<Command, String> {
+        self.build_command(program, args, cwd, true)
+    }
+
+    fn build_command(
+        &self,
+        program: &str,
+        args: &[String],
+        cwd: Option<&Path>,
+        trusted: bool,
+    ) -> Result<Command, String> {
+        let explicit_host = self.config.tier == SandboxTier::Host;
+        let unsandboxed_opt_in = std::env::var("RAVENBOT_ALLOW_UNSANDBOXED")
+            .ok()
+            .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+        if matches!(self.backend, SandboxBackend::None)
+            && !explicit_host
+            && !unsandboxed_opt_in
+            && !trusted
+        {
+            let reason = if self.config.tier == SandboxTier::Docker {
+                "Docker is not installed or not on PATH"
+            } else {
+                "bubblewrap is not installed or not on PATH"
+            };
+            return Err(format!(
+                "Refusing to run an unsandboxed command: {reason}. Install bubblewrap on Linux, set this agent's sandbox tier to Host to opt in to host execution, or set RAVENBOT_ALLOW_UNSANDBOXED=1 for a deliberate global override."
+            ));
+        }
+        // Docker has `--pids-limit`. A host process has no PID namespace, so
+        // `ulimit -u` would count the user's entire process tree and make an
+        // ordinary `fork` fail on a busy desktop. Bubblewrap does unshare PID,
+        // so its per-namespace process limit is meaningful.
+        let shim = if matches!(
+            &self.backend,
+            SandboxBackend::Docker(_) | SandboxBackend::None
+        ) {
+            self.ulimit_shim_with_process_limit(false)
+        } else {
+            self.ulimit_shim()
+        };
 
         let mut cmd = match &self.backend {
             SandboxBackend::Bubblewrap(bwrap) => {
@@ -225,6 +382,30 @@ impl SandboxRunner {
                 self.apply_bwrap_args(&mut cmd, cwd);
                 cmd.arg("--");
                 cmd.arg("/bin/sh").arg("-c").arg(&shim).arg(program);
+                cmd.args(args);
+                cmd
+            }
+            SandboxBackend::Seatbelt(sandbox_exec) => {
+                let profile = self.seatbelt_profile(cwd);
+                let mut cmd = Command::new(sandbox_exec);
+                cmd.arg("-p")
+                    .arg(profile)
+                    .arg("/bin/sh")
+                    .arg("-c")
+                    .arg(&shim)
+                    .arg(program);
+                cmd.args(args);
+                cmd
+            }
+            SandboxBackend::Docker(docker) => {
+                let mut cmd = Command::new(docker);
+                self.apply_docker_args(&mut cmd, cwd);
+                cmd.arg("--entrypoint")
+                    .arg("/bin/sh")
+                    .arg(self.docker_image())
+                    .arg("-c")
+                    .arg(&shim)
+                    .arg(program);
                 cmd.args(args);
                 cmd
             }
@@ -239,9 +420,122 @@ impl SandboxRunner {
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
         }
+        // The app process holds provider keys and other credentials in its
+        // environment (ProviderManager reads OPENAI_API_KEY, ANTHROPIC_API_KEY,
+        // …). A sandboxed command must not inherit them: `env` inside the
+        // sandbox would otherwise print every key. Keep only the variables an
+        // ordinary tool needs to run.
+        cmd.env_clear();
+        for (key, value) in std::env::vars() {
+            if allowed_child_env(&key) {
+                cmd.env(key, value);
+            }
+        }
         cmd.kill_on_drop(true);
         Ok(cmd)
     }
+
+    fn docker_image(&self) -> String {
+        self.config
+            .docker_image
+            .clone()
+            .or_else(|| std::env::var("RAVENBOT_DOCKER_IMAGE").ok())
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "debian:bookworm-slim".to_string())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_docker_args(&self, cmd: &mut Command, cwd: Option<&Path>) {
+        use std::os::unix::fs::MetadataExt;
+        cmd.args([
+            "run",
+            "--rm",
+            "--init",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--env",
+            "HOME=/tmp",
+            "--env",
+            "TMPDIR=/tmp",
+        ]);
+
+        let limits = &self.config.resource_limits;
+        if limits.max_memory_mb != u64::MAX {
+            cmd.args(["--memory", &format!("{}m", limits.max_memory_mb.max(32))]);
+        }
+        if limits.max_processes != u32::MAX {
+            cmd.args(["--pids-limit", &limits.max_processes.max(1).to_string()]);
+        }
+        if limits.max_task_duration_secs != u64::MAX {
+            cmd.args([
+                "--ulimit",
+                &format!("cpu={}", limits.max_task_duration_secs.max(1)),
+            ]);
+        }
+        if limits.max_disk_write_mb != u64::MAX {
+            cmd.args([
+                "--ulimit",
+                &format!(
+                    "fsize={}",
+                    limits.max_disk_write_mb.saturating_mul(2048).max(2048)
+                ),
+            ]);
+        }
+        let cpus = (limits.max_cpu_percent / 100.0).clamp(0.1, 64.0);
+        cmd.args(["--cpus", &format!("{cpus:.2}")]);
+        let tmp_mb = limits.max_disk_write_mb.clamp(16, 4096);
+        cmd.args([
+            "--tmpfs",
+            &format!("/tmp:rw,exec,nosuid,nodev,size={tmp_mb}m"),
+            "--network",
+            if self.config.network_policy.enabled {
+                "bridge"
+            } else {
+                "none"
+            },
+        ]);
+
+        if let Ok(meta) = std::fs::metadata("/proc/self") {
+            cmd.args(["--user", &format!("{}:{}", meta.uid(), meta.gid())]);
+        }
+
+        let mut paths: Vec<PathBuf> = Vec::new();
+        if let Some(dir) = cwd {
+            paths.push(expand_path(&dir.to_string_lossy()));
+        }
+        for allowed in &self.config.allowed_paths {
+            paths.push(expand_path(allowed));
+        }
+        let mut mounted: Vec<PathBuf> = Vec::new();
+        for path in paths {
+            if !path.exists()
+                || path == Path::new("/tmp")
+                || self.is_blocked(&path)
+                || mounted.iter().any(|existing| existing == &path)
+            {
+                continue;
+            }
+            let as_text = path.to_string_lossy().to_string();
+            cmd.args(["-v", &format!("{as_text}:{as_text}:rw")]);
+            mounted.push(path);
+        }
+
+        if let Some(dir) = cwd {
+            cmd.args([
+                "--workdir",
+                &expand_path(&dir.to_string_lossy()).to_string_lossy(),
+            ]);
+        } else {
+            cmd.args(["--workdir", "/tmp"]);
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn apply_docker_args(&self, _cmd: &mut Command, _cwd: Option<&Path>) {}
 
     fn apply_bwrap_args(&self, cmd: &mut Command, cwd: Option<&Path>) {
         cmd.arg("--die-with-parent");
@@ -382,6 +676,32 @@ fn expand_path(raw: &str) -> PathBuf {
     }
 }
 
+/// Environment variables a child process may inherit.
+///
+/// Anything that looks like a credential is dropped even if it is not in this
+/// list; the allowlist is deliberate rather than a deny-list of known keys.
+fn allowed_child_env(key: &str) -> bool {
+    matches!(
+        key,
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "LOGNAME"
+            | "SHELL"
+            | "LANG"
+            | "LANGUAGE"
+            | "TERM"
+            | "TMPDIR"
+            | "TZ"
+            | "CARGO_HOME"
+            | "RUSTUP_HOME"
+            | "DOCKER_HOST"
+            | "DOCKER_CONTEXT"
+            | "DOCKER_CONFIG"
+            | "XDG_RUNTIME_DIR"
+    ) || key.starts_with("LC_")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,6 +732,66 @@ mod tests {
     }
 
     #[test]
+    fn docker_backend_builds_a_locked_down_command() {
+        let work = std::env::temp_dir().join(format!("ravenbot-docker-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&work).unwrap();
+        let runner = SandboxRunner {
+            config: SandboxConfig {
+                tier: SandboxTier::Docker,
+                resource_limits: ResourceLimits::default(),
+                network_policy: NetworkPolicy::blocked(),
+                allowed_paths: Vec::new(),
+                docker_image: Some("alpine:3.20".to_string()),
+                ..Default::default()
+            },
+            backend: SandboxBackend::Docker(PathBuf::from("docker")),
+        };
+        let cmd = runner
+            .command(
+                "sh",
+                &["-c".to_string(), "echo ok".to_string()],
+                Some(&work),
+            )
+            .expect("docker command");
+        let args: Vec<String> = cmd
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        for expected in [
+            "run",
+            "--rm",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--network",
+            "none",
+            "--memory",
+            "--pids-limit",
+            "--cpus",
+            "--user",
+            "alpine:3.20",
+            "/bin/sh",
+        ] {
+            assert!(
+                args.iter().any(|arg| arg == expected),
+                "missing {expected}: {args:?}"
+            );
+        }
+        assert!(args.iter().any(|arg| arg == "--tmpfs"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-v" && pair[1].contains(&work.to_string_lossy().to_string())));
+        assert!(runner.is_isolated());
+        assert!(runner.report().backend.contains("docker"));
+        assert!(runner.report().filesystem_isolated);
+        assert!(runner.report().network_isolated);
+        let _ = std::fs::remove_dir_all(work);
+    }
+
+    #[test]
     fn host_tier_never_isolates() {
         let runner = SandboxRunner::from_tier(SandboxTier::Host);
         assert!(!runner.is_isolated());
@@ -421,9 +801,136 @@ mod tests {
     #[tokio::test]
     async fn command_runs_and_reports_output() {
         let runner = runner(false);
+        if !runner.is_isolated() {
+            eprintln!("bubblewrap unavailable; skipping command execution");
+            return;
+        }
         let (stdout, _stderr, ok) = run(&runner, "echo hello-sandbox").await;
         assert!(ok);
         assert!(stdout.contains("hello-sandbox"));
+    }
+
+    #[test]
+    fn seatbelt_profile_denies_by_default_and_only_opens_the_workspace() {
+        let mut runner = SandboxRunner {
+            config: SandboxConfig {
+                tier: SandboxTier::OsLevel,
+                resource_limits: ResourceLimits::default(),
+                network_policy: NetworkPolicy::blocked(),
+                allowed_paths: vec!["/tmp/office".to_string()],
+                ..Default::default()
+            },
+            backend: SandboxBackend::Seatbelt(PathBuf::from("/usr/bin/sandbox-exec")),
+        };
+        let profile = runner.seatbelt_profile(Some(Path::new("/tmp/office/sub")));
+        assert!(profile.contains("(deny default)"));
+        assert!(profile.contains("(subpath \"/tmp/office\")"));
+        assert!(profile.contains("(subpath \"/tmp/office/sub\")"));
+        assert!(!profile.contains("(allow network*)"));
+        assert!(runner.report().backend.contains("seatbelt"));
+        assert!(runner.is_isolated());
+        assert!(runner.command("sh", &[], None).is_ok());
+
+        runner.config.network_policy = NetworkPolicy::permissive();
+        assert!(runner.seatbelt_profile(None).contains("(allow network*)"));
+    }
+
+    #[test]
+    fn non_host_tier_without_a_backend_refuses_to_run() {
+        let config = SandboxConfig {
+            tier: SandboxTier::Docker,
+            resource_limits: ResourceLimits::default(),
+            network_policy: NetworkPolicy::default(),
+            ..Default::default()
+        };
+        let blocked = SandboxRunner {
+            config,
+            backend: SandboxBackend::None,
+        };
+        let error = blocked
+            .command("sh", &[], None)
+            .expect_err("docker without a backend must fail closed");
+        assert!(error.contains("Refusing to run an unsandboxed command"));
+
+        let host = SandboxRunner {
+            config: SandboxConfig {
+                tier: SandboxTier::Host,
+                resource_limits: ResourceLimits::default(),
+                network_policy: NetworkPolicy::default(),
+                ..Default::default()
+            },
+            backend: SandboxBackend::None,
+        };
+        assert!(
+            host.command("sh", &[], None).is_ok(),
+            "the Host tier is the explicit unsandboxed opt-in"
+        );
+        assert!(
+            blocked.command_trusted("sh", &[], None).is_ok(),
+            "app-owned renderers may fall back to limits-only"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_keys_are_not_inherited_by_a_sandboxed_command() {
+        let key = format!("RAVENBOT_TEST_SECRET_{}", uuid::Uuid::new_v4());
+        std::env::set_var(&key, "do-not-leak");
+        let runner = runner(false);
+        if !runner.is_isolated() {
+            std::env::remove_var(&key);
+            eprintln!("bubblewrap unavailable; skipping environment isolation");
+            return;
+        }
+        let (stdout, _stderr, _ok) = run(&runner, &format!("printf %s \"${key}\"")).await;
+        std::env::remove_var(&key);
+        assert!(
+            !stdout.contains("do-not-leak"),
+            "a credential leaked into the child: {stdout}"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    #[ignore = "requires Docker and alpine:3.20; run with RAVENBOT_DOCKER_TEST=1"]
+    async fn docker_tier_runs_in_a_real_isolated_container() {
+        let work =
+            std::env::temp_dir().join(format!("ravenbot-docker-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("marker.txt"), b"docker-marker").unwrap();
+        let runner = SandboxRunner::new(SandboxConfig {
+            tier: SandboxTier::Docker,
+            resource_limits: ResourceLimits::default(),
+            network_policy: NetworkPolicy::blocked(),
+            allowed_paths: vec![work.to_string_lossy().to_string()],
+            docker_image: Some("alpine:3.20".to_string()),
+            ..Default::default()
+        });
+        if !matches!(runner.backend(), SandboxBackend::Docker(_)) {
+            eprintln!("docker unavailable; skipping live docker test");
+            let _ = std::fs::remove_dir_all(work);
+            return;
+        }
+        let mut cmd = runner
+            .command(
+                "sh",
+                &[
+                    "-c".to_string(),
+                    "cat marker.txt; test ! -e /root/.ssh && echo no-ssh; if nslookup example.com >/dev/null 2>&1; then echo NET-LEAK; else echo net-blocked; fi; echo docker-ok"
+                        .to_string(),
+                ],
+                Some(&work),
+            )
+            .expect("docker command");
+        let out = cmd.output().await.expect("run docker");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "docker failed: {stderr}");
+        assert!(stdout.contains("docker-marker"), "{stdout} {stderr}");
+        assert!(stdout.contains("no-ssh"), "{stdout} {stderr}");
+        assert!(stdout.contains("net-blocked"), "{stdout} {stderr}");
+        assert!(!stdout.contains("NET-LEAK"), "{stdout} {stderr}");
+        assert!(stdout.contains("docker-ok"), "{stdout} {stderr}");
+        let _ = std::fs::remove_dir_all(work);
     }
 
     #[cfg(target_os = "linux")]
@@ -441,7 +948,10 @@ mod tests {
             h = home
         );
         let (stdout, _stderr, _ok) = run(&runner, &script).await;
-        assert!(!stdout.contains("LEAK:"), "secrets must be hidden: {stdout}");
+        assert!(
+            !stdout.contains("LEAK:"),
+            "secrets must be hidden: {stdout}"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -457,7 +967,10 @@ mod tests {
         )
         .await;
         assert!(ok);
-        assert!(stdout.contains("BLOCKED"), "external DNS should fail: {stdout}");
+        assert!(
+            stdout.contains("BLOCKED"),
+            "external DNS should fail: {stdout}"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -473,7 +986,23 @@ mod tests {
             return;
         }
         let (stdout, _stderr, ok) = run(&runner, "command -v cargo && echo FOUND").await;
-        assert!(ok && stdout.contains("FOUND"), "cargo must be reachable: {stdout}");
+        assert!(
+            ok && stdout.contains("FOUND"),
+            "cargo must be reachable: {stdout}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn host_execution_does_not_apply_a_user_wide_process_limit() {
+        let mut config = SandboxConfig::default();
+        config.tier = SandboxTier::Host;
+        let runner = SandboxRunner::new(config);
+        // `ulimit -u 10` counts the user's entire process tree and makes a
+        // normal fork fail on a busy desktop. Host execution must not set it.
+        let (stdout, stderr, ok) = run(&runner, "sh -c 'echo forked-ok'").await;
+        assert!(ok, "{stdout} {stderr}");
+        assert!(stdout.contains("forked-ok"), "{stdout} {stderr}");
     }
 
     #[tokio::test]

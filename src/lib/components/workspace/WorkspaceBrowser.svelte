@@ -197,7 +197,12 @@
     </div>
   {:else if tree}
     <div class="raven-wsb__body">
-      <div class="raven-wsb__list" role="tree" aria-label={t("wsb.listLabel")}>
+      <!--
+        A group of buttons, not a tree. The rows are individually focusable and
+        the hierarchy is visual; `role="tree"` requires `treeitem` children and
+        arrow-key navigation, which this surface does not implement.
+      -->
+      <div class="raven-wsb__list" role="group" aria-label={t("wsb.listLabel")}>
         <!--
           One row renderer, used by both views and at every depth.
 

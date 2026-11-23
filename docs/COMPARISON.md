@@ -1,5 +1,11 @@
 # RAVENBOT vs Grok Bot vs OpenBot
 
+> **Historical document.** This analysis was written against the first OpenBot
+> rebuild (commit `7911753`) and the Grok Bot material available at the time.
+> The current competitive and code audit — including OpenBot 2026, Grok Bot,
+> Muse, and the trust/runtime fixes — is
+> [`COMPETITIVE-AUDIT-2026.md`](COMPETITIVE-AUDIT-2026.md). Read that first.
+
 > Sources read for this document:
 > - **Grok Bot** — `https://www.grokbotexplained.app` (all 7 sections: overview, how-it-works,
 >   jobs, avatar-system, getting-started, trust-and-cost, in-the-wild)

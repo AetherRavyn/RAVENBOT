@@ -24,7 +24,26 @@ export default defineConfig({
           overlay: false,
         },
     watch: {
-      ignored: ["**/src-tauri/**"],
+      // This checkout doubles as the app data root, so the runtime writes
+      // accounts.sqlite, WAL/SHM files, logs, caches and agent workspaces into
+      // the repository. Vite must not treat those as source changes.
+      ignored: [
+        "**/src-tauri/**",
+        "**/*.sqlite",
+        "**/*.sqlite-shm",
+        "**/*.sqlite-wal",
+        "**/*.sqlite-journal",
+        "**/*.db",
+        "**/*.db-shm",
+        "**/*.db-wal",
+        "**/*.db-journal",
+        "projects/**",
+        "config/**",
+        "logs/**",
+        "cache/**",
+        "keys/**",
+        "skills/**",
+      ],
     },
   },
   ssr: {

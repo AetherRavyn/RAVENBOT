@@ -16,6 +16,7 @@
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
   import ConnectorIcon from "$lib/components/ConnectorIcon.svelte";
   import OfficeMemoryPanel from "$lib/components/OfficeMemoryPanel.svelte";
+  import OfficeAlertSettings from "$lib/components/OfficeAlertSettings.svelte";
   import WorkspaceBrowser from "$lib/components/workspace/WorkspaceBrowser.svelte";
   import { getDiceBearUrl, OFFICE_TEMPLATES, dicebearStyles, DEFAULT_AVATAR_STYLE } from "$lib/utils";
   import { officeTemplateName, officeTemplateDesc } from "$lib/catalogI18n";
@@ -75,6 +76,16 @@
   let avatarUrl = $state("");
   let avatarStyle = $state(DEFAULT_AVATAR_STYLE);
   let goal = $state("");
+  let goalOutcome = $state("");
+  let goalStopWhen = $state("");
+  let goalGates = $state("");
+  let goalMaxTurns = $state("8");
+  let goalMaxTokens = $state("0");
+  let goalMaxSeconds = $state("0");
+  let goalStatus = $state("");
+  let goalLastVerdict = $state("");
+  let goalTurns = $state(0);
+  let goalLoadedFor = $state("");
   let policy = $state("");
   let terms = $state("");
   let budget = $state("");
@@ -103,6 +114,46 @@
   let botServersMap = $state<Record<string, Set<string>>>({});
   let allServers = $state<any[]>([]);
   let toolsLoading = $state(false);
+
+  async function loadGoalContract(officeId: string) {
+    if (!officeId) return;
+    try {
+      const detail = await invoke<any>("get_office_goal", { officeId });
+      if (!detail?.goal) {
+        goalOutcome = "";
+        goalStopWhen = "";
+        goalGates = "";
+        goalMaxTurns = "8";
+        goalMaxTokens = "0";
+        goalMaxSeconds = "0";
+        goalStatus = "";
+        goalLastVerdict = "";
+        goalTurns = 0;
+        goalLoadedFor = officeId;
+        return;
+      }
+      const contract = detail.goal.contract ?? {};
+      goalOutcome = contract.outcome ?? "";
+      goalStopWhen = contract.stop_when ?? "";
+      goalGates = (detail.gates ?? []).map((gate: any) => gate.command).join("\n");
+      goalMaxTurns = String(contract.max_turns ?? 8);
+      goalMaxTokens = String(contract.max_tokens ?? 0);
+      goalMaxSeconds = String(contract.max_wall_seconds ?? 0);
+      goalStatus = detail.goal.status ?? "";
+      goalLastVerdict = detail.goal.last_verdict ?? "";
+      goalTurns = Number(detail.goal.turns_used ?? 0);
+      goalLoadedFor = officeId;
+    } catch {
+      // Settings remain usable when the contract cannot be read; save will
+      // report the real error if the contract is invalid.
+    }
+  }
+
+  $effect(() => {
+    if (open && room?.id) {
+      void loadGoalContract(room.id);
+    }
+  });
 
   $effect(() => {
     if (room) {
@@ -246,6 +297,32 @@
     projectFolders = projectFolders.filter((_, i) => i !== idx);
   }
 
+  async function toggleGoalStatus() {
+    if (!room?.id || !goalStatus) return;
+    const command =
+      goalStatus === "paused" || goalStatus === "blocked"
+        ? "resume_office_goal"
+        : ["done", "failed", "cancelled"].includes(goalStatus)
+          ? "reopen_office_goal"
+          : "pause_office_goal";
+    try {
+      const detail = await invoke<any>(command, { officeId: room.id });
+      goalStatus = detail?.goal?.status ?? "";
+      goalLastVerdict = detail?.goal?.last_verdict ?? goalLastVerdict;
+      goalTurns = Number(detail?.goal?.turns_used ?? goalTurns);
+      notify(
+        command === "resume_office_goal"
+          ? "Office goal resumed"
+          : command === "reopen_office_goal"
+            ? "Office goal reopened"
+            : "Office goal paused",
+        "success",
+      );
+    } catch (error) {
+      notify(String(error), "error");
+    }
+  }
+
   async function saveAll() {
     isSaving = true;
     try {
@@ -263,8 +340,39 @@
         project_folders: projectFolders.filter((f) => f.trim()),
       };
       await invoke("update_chatroom", { room: updated });
+      let contractError = "";
+      try {
+        if (goalLoadedFor !== room.id) {
+          throw new Error("The completion contract is still loading; reopen the office settings and save again.");
+        }
+        const gateInputs = goalGates
+          .split("\n")
+          .map((command) => command.trim())
+          .filter(Boolean)
+          .map((command) => ({ command }));
+        const detail = await invoke<any>("update_office_goal", {
+          officeId: room.id,
+          outcome: goalOutcome,
+          constraints: [],
+          boundaries: [],
+          stopWhen: goalStopWhen,
+          gates: gateInputs,
+          maxTurns: Number(goalMaxTurns) || 8,
+          maxTokens: Number(goalMaxTokens) || 0,
+          maxWallSeconds: Number(goalMaxSeconds) || 0,
+        });
+        goalStatus = detail?.goal?.status ?? goalStatus;
+        goalLastVerdict = detail?.goal?.last_verdict ?? "";
+        goalTurns = Number(detail?.goal?.turns_used ?? 0);
+      } catch (error) {
+        contractError = String(error);
+      }
       onUpdated(updated);
-      notify("Office details saved", "success");
+      if (contractError) {
+        notify(`Office saved, but the completion contract was not: ${contractError}`, "error");
+      } else {
+        notify("Office details saved", "success");
+      }
       saveSuccess = true;
       setTimeout(() => {
         saveSuccess = false;
@@ -289,6 +397,7 @@
     });
     await loadMembers();
     await loadOfficeTools();
+    window.dispatchEvent(new CustomEvent("fleet-changed"));
   }
 
   async function createAndAddBot() {
@@ -306,12 +415,14 @@
     newBotName = "";
     await loadMembers();
     await loadOfficeTools();
+    window.dispatchEvent(new CustomEvent("fleet-changed"));
   }
 
   async function removeMember(botId: string) {
     await invoke("remove_chatroom_member", { chatroomId: room.id, botId });
     await loadMembers();
     await loadOfficeTools();
+    window.dispatchEvent(new CustomEvent("fleet-changed"));
   }
 
   async function updateMemberRank(botId: string, rank: string, specialty: string) {
@@ -490,10 +601,10 @@
             <!-- Identity Details -->
             <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3.5 ">
               <div class="flex items-center justify-between">
-                <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                   <Settings class="size-3.5 text-[var(--brand-text)]" />
                   <span>{t("office.identity")}</span>
-                </h4>
+                </h3>
                 <Button
                   size="sm"
                   variant="outline"
@@ -543,10 +654,10 @@
               <!-- Project folders: where this office's work happens -->
               <div class="pt-4 mt-1 border-t border-[var(--hairline)] space-y-2.5">
                 <div class="flex items-center justify-between">
-                  <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <FolderOpen class="size-3.5 text-[var(--brand-text)]" />
                     <span>{t("office.folders")}</span>
-                  </h4>
+                  </h3>
                   <span class="text-[11px] text-[var(--text-muted)]">{projectFolders.length} configured</span>
                 </div>
                 <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
@@ -624,10 +735,10 @@
             <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3 ">
               <div class="flex items-center justify-between">
                 <div>
-                  <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <Building2 class="size-3.5 text-[var(--brand-text)]" />
                     <span>{t("office.domain")}</span>
-                  </h4>
+                  </h3>
                   <p class="text-[11px] text-[var(--text-tertiary)] mt-0.5">
                     {t("office.domainDesc")}
                   </p>
@@ -700,10 +811,10 @@
               <div class="lg:col-span-2 space-y-3">
                 <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3 ">
                   <div class="flex items-center justify-between">
-                    <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                    <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                       <Users class="size-3.5 text-[var(--brand-text)]" />
                       <span>{t("office.roster")} ({members.length})</span>
-                    </h4>
+                    </h3>
                     <span class="text-[11px] text-[var(--text-tertiary)]">{t("office.fleetTag")}</span>
                   </div>
 
@@ -760,10 +871,10 @@
               <div class="space-y-3">
                 <!-- Add Existing -->
                 <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3 ">
-                  <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <Search class="size-3.5 text-[var(--brand-text)]" />
                     <span>{t("office.addExisting")}</span>
-                  </h4>
+                  </h3>
 
                   <div class="relative">
                     <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
@@ -801,10 +912,10 @@
 
                 <!-- Create New Inline -->
                 <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3 ">
-                  <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <UserPlus class="size-3.5 text-[var(--brand-text)]" />
                     <span>{t("office.provisionNew")}</span>
-                  </h4>
+                  </h3>
 
                   <div class="space-y-2">
                     <Input
@@ -851,10 +962,10 @@
             <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3.5 ">
               <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[var(--hairline)]">
                 <div>
-                  <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <Layers class="size-3.5 text-[var(--brand-text)]" />
                     <span>{t("office.matrix")}</span>
-                  </h4>
+                  </h3>
                   <p class="text-[11px] text-[var(--text-tertiary)] mt-0.5">
                     Assign and synchronize 135+ Model Context Protocol tools across all member agents in this office.
                   </p>
@@ -940,10 +1051,10 @@
             <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3 ">
               <div class="flex items-center justify-between">
                 <div>
-                  <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <Shield class="size-3.5 text-[var(--brand-text)]" />
                     <span>{t("office.policyTitle")}</span>
-                  </h4>
+                  </h3>
                   <p class="text-[11px] text-[var(--text-tertiary)] mt-0.5">
                     {t("office.policyDesc")}
                   </p>
@@ -979,10 +1090,10 @@
             <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3 ">
               <div class="flex items-center justify-between">
                 <div>
-                  <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <FileText class="size-3.5 text-warning" />
                     <span>{t("office.termsTitle")}</span>
-                  </h4>
+                  </h3>
                   <p class="text-[11px] text-[var(--text-tertiary)] mt-0.5">
                     {t("office.termsDesc")}
                   </p>
@@ -1018,10 +1129,10 @@
             <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3 ">
               <div class="flex items-center justify-between">
                 <div>
-                  <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <Coins class="size-3.5 text-success" />
                     <span>{t("office.budgetTitle")}</span>
-                  </h4>
+                  </h3>
                   <p class="text-[11px] text-[var(--text-tertiary)] mt-0.5">
                     {t("office.budgetDesc")}
                   </p>
@@ -1078,6 +1189,7 @@
                 </div>
               {/if}
             </div>
+            <OfficeAlertSettings chatroomId={room.id} />
           </Tabs.Content>
 
           <!-- TAB 8: QUARTERLY GOAL -->
@@ -1085,10 +1197,10 @@
             <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3 ">
               <div class="flex items-center justify-between">
                 <div>
-                  <h4 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
                     <Target class="size-3.5 text-danger" />
                     <span>{t("office.goalTitle")}</span>
-                  </h4>
+                  </h3>
                   <p class="text-[11px] text-[var(--text-tertiary)] mt-0.5">
                     {t("office.goalDesc")}
                   </p>
@@ -1108,6 +1220,102 @@
                 <p class="text-[11px] text-[var(--brand-text)] leading-relaxed">
                   {t("office.goalHint")}
                 </p>
+              </div>
+            </div>
+
+            <div class="rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-4 space-y-3">
+              <div>
+                <h3 class="text-xs font-bold text-[var(--text-primary)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                  <Shield class="size-3.5 text-[var(--brand-text)]" />
+                  <span>{t("office.contractTitle")}</span>
+                </h3>
+                <p class="text-[11px] text-[var(--text-tertiary)] mt-0.5">
+                  {t("office.contractDesc")}
+                </p>
+              </div>
+
+              <div class="space-y-1.5">
+                <Label for="goal-contract-outcome" class="text-[11px] text-[var(--text-secondary)]">{t("office.contractOutcome")}</Label>
+                <Textarea
+                  id="goal-contract-outcome"
+                  bind:value={goalOutcome}
+                  rows={2}
+                  placeholder={t("office.contractOutcomePh")}
+                  class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] focus-visible:border-[var(--brand)] leading-relaxed"
+                />
+              </div>
+
+              <div class="space-y-1.5">
+                <Label for="goal-contract-stop" class="text-[11px] text-[var(--text-secondary)]">{t("office.contractStopWhen")}</Label>
+                <Input
+                  id="goal-contract-stop"
+                  bind:value={goalStopWhen}
+                  placeholder={t("office.contractStopPh")}
+                  class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
+                />
+              </div>
+
+              <div class="space-y-1.5">
+                <Label for="goal-contract-gates" class="text-[11px] text-[var(--text-secondary)]">{t("office.contractGates")}</Label>
+                <Textarea
+                  id="goal-contract-gates"
+                  bind:value={goalGates}
+                  rows={3}
+                  placeholder={t("office.contractGatesPh")}
+                  class="text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] focus-visible:border-[var(--brand)] leading-relaxed"
+                />
+                <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed">
+                  {t("office.contractGatesHint")}
+                </p>
+              </div>
+
+              <div class="flex flex-wrap items-center gap-x-3 gap-y-2 pt-1">
+                <Label for="goal-contract-turns" class="text-[11px] text-[var(--text-secondary)]">{t("office.contractMaxTurns")}</Label>
+                <Input
+                  id="goal-contract-turns"
+                  type="number"
+                  min="1"
+                  max="64"
+                  bind:value={goalMaxTurns}
+                  class="h-8 w-20 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] tabular-nums"
+                />
+                <Label for="goal-contract-tokens" class="text-[11px] text-[var(--text-secondary)]">{t("office.contractMaxTokens")}</Label>
+                <Input
+                  id="goal-contract-tokens"
+                  type="number"
+                  min="0"
+                  bind:value={goalMaxTokens}
+                  class="h-8 w-24 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] tabular-nums"
+                />
+                <Label for="goal-contract-seconds" class="text-[11px] text-[var(--text-secondary)]">{t("office.contractMaxSeconds")}</Label>
+                <Input
+                  id="goal-contract-seconds"
+                  type="number"
+                  min="0"
+                  bind:value={goalMaxSeconds}
+                  class="h-8 w-24 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] tabular-nums"
+                />
+                {#if goalStatus}
+                  <Badge variant="secondary" class="text-[11px] bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30">{goalStatus}</Badge>
+                  <Button
+                    variant="outline"
+                    class="h-7 text-[11px] border-[var(--hairline)] text-[var(--text-secondary)] hover:bg-[var(--hairline)] cursor-pointer"
+                    onclick={() => void toggleGoalStatus()}
+                  >
+                    {goalStatus === "paused" || goalStatus === "blocked"
+                      ? t("office.contractResume")
+                      : ["done", "failed", "cancelled"].includes(goalStatus)
+                        ? t("office.contractReopen")
+                        : t("office.contractPause")}
+                  </Button>
+                {/if}
+                <span class="text-[11px] text-[var(--text-tertiary)]">
+                  {#if goalLastVerdict}
+                    {t("office.contractVerdict", { verdict: goalLastVerdict })} · {t("office.contractReviewed", { n: goalTurns })}
+                  {:else}
+                    {t("office.contractNoVerdict")}
+                  {/if}
+                </span>
               </div>
             </div>
           </Tabs.Content>

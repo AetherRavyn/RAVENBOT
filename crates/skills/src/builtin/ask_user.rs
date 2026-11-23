@@ -26,9 +26,14 @@ impl Skill for AskUserSkill {
         "Ask the user"
     }
     fn description(&self) -> &str {
-        "Ask the user a clarifying question mid-task and wait for their answer. \
-         Use when you are genuinely blocked on a decision only the user can make. \
-         Provide an optional short header and a list of suggested options."
+        "Ask the user for input mid-task and wait for the answer. Use when you are \
+         genuinely blocked on a decision only the user can make. `kind: question` \
+         (the default) shows suggested answers and an optional text box. \
+         `kind: confirm` shows a decision card with up to four actions and an \
+         optional hold-to-confirm dangerous action. `kind: choice` shows a \
+         single- or multi-select list. `kind: form` collects labelled text, \
+         textarea, or select fields. For a structured kind, put the card in \
+         `payload` and still give a short fallback `question`."
     }
     fn version(&self) -> &str {
         "1.0.0"
@@ -49,7 +54,16 @@ impl Skill for AskUserSkill {
                 },
                 "allow_custom": {
                     "type": "boolean",
-                    "description": "Whether a free-text answer is allowed (default true)"
+                    "description": "Whether a free-text answer is allowed (default true, question kind only)"
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["question", "confirm", "choice", "form", "vault"],
+                    "description": "Card shape. Default question."
+                },
+                "payload": {
+                    "type": "object",
+                    "description": "The block. confirm: {title, description?, danger?, preview?, fields?: [{id,label,value}], actions: [{id,label,style?,danger?,confirm?,hold_ms?}]}. choice: {title, description?, multiple?, allow_text?, options: [{id,label,meta?,selected?}], submit_label?}. form: {title, description?, fields: [{id,label,kind:text|textarea|select,required?,options?,placeholder?,value?}], submit_label?}. vault: {site: string, purpose?: string, item_kind?: \"login\"}. The user fills the current browser page from the local vault; the tool result contains only the item name, origin and whether the fill succeeded, never the password."
                 }
             },
             "required": ["question"]

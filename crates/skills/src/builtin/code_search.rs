@@ -83,8 +83,9 @@ impl Skill for CodeSearchSkill {
         // error text is simply reported and the match cap is applied here.
         let mut argv: Vec<String> = vec!["-rn".into()];
         for g in &globs {
-            argv.push("--include=".into());
-            argv.push(g.clone());
+            // One argument: `--include=` followed by a separate word is read
+            // by grep as a file operand, not as the include glob.
+            argv.push(format!("--include={g}"));
         }
         argv.push("-e".into());
         argv.push(pattern.to_string());

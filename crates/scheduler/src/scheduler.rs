@@ -32,7 +32,10 @@ impl Default for SchedulerConfig {
 /// Callback that actually executes a due routine (send instruction to bot).
 /// Installed by the application shell; without it, due routines are only logged.
 pub type RoutineExecutor = Arc<
-    dyn Fn(Routine) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+    dyn Fn(
+            Routine,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
         + Send
         + Sync,
 >;
@@ -89,7 +92,7 @@ impl Scheduler {
                             routine_name = %routine.name,
                             "Executing scheduled routine"
                         );
-                        
+
                         // Execute routine (in production, this would trigger the bot)
                         if let Err(e) = self.execute_routine(&routine).await {
                             tracing::error!(
@@ -156,15 +159,18 @@ impl Scheduler {
             }
 
             let matches = match (&trigger.event, &event) {
-                (TriggerEvent::CronSchedule { routine_id: r1 }, TriggerEvent::CronSchedule { routine_id: r2 }) => {
-                    r1 == r2
-                }
-                (TriggerEvent::UserMessage { bot_id: b1, .. }, TriggerEvent::UserMessage { bot_id: b2, .. }) => {
-                    b1 == b2
-                }
-                (TriggerEvent::TaskCompleted { bot_id: b1, .. }, TriggerEvent::TaskCompleted { bot_id: b2, .. }) => {
-                    b1 == b2
-                }
+                (
+                    TriggerEvent::CronSchedule { routine_id: r1 },
+                    TriggerEvent::CronSchedule { routine_id: r2 },
+                ) => r1 == r2,
+                (
+                    TriggerEvent::UserMessage { bot_id: b1, .. },
+                    TriggerEvent::UserMessage { bot_id: b2, .. },
+                ) => b1 == b2,
+                (
+                    TriggerEvent::TaskCompleted { bot_id: b1, .. },
+                    TriggerEvent::TaskCompleted { bot_id: b2, .. },
+                ) => b1 == b2,
                 _ => false,
             };
 

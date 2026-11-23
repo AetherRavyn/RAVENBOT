@@ -17,3 +17,4 @@ uuid.workspace = true
 chrono.workspace = true
 async-trait = "0.1"
 sqlx.workspace = true
+reqwest.workspace = true

@@ -1,6 +1,6 @@
 //! Cron expression parser
 
-use chrono::{DateTime, Utc, Datelike, Timelike};
+use chrono::{DateTime, Datelike, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Parsed cron expression
@@ -20,7 +20,7 @@ impl CronParser {
     /// Parse a cron expression (5-field format: minute hour day month weekday)
     pub fn parse(expr: &str) -> Result<CronExpression, String> {
         let fields: Vec<&str> = expr.split_whitespace().collect();
-        
+
         if fields.len() != 5 {
             return Err("Cron expression must have 5 fields".to_string());
         }
@@ -47,16 +47,22 @@ impl CronParser {
                 if parts.len() != 2 {
                     return Err(format!("Invalid step expression: {}", part));
                 }
-                
-                let start = if parts[0] == "*" { min } else {
-                    parts[0].parse::<u32>().map_err(|_| format!("Invalid value: {}", parts[0]))?
+
+                let start = if parts[0] == "*" {
+                    min
+                } else {
+                    parts[0]
+                        .parse::<u32>()
+                        .map_err(|_| format!("Invalid value: {}", parts[0]))?
                 };
-                let step = parts[1].parse::<u32>().map_err(|_| format!("Invalid step: {}", parts[1]))?;
-                
+                let step = parts[1]
+                    .parse::<u32>()
+                    .map_err(|_| format!("Invalid step: {}", parts[1]))?;
+
                 if step == 0 {
                     return Err("Step cannot be zero".to_string());
                 }
-                
+
                 let mut i = start;
                 while i <= max {
                     values.push(i);
@@ -68,18 +74,24 @@ impl CronParser {
                 if range.len() != 2 {
                     return Err(format!("Invalid range: {}", part));
                 }
-                
-                let start = range[0].parse::<u32>().map_err(|_| format!("Invalid start: {}", range[0]))?;
-                let end = range[1].parse::<u32>().map_err(|_| format!("Invalid end: {}", range[1]))?;
-                
+
+                let start = range[0]
+                    .parse::<u32>()
+                    .map_err(|_| format!("Invalid start: {}", range[0]))?;
+                let end = range[1]
+                    .parse::<u32>()
+                    .map_err(|_| format!("Invalid end: {}", range[1]))?;
+
                 if start > end {
                     return Err(format!("Range start {} > end {}", start, end));
                 }
-                
+
                 values.extend(start..=end);
             } else {
                 // Single value
-                let value = part.parse::<u32>().map_err(|_| format!("Invalid value: {}", part))?;
+                let value = part
+                    .parse::<u32>()
+                    .map_err(|_| format!("Invalid value: {}", part))?;
                 if value < min || value > max {
                     return Err(format!("Value {} out of range {}-{}", value, min, max));
                 }
@@ -98,22 +110,25 @@ impl CronParser {
             && expr.hours.contains(&dt.hour())
             && expr.days_of_month.contains(&dt.day())
             && expr.months.contains(&dt.month())
-            && expr.days_of_week.contains(&dt.weekday().num_days_from_sunday())
+            && expr
+                .days_of_week
+                .contains(&dt.weekday().num_days_from_sunday())
     }
 
     /// Get the next execution time
     pub fn next_execution(expr: &CronExpression, after: &DateTime<Utc>) -> Option<DateTime<Utc>> {
         let mut candidate = *after + chrono::Duration::minutes(1);
         candidate = candidate.with_second(0).unwrap_or(candidate);
-        
+
         // Search for next match (up to 1 year ahead)
-        for _ in 0..525600 { // 365 * 24 * 60
+        for _ in 0..525600 {
+            // 365 * 24 * 60
             if Self::matches(expr, &candidate) {
                 return Some(candidate);
             }
             candidate += chrono::Duration::minutes(1);
         }
-        
+
         None
     }
 }

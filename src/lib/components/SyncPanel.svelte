@@ -88,6 +88,7 @@
       try {
         bots = await invoke("list_bots");
       } catch {}
+      window.dispatchEvent(new CustomEvent("fleet-changed"));
       onBotImported?.(botId);
     } catch (e: any) {
       importResult = { ok: false, message: String(e) };
@@ -125,6 +126,7 @@
       try {
         bots = await invoke("list_bots");
       } catch {}
+      window.dispatchEvent(new CustomEvent("fleet-changed"));
       onBotImported?.(botId);
     } catch (e: any) {
       importResult = { ok: false, message: String(e) };

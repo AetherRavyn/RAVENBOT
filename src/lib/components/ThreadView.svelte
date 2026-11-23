@@ -8,34 +8,68 @@
   import { Button } from "$lib/components/ui/button";
   import AgentIntelligence from "$lib/components/AgentIntelligence.svelte";
   import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
+  import TranscriptRail from "$lib/components/chat/TranscriptRail.svelte";
+  import MessageSelectionToolbar from "$lib/components/chat/MessageSelectionToolbar.svelte";
+  import { quoteAsMarkdown, type SelectionQuote } from "$lib/chat/selection";
   import ChatEmptyState from "$lib/components/chat/ChatEmptyState.svelte";
   import { matchingMessageIds, messageKey, stepMatchIndex } from "$lib/chat/search";
   import { agentActivity } from "$lib/agentActivity.svelte";
   import {
     MESSAGE_FOCUS_EVENT,
+    THREAD_FOCUS_EVENT,
     takePendingMessageFocus,
+    takePendingThreadFocus,
     type MessageFocusTarget,
+    type ThreadFocusTarget,
   } from "$lib/chat/messageFocus";
   import { isPersistedMessageId, toggleReaction as nextReactions } from "$lib/chat/reactions";
   import { replyQuoteFor } from "$lib/chat/replies";
+  import { messageDayKey, messageDayLabel } from "$lib/chat/dayMarkers";
   import { isEditableTarget, navigateMessage } from "$lib/chat/navigation";
   import { anchoredScrollTop, transcriptWindow } from "$lib/chat/messageWindow";
+  import {
+    mergeOlderMessages,
+    oldestMessageId,
+    MESSAGE_PAGE_SIZE,
+  } from "$lib/chat/messagePaging";
+  import {
+    mergeReplyTargets,
+    replyTargetsToLoad,
+  } from "$lib/chat/replyResolution";
+  import { drafts, threadDraftKey } from "$lib/chat/drafts";
+  import {
+    applyMention,
+    filterMentionItems,
+    mentionAtCaret,
+    type MentionItem,
+    type MentionSigil,
+    type MentionToken,
+  } from "$lib/chat/mentions";
+  import ComposerMentionMenu from "$lib/components/chat/ComposerMentionMenu.svelte";
   import ApprovalCard from "$lib/components/chat/ApprovalCard.svelte";
-  import QuestionCard from "$lib/components/chat/QuestionCard.svelte";
+  import InteractionBlockCard from "$lib/components/chat/InteractionBlock.svelte";
+  import type {
+    InteractionBlock as InteractionBlockPayload,
+    QuestionKind,
+  } from "$lib/chat/blocks";
   import ContextMeter from "$lib/components/chat/ContextMeter.svelte";
   import ImageGallery from "$lib/components/chat/ImageGallery.svelte";
+  import ImageGeneration from "$lib/components/chat/ImageGeneration.svelte";
   import FileAttachmentCard from "$lib/components/chat/FileAttachmentCard.svelte";
   import { contextUsage } from "$lib/chat/contextUsage.svelte";
+  import { canSteerRun } from "$lib/chat/steering";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
-  import ArtifactPanel from "$lib/components/ArtifactPanel.svelte";
+  import { makeArtifact } from "$lib/artifact";
+  import { artifactStore } from "$lib/artifacts.svelte";
+  import { sidePanel } from "$lib/workspace/sidePanel.svelte";
   import RoutinesPanel from "$lib/components/RoutinesPanel.svelte";
   import SyncPanel from "$lib/components/SyncPanel.svelte";
   import ComputerPanel from "$lib/components/ComputerPanel.svelte";
   import ChannelsPanel from "$lib/components/ChannelsPanel.svelte";
   import TeamImport from "$lib/components/TeamImport.svelte";
-  import type { Artifact } from "$lib/artifact";
   import { getDiceBearUrl, isUserMessage } from "$lib/utils";
   import { notify } from "$lib/toast";
+  import { announceAttentionChanged } from "$lib/attention.svelte";
   import { cn } from "$lib/utils.js";
   import {
     recordUtterance,
@@ -114,7 +148,15 @@
   /** The first thread load, so a focus request can wait for it instead of racing it. */
   let initialLoad: Promise<void> | null = null;
   let loadedBotId: string | null = null;
+  let loadingBotId: string | null = null;
+  let loadError = $state<string | null>(null);
   let loadSeq = 0;
+
+  $effect(() => {
+    if (!selectedThreadId) return;
+    const current = messages.filter((message) => message.thread_id === selectedThreadId);
+    if (current.length) contextUsage.hydrate(selectedThreadId, current);
+  });
 
   // ── In-thread search ───────────────────────────────────────────────────
   // The query filters over the text each row renders. Matches are message
@@ -139,6 +181,7 @@
   const MESSAGE_WINDOW = 50;
   const MESSAGE_WINDOW_STEP = 50;
   let messageWindow = $state(MESSAGE_WINDOW);
+  let hasEarlier = $state(false);
   let loadingEarlier = $state(false);
   let windowEnd = $state(0);
   const windowBounds = $derived(
@@ -150,13 +193,27 @@
   const hiddenBefore = $derived(visibleStart);
 
   async function loadEarlier() {
-    if (loadingEarlier || hiddenBefore <= 0) return;
+    if (loadingEarlier || (hiddenBefore <= 0 && !hasEarlier)) return;
     const el = messagesContainer;
     const previousTop = el?.scrollTop ?? 0;
     const previousHeight = el?.scrollHeight ?? 0;
     loadingEarlier = true;
     try {
-      messageWindow += MESSAGE_WINDOW_STEP;
+      if (hiddenBefore > 0) {
+        messageWindow += MESSAGE_WINDOW_STEP;
+      } else if (selectedThreadId) {
+        const page: any = await invoke("list_messages_page", {
+          threadId: selectedThreadId,
+          beforeId: oldestMessageId(messages),
+          limit: MESSAGE_PAGE_SIZE,
+        });
+        const older = Array.isArray(page?.messages) ? page.messages : [];
+        hasEarlier = !!page?.has_more;
+        if (older.length === 0) return;
+        messages = mergeOlderMessages(messages, older);
+        messageWindow += older.length;
+        void resolveReplyTargets(selectedThreadId, messages);
+      }
       await tick();
       if (el) {
         el.scrollTop = anchoredScrollTop(
@@ -210,9 +267,20 @@
     void scrollToSearchMatch(threadSearchIndex);
   }
 
-  function openSearch() {
+  async function openSearch() {
     threadSearchOpen = true;
-    void tick().then(() => threadSearchInput?.focus());
+    // Search covers the whole thread, not only the cursor-loaded tail. Load
+    // the full transcript on demand; normal scrolling stays paginated.
+    if (hasEarlier && selectedThreadId) {
+      try {
+        messages = await invoke("list_messages", { threadId: selectedThreadId });
+        hasEarlier = false;
+      } catch {
+        /* search still works over the loaded pages */
+      }
+    }
+    await tick();
+    threadSearchInput?.focus();
   }
 
   function closeSearch() {
@@ -227,9 +295,36 @@
   // the message, so an edited original stays current and a deleted one is
   // reported honestly.
   let replyingTo = $state<any | null>(null);
+  let replyTargets = $state<any[]>([]);
+  const replyLoadPending = new Set<string>();
+  const messagesForReplies = $derived(mergeReplyTargets(messages, replyTargets));
+
+  async function resolveReplyTargets(threadId: string, msgs: any[]) {
+    const known = new Set(
+      [...msgs, ...replyTargets].map((message) => String(message.id)),
+    );
+    const missing = replyTargetsToLoad(msgs, known, replyLoadPending);
+    if (missing.length === 0) return;
+    for (const id of missing) replyLoadPending.add(id);
+    try {
+      const fetched: any[] = await invoke("get_messages_by_ids", {
+        threadId,
+        ids: missing,
+      });
+      replyTargets = mergeReplyTargets(
+        replyTargets,
+        Array.isArray(fetched) ? fetched : [],
+      );
+    } catch {
+      /* the quote falls back to the unavailable label */
+    } finally {
+      for (const id of missing) replyLoadPending.delete(id);
+    }
+  }
+
   const activeReply = $derived(
     replyQuoteFor(
-      messages,
+      messagesForReplies,
       replyingTo?.id,
       replyAuthor,
       t("thread.replyUnavailable"),
@@ -251,6 +346,29 @@
     replyingTo = null;
   }
 
+  function messageById(id: string) {
+    return messages.find((message) => messageKey(message) === id) ?? null;
+  }
+
+  /** Reply to the whole message that owns the selected passage. */
+  function replyFromSelection(messageId: string) {
+    const message = messageById(messageId);
+    if (message) startReply(message);
+  }
+
+  /**
+   * Quote a passage: the source becomes the reply target and the passage enters
+   * the draft as a Markdown blockquote. Sending keeps both, so the model sees
+   * the exact words the user highlighted and the transcript can jump back.
+   */
+  function quoteFromSelection(selection: SelectionQuote) {
+    const message = messageById(selection.messageId);
+    if (!message) return;
+    startReply(message);
+    newMessage = `${quoteAsMarkdown(selection.text)}\n\n${newMessage}`.trimStart();
+    void tick().then(() => textareaRef?.focus());
+  }
+
   async function jumpToMessage(id: string) {
     await revealMessage(id);
   }
@@ -262,6 +380,24 @@
     }
     await tick();
     await revealMessage(target.messageId);
+  }
+
+  async function focusThreadTarget(target: ThreadFocusTarget) {
+    if (target.botId !== bot.id) return;
+    if (target.threadId !== selectedThreadId) {
+      await loadMessages(target.threadId);
+    }
+  }
+
+  async function handleThreadFocus(event: Event) {
+    const target = (event as CustomEvent<ThreadFocusTarget>).detail;
+    if (!target || target.botId !== bot.id) return;
+    ensureBotLoaded(bot.id);
+    if (initialLoad) await initialLoad;
+    // An initial load owns the hand-off while it is running; if it consumed
+    // this request, there is nothing left to do here.
+    if (!takePendingThreadFocus(bot.id)) return;
+    await focusThreadTarget(target);
   }
 
   async function handleMessageFocus(event: Event) {
@@ -283,14 +419,26 @@
    * bot-change effect call this, and the first caller owns the work.
    */
   function ensureBotLoaded(botId: string) {
-    if (!botId || loadedBotId === botId) return;
-    loadedBotId = botId;
+    if (!botId || loadedBotId === botId || loadingBotId === botId) return;
+    if (loadedBotId) {
+      drafts.saveNow(threadDraftKey(loadedBotId, selectedThreadId), newMessage);
+    }
+    loadingBotId = botId;
+    loadError = null;
     threads = [];
     selectedThreadId = null;
     messages = [];
     streamingText = "";
     streamingSources = [];
     streamingImages = [];
+    // Drafts, attachments and parked decisions belong to the previous
+    // conversation. Carrying them across a bot switch sent the wrong text or
+    // file into the wrong agent; the new conversation starts with its own
+    // saved draft.
+    newMessage = drafts.load(threadDraftKey(botId, null));
+    pendingAttachments = [];
+    pendingApprovals = [];
+    pendingQuestions = [];
     const seq = ++loadSeq;
     invoke("get_session_usage", { botId })
       .then((res: any) => {
@@ -307,18 +455,31 @@
         if (seq !== loadSeq) return;
         threads = result;
         const target = takePendingMessageFocus(botId);
+        const threadTarget = takePendingThreadFocus(botId);
         if (target) {
           await loadMessages(target.threadId);
           if (seq !== loadSeq) return;
           await tick();
           await revealMessage(target.messageId);
+        } else if (threadTarget) {
+          await loadMessages(threadTarget.threadId);
         } else if (threads.length > 0) {
           await loadMessages(threads[0].id);
         }
+        if (seq === loadSeq) loadedBotId = botId;
       } catch (e) {
+        // Do not mark the bot loaded: the user can switch back and retry, and
+        // the next effect will run rather than showing a permanent empty state.
+        if (seq === loadSeq) {
+          loadedBotId = null;
+          loadError = String(e);
+        }
         console.error("Failed to load threads:", e);
       } finally {
-        if (seq === loadSeq) initialLoad = null;
+        if (seq === loadSeq) {
+          initialLoad = null;
+          loadingBotId = null;
+        }
       }
     })();
   }
@@ -350,7 +511,16 @@
   }
 
   let newMessage = $state("");
+  let mentionOpen = $state(false);
+  let mentionSigil = $state<MentionSigil>("#");
+  let mentionToken = $state<MentionToken | null>(null);
+  let mentionItems = $state<MentionItem[]>([]);
+  let mentionIndex = $state(0);
+  let fileMentions = $state<MentionItem[]>([]);
+  let skillMentions = $state<MentionItem[]>([]);
+  let mentionSourcesBotId: string | null = null;
   let sending = $state(false);
+  let pendingMessageId = $state<string | null>(null);
   let showCostInfo = $state(false);
   let showIntelligence = $state(false);
   let showThreadDrawer = $state(false);
@@ -434,6 +604,7 @@
     try {
       await invoke("decide_approval", { approvalId: id, allowed, note: null });
       pendingApprovals = pendingApprovals.filter((a) => a.id !== id);
+      announceAttentionChanged();
     } catch (e) {
       console.error("Failed to decide approval:", e);
     } finally {
@@ -447,6 +618,7 @@
   interface PendingQuestion {
     id: string; bot_id: string; thread_id: string; run_id: string;
     header: string; question: string; options: string[]; allow_custom: boolean;
+    kind?: QuestionKind | null; payload?: InteractionBlockPayload | null;
     status: string; created_at: string;
   }
   let pendingQuestions = $state<PendingQuestion[]>([]);
@@ -468,6 +640,7 @@
     try {
       await invoke("answer_question", { questionId: id, answer: value });
       pendingQuestions = pendingQuestions.filter((q) => q.id !== id);
+      announceAttentionChanged();
     } catch (e) {
       console.error("Failed to answer question:", e);
     } finally {
@@ -481,6 +654,27 @@
   let sessionCost = $state(0.0);
   let userAvatar = $state<string | null>(null);
   let messagesContainer = $state<HTMLDivElement | null>(null);
+  let railEntries = $derived(
+    visibleMessages
+      .filter((message) => isUserMessage(message))
+      .map((message) => {
+        const text =
+          typeof message.content === "string"
+            ? message.content
+            : message.content?.text || "";
+        return {
+          id: `message-${messageKey(message)}`,
+          kind: "user" as const,
+          label: text.trim().slice(0, 80) || t("thread.you"),
+        };
+      }),
+  );
+
+  function jumpToRail(id: string) {
+    document
+      .getElementById(id)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
   // OpenBot scroll behavior: auto-follow only while the reader is already at
   // the bottom (within 80px); scrolling up during a run unsticks and reveals
   // the jump-to-latest pill. `staticEntries` flags bulk history loads so row
@@ -496,6 +690,7 @@
   import { prefersReducedMotion, announce } from "$lib/a11y";
   import ChatActionMarker from "$lib/components/chat/ChatActionMarker.svelte";
   import { t } from "$lib/i18n";
+  import { sessionRole } from "$lib/sessionRole.svelte";
 
   let textareaRef = $state<HTMLTextAreaElement | null>(null);
 
@@ -549,6 +744,10 @@
     { id: number; name: string; done: boolean; args?: unknown; startedAt?: number; ms?: number }[]
   >([]);
   let markerSeq = 0;
+  const liveImageGeneration = $derived(
+    [...actionMarkers].reverse().find((marker) => marker.name === "image_gen" && !marker.done) ??
+      null,
+  );
   let streamingSources = $state<any[]>([]);
   // Live images produced by tools during the run (e.g. screenshots)
   let streamingImages = $state<{ name: string; data_url: string }[]>([]);
@@ -574,7 +773,6 @@
       console.error("Search failed:", e);
     }
   }
-  let openArtifact = $state<Artifact | null>(null);
   // Temporary (ephemeral) chat mode: new threads skip agent-memory persistence
   let tempActive = $state(false);
   // Edit-and-resend: editing a prior user turn removes everything after it
@@ -623,6 +821,7 @@
   onMount(async () => {
     window.addEventListener("local-skill-try", handleTryLocalSkill);
     window.addEventListener(MESSAGE_FOCUS_EVENT, handleMessageFocus);
+    window.addEventListener(THREAD_FOCUS_EVENT, handleThreadFocus);
     ensureBotLoaded(bot.id);
     await initialLoad;
 
@@ -691,6 +890,33 @@
             ];
             scrollToBottom();
             break;
+          case "steer": {
+            const id = String(payload?.message_id || "");
+            const tid = String(payload?.thread_id || "");
+            const content = String(payload?.content || "");
+            if (!id || (tid && tid !== selectedThreadId)) break;
+            if (messages.some((message) => String(message.id) === id)) break;
+            const saved = {
+              id,
+              thread_id: selectedThreadId,
+              role: "user",
+              content,
+              attachments: [],
+              reply_to_id: null,
+              reactions: [],
+              created_at: new Date().toISOString(),
+            };
+            const optimistic = messages.findIndex(
+              (message) =>
+                String(message.id).startsWith("temp-steer-") && message.content === content,
+            );
+            messages =
+              optimistic >= 0
+                ? messages.map((message, index) => (index === optimistic ? saved : message))
+                : [...messages, saved];
+            scrollToBottom();
+            break;
+          }
           case "tool_finished": {
             streamingTool = null;
             const nm = payload.name || "tool";
@@ -818,6 +1044,7 @@
     unlisten = null;
     window.removeEventListener("local-skill-try", handleTryLocalSkill);
     window.removeEventListener(MESSAGE_FOCUS_EVENT, handleMessageFocus);
+    window.removeEventListener(THREAD_FOCUS_EVENT, handleThreadFocus);
     if (threadSearchTimer) clearTimeout(threadSearchTimer);
     reveal.stop();
     stopVoiceMode();
@@ -833,7 +1060,10 @@
   // effect re-ran mid-run and reset the conversation.
   $effect(() => {
     const botId = bot?.id;
-    if (botId) ensureBotLoaded(botId);
+    if (botId) {
+      ensureBotLoaded(botId);
+      void loadMentionSources(botId);
+    }
   });
 
   // Play base64 audio (WAV) via the Web Audio API.
@@ -859,12 +1089,12 @@
     if (windowEnd !== 0) {
       // The bottom of a pinned window is not the bottom of the transcript.
       stickToLatest = false;
-      if (nearTop && hiddenBefore > 0) void loadEarlier();
+      if (nearTop && (hiddenBefore > 0 || hasEarlier)) void loadEarlier();
       return;
     }
     stickToLatest = el.scrollHeight - el.scrollTop - el.clientHeight <= 80;
     if (stickToLatest) unseenMessages = 0;
-    if (nearTop && hiddenBefore > 0) void loadEarlier();
+    if (nearTop && (hiddenBefore > 0 || hasEarlier)) void loadEarlier();
   }
 
   function jumpToLatest() {
@@ -927,13 +1157,27 @@
   }
 
   async function loadMessages(threadId: string) {
-    if (threadId !== selectedThreadId) replyingTo = null;
+    const changed = threadId !== selectedThreadId;
+    if (changed) {
+      replyingTo = null;
+      if (bot?.id) {
+        drafts.saveNow(threadDraftKey(bot.id, selectedThreadId), newMessage);
+      }
+    }
     stickToLatest = true;
     unseenMessages = 0;
     seenMessageCount = 0;
     messageWindow = MESSAGE_WINDOW;
     windowEnd = 0;
     selectedThreadId = threadId;
+    if (changed && bot?.id) {
+      newMessage = drafts.load(threadDraftKey(bot.id, threadId));
+      void tick().then(() => {
+        if (!textareaRef) return;
+        textareaRef.style.height = "auto";
+        textareaRef.style.height = Math.min(textareaRef.scrollHeight, 160) + "px";
+      });
+    }
     showThreadDropdown = false;
     staticEntries = true;
     streamingText = "";
@@ -945,8 +1189,19 @@
       refreshQuestions(bot.id);
     }
     editingMessage = null;
+    replyTargets = [];
     try {
-      messages = await invoke("list_messages", { threadId });
+      hasEarlier = false;
+      const page: any = await invoke("list_messages_page", {
+        threadId,
+        beforeId: null,
+        limit: MESSAGE_PAGE_SIZE,
+      });
+      messages = Array.isArray(page?.messages) ? page.messages : [];
+      hasEarlier = !!page?.has_more;
+      messageWindow = Math.max(MESSAGE_WINDOW, messages.length);
+      windowEnd = 0;
+      void resolveReplyTargets(threadId, messages);
       await tick();
       staticEntries = false;
       scrollToBottom(true);
@@ -985,6 +1240,16 @@
   // Active run id (from run_started) and the run we paused (for resume).
   let activeRunId = $state<string | null>(null);
   let pausedRunId = $state<string | null>(null);
+  const runActive = $derived(sending || (!!activeRunId && !pausedRunId));
+  const canSteer = $derived(
+    canSteerRun({
+      running: runActive,
+      streamingTool,
+      activeRunId,
+      text: newMessage,
+      attachmentCount: pendingAttachments.length,
+    }),
+  );
 
   async function togglePause() {
     try {
@@ -1010,6 +1275,24 @@
       }
     } catch (e) {
       console.error("Failed to toggle pause:", e);
+    }
+  }
+
+  /**
+   * Stop the active run. Pause is resumable; stop is final. Without this a
+   * hung provider leaves the composer locked until the IPC promise settles.
+   */
+  async function stopActiveRun() {
+    if (!activeRunId) return;
+    try {
+      await invoke("cancel_run", { runId: activeRunId });
+      activeRunId = null;
+      pausedRunId = null;
+      streamingText = "";
+      streamingTool = null;
+      notify("Stopped the active run.", "success");
+    } catch (e) {
+      notify(`Could not stop the run: ${String(e)}`, "error");
     }
   }
 
@@ -1059,12 +1342,64 @@
     }
   }
 
+  async function steerActiveRun(text: string) {
+    if (!selectedThreadId || !streamingTool || !activeRunId) return;
+    const tempId = "temp-steer-" + Date.now();
+    const tempMessage = {
+      id: tempId,
+      thread_id: selectedThreadId,
+      role: "user",
+      content: text,
+      attachments: [],
+      reply_to_id: null,
+      reactions: [],
+      created_at: new Date().toISOString(),
+    };
+    messages = [...messages, tempMessage];
+    pendingMessageId = tempId;
+    newMessage = "";
+    try {
+      const saved: any = await invoke("steer_thread", {
+        threadId: selectedThreadId,
+        content: text,
+      });
+      const replaced = messages.map((message) =>
+        String(message.id) === tempId ? saved : message,
+      );
+      messages = replaced.filter(
+        (message, index) =>
+          replaced.findIndex((other) => String(other.id) === String(message.id)) === index,
+      );
+      notify(t("thread.steerQueued"), "success");
+    } catch (error: any) {
+      messages = messages.filter((message) => String(message.id) !== tempId);
+      newMessage = text;
+      notify(`${t("thread.steerTooLate")} ${String(error)}`, "error");
+    } finally {
+      pendingMessageId = null;
+      scrollToBottom(true);
+    }
+  }
+
   async function sendMessage(textToSend?: string) {
+    if (sessionRole.role === "viewer") return;
     const typed = (textToSend || newMessage).trim();
     const hasAttachments = pendingAttachments.length > 0;
-    if (sending || (!typed && !hasAttachments)) return;
+    if (!typed && !hasAttachments) return;
+    if (sending || (activeRunId && !pausedRunId)) {
+      // The active run accepts a steer only while a tool is executing. The
+      // backend enforces the same rule; this branch just avoids a pointless
+      // request when the composer is between tools.
+      if (typed && !hasAttachments && streamingTool && activeRunId) {
+        await steerActiveRun(typed);
+      } else if (hasAttachments) {
+        notify(t("thread.steerTextOnly"), "info");
+      }
+      return;
+    }
     const rawText = typed || "(shared files)";
     const replyToId = replyingTo?.id ?? null;
+    const draftBotId = bot?.id ?? null;
 
     // Apply DeepSearch or Think prefixes if toggled
     let text = rawText;
@@ -1115,6 +1450,7 @@
         created_at: new Date().toISOString(),
       };
       messages = [...messages, tempUserMsg];
+      pendingMessageId = tempUserMsg.id;
       // An explicit send always returns the feed to the bottom (OpenBot).
       scrollToBottom(true);
 
@@ -1137,17 +1473,30 @@
       }
       replyingTo = null;
       pendingAttachments = [];
+      if (draftBotId) {
+        drafts.clear(threadDraftKey(draftBotId, null));
+        drafts.clear(threadDraftKey(draftBotId, selectedThreadId));
+      }
 
       if (selectedThreadId) {
         await loadMessages(selectedThreadId);
       }
+      pendingMessageId = null;
     } catch (e: any) {
       console.error("Failed to send message:", e);
+      pendingMessageId = null;
       notify(`Message not sent: ${String(e)}`, "error");
+      // A failed send must not eat the draft. Put the text back and persist it
+      // under the conversation that is actually open now.
+      newMessage = rawText;
+      if (draftBotId) {
+        drafts.saveNow(threadDraftKey(draftBotId, selectedThreadId), rawText);
+      }
       if (selectedThreadId) {
         await loadMessages(selectedThreadId);
       }
     } finally {
+      pendingMessageId = null;
       sending = false;
       streamingText = "";
       streamingTool = null;
@@ -1347,10 +1696,107 @@
     }
   }
 
+  async function loadMentionSources(botId: string) {
+    if (!botId || mentionSourcesBotId === botId) return;
+    mentionSourcesBotId = botId;
+    try {
+      const files = (await invoke<any[]>("list_file_changes", { botId, limit: 200 })) || [];
+      let paths = [...new Set(files.map((file) => String(file.path || "")).filter(Boolean))];
+      if (paths.length === 0) {
+        const recent = (await invoke<any[]>("list_recent_file_changes", { limit: 200 })) || [];
+        paths = [...new Set(recent.map((file) => String(file.path || "")).filter(Boolean))];
+      }
+      fileMentions = paths.slice(0, 100).map((path) => ({
+        id: path,
+        label: path,
+        detail: "file",
+        kind: "file" as const,
+      }));
+    } catch {
+      fileMentions = [];
+    }
+    try {
+      const skills = (await invoke<any[]>("list_all_skills")) || [];
+      skillMentions = skills
+        .slice(0, 100)
+        .map((skill: any) => ({
+          id: String(skill.id || ""),
+          label: String(skill.id || ""),
+          detail: String(skill.description || ""),
+          kind: "skill" as const,
+        }))
+        .filter((item: MentionItem) => item.id);
+    } catch {
+      skillMentions = [];
+    }
+  }
+
+  function closeMentions() {
+    mentionOpen = false;
+    mentionToken = null;
+  }
+
+  function updateMentions(value: string, caret: number) {
+    const token = mentionAtCaret(value, caret);
+    if (!token || token.sigil === "@") {
+      closeMentions();
+      return;
+    }
+    const source = token.sigil === "#" ? fileMentions : skillMentions;
+    if (source.length === 0) {
+      closeMentions();
+      return;
+    }
+    mentionToken = token;
+    mentionSigil = token.sigil;
+    mentionItems = filterMentionItems(source, token.query);
+    mentionIndex = 0;
+    mentionOpen = mentionItems.length > 0;
+  }
+
+  function chooseMention(item: MentionItem) {
+    if (!mentionToken) return;
+    const applied = applyMention(newMessage, mentionToken, item.label);
+    newMessage = applied.text;
+    closeMentions();
+    if (bot?.id) drafts.save(threadDraftKey(bot.id, selectedThreadId), applied.text);
+    void tick().then(() => {
+      textareaRef?.focus();
+      textareaRef?.setSelectionRange(applied.caret, applied.caret);
+    });
+  }
+
+  function handleMentionKeydown(event: KeyboardEvent): boolean {
+    if (!mentionOpen) return false;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const total = mentionItems.length;
+      mentionIndex = total > 0 ? (mentionIndex + delta + total) % total : 0;
+      return true;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      const item = mentionItems[mentionIndex];
+      if (item) chooseMention(item);
+      return true;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMentions();
+      return true;
+    }
+    return false;
+  }
+
   function handleTextareaInput(e: Event) {
     const target = e.target as HTMLTextAreaElement;
     target.style.height = "auto";
     target.style.height = Math.min(target.scrollHeight, 160) + "px";
+    if (bot?.id) {
+      drafts.save(threadDraftKey(bot.id, selectedThreadId), target.value);
+    }
+    updateMentions(target.value, target.selectionStart ?? target.value.length);
   }
 
   // ---- Inline image attachments (paste / drag-drop) ----
@@ -1688,7 +2134,7 @@
   {/if}
 {/snippet}
 
-<div class="flex flex-col h-full overflow-hidden select-none bg-[var(--surface-0)] text-[var(--text-primary)] font-sans relative">
+<div class="flex flex-col h-full overflow-hidden bg-[var(--surface-0)] text-[var(--text-primary)] font-sans relative">
   <!-- Sleek Top Header Bar (Grok Style) -->
   <header class="h-[46px] px-4 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between gap-3 z-20 shrink-0">
     <!-- Left: Bot Avatar & Info + Thread Switcher Dropdown -->
@@ -1878,7 +2324,7 @@
           class="h-7 px-2 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-xs flex items-center gap-1.5 transition-colors cursor-pointer {threadSearchOpen
             ? 'text-[var(--brand-text)] border-[var(--brand)]/40 bg-[var(--brand-soft)]'
             : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
-          onclick={() => (threadSearchOpen ? closeSearch() : openSearch())}
+          onclick={() => (threadSearchOpen ? closeSearch() : void openSearch())}
           aria-expanded={threadSearchOpen}
           aria-label={t("thread.searchInThread")}
           title={t("thread.searchInThread")}
@@ -2082,6 +2528,18 @@
         <Settings class="size-3.5" />
       </button>
 
+      {#if activeRunId}
+        <button
+          type="button"
+          class="size-7 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] flex items-center justify-center text-[var(--danger-text)] hover:bg-[var(--danger-soft-hover)] transition-colors cursor-pointer"
+          onclick={stopActiveRun}
+          aria-label="Stop the active run"
+          title="Stop the active run"
+        >
+          <XCircle class="size-3.5" />
+        </button>
+      {/if}
+
       <!-- Pause / Play Agent -->
       <button
         type="button"
@@ -2189,20 +2647,22 @@
       </div>
     {/if}
 
-    <!-- Chat Messages Stream (+ optional Artifact split view) -->
+    <!-- Chat Messages Stream -->
     <div class="flex flex-1 overflow-hidden bg-[var(--surface-0)]">
-      <div class="flex flex-col overflow-hidden {openArtifact ? 'w-[54%] shrink-0' : 'flex-1'}">
+      <div class="flex flex-1 flex-col overflow-hidden">
       <div class="relative flex-1 min-h-0">
       <div bind:this={messagesContainer} onscroll={handleFeedScroll} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" class="h-full overflow-y-auto px-3 pt-2 pb-6 {staticEntries ? 'entries-static' : ''}">
         <div class="max-w-[720px] mx-auto">
-          {#if hiddenBefore > 0}
+          {#if hiddenBefore > 0 || hasEarlier}
             <div class="load-earlier-row">
               <button
                 type="button"
                 class="load-earlier"
                 onclick={() => void loadEarlier()}
               >
-                {t("thread.loadEarlier", { count: hiddenBefore })}
+                {t("thread.loadEarlier", {
+                  count: hiddenBefore > 0 ? hiddenBefore : MESSAGE_PAGE_SIZE,
+                })}
               </button>
             </div>
           {/if}
@@ -2218,6 +2678,8 @@
           {/if}
           {#each visibleMessages as message, vi (message.id || message.created_at)}
             {@const mi = visibleStart + vi}
+            {@const dayKey = messageDayKey(message.created_at)}
+            {@const previousDayKey = mi > 0 ? messageDayKey(messages[mi - 1]?.created_at) : ""}
             {@const isUser = isUserMessage(message)}
             {@const isModelError = typeof message.content === "string" && message.content.includes("⚠️ **Model Error:**")}
             {@const rawContent = typeof message.content === "string" ? message.content : message.content?.text || JSON.stringify(message.content)}
@@ -2272,14 +2734,27 @@
                 {/if}
               {/snippet}
 
+            {#if dayKey && dayKey !== previousDayKey}
+              <div
+                class="flex items-center gap-3 px-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"
+                role="separator"
+                aria-label={messageDayLabel(message.created_at)}
+              >
+                <span class="h-px flex-1 bg-[var(--hairline)]" aria-hidden="true"></span>
+                <span>{messageDayLabel(message.created_at)}</span>
+                <span class="h-px flex-1 bg-[var(--hairline)]" aria-hidden="true"></span>
+              </div>
+            {/if}
+
             <ChatMessageRow
               {isUser}
               isError={isModelError}
               rowId={`message-${messageKey(message)}`}
+              messageId={isPersistedMessageId(message.id) ? message.id : undefined}
               searchHit={threadSearchOpen && threadSearchMatchSet.has(messageKey(message))}
               searchCurrent={threadSearchOpen && threadCurrentSearchKey === messageKey(message)}
               replyTo={replyQuoteFor(
-                messages,
+                messagesForReplies,
                 message.reply_to_id,
                 replyAuthor,
                 t("thread.replyUnavailable"),
@@ -2297,11 +2772,15 @@
               tools={message.content.tools ?? []}
               spans={message.content.spans ?? []}
               time={formatTime(message.created_at)}
+              pending={message.id === pendingMessageId}
               {grouped}
               showMeta={!continuesRun}
               {ghost}
               fullWidthAgent={true}
-              onOpenArtifact={(a) => (openArtifact = a)}
+              onOpenArtifact={(code, lang) => {
+                artifactStore.open(makeArtifact(code, lang));
+                sidePanel.select("artifacts", sidePanel.scope());
+              }}
             >
               {#snippet errorCard()}
                 <!-- Model Configuration Required Card -->
@@ -2441,6 +2920,13 @@
                     ms={m.ms ?? null}
                   />
                 {/each}
+                {#if liveImageGeneration}
+                  <ImageGeneration
+                    state="generating"
+                    prompt={String((liveImageGeneration.args as any)?.prompt ?? "")}
+                    size={String((liveImageGeneration.args as any)?.size ?? "")}
+                  />
+                {/if}
               </div>
             {/if}
           {/snippet}
@@ -2512,18 +2998,25 @@
 
           <!-- Question cards: the agent needs input to continue -->
           {#each pendingQuestions as q (q.id)}
-            <QuestionCard
+            <InteractionBlockCard
               botName={bot.name}
               header={q.header}
               question={q.question}
               options={q.options || []}
               allowCustom={q.allow_custom !== false}
+              kind={q.kind || "question"}
+              payload={q.payload || null}
               answering={answeringQuestion === q.id}
               onAnswer={(answer) => answerQuestion(q.id, answer)}
             />
           {/each}
         </div>
         </div>
+        <MessageSelectionToolbar
+          container={messagesContainer}
+          onReply={replyFromSelection}
+          onQuote={quoteFromSelection}
+        />
         {#if !stickToLatest}
           <button
             type="button"
@@ -2547,12 +3040,17 @@
             <span>{t("thread.jumpLatest")}</span>
           </button>
         {/if}
+        <TranscriptRail
+          container={messagesContainer}
+          entries={railEntries}
+          onJump={jumpToRail}
+        />
       </div>
 
       <!-- Grok Floating Capsule Composer -->
       <div class="p-4 bg-[var(--surface-0)] shrink-0">
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]  p-3 shadow-2xl transition-all duration-200 focus-within:border-[var(--brand)]"
+        <div class="relative max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]  p-3 shadow-2xl transition-all duration-200 focus-within:border-[var(--brand)]"
           ondragover={(e) => e.preventDefault()}
           ondrop={handleComposerDrop}
         >
@@ -2635,6 +3133,14 @@
           <span>{bot.name} is waiting for your answer — reply to the question above.</span>
         </div>
       {/if}
+      {#if mentionOpen}
+        <ComposerMentionMenu
+          sigil={mentionSigil}
+          items={mentionItems}
+          activeIndex={mentionIndex}
+          onPick={chooseMention}
+        />
+      {/if}
       <textarea
         bind:this={textareaRef}
         bind:value={newMessage}
@@ -2646,6 +3152,7 @@
         rows={1}
         class="w-full bg-transparent text-xs sm:text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
         onkeydown={(e) => {
+          if (handleMentionKeydown(e)) return;
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             sendMessage();
@@ -2774,14 +3281,14 @@
               <button
                 type="button"
                 onclick={() => sendMessage()}
-                disabled={(!newMessage.trim() && pendingAttachments.length === 0) || sending}
-                aria-label={t("home.send")}
-                class="size-8 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer {(newMessage.trim() || pendingAttachments.length) && !sending
+                disabled={(!newMessage.trim() && pendingAttachments.length === 0) || (runActive && !canSteer)}
+                aria-label={canSteer ? t("thread.steer") : t("home.send")}
+                class="size-8 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer {(newMessage.trim() || pendingAttachments.length) && (!runActive || canSteer)
                   ? 'btn-brand text-[var(--text-primary)] hover:scale-105 active:scale-95'
                   : 'bg-[var(--surface-3)] text-[var(--text-muted)] cursor-not-allowed'}"
-                title={t("home.send")}
+                title={canSteer ? t("thread.steerTitle") : t("home.send")}
               >
-                {#if sending}
+                {#if runActive && !canSteer}
                   <Loader2 class="size-3.5 animate-spin" />
                 {:else}
                   <ArrowUp class="size-4 stroke-[2.5]" />
@@ -2799,12 +3306,6 @@
       </div>
       </div>
 
-      <!-- Artifact / Canvas Split Panel -->
-      {#if openArtifact}
-        <div class="w-[46%] border-l border-[var(--hairline)] shrink-0">
-          <ArtifactPanel artifact={openArtifact} onClose={() => (openArtifact = null)} />
-        </div>
-      {/if}
     </div>
   </div>
 </div>

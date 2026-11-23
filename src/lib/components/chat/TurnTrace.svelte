@@ -13,7 +13,17 @@
   import type { ToolTrace, TraceSpan } from "$lib/types";
   import ToolTraceList from "$lib/components/ToolTraceList.svelte";
   import TraceWaterfall from "$lib/components/chat/TraceWaterfall.svelte";
-  import { Activity, Check, ChevronRight, X } from "@lucide/svelte";
+  import {
+    Activity,
+    Brain,
+    Check,
+    ChevronRight,
+    Gauge,
+    Sparkles,
+    Users,
+    Wrench,
+    X,
+  } from "@lucide/svelte";
 
   interface Props {
     tools: ToolTrace[];
@@ -26,6 +36,21 @@
 
   let open = $state(false);
   let traceOpen = $state(false);
+
+  function stepIcon(kind: string) {
+    switch (kind) {
+      case "model":
+        return Sparkles;
+      case "memory":
+        return Brain;
+      case "delegation":
+        return Users;
+      case "context":
+        return Gauge;
+      default:
+        return Wrench;
+    }
+  }
 
   function duration(ms: number | null | undefined): string | null {
     if (ms == null || ms <= 0) return null;
@@ -114,6 +139,23 @@
             <span class="turn-trace__reasoning-label">{t("trace.reasoning")}</span>
             <span class="turn-trace__reasoning-text">{reasoning.length > 180 ? `${reasoning.slice(0, 180)}…` : reasoning}</span>
           </div>
+        {/if}
+        {#if timeline.length > 0}
+          <ol class="turn-steps" aria-label={t("trace.steps")}>
+            {#each timeline as step (step.id)}
+              {@const Icon = stepIcon(step.kind)}
+              <li class="turn-step" data-kind={step.kind} data-failed={step.failed}>
+                <span class="turn-step__icon" aria-hidden="true">
+                  <Icon class="size-3.5" strokeWidth={1.8} />
+                </span>
+                <span class="turn-step__copy">
+                  <span class="turn-step__label">{step.label}</span>
+                  {#if step.detail}<span class="turn-step__detail">{step.detail}</span>{/if}
+                </span>
+                <span class="turn-step__ms">{duration(step.duration) ?? "—"}</span>
+              </li>
+            {/each}
+          </ol>
         {/if}
         {#if tools.length > 0}
           <div class="turn-trace__timeline-head">

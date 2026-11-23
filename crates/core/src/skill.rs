@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::bot::Permission;
+use serde::{Deserialize, Serialize};
 
 /// A skill that a bot can use
 #[derive(Debug, Clone, Serialize, Deserialize)]

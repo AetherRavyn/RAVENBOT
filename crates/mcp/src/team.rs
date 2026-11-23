@@ -203,74 +203,75 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
         return None;
     }
     if kill_switch_active() {
-        return Some(err("RAVENBOT kill switch is active: team operations are paused."));
+        return Some(err(
+            "RAVENBOT kill switch is active: team operations are paused.",
+        ));
     }
     let pool = db.pool();
 
     let result = match name {
-        "ravenbot_list_bots" => {
-            match ravenbot_db::queries::BotQueries::list(pool).await {
-                Ok(bots) => ok(json!({
-                    "count": bots.len(),
-                    "bots": bots.iter().map(|b| json!({
-                        "id": b.id,
-                        "name": b.name,
-                        "rank": b.rank,
-                        "specialty": b.specialty,
-                        "provider": b.config.model_provider,
-                        "model": b.config.model_id,
-                        "is_orchestrator": b.is_orchestrator,
-                        "skills": b.skills,
-                        "status": b.status,
-                    })).collect::<Vec<_>>()
-                })),
-                Err(e) => err(format!("Failed to list bots: {e}")),
-            }
-        }
-        "ravenbot_list_offices" => {
-            match ravenbot_db::queries::ChatRoomQueries::list(pool).await {
-                Ok(rooms) => {
-                    let mut offices = Vec::new();
-                    for room in rooms {
-                        let members = ravenbot_db::queries::ChatRoomQueries::list_members(pool, room.id)
+        "ravenbot_list_bots" => match ravenbot_db::queries::BotQueries::list(pool).await {
+            Ok(bots) => ok(json!({
+                "count": bots.len(),
+                "bots": bots.iter().map(|b| json!({
+                    "id": b.id,
+                    "name": b.name,
+                    "rank": b.rank,
+                    "specialty": b.specialty,
+                    "provider": b.config.model_provider,
+                    "model": b.config.model_id,
+                    "is_orchestrator": b.is_orchestrator,
+                    "skills": b.skills,
+                    "status": b.status,
+                })).collect::<Vec<_>>()
+            })),
+            Err(e) => err(format!("Failed to list bots: {e}")),
+        },
+        "ravenbot_list_offices" => match ravenbot_db::queries::ChatRoomQueries::list(pool).await {
+            Ok(rooms) => {
+                let mut offices = Vec::new();
+                for room in rooms {
+                    let members =
+                        ravenbot_db::queries::ChatRoomQueries::list_members(pool, room.id)
                             .await
                             .unwrap_or_default();
-                        offices.push(json!({
-                            "id": room.id,
-                            "name": room.name,
-                            "description": room.description,
-                            "template": room.office_template,
-                            "goal": room.goal,
-                            "policy": room.policy,
-                            "members": members.iter().map(|m| json!({
-                                "bot_id": m.bot_id,
-                                "rank": m.rank,
-                                "specialty": m.specialty,
-                            })).collect::<Vec<_>>()
-                        }));
-                    }
-                    ok(json!({ "count": offices.len(), "offices": offices }))
+                    offices.push(json!({
+                        "id": room.id,
+                        "name": room.name,
+                        "description": room.description,
+                        "template": room.office_template,
+                        "goal": room.goal,
+                        "policy": room.policy,
+                        "members": members.iter().map(|m| json!({
+                            "bot_id": m.bot_id,
+                            "rank": m.rank,
+                            "specialty": m.specialty,
+                        })).collect::<Vec<_>>()
+                    }));
                 }
-                Err(e) => err(format!("Failed to list offices: {e}")),
+                ok(json!({ "count": offices.len(), "offices": offices }))
             }
-        }
-        "ravenbot_list_channels" => {
-            match ravenbot_db::queries::ChannelQueries::list(pool).await {
-                Ok(channels) => ok(json!({
-                    "count": channels.len(),
-                    "channels": channels.iter().map(|c| json!({
-                        "id": c.id,
-                        "name": c.name,
-                        "description": c.description,
-                        "instructions": c.instructions,
-                        "working_folder": c.working_folder,
-                    })).collect::<Vec<_>>()
-                })),
-                Err(e) => err(format!("Failed to list channels: {e}")),
-            }
-        }
+            Err(e) => err(format!("Failed to list offices: {e}")),
+        },
+        "ravenbot_list_channels" => match ravenbot_db::queries::ChannelQueries::list(pool).await {
+            Ok(channels) => ok(json!({
+                "count": channels.len(),
+                "channels": channels.iter().map(|c| json!({
+                    "id": c.id,
+                    "name": c.name,
+                    "description": c.description,
+                    "instructions": c.instructions,
+                    "working_folder": c.working_folder,
+                })).collect::<Vec<_>>()
+            })),
+            Err(e) => err(format!("Failed to list channels: {e}")),
+        },
         "ravenbot_read_messages" => {
-            let Some(thread_id) = args.get("thread_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+            let Some(thread_id) = args
+                .get("thread_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+            else {
                 return Some(err("ravenbot_read_messages requires a valid 'thread_id'"));
             };
             let limit = args
@@ -284,13 +285,15 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
                     let start = total.saturating_sub(limit);
                     let page: Vec<Value> = messages[start..]
                         .iter()
-                        .map(|m| json!({
-                            "id": m.id,
-                            "role": role_str(&m.role),
-                            "sender": m.sender_name,
-                            "text": truncate(&message_text(m), 1200),
-                            "created_at": m.created_at,
-                        }))
+                        .map(|m| {
+                            json!({
+                                "id": m.id,
+                                "role": role_str(&m.role),
+                                "sender": m.sender_name,
+                                "text": truncate(&message_text(m), 1200),
+                                "created_at": m.created_at,
+                            })
+                        })
                         .collect();
                     ok(json!({ "thread_id": thread_id, "total": total, "messages": page }))
                 }
@@ -298,7 +301,11 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
             }
         }
         "ravenbot_search_messages" => {
-            let Some(query) = args.get("query").and_then(|v| v.as_str()).filter(|q| !q.trim().is_empty()) else {
+            let Some(query) = args
+                .get("query")
+                .and_then(|v| v.as_str())
+                .filter(|q| !q.trim().is_empty())
+            else {
                 return Some(err("ravenbot_search_messages requires a non-empty 'query'"));
             };
             let limit = args
@@ -321,10 +328,17 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
             }
         }
         "ravenbot_create_bot" => {
-            let Some(name) = args.get("name").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()) else {
+            let Some(name) = args
+                .get("name")
+                .and_then(|v| v.as_str())
+                .filter(|n| !n.trim().is_empty())
+            else {
                 return Some(err("ravenbot_create_bot requires 'name'"));
             };
-            let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            let description = args
+                .get("description")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             let mut bot = ravenbot_core::Bot::new(name, description);
             if let Some(rank) = args.get("rank").and_then(|v| v.as_str()) {
                 bot.rank = Some(rank.to_string());
@@ -336,7 +350,10 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
                 bot.config.custom_prompt = Some(prompt.to_string());
             }
             if let Some(skills) = args.get("skills").and_then(|v| v.as_array()) {
-                bot.skills = skills.iter().filter_map(|s| s.as_str().map(str::to_string)).collect();
+                bot.skills = skills
+                    .iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect();
             }
             let (provider, model) = resolve_default_model(pool).await;
             bot.config.model_provider = args
@@ -350,12 +367,18 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
                 .unwrap_or(&model)
                 .to_string();
             match ravenbot_db::queries::BotQueries::insert(pool, &bot).await {
-                Ok(()) => ok(json!({ "created": true, "bot_id": bot.id, "name": bot.name, "provider": bot.config.model_provider, "model": bot.config.model_id })),
+                Ok(()) => ok(
+                    json!({ "created": true, "bot_id": bot.id, "name": bot.name, "provider": bot.config.model_provider, "model": bot.config.model_id }),
+                ),
                 Err(e) => err(format!("Failed to create bot: {e}")),
             }
         }
         "ravenbot_update_bot" => {
-            let Some(bot_id) = args.get("bot_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
+            let Some(bot_id) = args
+                .get("bot_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+            else {
                 return Some(err("ravenbot_update_bot requires a valid 'bot_id'"));
             };
             let existing = ravenbot_db::queries::BotQueries::get(pool, bot_id).await;
@@ -372,7 +395,10 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
                 bot.config.custom_prompt = Some(prompt.to_string());
             }
             if let Some(skills) = args.get("skills").and_then(|v| v.as_array()) {
-                bot.skills = skills.iter().filter_map(|s| s.as_str().map(str::to_string)).collect();
+                bot.skills = skills
+                    .iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect();
             }
             if let Some(rank) = args.get("rank").and_then(|v| v.as_str()) {
                 bot.rank = Some(rank.to_string());
@@ -381,18 +407,36 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
                 bot.specialty = Some(specialty.to_string());
             }
             match ravenbot_db::queries::BotQueries::update(pool, &bot).await {
-                Ok(()) => ok(json!({ "updated": true, "bot_id": bot.id, "provider": bot.config.model_provider, "model": bot.config.model_id })),
+                Ok(()) => ok(
+                    json!({ "updated": true, "bot_id": bot.id, "provider": bot.config.model_provider, "model": bot.config.model_id }),
+                ),
                 Err(e) => err(format!("Failed to update bot: {e}")),
             }
         }
         "ravenbot_assign_bot_to_office" => {
-            let Some(chatroom_id) = args.get("chatroom_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
-                return Some(err("ravenbot_assign_bot_to_office requires a valid 'chatroom_id'"));
+            let Some(chatroom_id) = args
+                .get("chatroom_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+            else {
+                return Some(err(
+                    "ravenbot_assign_bot_to_office requires a valid 'chatroom_id'",
+                ));
             };
-            let Some(bot_id) = args.get("bot_id").and_then(|v| v.as_str()).and_then(|s| Uuid::parse_str(s).ok()) else {
-                return Some(err("ravenbot_assign_bot_to_office requires a valid 'bot_id'"));
+            let Some(bot_id) = args
+                .get("bot_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| Uuid::parse_str(s).ok())
+            else {
+                return Some(err(
+                    "ravenbot_assign_bot_to_office requires a valid 'bot_id'",
+                ));
             };
-            let rank = args.get("rank").and_then(|v| v.as_str()).unwrap_or("Member").to_string();
+            let rank = args
+                .get("rank")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Member")
+                .to_string();
             let specialty = args
                 .get("specialty")
                 .and_then(|v| v.as_str())
@@ -406,7 +450,9 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
                 joined_at: chrono::Utc::now(),
             };
             match ravenbot_db::queries::ChatRoomQueries::add_member(pool, &member).await {
-                Ok(()) => ok(json!({ "assigned": true, "chatroom_id": chatroom_id, "bot_id": bot_id })),
+                Ok(()) => {
+                    ok(json!({ "assigned": true, "chatroom_id": chatroom_id, "bot_id": bot_id }))
+                }
                 Err(e) => err(format!("Failed to assign bot: {e}")),
             }
         }
@@ -428,7 +474,10 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
             }
             // Resolve to a real bot first (fail fast with a clear error).
             let resolved = if let Ok(id) = Uuid::parse_str(&target) {
-                ravenbot_db::queries::BotQueries::get(pool, id).await.ok().flatten()
+                ravenbot_db::queries::BotQueries::get(pool, id)
+                    .await
+                    .ok()
+                    .flatten()
             } else {
                 ravenbot_db::queries::BotQueries::list(pool)
                     .await
@@ -463,7 +512,11 @@ pub async fn call(db: &Database, name: &str, args: &Value) -> Option<Value> {
 }
 
 /// Run one headless turn in a child process (same binary, same database).
-async fn send_task_subprocess(bot_id: &Uuid, message: &str, timeout_secs: u64) -> Result<String, String> {
+async fn send_task_subprocess(
+    bot_id: &Uuid,
+    message: &str,
+    timeout_secs: u64,
+) -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot resolve executable: {e}"))?;
     let mut cmd = tokio::process::Command::new(exe);
     cmd.arg("run")
@@ -479,7 +532,11 @@ async fn send_task_subprocess(bot_id: &Uuid, message: &str, timeout_secs: u64) -
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
     if output.status.success() {
-        Ok(if stdout.is_empty() { "(no output)".to_string() } else { stdout })
+        Ok(if stdout.is_empty() {
+            "(no output)".to_string()
+        } else {
+            stdout
+        })
     } else {
         Err(format!(
             "task failed (exit {}): {}",
@@ -518,7 +575,10 @@ mod tests {
         for d in &defs {
             let name = d.get("name").and_then(|v| v.as_str()).unwrap();
             assert!(is_team_tool(name), "{name} should be dispatchable");
-            assert!(d.get("inputSchema").is_some(), "{name} needs an input schema");
+            assert!(
+                d.get("inputSchema").is_some(),
+                "{name} needs an input schema"
+            );
         }
     }
 

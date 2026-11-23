@@ -10,7 +10,7 @@
 use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 
-use super::{ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError};
+use super::{Message, ModelError, ModelProviderTrait, ModelResponse, ToolDefinition};
 
 /// Local inference provider — fully offline
 pub struct LocalProvider {
@@ -66,7 +66,8 @@ impl ModelProviderTrait for LocalProvider {
             return Err(ModelError::Provider(
                 "No local model configured. Set a model path via Settings → Local Models, \
                  e.g., download a GGUF file and point Ollama or this provider at it. \
-                 See docs/local-models.md for setup.".to_string()
+                 See docs/local-models.md for setup."
+                    .to_string(),
             ));
         }
 

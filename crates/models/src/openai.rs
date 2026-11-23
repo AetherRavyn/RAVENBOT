@@ -4,7 +4,10 @@ use async_trait::async_trait;
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 
-use super::{StreamChunk, ModelProviderTrait, ModelResponse, Message, ToolDefinition, ModelError, Usage, DeltaCallback, StreamAccumulator, streaming};
+use super::{
+    streaming, DeltaCallback, Message, ModelError, ModelProviderTrait, ModelResponse,
+    StreamAccumulator, StreamChunk, ToolDefinition, Usage,
+};
 
 const BASE_URL: &str = "https://api.openai.com/v1";
 
@@ -100,7 +103,7 @@ impl OpenAIProvider {
         Self {
             api_key,
             model_id: "gpt-4o".to_string(),
-            client: reqwest::Client::new(),
+            client: crate::http_client(),
         }
     }
 
@@ -123,32 +126,42 @@ impl OpenAIProvider {
         // Most OpenAI-wire providers accept 0..=2, but some gateways cap at
         // 1 — clamp defensively instead of failing the run on a 400.
         let temperature = temperature.clamp(0.0, 2.0);
-        let api_key = self.api_key.as_ref()
+        let api_key = self
+            .api_key
+            .as_ref()
             .ok_or_else(|| ModelError::Auth("OpenAI API key not configured".to_string()))?;
 
-        let chat_messages: Vec<ChatMessage> = messages.iter().map(|m| {
-            // Vision: text + inline image parts (data URI) when images present.
-            // Native assistant tool_calls / tool results round-trip by id.
-            ChatMessage {
-                role: m.role.clone(),
-                content: m.openai_content(),
-                tool_calls: m.openai_tool_calls(),
-                tool_call_id: m.tool_call_id.clone(),
-                name: m.name.clone(),
-            }
-        }).collect();
+        let chat_messages: Vec<ChatMessage> = messages
+            .iter()
+            .map(|m| {
+                // Vision: text + inline image parts (data URI) when images present.
+                // Native assistant tool_calls / tool results round-trip by id.
+                ChatMessage {
+                    role: m.role.clone(),
+                    content: m.openai_content(),
+                    tool_calls: m.openai_tool_calls(),
+                    tool_call_id: m.tool_call_id.clone(),
+                    name: m.name.clone(),
+                }
+            })
+            .collect();
 
         let tools_param = if tools.is_empty() {
             None
         } else {
-            Some(tools.iter().map(|t| ToolParam {
-                tool_type: "function".to_string(),
-                function: FunctionParam {
-                    name: t.name.clone(),
-                    description: t.description.clone(),
-                    parameters: t.parameters.clone(),
-                },
-            }).collect())
+            Some(
+                tools
+                    .iter()
+                    .map(|t| ToolParam {
+                        tool_type: "function".to_string(),
+                        function: FunctionParam {
+                            name: t.name.clone(),
+                            description: t.description.clone(),
+                            parameters: t.parameters.clone(),
+                        },
+                    })
+                    .collect(),
+            )
         };
 
         let request = ChatRequest {
@@ -159,13 +172,16 @@ impl OpenAIProvider {
             max_tokens,
             stream,
             stream_options: if stream {
-                Some(StreamOptions { include_usage: true })
+                Some(StreamOptions {
+                    include_usage: true,
+                })
             } else {
                 None
             },
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(format!("{}/chat/completions", BASE_URL))
             .header("Authorization", format!("Bearer {}", api_key))
             .header("Content-Type", "application/json")
@@ -177,16 +193,35 @@ impl OpenAIProvider {
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            return Err(ModelError::Provider(format!("API error {}: {}", status, body)));
+            return Err(ModelError::Provider(format!(
+                "API error {}: {}",
+                status, body
+            )));
         }
 
         if let Some(on_delta) = on_delta {
             // Streaming path: parse SSE chunks, forward deltas live
             let mut acc = StreamAccumulator::new();
-            streaming::consume_sse(response, |json| {
+            let mut completed = false;
+            let saw_done = streaming::consume_sse(response, |json| {
+                if json
+                    .get("choices")
+                    .and_then(|choices| choices.get(0))
+                    .and_then(|choice| choice.get("finish_reason"))
+                    .and_then(|reason| reason.as_str())
+                    .is_some()
+                {
+                    completed = true;
+                }
                 if let Some(usage) = json.get("usage") {
-                    let input = usage.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                    let output = usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let input = usage
+                        .get("prompt_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output = usage
+                        .get("completion_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
                     if input > 0 || output > 0 {
                         acc.set_usage(input, output);
                     }
@@ -211,27 +246,41 @@ impl OpenAIProvider {
                             for chunk in tc {
                                 let func = chunk.get("function");
                                 acc.push_tool_call_delta(
-                                    chunk.get("index").and_then(|v| v.as_u64()).map(|v| v as usize),
+                                    chunk
+                                        .get("index")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as usize),
                                     chunk.get("id").and_then(|v| v.as_str()),
                                     func.and_then(|f| f.get("name")).and_then(|v| v.as_str()),
-                                    func.and_then(|f| f.get("arguments")).and_then(|v| v.as_str()),
+                                    func.and_then(|f| f.get("arguments"))
+                                        .and_then(|v| v.as_str()),
                                 );
                             }
                         }
                     }
                 }
                 Ok(())
-            }).await?;
+            })
+            .await?;
+            if !completed && !saw_done {
+                return Err(ModelError::IncompleteStream {
+                    partial: acc.content().to_string(),
+                });
+            }
             Ok(acc.finish())
         } else {
             // Non-streaming path
-            let chat_response: ChatResponse = response.json().await
-                .map_err(ModelError::Http)?;
+            let chat_response: ChatResponse = response.json().await.map_err(ModelError::Http)?;
 
-            let choice = chat_response.choices.first()
+            let choice = chat_response
+                .choices
+                .first()
                 .ok_or_else(|| ModelError::Provider("No response choices".to_string()))?;
 
-            let tool_calls = choice.message.tool_calls.as_ref()
+            let tool_calls = choice
+                .message
+                .tool_calls
+                .as_ref()
                 .unwrap_or(&vec![])
                 .iter()
                 .filter_map(|tc| {
@@ -244,13 +293,17 @@ impl OpenAIProvider {
                 })
                 .collect();
 
-            let usage = chat_response.usage.as_ref().map(|u| Usage {
-                input_tokens: u.prompt_tokens,
-                output_tokens: u.completion_tokens,
-            }).unwrap_or(Usage {
-                input_tokens: 0,
-                output_tokens: 0,
-            });
+            let usage = chat_response
+                .usage
+                .as_ref()
+                .map(|u| Usage {
+                    input_tokens: u.prompt_tokens,
+                    output_tokens: u.completion_tokens,
+                })
+                .unwrap_or(Usage {
+                    input_tokens: 0,
+                    output_tokens: 0,
+                });
 
             Ok(ModelResponse {
                 content: choice.message.content.clone(),
@@ -275,7 +328,8 @@ impl ModelProviderTrait for OpenAIProvider {
         temperature: f32,
         max_tokens: u32,
     ) -> Result<ModelResponse, ModelError> {
-        self.send_chat(messages, tools, temperature, max_tokens, false, None, false).await
+        self.send_chat(messages, tools, temperature, max_tokens, false, None, false)
+            .await
     }
 
     async fn complete_stream(
@@ -287,7 +341,16 @@ impl ModelProviderTrait for OpenAIProvider {
         on_delta: DeltaCallback,
         enable_reasoning: bool,
     ) -> Result<ModelResponse, ModelError> {
-        self.send_chat(messages, tools, temperature, max_tokens, true, Some(&on_delta), enable_reasoning).await
+        self.send_chat(
+            messages,
+            tools,
+            temperature,
+            max_tokens,
+            true,
+            Some(&on_delta),
+            enable_reasoning,
+        )
+        .await
     }
 
     fn with_model(mut self: Box<Self>, model_id: String) -> Box<dyn ModelProviderTrait> {
@@ -301,7 +364,8 @@ impl ModelProviderTrait for OpenAIProvider {
             None => return Ok(false),
         };
 
-        let response = self.client
+        let response = self
+            .client
             .get(format!("{}/models", BASE_URL))
             .header("Authorization", format!("Bearer {}", api_key))
             .send()

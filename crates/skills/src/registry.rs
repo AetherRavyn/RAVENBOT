@@ -21,6 +21,7 @@ impl SkillRegistry {
         registry.register(Arc::new(WebSearchSkill::new()));
         registry.register(Arc::new(FileReadSkill::new()));
         registry.register(Arc::new(FileWriteSkill::new()));
+        registry.register(Arc::new(FileEditSkill::new()));
         registry.register(Arc::new(ShellExecSkill::new()));
         registry.register(Arc::new(DelegateSkill::new()));
         registry.register(Arc::new(ScreenshotSkill::new()));
@@ -41,6 +42,7 @@ impl SkillRegistry {
         registry.register(Arc::new(TavilySearchSkill::new()));
         registry.register(Arc::new(MemorySaveSkill::new()));
         registry.register(Arc::new(MemoryRecallSkill::new()));
+        registry.register(Arc::new(SessionSearchSkill::new()));
         registry.register(Arc::new(FileTreeSkill::new()));
         registry.register(Arc::new(CodeEditSkill::new()));
         registry.register(Arc::new(HttpRequestSkill::new()));

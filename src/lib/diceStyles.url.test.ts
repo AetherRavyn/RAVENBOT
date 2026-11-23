@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { getDiceBearUrl } from "$lib/utils";
-import { DICE_STYLES, AVATAR_BACKGROUNDS } from "$lib/diceStyles";
+import { DICE_STYLES, AVATAR_BACKGROUNDS, currentDiceBearUrl } from "$lib/diceStyles";
 
 /**
  * The shape the API accepts, transcribed from its own validator.
@@ -55,6 +55,50 @@ describe("every URL the app can build", () => {
       expect(avatarBg(seed)).toBe(avatarBg(seed));
     }
     expect(AVATAR_BACKGROUNDS.length).toBeGreaterThan(1);
+  });
+});
+
+describe("a stored URL brought up to date", () => {
+  /**
+   * Every agent created before the 10.x upgrade carries a background *list*
+   * from the 9.x API, because that is what the old picker saved. Rebuilding
+   * the URL with the current version used to carry the list forward, and 10.x
+   * answers it with a 400 — a blank avatar in the console, not a visible error.
+   * The office's own agents all have this exact shape.
+   */
+  it("repairs a 9.x background list instead of requesting a 400", () => {
+    const after = currentDiceBearUrl(
+      "https://api.dicebear.com/9.x/bottts/svg?seed=CEO&backgroundColor=6366f1,8b5cf6,06b6d4,ec4899,f59e0b,10b981&radius=50",
+    )!;
+    const bg = new URL(after.url).searchParams.get("backgroundColor") ?? "";
+    expect(after.url).toContain("dicebear.com/10.x/bottts/svg");
+    expect(after.url).not.toContain("%2C");
+    expect(SINGLE_COLOUR.test(bg), `still sent ${JSON.stringify(bg)}`).toBe(true);
+    // The first colour was a real choice; keep it rather than silently
+    // switching the agent's frame.
+    expect(bg).toBe("6366f1");
+  });
+
+  it("is idempotent after repairing the background", () => {
+    const once = currentDiceBearUrl(
+      "https://api.dicebear.com/9.x/lorelei/svg?seed=The%20Raven&backgroundColor=6366f1,8b5cf6",
+    )!;
+    const twice = currentDiceBearUrl(once.url)!;
+    expect(twice.url).toBe(once.url);
+  });
+
+  it("falls back to the agent's palette colour when no stored colour is valid", () => {
+    const after = currentDiceBearUrl(
+      "https://api.dicebear.com/9.x/bottts/svg?seed=CEO&backgroundColor=not-a-colour,also-bad",
+    )!;
+    const bg = new URL(after.url).searchParams.get("backgroundColor")!;
+    expect(SINGLE_COLOUR.test(bg)).toBe(true);
+    expect(AVATAR_BACKGROUNDS).toContain(bg);
+  });
+
+  it("keeps a transparent background transparent when none was requested", () => {
+    const after = currentDiceBearUrl("https://api.dicebear.com/9.x/bottts/svg?seed=Ada")!;
+    expect(new URL(after.url).searchParams.has("backgroundColor")).toBe(false);
   });
 });
 

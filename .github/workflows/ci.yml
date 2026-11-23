@@ -65,6 +65,14 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
+      # The Docker tier is a real container backend, not a fallback. Run the
+      # live test here so a change that breaks mounts, limits, or network
+      # isolation fails CI instead of only a manual check.
+      - name: Docker sandbox live test
+        run: |
+          docker pull alpine:3.20
+          cargo test -p ravenbot-sandbox --lib docker_tier_runs_in_a_real_isolated_container -- --ignored --nocapture
+
       # Report-only for now. The workspace carries a known clippy baseline, so
       # `-D warnings` would keep this job red until that debt is cleared — a
       # permanently failing gate teaches people to ignore CI. Tightening this
@@ -83,7 +91,7 @@ jobs:
       - name: Install frontend dependencies
         run: bun install
 
-      - name: Frontend checks (typecheck + tests)
+      - name: Frontend checks (typecheck + UI gate + tests)
         run: |
           bun run check
           bun run test
@@ -119,3 +127,39 @@ jobs:
         uses: EmbarkStudios/cargo-deny-action@v1
         with:
           command: check all
+
+  # The Linux job executes the real systemd service. These jobs compile and run
+  # the unit/task/account contracts on macOS and Windows, where launchd and Task
+  # Scheduler cannot be exercised safely from a hosted runner. They catch the
+  # platform-specific rendering and path regressions that Linux cannot.
+  platform-contracts:
+    name: Platform contracts (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Service unit contracts
+        run: cargo test -p ravenbot --lib service::tests
+
+      - name: Account contracts
+        run: cargo test -p ravenbot --lib accounts::tests
+
+      - name: Account environment handoff
+        run: cargo test -p ravenbot --test accounts_env

@@ -57,6 +57,87 @@ and explicit:
 The same rules are carried by the tool descriptions themselves, so a model that
 only reads the schema still gets the intended usage.
 
+## Run liveness
+
+A run records `heartbeat_at` and a `phase` at model, tool, approval, and
+checkpoint boundaries. Long model rounds, tool calls, and approval waits hold a
+lease that refreshes the heartbeat every 20 seconds, so a quiet provider call
+does not look like a dead run. Terminal transitions append to `work_events`
+(`run_started`, then `run_completed` / `run_failed` / `run_cancelled`).
+
+Office nodes are bounded by **stall**, not wall clock:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `RAVENBOT_NODE_STALL_SECS` | 1800 | Stop a node whose heartbeat is older than this. |
+| `RAVENBOT_NODE_MAX_SECS` | 8 × stall | Final hard cap even if the heartbeat keeps moving. |
+| `RAVENBOT_NODE_TIMEOUT_SECS` | — | Backward-compatible alias for the stall threshold. |
+
+A slow node that is still streaming, running tools, or waiting on a person is
+left alone; a wedged node stops and reports its phase and last tool.
+
+## Quality gates
+
+A model's `complete` verdict is a claim until the workspace's own commands
+agree. Each office has one persisted completion contract (`goals` +
+`goal_gates`) derived from its mission. The contract names the outcome, the
+stop condition, the reviewed-cycle budget, and up to four custom verification
+commands. Custom commands are checked by the shell-safety policy when saved and
+again when run; a destructive command is refused.
+
+Before the office ends a reviewed turn, RAVENBOT runs the contract's custom
+gates, then detects known project manifests and runs up to two additional
+gates:
+
+| Manifest | Gate |
+|---|---|
+| `Cargo.toml` | `cargo test --quiet` |
+| `package.json` | `npm test`, then `npm run build` (or `npm run check`) |
+| `go.mod` | `go test ./...` |
+
+Node gates run with `CI=1` and `NO_COLOR=1`, so a test runner does not enter
+watch mode. The default per-gate timeout is 600 seconds
+(`RAVENBOT_GATE_TIMEOUT_SECS`).
+
+A red required gate vetoes completion even when the lead said the product was
+done. Its output tail becomes the next cycle's task, which is how "the tests
+fail" turns into work instead of a false finish. Results are persisted in
+`office_gate_runs` with the goal id and posted to the office conversation. A
+missing or unrecognized manifest is not a failure; it is reported as no gate
+detected. Optional custom gates are reported but cannot veto completion.
+
+The contract's `max_turns`, `max_tokens`, and `max_wall_seconds` stop the office
+cycle loop. Tokens are measured from the runs linked to the office (the office
+thread and its node threads), and usage is monotonic. The office re-reads the
+goal before every cycle, so a pause, block, or budget exhausted mid-turn stops
+the next cycle instead of spending past it.
+
+Each reviewed cycle records a strict `done | continue | blocked | wait` verdict,
+its reason, and its turn count. `blocked` and `wait` stop the turn without
+claiming completion; `wait` pauses the goal because there is no process-wait
+support yet. A done goal is not reopened by a late review. Office settings can
+pause, resume, and reopen the goal (a done/failed/cancelled goal can start a new
+mission); a paused goal is refused at the start of the next turn.
+
+## Background tasks
+
+`task_runner` can start a long build, test, or server with `background: true`.
+It returns a `process_id` immediately. The process output is captured to a
+bounded 200k-character tail, and the registry keeps finished entries for 30
+minutes.
+
+- `action: "wait"` with `process_id`, optional `pattern`, and `timeout` releases
+  on process exit, a matching output line, or the timeout.
+- `action: "status"` inspects one process.
+- `action: "processes"` lists this conversation's background processes.
+- `action: "stop"` terminates one.
+
+A background child is owned by a supervisor task with `kill_on_drop`, so closing
+the app does not leave an orphan. The task runs through the same sandbox and
+hard safety policy as a foreground task. Host-tier commands apply CPU, memory,
+and file-size limits but not a user-wide process cap, which would otherwise make
+ordinary `fork` fail on a busy desktop.
+
 ## Office handoff
 
 An office node is not a chat turn. No user is watching it, so `ask_user` is
@@ -75,6 +156,40 @@ bridges context windows.
 A node can also hand work to a teammate through `delegate`. The child inherits
 the office, project roots, autonomy, and live stream emitter, so delegated work
 is visible in the room instead of disappearing behind a tool result.
+
+## Work ledger
+
+Every office plan node is also a durable `work_item` (migration 066), keyed by
+the graph node id. The graph remains the scheduler; the ledger is the readable
+record:
+
+- planned nodes and dependency edges are seeded before execution;
+- a node start atomically claims the item, increments its attempt count, and
+  takes a 15-minute lease; an expired lease is reclaimable by a new run;
+- done, failed, and skipped transitions also write the result/error and append
+  a `work_events` entry;
+- a loop iteration or loop-group reset reopens the item without spending an
+  attempt;
+- comments and artifact paths are appended, never used to rewrite the task.
+
+Changed files from a node's run are attached to its work item as artifacts
+from the `file_changes` journal, so the drawer lists what the run actually
+produced without trusting prose. The office board opens a task-detail drawer. It reads the item with
+`get_work_item`, appends notes with `add_work_comment`, and exposes
+`retry_work_item`, `block_work_item`, `unblock_work_item`,
+`request_work_review`, `request_work_changes`, and `approve_work_review`.
+
+Retry, unblock, and request-changes reopen the item's saved graph: the target
+node and every descendant are reset to pending, their blackboard outputs are
+cleared, and the office resumes. Completed upstream work is kept. The reviewer
+comment is written into the implementer's thread as a `[Rework requested]`
+message, so the next run sees it.
+
+After a graph finishes, its items are projected into the workspace's
+`Shared/STATUS.md` between `<!-- ravenbot:work-ledger:begin -->` and
+`<!-- ravenbot:work-ledger:end -->`. Everything the agents wrote outside those
+markers is preserved. The SQLite ledger is authoritative; the file is a
+projection for the next agent and the human reading the folder.
 
 ## Visual output and skills
 
@@ -123,6 +238,20 @@ heartbeat starts a turn only when the office is idle and its previous turn is
 old enough, so a crash or a long provider call cannot stack turns on top of each
 other.
 
+- **Multi-cycle turn.** A vague "continue" request, an autonomous heartbeat, or
+  a cycle with failed tasks runs up to four plan→execute→synthesize cycles
+  (`RAVENBOT_OFFICE_CYCLES`, 1–8). The lead reviews product completion after
+  each cycle; a software goal gets a forced verification/continuation cycle
+  after its first milestone even if every task says done. The turn stops on
+  verified completion, the cycle cap, two cycles without a workspace change,
+  budget exhaustion, a queued user message, or a cancel.
+- **Graph resume.** Each cycle's `TaskGraph` is snapshotted to
+  `office_graphs` while it runs. On startup, the saved graph is restored,
+  completed nodes keep their outputs, and only nodes that were interrupted are
+  rescheduled. A node whose run has a checkpoint resumes that exact run and
+  replays its in-flight tool results; a node without a checkpoint falls back to
+  its thread with a resume note. This avoids replanning finished work and avoids
+  starting the interrupted task from scratch.
 - **Budget ceiling.** `ChatRoom.budget` is enforced against the per-office,
   per-member spend since the first of the month. Each member's prior lifetime
   usage is its baseline; a shared bot's spend in another office does not count.
@@ -141,10 +270,29 @@ other.
   persisted in `office_queue` and starts as soon as the active turn releases
   the office. FIFO order, pause/resume, cancel, and restart survival are
   enforced by the queue worker; autonomy yields while a user queue is pending.
+- **Context handoff.** Compaction keeps the system prompt plus a token-budgeted
+  tail and replaces the dropped middle with a structured summary: task/goal,
+  current request, file paths, tools/commands, errors, and earlier context. Tool
+  call/result pairs are never split. The handoff is persisted with the last
+  core message it covers (`context_summaries`, `threads.context_floor_message_id`),
+  and a later run replays `summary + messages after the floor`. The core-message
+  mapping travels with the model messages, so the floor is the last message the
+  summary actually covers. This keeps a long project's state usable without an
+  extra model call and without re-reading the whole transcript.
+- **Micro-compaction.** Before dropping any message, old tool results outside
+  the newest twelve rows are replaced in place with a one-line recovery
+  pointer. A tool call keeps a result, the conversation structure survives, and
+  a build log from six rounds ago stops consuming the window. If stubbing is
+  enough, no summary is created; if it is not, the full handoff runs on the
+  original messages so tool detail is not lost from the summary.
+- **Session search.** The durable transcript is indexed with FTS5. The
+  read-only `session_search` tool returns ranked snippets with
+  `>>>match<<<` markers (and can be scoped to one thread), so an agent can
+  recover a decision, path, command, or error that compaction summarized away.
 - **Context meter.** Every model round emits an estimated context-window usage.
   The composer warns at 80% and 95%; a click requests a one-shot manual
   compaction on the next run.
-- **Tool budget.** Office-style work defaults to twenty model↔tool rounds
+- **Tool budget.** Office-style work defaults to forty model↔tool rounds
   (configurable per bot or via `RAVENBOT_MAX_TOOL_ROUNDS`). When the budget is
   exhausted the node returns a progress report, is marked partial, and its
   dependents are skipped rather than built on an unfinished artifact.
@@ -210,3 +358,11 @@ The runtime is tested at the harness boundary, not just the happy path:
 - <https://github.com/deepseek-ai/deepseek-harness>
 - <https://github.com/anomalyco/opencode>
 - <https://github.com/xai-org/grok-build>
+
+## Beyond this harness
+
+This document describes the current bounded-turn office. The next layer —
+durable per-task execution, structured context handoff, completion contracts,
+background delegation, and curated memory/skills — is planned in
+[`LONG-AGENTIC-WORK-PLAN.md`](LONG-AGENTIC-WORK-PLAN.md). The plan is explicit
+about what exists, what is missing, and which phase must land before the next.

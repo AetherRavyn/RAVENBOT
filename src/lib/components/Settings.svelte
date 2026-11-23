@@ -4,6 +4,10 @@
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import RunsPanel from "$lib/components/RunsPanel.svelte";
+  import AuditLogPanel from "$lib/components/AuditLogPanel.svelte";
+  import NotificationSettings from "$lib/components/NotificationSettings.svelte";
+  import BrowserProfilesPanel from "$lib/components/BrowserProfilesPanel.svelte";
+  import MemoryEmbeddingSettings from "$lib/components/MemoryEmbeddingSettings.svelte";
   import * as Dialog from "$lib/components/ui/dialog";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -14,6 +18,7 @@
   import { getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition, THEMES } from "$lib/theme";
   import { setLocale, getAvailableLocales, localeState, type Locale } from "$lib/i18n";
   import { t } from "$lib/i18n";
+  import { openExternal } from "$lib/external";
   import ThemeLogo from "$lib/components/ThemeLogo.svelte";
   import ConnectorCenter from "$lib/components/ConnectorCenter.svelte";
   import LocalSkillsPanel from "$lib/components/LocalSkillsPanel.svelte";
@@ -30,7 +35,7 @@
     Loader2, Wifi, WifiOff, RefreshCw, AlertCircle, Zap, Layers,
     DollarSign, Shield, BookOpen, Settings, ChevronRight, Sparkles,
     Cpu, Globe, Lock, Unlock, Trash2, ExternalLink, X, Plug, Plus,
-    Activity, BarChart3, Bot, Search,
+    Activity, BarChart3, Bell, Bot, Brain, Search, Power, MessageSquare, LogOut,
   } from "@lucide/svelte";
 
   interface Props {
@@ -91,21 +96,48 @@
   let providersBadge = $derived(`${catalog.length}`);
   let curatedModelCount = $derived(catalog.reduce((s, p) => s + p.fallback_models.length, 0));
 
-  const navSections = $derived<NavSection[]>([
+  const navSections = $derived<NavSection[]>(([
     { id: "providers", label: t("settings.navProviders"), icon: Key, color: "text-[var(--brand-text)]", keywords: "api key keys provider token connect model" },
     { id: "connectors", label: t("ui.connectors"), icon: Layers, badge: "135+", color: "text-[var(--brand-text)]", keywords: "mcp connectors integrations tools servers" },
     { id: "models", label: t("settings.navModels"), icon: Cpu, badge: t("settings.live"), color: "text-warning", keywords: "model manager ai context provider" },
+    { id: "agent", label: t("settings.navDefaultAgent"), icon: Bot, color: "text-[var(--brand-text)]", keywords: "default agent raven office architect designer primary" },
     { id: "skills", label: t("settings.navSkills"), icon: Sparkles, color: "text-[var(--brand-text)]", keywords: "skills local capability marketplace" },
+    { id: "memory", label: t("memoryEmbedding.nav"), icon: Brain, color: "text-[var(--brand-text)]", keywords: "memory embeddings ollama openai semantic rag reindex" },
     { id: "budgets", label: t("settings.navBudgets"), icon: DollarSign, color: "text-success", keywords: "budget cost spend usage limit" },
     { id: "usage", label: t("settings.navUsage"), icon: BarChart3, color: "text-success", keywords: "usage cost tokens spend runs" },
+    { id: "remote", label: t("settings.navRemote"), icon: Globe, color: "text-info", keywords: "remote mobile phone pair token rbac role lan service" },
+    { id: "chatapps", label: t("settings.navChatApps"), icon: MessageSquare, color: "text-info", keywords: "telegram chat bot native messaging pair" },
     { id: "diagnostics", label: "Diagnostics", icon: Activity, color: "text-[var(--text-tertiary)]", keywords: "runs errors logs audit" },
+    { id: "notifications", label: t("notifications.nav"), icon: Bell, color: "text-[var(--brand-text)]", keywords: "notifications desktop alerts system" },
+    { id: "browser", label: t("browserProfiles.nav"), icon: Globe, color: "text-[var(--brand-text)]", keywords: "browser profiles cookies sessions web" },
     { id: "profile", label: t("settings.navProfile"), icon: User, color: "text-[var(--brand-text)]", keywords: "profile avatar name identity" },
     { id: "themes", label: t("settings.navThemes"), icon: Palette, color: "text-info", keywords: "theme appearance dark light color" },
-    { id: "local", label: t("settings.navLocal"), icon: Server, color: "text-success", keywords: "local ollama endpoint offline" },
+    { id: "local", label: t("settings.navLocal"), icon: Server, color: "text-success", keywords: "local ollama endpoint offline background service systemd launchd daemon hidden login" },
     { id: "about", label: t("settings.about"), icon: Info, color: "text-[var(--text-tertiary)]", keywords: "about version update release" },
-  ]);
+  ]).filter((section) =>
+    !currentAccount || currentAccount.role === "owner" || section.id === "profile" || section.id === "about"
+  ));
 
-  let activeSection = $state("providers");
+  const SETTINGS_SECTION_KEY = "raven.settingsSection";
+  let activeSection = $state(
+    (() => {
+      try {
+        return localStorage.getItem(SETTINGS_SECTION_KEY) || "providers";
+      } catch {
+        return "providers";
+      }
+    })(),
+  );
+  let lastInitialSection = "";
+
+  function selectSection(id: string) {
+    activeSection = id;
+    try {
+      localStorage.setItem(SETTINGS_SECTION_KEY, id);
+    } catch {
+      /* storage unavailable */
+    }
+  }
   let searchQuery = $state("");
   let sectionQuery = $state("");
   let filteredSections = $derived(
@@ -130,6 +162,7 @@
   let budgetKind = $state<"unlimited" | "tokens" | "cost">("unlimited");
   let budgetMax = $state<number | null>(null);
   let budgetPeriod = $state("total");
+  let budgetBehavior = $state("hard_stop");
 
   // ── Profile state ───────────────────────────────────────────────────────────
   let currentTheme = $state<ThemeDefinition>(getStoredTheme());
@@ -142,6 +175,90 @@
   let ollamaUrl = $state("http://localhost:11434");
   let ollamaProbe = $state<any>(null);
   let ollamaProbing = $state(false);
+  let autostartEnabled = $state(false);
+  let autostartBusy = $state(false);
+  let allowPrivateNetwork = $state(false);
+  let privateNetworkBusy = $state(false);
+  let serviceStatus = $state<any>(null);
+  let serviceBusy = $state(false);
+  let serviceError = $state<string | null>(null);
+  let remoteStatus = $state<any>(null);
+  let remoteBusy = $state(false);
+  let remoteError = $state<string | null>(null);
+  let remoteSaved = $state(false);
+  let remotePort = $state(8790);
+  let remoteAllowLan = $state(false);
+  let remoteTls = $state(false);
+  let remoteRole = $state("viewer");
+  let remotePairing = $state<any>(null);
+  let telegramStatus = $state<any>(null);
+  let telegramEnabled = $state(false);
+  let telegramToken = $state("");
+  let telegramDefaultBot = $state("");
+  let telegramBusy = $state(false);
+  let telegramError = $state<string | null>(null);
+  let telegramSaved = $state(false);
+  let telegramPairing = $state<any>(null);
+  let slackStatus = $state<any>(null);
+  let slackEnabled = $state(false);
+  let slackAppToken = $state("");
+  let slackBotToken = $state("");
+  let slackDefaultBot = $state("");
+  let slackBusy = $state(false);
+  let slackError = $state<string | null>(null);
+  let slackSaved = $state(false);
+  let slackPairing = $state<any>(null);
+  let discordStatus = $state<any>(null);
+  let discordEnabled = $state(false);
+  let discordToken = $state("");
+  let discordDefaultBot = $state("");
+  let discordBusy = $state(false);
+  let discordError = $state<string | null>(null);
+  let discordSaved = $state(false);
+  let discordPairing = $state<any>(null);
+  let whatsappStatus = $state<any>(null);
+  let whatsappEnabled = $state(false);
+  let whatsappToken = $state("");
+  let whatsappAppSecret = $state("");
+  let whatsappVerifyToken = $state("");
+  let whatsappPhoneId = $state("");
+  let whatsappDefaultBot = $state("");
+  let whatsappBusy = $state(false);
+  let whatsappError = $state<string | null>(null);
+  let whatsappSaved = $state(false);
+  let whatsappPairing = $state<any>(null);
+  let teamsStatus = $state<any>(null);
+  let teamsEnabled = $state(false);
+  let teamsAppId = $state("");
+  let teamsPassword = $state("");
+  let teamsTenants = $state("");
+  let teamsDefaultBot = $state("");
+  let teamsBusy = $state(false);
+  let teamsError = $state<string | null>(null);
+  let teamsSaved = $state(false);
+  let teamsPairing = $state<any>(null);
+  let currentAccount = $state<any>(null);
+  let accountBusy = $state(false);
+  let accountError = $state<string | null>(null);
+  let workspaceGrants = $state<[string, string][]>([]);
+  let grantUsername = $state("");
+  let grantRole = $state("viewer");
+  let grantBusy = $state(false);
+  let grantError = $state<string | null>(null);
+  const PAID_TOOL_KEYS = [
+    "tavily_search",
+    "image_gen",
+    "voice_input",
+    "voice_output",
+    "api_tester",
+    "http_request",
+    "web_search",
+    "arxiv",
+    "youtube",
+  ];
+  let toolPrices = $state<Record<string, string>>({});
+  let toolPricesSaving = $state(false);
+  let toolPricesSaved = $state(false);
   let ollamaSaving = $state(false);
   let ollamaSaved = $state(false);
   let ollamaError = $state<string | null>(null);
@@ -318,7 +435,10 @@
   $effect(() => {
     if (open) {
       sectionQuery = "";
-      if (initialSection) activeSection = mapSection(initialSection);
+      if (initialSection && initialSection !== lastInitialSection) {
+        lastInitialSection = initialSection;
+        selectSection(mapSection(initialSection));
+      }
       // Catalog first (everything else keys off it), then keys + ollama.
       getCatalog().then((list) => {
         catalog = list;
@@ -327,6 +447,17 @@
         }
         loadConfiguredProviders().then(refreshConfiguredModels);
         loadOllamaUrl();
+        loadAutostart();
+        loadServiceStatus();
+        loadRemoteStatus();
+        loadTelegramStatus();
+        loadSlackStatus();
+        loadDiscordStatus();
+        loadWhatsAppStatus();
+        loadTeamsStatus();
+        loadCurrentAccount();
+        loadPrivateNetworkPolicy();
+        loadToolPrices();
         loadDefaultModel();
         loadDefaultAgent();
         loadCustomProviders();
@@ -488,6 +619,793 @@
     } catch { /* default stands */ }
   }
 
+  async function loadAutostart() {
+    try {
+      autostartEnabled = await invoke<boolean>("get_autostart_enabled");
+    } catch {
+      autostartEnabled = false;
+    }
+  }
+
+  async function loadServiceStatus() {
+    try {
+      serviceStatus = await invoke("get_service_status");
+    } catch (e) {
+      serviceStatus = null;
+      serviceError = String(e);
+    }
+  }
+
+  async function loadRemoteStatus() {
+    try {
+      remoteStatus = await invoke("get_remote_status");
+      remotePort = remoteStatus?.port || 8790;
+      remoteAllowLan = Boolean(remoteStatus?.allow_lan);
+      remoteTls = Boolean(remoteStatus?.tls);
+    } catch (e) {
+      remoteStatus = null;
+      remoteError = String(e);
+    }
+  }
+
+  async function saveRemoteAccess(enabled = Boolean(remoteStatus?.enabled)) {
+    if (remoteBusy) return;
+    remoteBusy = true;
+    remoteError = null;
+    remoteSaved = false;
+    try {
+      remoteStatus = await invoke("configure_remote_access", {
+        enabled,
+        port: Number(remotePort) || 8790,
+        allowLan: remoteAllowLan,
+        tls: remoteTls,
+      });
+      remotePort = remoteStatus?.port || remotePort;
+      remoteAllowLan = Boolean(remoteStatus?.allow_lan);
+      remoteTls = Boolean(remoteStatus?.tls);
+      if (!remoteStatus?.running) remotePairing = null;
+      remoteSaved = true;
+      setTimeout(() => (remoteSaved = false), 1600);
+    } catch (e) {
+      remoteError = String(e);
+      await loadRemoteStatus();
+    } finally {
+      remoteBusy = false;
+    }
+  }
+
+  async function generatePairing() {
+    if (remoteBusy) return;
+    remoteBusy = true;
+    remoteError = null;
+    try {
+      remotePairing = await invoke("create_remote_pairing", { role: remoteRole });
+    } catch (e) {
+      remoteError = String(e);
+    } finally {
+      remoteBusy = false;
+    }
+  }
+
+  async function revokeRemoteDevice(deviceId: string) {
+    if (remoteBusy) return;
+    if (!confirm(t("settings.remoteRevokeConfirm"))) return;
+    remoteBusy = true;
+    remoteError = null;
+    try {
+      await invoke("revoke_remote_device", { deviceId });
+      await loadRemoteStatus();
+    } catch (e) {
+      remoteError = String(e);
+    } finally {
+      remoteBusy = false;
+    }
+  }
+
+  async function copyPairingCode() {
+    if (!remotePairing?.code) return;
+    try {
+      await navigator.clipboard.writeText(remotePairing.code);
+      remoteSaved = true;
+      setTimeout(() => (remoteSaved = false), 1200);
+    } catch {
+      /* clipboard unavailable; the code is still visible */
+    }
+  }
+
+  function remoteTime(value: string | null | undefined): string {
+    if (!value) return "—";
+    const normalized = value.includes("T")
+      ? value
+      : `${value.replace(" ", "T")}Z`;
+    const date = new Date(normalized);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  }
+
+  async function loadTelegramStatus() {
+    try {
+      telegramStatus = await invoke("get_telegram_status");
+      telegramEnabled = Boolean(telegramStatus?.enabled);
+      telegramDefaultBot = telegramStatus?.default_bot || "";
+    } catch (e) {
+      telegramStatus = null;
+      telegramError = String(e);
+    }
+  }
+
+  async function saveTelegram() {
+    if (telegramBusy) return;
+    telegramBusy = true;
+    telegramError = null;
+    telegramSaved = false;
+    try {
+      telegramStatus = await invoke("set_telegram_config", {
+        enabled: telegramEnabled,
+        token: telegramToken.trim() ? telegramToken.trim() : null,
+        defaultBot: telegramDefaultBot || "00000000-0000-0000-0000-000000000000",
+      });
+      telegramEnabled = Boolean(telegramStatus?.enabled);
+      telegramDefaultBot = telegramStatus?.default_bot || "";
+      telegramToken = "";
+      if (!telegramEnabled) telegramPairing = null;
+      telegramSaved = true;
+      setTimeout(() => (telegramSaved = false), 1600);
+    } catch (e) {
+      telegramError = String(e);
+      await loadTelegramStatus();
+    } finally {
+      telegramBusy = false;
+    }
+  }
+
+  async function removeTelegramToken() {
+    if (telegramBusy) return;
+    if (!confirm(t("settings.telegramRemoveTokenConfirm"))) return;
+    telegramBusy = true;
+    telegramError = null;
+    try {
+      telegramStatus = await invoke("set_telegram_config", {
+        enabled: false,
+        token: "",
+        defaultBot: telegramDefaultBot || null,
+      });
+      telegramEnabled = false;
+      telegramToken = "";
+    } catch (e) {
+      telegramError = String(e);
+    } finally {
+      telegramBusy = false;
+    }
+  }
+
+  async function createTelegramPairing() {
+    if (telegramBusy) return;
+    telegramBusy = true;
+    telegramError = null;
+    try {
+      telegramPairing = await invoke("create_telegram_pairing", {
+        botId: telegramDefaultBot || null,
+      });
+    } catch (e) {
+      telegramError = String(e);
+    } finally {
+      telegramBusy = false;
+    }
+  }
+
+  async function unlinkTelegramChat(chatId: string) {
+    if (telegramBusy) return;
+    if (!confirm(t("settings.telegramUnlinkConfirm"))) return;
+    telegramBusy = true;
+    telegramError = null;
+    try {
+      await invoke("unlink_telegram_chat", { chatId });
+      await loadTelegramStatus();
+    } catch (e) {
+      telegramError = String(e);
+    } finally {
+      telegramBusy = false;
+    }
+  }
+
+  function telegramBotName(botId: string): string {
+    return bots.find((bot: any) => bot.id === botId)?.name || botId.slice(0, 8);
+  }
+
+  async function loadSlackStatus() {
+    try {
+      slackStatus = await invoke("get_slack_status");
+      slackEnabled = Boolean(slackStatus?.enabled);
+      slackDefaultBot = slackStatus?.default_bot || "";
+    } catch (e) {
+      slackStatus = null;
+      slackError = String(e);
+    }
+  }
+
+  async function saveSlack() {
+    if (slackBusy) return;
+    slackBusy = true;
+    slackError = null;
+    slackSaved = false;
+    try {
+      slackStatus = await invoke("set_slack_config", {
+        enabled: slackEnabled,
+        appToken: slackAppToken.trim() ? slackAppToken.trim() : null,
+        botToken: slackBotToken.trim() ? slackBotToken.trim() : null,
+        defaultBot: slackDefaultBot || "00000000-0000-0000-0000-000000000000",
+      });
+      slackEnabled = Boolean(slackStatus?.enabled);
+      slackDefaultBot = slackStatus?.default_bot || "";
+      slackAppToken = "";
+      slackBotToken = "";
+      if (!slackEnabled) slackPairing = null;
+      slackSaved = true;
+      setTimeout(() => (slackSaved = false), 1600);
+    } catch (e) {
+      slackError = String(e);
+      await loadSlackStatus();
+    } finally {
+      slackBusy = false;
+    }
+  }
+
+  async function removeSlackTokens() {
+    if (slackBusy) return;
+    if (!confirm(t("settings.slackRemoveTokensConfirm"))) return;
+    slackBusy = true;
+    slackError = null;
+    try {
+      slackStatus = await invoke("set_slack_config", {
+        enabled: false,
+        appToken: "",
+        botToken: "",
+        defaultBot: slackDefaultBot || "00000000-0000-0000-0000-000000000000",
+      });
+      slackEnabled = false;
+      slackAppToken = "";
+      slackBotToken = "";
+      slackPairing = null;
+    } catch (e) {
+      slackError = String(e);
+    } finally {
+      slackBusy = false;
+    }
+  }
+
+  async function createSlackPairing() {
+    if (slackBusy) return;
+    slackBusy = true;
+    slackError = null;
+    try {
+      slackPairing = await invoke("create_slack_pairing", {
+        botId: slackDefaultBot || null,
+      });
+    } catch (e) {
+      slackError = String(e);
+    } finally {
+      slackBusy = false;
+    }
+  }
+
+  async function unlinkSlackChannel(channelId: string) {
+    if (slackBusy) return;
+    if (!confirm(t("settings.slackUnlinkConfirm"))) return;
+    slackBusy = true;
+    slackError = null;
+    try {
+      await invoke("unlink_slack_channel", { channelId });
+      await loadSlackStatus();
+    } catch (e) {
+      slackError = String(e);
+    } finally {
+      slackBusy = false;
+    }
+  }
+
+  function slackBotName(botId: string): string {
+    return bots.find((bot: any) => bot.id === botId)?.name || botId.slice(0, 8);
+  }
+
+  async function loadDiscordStatus() {
+    try {
+      discordStatus = await invoke("get_discord_status");
+      discordEnabled = Boolean(discordStatus?.enabled);
+      discordDefaultBot = discordStatus?.default_bot || "";
+    } catch (e) {
+      discordStatus = null;
+      discordError = String(e);
+    }
+  }
+
+  async function saveDiscord() {
+    if (discordBusy) return;
+    discordBusy = true;
+    discordError = null;
+    discordSaved = false;
+    try {
+      discordStatus = await invoke("set_discord_config", {
+        enabled: discordEnabled,
+        token: discordToken.trim() ? discordToken.trim() : null,
+        defaultBot: discordDefaultBot || "00000000-0000-0000-0000-000000000000",
+      });
+      discordEnabled = Boolean(discordStatus?.enabled);
+      discordDefaultBot = discordStatus?.default_bot || "";
+      discordToken = "";
+      if (!discordEnabled) discordPairing = null;
+      discordSaved = true;
+      setTimeout(() => (discordSaved = false), 1600);
+    } catch (e) {
+      discordError = String(e);
+      await loadDiscordStatus();
+    } finally {
+      discordBusy = false;
+    }
+  }
+
+  async function removeDiscordToken() {
+    if (discordBusy) return;
+    if (!confirm(t("settings.discordRemoveTokenConfirm"))) return;
+    discordBusy = true;
+    discordError = null;
+    try {
+      discordStatus = await invoke("set_discord_config", {
+        enabled: false,
+        token: "",
+        defaultBot: discordDefaultBot || "00000000-0000-0000-0000-000000000000",
+      });
+      discordEnabled = false;
+      discordToken = "";
+      discordPairing = null;
+    } catch (e) {
+      discordError = String(e);
+    } finally {
+      discordBusy = false;
+    }
+  }
+
+  async function createDiscordPairing() {
+    if (discordBusy) return;
+    discordBusy = true;
+    discordError = null;
+    try {
+      discordPairing = await invoke("create_discord_pairing", {
+        botId: discordDefaultBot || null,
+      });
+    } catch (e) {
+      discordError = String(e);
+    } finally {
+      discordBusy = false;
+    }
+  }
+
+  async function unlinkDiscordChannel(channelId: string) {
+    if (discordBusy) return;
+    if (!confirm(t("settings.discordUnlinkConfirm"))) return;
+    discordBusy = true;
+    discordError = null;
+    try {
+      await invoke("unlink_discord_channel", { channelId });
+      await loadDiscordStatus();
+    } catch (e) {
+      discordError = String(e);
+    } finally {
+      discordBusy = false;
+    }
+  }
+
+  function discordBotName(botId: string): string {
+    return bots.find((bot: any) => bot.id === botId)?.name || botId.slice(0, 8);
+  }
+
+  async function loadWhatsAppStatus() {
+    try {
+      whatsappStatus = await invoke("get_whatsapp_status");
+      whatsappEnabled = Boolean(whatsappStatus?.enabled);
+      whatsappDefaultBot = whatsappStatus?.default_bot || "";
+      whatsappPhoneId = whatsappStatus?.phone_number_id || "";
+    } catch (e) {
+      whatsappStatus = null;
+      whatsappError = String(e);
+    }
+  }
+
+  async function saveWhatsApp() {
+    if (whatsappBusy) return;
+    whatsappBusy = true;
+    whatsappError = null;
+    whatsappSaved = false;
+    try {
+      whatsappStatus = await invoke("set_whatsapp_config", {
+        enabled: whatsappEnabled,
+        token: whatsappToken.trim() ? whatsappToken.trim() : null,
+        appSecret: whatsappAppSecret.trim() ? whatsappAppSecret.trim() : null,
+        verifyToken: whatsappVerifyToken.trim() ? whatsappVerifyToken.trim() : null,
+        phoneNumberId: whatsappPhoneId.trim() ? whatsappPhoneId.trim() : "",
+        defaultBot: whatsappDefaultBot || "00000000-0000-0000-0000-000000000000",
+      });
+      whatsappEnabled = Boolean(whatsappStatus?.enabled);
+      whatsappDefaultBot = whatsappStatus?.default_bot || "";
+      whatsappPhoneId = whatsappStatus?.phone_number_id || "";
+      whatsappToken = "";
+      whatsappAppSecret = "";
+      whatsappVerifyToken = "";
+      if (!whatsappEnabled) whatsappPairing = null;
+      whatsappSaved = true;
+      setTimeout(() => (whatsappSaved = false), 1600);
+    } catch (e) {
+      whatsappError = String(e);
+      await loadWhatsAppStatus();
+    } finally {
+      whatsappBusy = false;
+    }
+  }
+
+  async function removeWhatsAppConfig() {
+    if (whatsappBusy) return;
+    if (!confirm(t("settings.whatsappRemoveConfirm"))) return;
+    whatsappBusy = true;
+    whatsappError = null;
+    try {
+      whatsappStatus = await invoke("set_whatsapp_config", {
+        enabled: false,
+        token: "",
+        appSecret: "",
+        verifyToken: "",
+        phoneNumberId: "",
+        defaultBot: whatsappDefaultBot || "00000000-0000-0000-0000-000000000000",
+      });
+      whatsappEnabled = false;
+      whatsappToken = "";
+      whatsappAppSecret = "";
+      whatsappVerifyToken = "";
+      whatsappPhoneId = "";
+      whatsappPairing = null;
+    } catch (e) {
+      whatsappError = String(e);
+    } finally {
+      whatsappBusy = false;
+    }
+  }
+
+  async function createWhatsAppPairing() {
+    if (whatsappBusy) return;
+    whatsappBusy = true;
+    whatsappError = null;
+    try {
+      whatsappPairing = await invoke("create_whatsapp_pairing", {
+        botId: whatsappDefaultBot || null,
+      });
+    } catch (e) {
+      whatsappError = String(e);
+    } finally {
+      whatsappBusy = false;
+    }
+  }
+
+  async function unlinkWhatsAppNumber(waId: string) {
+    if (whatsappBusy) return;
+    if (!confirm(t("settings.whatsappUnlinkConfirm"))) return;
+    whatsappBusy = true;
+    whatsappError = null;
+    try {
+      await invoke("unlink_whatsapp_number", { waId });
+      await loadWhatsAppStatus();
+    } catch (e) {
+      whatsappError = String(e);
+    } finally {
+      whatsappBusy = false;
+    }
+  }
+
+  function whatsappBotName(botId: string): string {
+    return bots.find((bot: any) => bot.id === botId)?.name || botId.slice(0, 8);
+  }
+
+  async function loadTeamsStatus() {
+    try {
+      teamsStatus = await invoke("get_teams_status");
+      teamsEnabled = Boolean(teamsStatus?.enabled);
+      teamsAppId = teamsStatus?.app_id || "";
+      teamsTenants = (teamsStatus?.tenants || []).join(", ");
+      teamsDefaultBot = teamsStatus?.default_bot || "";
+    } catch (e) {
+      teamsStatus = null;
+      teamsError = String(e);
+    }
+  }
+
+  async function saveTeams() {
+    if (teamsBusy) return;
+    teamsBusy = true;
+    teamsError = null;
+    teamsSaved = false;
+    try {
+      teamsStatus = await invoke("set_teams_config", {
+        enabled: teamsEnabled,
+        appId: teamsAppId.trim() ? teamsAppId.trim() : "",
+        appPassword: teamsPassword.trim() ? teamsPassword.trim() : null,
+        tenants: teamsTenants.trim() ? teamsTenants.trim() : "",
+        defaultBot: teamsDefaultBot || "00000000-0000-0000-0000-000000000000",
+      });
+      teamsEnabled = Boolean(teamsStatus?.enabled);
+      teamsAppId = teamsStatus?.app_id || "";
+      teamsTenants = (teamsStatus?.tenants || []).join(", ");
+      teamsDefaultBot = teamsStatus?.default_bot || "";
+      teamsPassword = "";
+      if (!teamsEnabled) teamsPairing = null;
+      teamsSaved = true;
+      setTimeout(() => (teamsSaved = false), 1600);
+    } catch (e) {
+      teamsError = String(e);
+      await loadTeamsStatus();
+    } finally {
+      teamsBusy = false;
+    }
+  }
+
+  async function removeTeamsConfig() {
+    if (teamsBusy) return;
+    if (!confirm(t("settings.teamsRemoveConfirm"))) return;
+    teamsBusy = true;
+    teamsError = null;
+    try {
+      teamsStatus = await invoke("set_teams_config", {
+        enabled: false,
+        appId: "",
+        appPassword: "",
+        tenants: "",
+        defaultBot: teamsDefaultBot || "00000000-0000-0000-0000-000000000000",
+      });
+      teamsEnabled = false;
+      teamsAppId = "";
+      teamsPassword = "";
+      teamsTenants = "";
+      teamsPairing = null;
+    } catch (e) {
+      teamsError = String(e);
+    } finally {
+      teamsBusy = false;
+    }
+  }
+
+  async function createTeamsPairing() {
+    if (teamsBusy) return;
+    teamsBusy = true;
+    teamsError = null;
+    try {
+      teamsPairing = await invoke("create_teams_pairing", {
+        botId: teamsDefaultBot || null,
+      });
+    } catch (e) {
+      teamsError = String(e);
+    } finally {
+      teamsBusy = false;
+    }
+  }
+
+  async function unlinkTeamsConversation(conversationId: string) {
+    if (teamsBusy) return;
+    if (!confirm(t("settings.teamsUnlinkConfirm"))) return;
+    teamsBusy = true;
+    teamsError = null;
+    try {
+      await invoke("unlink_teams_conversation", { conversationId });
+      await loadTeamsStatus();
+    } catch (e) {
+      teamsError = String(e);
+    } finally {
+      teamsBusy = false;
+    }
+  }
+
+  function accountRoleLabel(role: string | undefined): string {
+    if (role === "operator") return t("settings.accountRoleOperator");
+    if (role === "viewer") return t("settings.accountRoleViewer");
+    return t("settings.accountRoleOwner");
+  }
+
+  function teamsBotName(botId: string): string {
+    return bots.find((bot: any) => bot.id === botId)?.name || botId.slice(0, 8);
+  }
+
+  async function loadCurrentAccount() {
+    try {
+      currentAccount = await invoke("get_current_account");
+      if (currentAccount?.role && currentAccount.role !== "owner") {
+        activeSection = "profile";
+      } else if (currentAccount?.role === "owner") {
+        loadWorkspaceGrants();
+      }
+    } catch (e) {
+      currentAccount = null;
+      accountError = String(e);
+    }
+  }
+
+  async function loadWorkspaceGrants() {
+    try {
+      workspaceGrants = await invoke("list_workspace_grants");
+      grantError = null;
+    } catch (e) {
+      workspaceGrants = [];
+      grantError = String(e);
+    }
+  }
+
+  async function grantWorkspaceAccess() {
+    const username = grantUsername.trim();
+    if (!username || grantBusy) return;
+    grantBusy = true;
+    grantError = null;
+    try {
+      await invoke("grant_workspace_access", { username, role: grantRole });
+      grantUsername = "";
+      await loadWorkspaceGrants();
+    } catch (e) {
+      grantError = String(e);
+    } finally {
+      grantBusy = false;
+    }
+  }
+
+  async function revokeWorkspaceAccess(username: string) {
+    if (grantBusy) return;
+    if (!confirm(t("settings.workspaceGrantConfirm", { username }))) return;
+    grantBusy = true;
+    grantError = null;
+    try {
+      await invoke("revoke_workspace_access", { username });
+      await loadWorkspaceGrants();
+    } catch (e) {
+      grantError = String(e);
+    } finally {
+      grantBusy = false;
+    }
+  }
+
+  async function logoutAccount() {
+    if (accountBusy) return;
+    if (!confirm(t("settings.accountLogoutConfirm"))) return;
+    accountBusy = true;
+    accountError = null;
+    try {
+      await invoke("logout_account");
+    } catch (e) {
+      accountError = String(e);
+      accountBusy = false;
+    }
+  }
+
+  async function installService() {
+    if (serviceBusy) return;
+    serviceBusy = true;
+    serviceError = null;
+    try {
+      serviceStatus = await invoke("install_background_service");
+      // The backend disables the plain login item so only one launcher runs.
+      autostartEnabled = false;
+    } catch (e) {
+      serviceError = String(e);
+    } finally {
+      serviceBusy = false;
+    }
+  }
+
+  async function uninstallService() {
+    if (serviceBusy) return;
+    if (!confirm(t("settings.backgroundUninstallConfirm"))) return;
+    serviceBusy = true;
+    serviceError = null;
+    try {
+      serviceStatus = await invoke("uninstall_background_service");
+    } catch (e) {
+      serviceError = String(e);
+    } finally {
+      serviceBusy = false;
+    }
+  }
+
+  async function toggleServiceLinger() {
+    if (serviceBusy || !serviceStatus) return;
+    serviceBusy = true;
+    serviceError = null;
+    try {
+      serviceStatus = await invoke("set_background_service_linger", {
+        enabled: !serviceStatus.linger,
+      });
+    } catch (e) {
+      serviceError = String(e);
+    } finally {
+      serviceBusy = false;
+    }
+  }
+
+  async function handoffService() {
+    if (serviceBusy || !serviceStatus) return;
+    if (!confirm(t("settings.backgroundHandoffConfirm"))) return;
+    serviceBusy = true;
+    serviceError = null;
+    try {
+      await invoke("handoff_to_background_service");
+      // The app exits shortly after this resolves.
+    } catch (e) {
+      serviceError = String(e);
+      serviceBusy = false;
+    }
+  }
+
+  async function loadToolPrices() {
+    try {
+      const prices = await invoke<Record<string, number>>("get_tool_prices");
+      const next: Record<string, string> = {};
+      for (const key of PAID_TOOL_KEYS) {
+        next[key] = prices?.[key] ? String(prices[key]) : "";
+      }
+      toolPrices = next;
+    } catch {
+      toolPrices = {};
+    }
+  }
+
+  async function saveToolPrices() {
+    if (toolPricesSaving) return;
+    toolPricesSaving = true;
+    toolPricesSaved = false;
+    try {
+      const payload: Record<string, number> = {};
+      for (const [key, value] of Object.entries(toolPrices)) {
+        const price = Number(value);
+        if (Number.isFinite(price) && price > 0) payload[key] = price;
+      }
+      await invoke("set_tool_prices", { prices: payload });
+      toolPricesSaved = true;
+      setTimeout(() => (toolPricesSaved = false), 1500);
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      toolPricesSaving = false;
+    }
+  }
+
+  async function loadPrivateNetworkPolicy() {
+    try {
+      allowPrivateNetwork = await invoke<boolean>(
+        "get_allow_private_tool_network",
+      );
+    } catch {
+      allowPrivateNetwork = false;
+    }
+  }
+
+  async function togglePrivateNetwork() {
+    if (privateNetworkBusy) return;
+    privateNetworkBusy = true;
+    const next = !allowPrivateNetwork;
+    try {
+      await invoke("set_allow_private_tool_network", { allow: next });
+      allowPrivateNetwork = next;
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      privateNetworkBusy = false;
+    }
+  }
+
+  async function toggleAutostart() {
+    if (autostartBusy) return;
+    autostartBusy = true;
+    const next = !autostartEnabled;
+    try {
+      await invoke("set_autostart_enabled", { enabled: next });
+      autostartEnabled = next;
+    } catch (e) {
+      alert(String(e));
+    } finally {
+      autostartBusy = false;
+    }
+  }
+
   async function saveOllamaUrl() {
     ollamaSaving = true;
     ollamaError = null;
@@ -560,7 +1478,7 @@
     }
   }
 
-  // ── Office designer ─────────────────────────────────────────────────────
+  // ── Default agent ───────────────────────────────────────────────────────
   async function loadDefaultAgent() {
     try {
       defaultAgent = await invoke<any>("get_default_agent");
@@ -588,7 +1506,7 @@
     defaultAgentError = null;
     try {
       defaultAgent = await invoke<any>("create_default_agent", {
-        name: "Chief of Staff",
+        name: "The Raven",
         provider: defaultProvider,
         model: defaultModel,
       });
@@ -610,6 +1528,7 @@
       budgetKind = limit?.kind || "unlimited";
       budgetMax = limit?.kind && limit.kind !== "unlimited" ? limit.max : null;
       budgetPeriod = res?.budget?.period || "total";
+      budgetBehavior = res?.budget?.behavior || "hard_stop";
     } catch (e) { console.error("Failed to load budget:", e); }
   }
 
@@ -620,6 +1539,7 @@
         botId: budgetBotId, kind: budgetKind,
         max: budgetKind === "unlimited" ? 0 : Number(budgetMax || 0),
         period: budgetPeriod,
+        behavior: budgetBehavior,
       });
       await loadBudget();
     } catch (e) { alert(t("settings.alertBudgetFailed") + String(e)); }
@@ -675,7 +1595,7 @@
 {#if open}
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--scrim)] " onclick={(e) => { if (e.target === e.currentTarget) onClose(); }} onkeydown={(e) => { if (e.key === "Escape") onClose(); }} role="dialog" aria-modal="true" tabindex="-1">
+<div class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--scrim)] " onclick={(e) => { if (e.target === e.currentTarget) onClose(); }} onkeydown={(e) => { if (e.key === "Escape") onClose(); }} role="dialog" aria-modal="true" aria-label={t("settings.title")} tabindex="-1">
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div role="document" class="modal-panel w-[95vw] max-w-[1400px] h-[92vh] flex overflow-hidden" onclick={(e) => e.stopPropagation()}>
@@ -716,7 +1636,7 @@
           <button
             type="button"
             class="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-all cursor-pointer {activeSection === section.id ? 'bg-[var(--surface-3)] text-[var(--text-primary)] shadow-lg' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-            onclick={() => activeSection = section.id}
+            onclick={() => selectSection(section.id)}
             aria-pressed={activeSection === section.id}
           >
             <SectionIcon class="size-4 {section.color || ''}" />
@@ -936,9 +1856,9 @@
 
                   <!-- Get key link -->
                   {#if !connected && ps.key_url}
-                    <a href={ps.key_url} target="_blank" rel="noopener" class="inline-flex items-center gap-1 text-[11px] text-[var(--brand-text)] hover:text-[var(--brand-text)] mt-2">
+                    <button type="button" onclick={() => openExternal(ps.key_url)} class="inline-flex items-center gap-1 text-[11px] text-[var(--brand-text)] hover:text-[var(--brand-text)] mt-2 cursor-pointer">
                       {t("settings.getApiKey")} <ExternalLink class="size-2.5" />
-                    </a>
+                    </button>
                   {/if}
                 </div>
               {/each}
@@ -1091,6 +2011,87 @@
       {/if}
 
       <!-- Section: Model Manager -->
+      {#if activeSection === "agent"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="max-w-4xl mx-auto space-y-6">
+            <div>
+              <h3 class="text-lg font-bold text-[var(--text-primary)] flex items-center gap-2">
+                <Bot class="size-5 text-[var(--brand-text)]" /> {t("settings.navDefaultAgent")}
+              </h3>
+              <p class="text-sm text-[var(--text-tertiary)] mt-1">
+                The Raven is the primary assistant and the agent that designs new offices.
+                Set it up once after login; you can replace it with any existing agent later.
+              </p>
+            </div>
+            <!-- Default agent -->
+            <div class="p-4 rounded-2xl border border-[var(--hairline)] bg-card/60 space-y-3">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">The Raven — default agent</h4>
+                  <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
+                    The agent that leads the fleet and designs each new office from its name and
+                    mission, using only the skills, connectors, and plugins installed here.
+                  </p>
+                </div>
+                <span class="size-8 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/30 flex items-center justify-center text-[var(--brand-text)] shrink-0">
+                  <Bot class="size-4" />
+                </span>
+              </div>
+
+              {#if defaultAgent}
+                <div class="flex items-center gap-2 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] px-3 py-2 min-w-0">
+                  <span class="size-7 rounded-lg bg-[var(--surface-3)] flex items-center justify-center shrink-0">
+                    <Bot class="size-3.5 text-[var(--brand-text)]" />
+                  </span>
+                  <div class="min-w-0">
+                    <div class="text-xs font-bold text-[var(--text-primary)] truncate">{defaultAgent.name}</div>
+                    <div class="text-[11px] font-mono text-[var(--text-muted)] truncate">
+                      {defaultAgent.config?.model_provider}/{defaultAgent.config?.model_id}
+                    </div>
+                  </div>
+                </div>
+              {:else}
+                <p class="text-[11px] text-warning leading-snug">
+                  No default agent set. New offices fall back to the default model and an anonymous designer.
+                </p>
+              {/if}
+
+              <div class="flex items-center gap-2">
+                <Select.Root type="single" value={defaultAgent?.id ?? ""} onValueChange={(v) => v && saveDefaultAgent(v)}>
+                  <Select.Trigger class="flex-1 min-w-0 h-9 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--hairline-strong)] px-3 flex items-center justify-between text-xs cursor-pointer">
+                    <span class="truncate {defaultAgent ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]'}">
+                      {defaultAgent?.name ?? "Choose an existing agent"}
+                    </span>
+                    <ChevronDown class="size-4 text-[var(--text-muted)] shrink-0" />
+                  </Select.Trigger>
+                  <Select.Content class="max-h-72">
+                    {#each bots as b (b.id)}
+                      <Select.Item value={b.id} class="text-xs">
+                        {b.name}{b.is_orchestrator ? " · lead" : ""}
+                      </Select.Item>
+                    {/each}
+                  </Select.Content>
+                </Select.Root>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  class="h-9 gap-1.5 text-xs border-[var(--hairline-strong)] shrink-0"
+                  onclick={createDefaultAgentHere}
+                  disabled={defaultAgentSaving}
+                >
+                  {#if defaultAgentSaving}<Loader2 class="size-3 animate-spin" />{:else}<Sparkles class="size-3" />{/if}
+                  Create The Raven
+                </Button>
+              </div>
+              {#if defaultAgentError}
+                <p class="text-[11px] text-danger leading-snug">{defaultAgentError}</p>
+              {/if}
+            </div>
+
+          </div>
+        </div>
+      {/if}
+
       {#if activeSection === "models"}
         <div class="flex-1 overflow-y-auto no-scrollbar p-6">
           <div class="max-w-4xl mx-auto space-y-6">
@@ -1166,71 +2167,6 @@
                   {#if defaultSaving}<Loader2 class="size-3 animate-spin" />{:else}<Save class="size-3" />{/if} {t("settings.saveDefault")}
                 </Button>
               </div>
-            </div>
-
-            <!-- Office designer -->
-            <div class="p-4 rounded-2xl border border-[var(--hairline)] bg-card/60 space-y-3">
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <h4 class="text-sm font-bold text-[var(--text-primary)]">Office designer</h4>
-                  <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">
-                    The agent that designs each new office from its name and mission — using only the
-                    skills, connectors, and plugins installed here.
-                  </p>
-                </div>
-                <span class="size-8 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/30 flex items-center justify-center text-[var(--brand-text)] shrink-0">
-                  <Bot class="size-4" />
-                </span>
-              </div>
-
-              {#if defaultAgent}
-                <div class="flex items-center gap-2 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] px-3 py-2 min-w-0">
-                  <span class="size-7 rounded-lg bg-[var(--surface-3)] flex items-center justify-center shrink-0">
-                    <Bot class="size-3.5 text-[var(--brand-text)]" />
-                  </span>
-                  <div class="min-w-0">
-                    <div class="text-xs font-bold text-[var(--text-primary)] truncate">{defaultAgent.name}</div>
-                    <div class="text-[11px] font-mono text-[var(--text-muted)] truncate">
-                      {defaultAgent.config?.model_provider}/{defaultAgent.config?.model_id}
-                    </div>
-                  </div>
-                </div>
-              {:else}
-                <p class="text-[11px] text-warning leading-snug">
-                  No office designer set. New offices fall back to the default model and an anonymous designer.
-                </p>
-              {/if}
-
-              <div class="flex items-center gap-2">
-                <Select.Root type="single" value={defaultAgent?.id ?? ""} onValueChange={(v) => v && saveDefaultAgent(v)}>
-                  <Select.Trigger class="flex-1 min-w-0 h-9 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--hairline-strong)] px-3 flex items-center justify-between text-xs cursor-pointer">
-                    <span class="truncate {defaultAgent ? 'text-[var(--text-secondary)]' : 'text-[var(--text-muted)]'}">
-                      {defaultAgent?.name ?? "Choose an existing agent"}
-                    </span>
-                    <ChevronDown class="size-4 text-[var(--text-muted)] shrink-0" />
-                  </Select.Trigger>
-                  <Select.Content class="max-h-72">
-                    {#each bots as b (b.id)}
-                      <Select.Item value={b.id} class="text-xs">
-                        {b.name}{b.is_orchestrator ? " · lead" : ""}
-                      </Select.Item>
-                    {/each}
-                  </Select.Content>
-                </Select.Root>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  class="h-9 gap-1.5 text-xs border-[var(--hairline-strong)] shrink-0"
-                  onclick={createDefaultAgentHere}
-                  disabled={defaultAgentSaving}
-                >
-                  {#if defaultAgentSaving}<Loader2 class="size-3 animate-spin" />{:else}<Sparkles class="size-3" />{/if}
-                  Create Chief of Staff
-                </Button>
-              </div>
-              {#if defaultAgentError}
-                <p class="text-[11px] text-danger leading-snug">{defaultAgentError}</p>
-              {/if}
             </div>
 
             <!-- Discovered models by provider -->
@@ -1330,8 +2266,11 @@
                     <div class="h-full rounded-full transition-all {budgetState.should_warn ? 'bg-warning' : budgetState.allowed ? 'bg-success' : 'bg-danger'}" style="width: {Math.min(budgetState.percentage_used, 100)}%"></div>
                   </div>
                   <p class="text-xs text-[var(--text-muted)]">{t("settings.pctUsed", { pct: budgetState.percentage_used.toFixed(0) })}{budgetState.allowed ? '' : ' — ' + t("settings.blocked")}</p>
+                  {#if budgetState.should_warn && budgetState.allowed}
+                    <p class="text-xs text-[var(--text-warning)]">{t("settings.budgetWarning")}</p>
+                  {/if}
 
-                  <div class="grid grid-cols-3 gap-3 pt-3 border-t" style="border-color: {currentTheme.borderHex};">
+                  <div class="grid grid-cols-2 gap-3 pt-3 border-t" style="border-color: {currentTheme.borderHex};">
                     <SimpleSelect
                       value={budgetKind}
                       options={[
@@ -1352,6 +2291,14 @@
                       ]}
                       onValueChange={(v) => (budgetPeriod = v)}
                     />
+                    <SimpleSelect
+                      value={budgetBehavior}
+                      options={[
+                        { value: "hard_stop", label: t("settings.behaviorHardStop") },
+                        { value: "warn", label: t("settings.behaviorWarn") },
+                      ]}
+                      onValueChange={(v) => (budgetBehavior = v)}
+                    />
                   </div>
                   <div class="flex justify-between">
                     <Button size="sm" variant="outline" class="h-8 gap-1.5 text-xs border-danger/30 text-danger" onclick={resetBudget}>
@@ -1368,6 +2315,40 @@
                 <p class="text-sm text-[var(--text-muted)]">{t("settings.selectAgentHint")}</p>
               {/if}
             </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.toolPricing")}</h4>
+                  <p class="text-xs text-[var(--text-tertiary)] mt-1">{t("settings.toolPricingDesc")}</p>
+                </div>
+                {#if toolPricesSaved}
+                  <span class="text-[11px] text-success font-bold flex items-center gap-1 bg-success/10 px-2 py-1 rounded-full"><Check class="size-3" /> {t("settings.saved")}</span>
+                {/if}
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                {#each PAID_TOOL_KEYS as key (key)}
+                  <label class="flex items-center gap-2 text-[11px] text-[var(--text-secondary)]">
+                    <span class="font-mono truncate flex-1">{key}</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.0001"
+                      bind:value={toolPrices[key]}
+                      placeholder="0"
+                      aria-label={t("settings.toolPricePerCall", { tool: key })}
+                      class="h-8 w-24 text-xs font-mono"
+                    />
+                  </label>
+                {/each}
+              </div>
+              <div class="flex justify-end">
+                <Button size="sm" class="h-8 gap-1.5 text-xs" onclick={saveToolPrices} disabled={toolPricesSaving}>
+                  {#if toolPricesSaving}<Loader2 class="size-3.5 animate-spin" />{:else}<Save class="size-3.5" />{/if}
+                  {t("settings.saveToolPricing")}
+                </Button>
+              </div>
+            </div>
           </div>
         </div>
       {/if}
@@ -1381,18 +2362,801 @@
         </div>
       {/if}
 
+      {#if activeSection === "chatapps"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="mx-auto max-w-3xl space-y-5">
+            <div>
+              <h3 class="text-lg font-bold text-[var(--text-primary)] flex items-center gap-2">
+                <MessageSquare class="size-5 text-info" /> {t("settings.telegramTitle")}
+              </h3>
+              <p class="text-sm text-[var(--text-tertiary)] mt-1">{t("settings.telegramDesc")}</p>
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-4" style="border-color: {currentTheme.borderHex};">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="size-2 rounded-full {telegramStatus?.enabled ? 'bg-success' : 'bg-[var(--text-muted)]'}" aria-hidden="true"></span>
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.telegramConnector")}</h4>
+                </div>
+                <span class="text-[11px] font-mono px-2 py-0.5 rounded-full {telegramStatus?.enabled ? 'text-success bg-success/10' : 'text-[var(--text-muted)] bg-[var(--surface-2)]'}">
+                  {telegramStatus?.enabled ? t("settings.telegramOn") : t("settings.telegramOff")}
+                </span>
+              </div>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.telegramTokenHint")}</p>
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.telegramToken")}</span>
+                  <Input
+                    type="password"
+                    bind:value={telegramToken}
+                    placeholder={telegramStatus?.token_present ? "••••••••" : "123456:ABC…"}
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.telegramToken")}
+                  />
+                </label>
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.telegramDefaultBot")}</span>
+                  <SimpleSelect
+                    value={telegramDefaultBot}
+                    class="h-9"
+                    options={[
+                      { value: "", label: t("settings.telegramChooseBot") },
+                      ...bots.map((bot: any) => ({ value: bot.id, label: bot.name })),
+                    ]}
+                    onValueChange={(value) => (telegramDefaultBot = value)}
+                  />
+                </label>
+              </div>
+              <label class="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                <input type="checkbox" bind:checked={telegramEnabled} class="size-4 accent-[var(--brand)]" />
+                <span>{t("settings.telegramEnable")}</span>
+              </label>
+              <div class="flex flex-wrap items-center gap-2">
+                <Button size="sm" class="gap-1.5" onclick={saveTelegram} disabled={telegramBusy}>
+                  {#if telegramBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Save class="size-3.5" />{/if}
+                  {t("ui.save")}
+                </Button>
+                {#if telegramStatus?.token_present}
+                  <Button size="sm" variant="outline" class="gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={removeTelegramToken} disabled={telegramBusy}>
+                    <Trash2 class="size-3.5" /> {t("settings.telegramRemoveToken")}
+                  </Button>
+                {/if}
+                {#if telegramSaved}
+                  <span class="text-[11px] text-success font-bold flex items-center gap-1"><Check class="size-3" /> {t("settings.saved")}</span>
+                {/if}
+              </div>
+              {#if telegramError}
+                <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2">{telegramError}</p>
+              {/if}
+              <p class="text-[11px] leading-relaxed text-[var(--text-muted)]">{t("settings.telegramPollingHint")}</p>
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.telegramPair")}</h4>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.telegramPairHint")}</p>
+              <Button size="sm" class="gap-1.5" onclick={createTelegramPairing} disabled={telegramBusy || !telegramStatus?.enabled || !telegramStatus?.token_present || !telegramDefaultBot}>
+                {#if telegramBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Key class="size-3.5" />{/if}
+                {t("settings.telegramPairGenerate")}
+              </Button>
+              {#if telegramPairing}
+                <div class="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-4 py-3">
+                  <span class="font-mono text-2xl tracking-[0.2em] text-[var(--text-primary)]">{telegramPairing.code}</span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.telegramPairInstruction", { code: telegramPairing.code })}
+                  </span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.remotePairingExpires", { time: remoteTime(telegramPairing.expires_at) })}
+                  </span>
+                </div>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.telegramChats")}</h4>
+              {#if !telegramStatus || telegramStatus.links.length === 0}
+                <p class="text-[11px] text-[var(--text-muted)]">{t("settings.telegramNoChats")}</p>
+              {:else}
+                <ul class="divide-y divide-[var(--hairline)]">
+                  {#each telegramStatus.links as link (link.chat_id)}
+                    <li class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                      <div class="min-w-0">
+                        <p class="text-xs font-semibold text-[var(--text-primary)]">{link.chat_title || link.chat_id}</p>
+                        <p class="text-[11px] text-[var(--text-muted)]">
+                          {telegramBotName(link.bot_id)} · {t("settings.telegramLastSeen", { time: remoteTime(link.last_seen_at) })}
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline" class="h-7 gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={() => unlinkTelegramChat(link.chat_id)} disabled={telegramBusy}>
+                        <Trash2 class="size-3" /> {t("settings.telegramUnlink")}
+                      </Button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-4" style="border-color: {currentTheme.borderHex};">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="size-2 rounded-full {slackStatus?.enabled ? 'bg-success' : 'bg-[var(--text-muted)]'}" aria-hidden="true"></span>
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.slackConnector")}</h4>
+                </div>
+                <span class="text-[11px] font-mono px-2 py-0.5 rounded-full {slackStatus?.enabled ? 'text-success bg-success/10' : 'text-[var(--text-muted)] bg-[var(--surface-2)]'}">
+                  {slackStatus?.enabled ? t("settings.slackOn") : t("settings.slackOff")}
+                </span>
+              </div>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.slackTokenHint")}</p>
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.slackAppToken")}</span>
+                  <Input
+                    type="password"
+                    bind:value={slackAppToken}
+                    placeholder={slackStatus?.app_token_present ? "••••••••" : "xapp-…"}
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.slackAppToken")}
+                  />
+                </label>
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.slackBotToken")}</span>
+                  <Input
+                    type="password"
+                    bind:value={slackBotToken}
+                    placeholder={slackStatus?.bot_token_present ? "••••••••" : "xoxb-…"}
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.slackBotToken")}
+                  />
+                </label>
+              </div>
+              <label class="text-[11px] text-[var(--text-muted)] block">
+                <span class="block mb-1">{t("settings.slackDefaultBot")}</span>
+                <SimpleSelect
+                  value={slackDefaultBot}
+                  class="h-9"
+                  options={[
+                    { value: "", label: t("settings.telegramChooseBot") },
+                    ...bots.map((bot: any) => ({ value: bot.id, label: bot.name })),
+                  ]}
+                  onValueChange={(value) => (slackDefaultBot = value)}
+                />
+              </label>
+              <label class="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                <input type="checkbox" bind:checked={slackEnabled} class="size-4 accent-[var(--brand)]" />
+                <span>{t("settings.slackEnable")}</span>
+              </label>
+              <div class="flex flex-wrap items-center gap-2">
+                <Button size="sm" class="gap-1.5" onclick={saveSlack} disabled={slackBusy}>
+                  {#if slackBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Save class="size-3.5" />{/if}
+                  {t("ui.save")}
+                </Button>
+                {#if slackStatus?.app_token_present || slackStatus?.bot_token_present}
+                  <Button size="sm" variant="outline" class="gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={removeSlackTokens} disabled={slackBusy}>
+                    <Trash2 class="size-3.5" /> {t("settings.slackRemoveTokens")}
+                  </Button>
+                {/if}
+                {#if slackSaved}
+                  <span class="text-[11px] text-success font-bold flex items-center gap-1"><Check class="size-3" /> {t("settings.saved")}</span>
+                {/if}
+              </div>
+              {#if slackError}
+                <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2">{slackError}</p>
+              {/if}
+              <p class="text-[11px] leading-relaxed text-[var(--text-muted)]">{t("settings.slackSocketHint")}</p>
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.slackPair")}</h4>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.slackPairHint")}</p>
+              <Button size="sm" class="gap-1.5" onclick={createSlackPairing} disabled={slackBusy || !slackStatus?.enabled || !slackStatus?.app_token_present || !slackStatus?.bot_token_present || !slackDefaultBot}>
+                {#if slackBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Key class="size-3.5" />{/if}
+                {t("settings.slackPairGenerate")}
+              </Button>
+              {#if slackPairing}
+                <div class="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-4 py-3">
+                  <span class="font-mono text-2xl tracking-[0.2em] text-[var(--text-primary)]">{slackPairing.code}</span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.slackPairInstruction", { code: slackPairing.code })}
+                  </span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.remotePairingExpires", { time: remoteTime(slackPairing.expires_at) })}
+                  </span>
+                </div>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.slackChannels")}</h4>
+              {#if !slackStatus || slackStatus.links.length === 0}
+                <p class="text-[11px] text-[var(--text-muted)]">{t("settings.slackNoChannels")}</p>
+              {:else}
+                <ul class="divide-y divide-[var(--hairline)]">
+                  {#each slackStatus.links as link (link.channel_id)}
+                    <li class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                      <div class="min-w-0">
+                        <p class="text-xs font-semibold text-[var(--text-primary)]">{link.chat_title || link.channel_id}</p>
+                        <p class="text-[11px] text-[var(--text-muted)]">
+                          {slackBotName(link.bot_id)} · {t("settings.telegramLastSeen", { time: remoteTime(link.last_seen_at) })}
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline" class="h-7 gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={() => unlinkSlackChannel(link.channel_id)} disabled={slackBusy}>
+                        <Trash2 class="size-3" /> {t("settings.telegramUnlink")}
+                      </Button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-4" style="border-color: {currentTheme.borderHex};">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="size-2 rounded-full {discordStatus?.enabled ? 'bg-success' : 'bg-[var(--text-muted)]'}" aria-hidden="true"></span>
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.discordConnector")}</h4>
+                </div>
+                <span class="text-[11px] font-mono px-2 py-0.5 rounded-full {discordStatus?.enabled ? 'text-success bg-success/10' : 'text-[var(--text-muted)] bg-[var(--surface-2)]'}">
+                  {discordStatus?.enabled ? t("settings.discordOn") : t("settings.discordOff")}
+                </span>
+              </div>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.discordTokenHint")}</p>
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.discordToken")}</span>
+                  <Input
+                    type="password"
+                    bind:value={discordToken}
+                    placeholder={discordStatus?.token_present ? "••••••••" : "Bot token"}
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.discordToken")}
+                  />
+                </label>
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.discordDefaultBot")}</span>
+                  <SimpleSelect
+                    value={discordDefaultBot}
+                    class="h-9"
+                    options={[
+                      { value: "", label: t("settings.telegramChooseBot") },
+                      ...bots.map((bot: any) => ({ value: bot.id, label: bot.name })),
+                    ]}
+                    onValueChange={(value) => (discordDefaultBot = value)}
+                  />
+                </label>
+              </div>
+              <label class="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                <input type="checkbox" bind:checked={discordEnabled} class="size-4 accent-[var(--brand)]" />
+                <span>{t("settings.discordEnable")}</span>
+              </label>
+              <div class="flex flex-wrap items-center gap-2">
+                <Button size="sm" class="gap-1.5" onclick={saveDiscord} disabled={discordBusy}>
+                  {#if discordBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Save class="size-3.5" />{/if}
+                  {t("ui.save")}
+                </Button>
+                {#if discordStatus?.token_present}
+                  <Button size="sm" variant="outline" class="gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={removeDiscordToken} disabled={discordBusy}>
+                    <Trash2 class="size-3.5" /> {t("settings.discordRemoveToken")}
+                  </Button>
+                {/if}
+                {#if discordSaved}
+                  <span class="text-[11px] text-success font-bold flex items-center gap-1"><Check class="size-3" /> {t("settings.saved")}</span>
+                {/if}
+              </div>
+              {#if discordError}
+                <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2">{discordError}</p>
+              {/if}
+              <p class="text-[11px] leading-relaxed text-[var(--text-muted)]">{t("settings.discordGatewayHint")}</p>
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.discordPair")}</h4>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.discordPairHint")}</p>
+              <Button size="sm" class="gap-1.5" onclick={createDiscordPairing} disabled={discordBusy || !discordStatus?.enabled || !discordStatus?.token_present || !discordDefaultBot}>
+                {#if discordBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Key class="size-3.5" />{/if}
+                {t("settings.discordPairGenerate")}
+              </Button>
+              {#if discordPairing}
+                <div class="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-4 py-3">
+                  <span class="font-mono text-2xl tracking-[0.2em] text-[var(--text-primary)]">{discordPairing.code}</span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.discordPairInstruction", { code: discordPairing.code })}
+                  </span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.remotePairingExpires", { time: remoteTime(discordPairing.expires_at) })}
+                  </span>
+                </div>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.discordChannels")}</h4>
+              {#if !discordStatus || discordStatus.links.length === 0}
+                <p class="text-[11px] text-[var(--text-muted)]">{t("settings.discordNoChannels")}</p>
+              {:else}
+                <ul class="divide-y divide-[var(--hairline)]">
+                  {#each discordStatus.links as link (link.channel_id)}
+                    <li class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                      <div class="min-w-0">
+                        <p class="text-xs font-semibold text-[var(--text-primary)]">{link.chat_title || link.channel_id}</p>
+                        <p class="text-[11px] text-[var(--text-muted)]">
+                          {discordBotName(link.bot_id)} · {t("settings.telegramLastSeen", { time: remoteTime(link.last_seen_at) })}
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline" class="h-7 gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={() => unlinkDiscordChannel(link.channel_id)} disabled={discordBusy}>
+                        <Trash2 class="size-3" /> {t("settings.discordUnlink")}
+                      </Button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-4" style="border-color: {currentTheme.borderHex};">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="size-2 rounded-full {whatsappStatus?.enabled ? 'bg-success' : 'bg-[var(--text-muted)]'}" aria-hidden="true"></span>
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.whatsappConnector")}</h4>
+                </div>
+                <span class="text-[11px] font-mono px-2 py-0.5 rounded-full {whatsappStatus?.enabled ? 'text-success bg-success/10' : 'text-[var(--text-muted)] bg-[var(--surface-2)]'}">
+                  {whatsappStatus?.enabled ? t("settings.whatsappOn") : t("settings.whatsappOff")}
+                </span>
+              </div>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.whatsappTokenHint")}</p>
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.whatsappToken")}</span>
+                  <Input
+                    type="password"
+                    bind:value={whatsappToken}
+                    placeholder={whatsappStatus?.token_present ? "••••••••" : "EAAG…"}
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.whatsappToken")}
+                  />
+                </label>
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.whatsappAppSecret")}</span>
+                  <Input
+                    type="password"
+                    bind:value={whatsappAppSecret}
+                    placeholder={whatsappStatus?.app_secret_present ? "••••••••" : t("settings.whatsappAppSecretPlaceholder")}
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.whatsappAppSecret")}
+                  />
+                </label>
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.whatsappVerifyToken")}</span>
+                  <Input
+                    type="password"
+                    bind:value={whatsappVerifyToken}
+                    placeholder={whatsappStatus?.verify_token_present ? "••••••••" : t("settings.whatsappVerifyTokenPlaceholder")}
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.whatsappVerifyToken")}
+                  />
+                </label>
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.whatsappPhoneId")}</span>
+                  <Input
+                    bind:value={whatsappPhoneId}
+                    placeholder="1234567890"
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.whatsappPhoneId")}
+                  />
+                </label>
+              </div>
+              <label class="text-[11px] text-[var(--text-muted)] block">
+                <span class="block mb-1">{t("settings.whatsappDefaultBot")}</span>
+                <SimpleSelect
+                  value={whatsappDefaultBot}
+                  class="h-9"
+                  options={[
+                    { value: "", label: t("settings.telegramChooseBot") },
+                    ...bots.map((bot: any) => ({ value: bot.id, label: bot.name })),
+                  ]}
+                  onValueChange={(value) => (whatsappDefaultBot = value)}
+                />
+              </label>
+              <label class="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                <input type="checkbox" bind:checked={whatsappEnabled} class="size-4 accent-[var(--brand)]" />
+                <span>{t("settings.whatsappEnable")}</span>
+              </label>
+              <div class="flex flex-wrap items-center gap-2">
+                <Button size="sm" class="gap-1.5" onclick={saveWhatsApp} disabled={whatsappBusy}>
+                  {#if whatsappBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Save class="size-3.5" />{/if}
+                  {t("ui.save")}
+                </Button>
+                {#if whatsappStatus?.token_present || whatsappStatus?.app_secret_present || whatsappStatus?.verify_token_present || whatsappStatus?.phone_number_id}
+                  <Button size="sm" variant="outline" class="gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={removeWhatsAppConfig} disabled={whatsappBusy}>
+                    <Trash2 class="size-3.5" /> {t("settings.whatsappRemove")}
+                  </Button>
+                {/if}
+                {#if whatsappSaved}
+                  <span class="text-[11px] text-success font-bold flex items-center gap-1"><Check class="size-3" /> {t("settings.saved")}</span>
+                {/if}
+              </div>
+              {#if whatsappError}
+                <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2">{whatsappError}</p>
+              {/if}
+              <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2.5 space-y-1">
+                <p class="text-[11px] font-medium text-[var(--text-secondary)]">{t("settings.whatsappWebhook")}</p>
+                <code class="block text-[11px] font-mono text-[var(--text-primary)] break-all">{whatsappStatus?.local_webhook_url || "http://127.0.0.1:8801/whatsapp"}</code>
+                <p class="text-[11px] leading-relaxed text-[var(--text-muted)]">{t("settings.whatsappWebhookHint")}</p>
+              </div>
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.whatsappPair")}</h4>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.whatsappPairHint")}</p>
+              <Button size="sm" class="gap-1.5" onclick={createWhatsAppPairing} disabled={whatsappBusy || !whatsappStatus?.enabled || !whatsappStatus?.token_present || !whatsappStatus?.phone_number_id || !whatsappDefaultBot}>
+                {#if whatsappBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Key class="size-3.5" />{/if}
+                {t("settings.whatsappPairGenerate")}
+              </Button>
+              {#if whatsappPairing}
+                <div class="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-4 py-3">
+                  <span class="font-mono text-2xl tracking-[0.2em] text-[var(--text-primary)]">{whatsappPairing.code}</span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.whatsappPairInstruction", { code: whatsappPairing.code })}
+                  </span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.remotePairingExpires", { time: remoteTime(whatsappPairing.expires_at) })}
+                  </span>
+                </div>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.whatsappNumbers")}</h4>
+              {#if !whatsappStatus || whatsappStatus.links.length === 0}
+                <p class="text-[11px] text-[var(--text-muted)]">{t("settings.whatsappNoNumbers")}</p>
+              {:else}
+                <ul class="divide-y divide-[var(--hairline)]">
+                  {#each whatsappStatus.links as link (link.wa_id)}
+                    <li class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                      <div class="min-w-0">
+                        <p class="text-xs font-semibold text-[var(--text-primary)]">{link.display_name || link.wa_id}</p>
+                        <p class="text-[11px] text-[var(--text-muted)]">
+                          {whatsappBotName(link.bot_id)} · {t("settings.telegramLastSeen", { time: remoteTime(link.last_seen_at) })}
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline" class="h-7 gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={() => unlinkWhatsAppNumber(link.wa_id)} disabled={whatsappBusy}>
+                        <Trash2 class="size-3" /> {t("settings.whatsappUnlink")}
+                      </Button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-4" style="border-color: {currentTheme.borderHex};">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="size-2 rounded-full {teamsStatus?.enabled ? 'bg-success' : 'bg-[var(--text-muted)]'}" aria-hidden="true"></span>
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.teamsConnector")}</h4>
+                </div>
+                <span class="text-[11px] font-mono px-2 py-0.5 rounded-full {teamsStatus?.enabled ? 'text-success bg-success/10' : 'text-[var(--text-muted)] bg-[var(--surface-2)]'}">
+                  {teamsStatus?.enabled ? t("settings.teamsOn") : t("settings.teamsOff")}
+                </span>
+              </div>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.teamsTokenHint")}</p>
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.teamsAppId")}</span>
+                  <Input
+                    bind:value={teamsAppId}
+                    placeholder="00000000-0000-0000-0000-000000000000"
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.teamsAppId")}
+                  />
+                </label>
+                <label class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.teamsAppPassword")}</span>
+                  <Input
+                    type="password"
+                    bind:value={teamsPassword}
+                    placeholder={teamsStatus?.app_password_present ? "••••••••" : t("settings.teamsAppPasswordPlaceholder")}
+                    class="h-9 font-mono text-xs"
+                    aria-label={t("settings.teamsAppPassword")}
+                  />
+                </label>
+              </div>
+              <label class="text-[11px] text-[var(--text-muted)] block">
+                <span class="block mb-1">{t("settings.teamsTenants")}</span>
+                <Input
+                  bind:value={teamsTenants}
+                  placeholder="00000000-0000-0000-0000-000000000000"
+                  class="h-9 font-mono text-xs"
+                  aria-label={t("settings.teamsTenants")}
+                />
+              </label>
+              <label class="text-[11px] text-[var(--text-muted)] block">
+                <span class="block mb-1">{t("settings.teamsDefaultBot")}</span>
+                <SimpleSelect
+                  value={teamsDefaultBot}
+                  class="h-9"
+                  options={[
+                    { value: "", label: t("settings.telegramChooseBot") },
+                    ...bots.map((bot: any) => ({ value: bot.id, label: bot.name })),
+                  ]}
+                  onValueChange={(value) => (teamsDefaultBot = value)}
+                />
+              </label>
+              <label class="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                <input type="checkbox" bind:checked={teamsEnabled} class="size-4 accent-[var(--brand)]" />
+                <span>{t("settings.teamsEnable")}</span>
+              </label>
+              <div class="flex flex-wrap items-center gap-2">
+                <Button size="sm" class="gap-1.5" onclick={saveTeams} disabled={teamsBusy}>
+                  {#if teamsBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Save class="size-3.5" />{/if}
+                  {t("ui.save")}
+                </Button>
+                {#if teamsStatus?.app_id || teamsStatus?.app_password_present || (teamsStatus?.tenants && teamsStatus.tenants.length)}
+                  <Button size="sm" variant="outline" class="gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={removeTeamsConfig} disabled={teamsBusy}>
+                    <Trash2 class="size-3.5" /> {t("settings.teamsRemove")}
+                  </Button>
+                {/if}
+                {#if teamsSaved}
+                  <span class="text-[11px] text-success font-bold flex items-center gap-1"><Check class="size-3" /> {t("settings.saved")}</span>
+                {/if}
+              </div>
+              {#if teamsError}
+                <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2">{teamsError}</p>
+              {/if}
+              <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2.5 space-y-1">
+                <p class="text-[11px] font-medium text-[var(--text-secondary)]">{t("settings.teamsWebhook")}</p>
+                <code class="block text-[11px] font-mono text-[var(--text-primary)] break-all">{teamsStatus?.local_webhook_url || "http://127.0.0.1:8801/teams"}</code>
+                <p class="text-[11px] leading-relaxed text-[var(--text-muted)]">{t("settings.teamsWebhookHint")}</p>
+              </div>
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.teamsPair")}</h4>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.teamsPairHint")}</p>
+              <Button size="sm" class="gap-1.5" onclick={createTeamsPairing} disabled={teamsBusy || !teamsStatus?.enabled || !teamsStatus?.app_id || !teamsStatus?.app_password_present || !teamsDefaultBot}>
+                {#if teamsBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Key class="size-3.5" />{/if}
+                {t("settings.teamsPairGenerate")}
+              </Button>
+              {#if teamsPairing}
+                <div class="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-4 py-3">
+                  <span class="font-mono text-2xl tracking-[0.2em] text-[var(--text-primary)]">{teamsPairing.code}</span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.teamsPairInstruction", { code: teamsPairing.code })}
+                  </span>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.remotePairingExpires", { time: remoteTime(teamsPairing.expires_at) })}
+                  </span>
+                </div>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.teamsConversations")}</h4>
+              {#if !teamsStatus || teamsStatus.links.length === 0}
+                <p class="text-[11px] text-[var(--text-muted)]">{t("settings.teamsNoConversations")}</p>
+              {:else}
+                <ul class="divide-y divide-[var(--hairline)]">
+                  {#each teamsStatus.links as link (link.conversation_id)}
+                    <li class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                      <div class="min-w-0">
+                        <p class="text-xs font-semibold text-[var(--text-primary)]">{link.chat_title || link.conversation_id}</p>
+                        <p class="text-[11px] text-[var(--text-muted)]">
+                          {teamsBotName(link.bot_id)} · {t("settings.telegramLastSeen", { time: remoteTime(link.last_seen_at) })}
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline" class="h-7 gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={() => unlinkTeamsConversation(link.conversation_id)} disabled={teamsBusy}>
+                        <Trash2 class="size-3" /> {t("settings.teamsUnlink")}
+                      </Button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+
+            <p class="text-[11px] leading-relaxed text-[var(--text-muted)]">{t("settings.telegramOtherApps")}</p>
+          </div>
+        </div>
+      {/if}
+
+      {#if activeSection === "remote"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="mx-auto max-w-3xl space-y-5">
+            <div>
+              <h3 class="text-lg font-bold text-[var(--text-primary)] flex items-center gap-2">
+                <Globe class="size-5 text-info" /> {t("settings.remoteTitle")}
+              </h3>
+              <p class="text-sm text-[var(--text-tertiary)] mt-1">{t("settings.remoteDesc")}</p>
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-4" style="border-color: {currentTheme.borderHex};">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="size-2 rounded-full {remoteStatus?.running ? 'bg-success' : 'bg-[var(--text-muted)]'}" aria-hidden="true"></span>
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.remoteAccess")}</h4>
+                </div>
+                <span class="text-[11px] font-mono px-2 py-0.5 rounded-full {remoteStatus?.running ? 'text-success bg-success/10' : 'text-[var(--text-muted)] bg-[var(--surface-2)]'}">
+                  {remoteStatus?.running ? t("settings.remoteRunning") : t("settings.remoteStopped")}
+                </span>
+              </div>
+
+              <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <label class="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                  <span class="flex-1">{t("settings.remotePort")}</span>
+                  <Input
+                    type="number"
+                    min="1024"
+                    max="65535"
+                    bind:value={remotePort}
+                    class="h-8 w-28 font-mono text-xs"
+                    aria-label={t("settings.remotePort")}
+                  />
+                </label>
+                <label class="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                  <input type="checkbox" bind:checked={remoteAllowLan} class="size-4 accent-[var(--brand)]" />
+                  <span>{t("settings.remoteAllowLan")}</span>
+                </label>
+                <label class="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                  <input type="checkbox" bind:checked={remoteTls} class="size-4 accent-[var(--brand)]" />
+                  <span>{t("settings.remoteTls")}</span>
+                </label>
+              </div>
+
+              {#if remoteAllowLan && !remoteTls}
+                <p class="text-[11px] leading-relaxed text-warning bg-warning/10 border border-warning/20 rounded-lg px-3 py-2">
+                  {t("settings.remoteLanWarning")}
+                </p>
+              {/if}
+              {#if remoteTls}
+                <p class="text-[11px] leading-relaxed text-warning bg-warning/10 border border-warning/20 rounded-lg px-3 py-2">
+                  {t("settings.remoteTlsHint")}
+                </p>
+              {/if}
+
+              <div class="flex flex-wrap items-center gap-2">
+                <Button size="sm" class="gap-1.5" onclick={() => saveRemoteAccess(!remoteStatus?.enabled)} disabled={remoteBusy}>
+                  {#if remoteBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Globe class="size-3.5" />{/if}
+                  {remoteStatus?.enabled ? t("settings.remoteStop") : t("settings.remoteStart")}
+                </Button>
+                {#if remoteStatus?.enabled}
+                  <Button size="sm" variant="outline" class="gap-1.5 border-[var(--hairline-strong)]" onclick={() => saveRemoteAccess(true)} disabled={remoteBusy}>
+                    <Save class="size-3.5" /> {t("ui.save")}
+                  </Button>
+                {/if}
+                <Button size="sm" variant="outline" class="gap-1.5 border-[var(--hairline-strong)]" onclick={loadRemoteStatus} disabled={remoteBusy}>
+                  <RefreshCw class="size-3.5" /> {t("settings.refresh")}
+                </Button>
+                {#if remoteSaved}
+                  <span class="text-[11px] text-success font-bold flex items-center gap-1"><Check class="size-3" /> {t("settings.saved")}</span>
+                {/if}
+              </div>
+
+              {#if remoteStatus?.running}
+                <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2">
+                  <p class="text-[11px] text-[var(--text-muted)]">{t("settings.remoteUrl")}</p>
+                  <p class="font-mono text-xs text-[var(--text-primary)] break-all">{remoteStatus.url}</p>
+                  {#if remoteStatus.tls && remoteStatus.fingerprint}
+                    <p class="mt-2 text-[11px] text-[var(--text-muted)]">{t("settings.remoteFingerprint")}</p>
+                    <p class="font-mono text-[11px] text-[var(--text-secondary)] break-all">{remoteStatus.fingerprint}</p>
+                  {/if}
+                </div>
+              {/if}
+              {#if remoteError}
+                <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2">{remoteError}</p>
+              {/if}
+              <p class="text-[11px] leading-relaxed text-[var(--text-muted)]">{t("settings.remoteTunnelHint")}</p>
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.remotePairing")}</h4>
+              <p class="text-[11px] leading-relaxed text-[var(--text-tertiary)]">{t("settings.remotePairingHint")}</p>
+              <div class="flex flex-wrap items-end gap-2">
+                <div class="text-[11px] text-[var(--text-muted)]">
+                  <span class="block mb-1">{t("settings.remotePairingRole")}</span>
+                  <SimpleSelect
+                    value={remoteRole}
+                    class="h-8 w-56"
+                    options={[
+                      { value: "viewer", label: t("settings.remoteRoleViewer") },
+                      { value: "operator", label: t("settings.remoteRoleOperator") },
+                      { value: "admin", label: t("settings.remoteRoleAdmin") },
+                    ]}
+                    onValueChange={(value) => (remoteRole = value)}
+                  />
+                </div>
+                <Button size="sm" class="gap-1.5" onclick={generatePairing} disabled={remoteBusy || !remoteStatus?.running}>
+                  {#if remoteBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Key class="size-3.5" />{/if}
+                  {t("settings.remotePairingGenerate")}
+                </Button>
+              </div>
+              {#if remotePairing}
+                <div class="flex flex-wrap items-center gap-3 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-4 py-3">
+                  <span class="font-mono text-2xl tracking-[0.2em] text-[var(--text-primary)]" aria-label={t("settings.remotePairing")}>{remotePairing.code}</span>
+                  <Button size="sm" variant="outline" class="h-7 gap-1.5 border-[var(--brand)]/30" onclick={copyPairingCode}>
+                    <Check class="size-3" /> {t("settings.remoteCopy")}
+                  </Button>
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("settings.remotePairingExpires", { time: remoteTime(remotePairing.expires_at) })}
+                  </span>
+                </div>
+              {/if}
+            </div>
+
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.remoteDevices")}</h4>
+              {#if !remoteStatus || remoteStatus.devices.filter((device: any) => !device.revoked_at).length === 0}
+                <p class="text-[11px] text-[var(--text-muted)]">{t("settings.remoteNoDevices")}</p>
+              {:else}
+                <ul class="divide-y divide-[var(--hairline)]">
+                  {#each remoteStatus.devices.filter((device: any) => !device.revoked_at) as device (device.id)}
+                    <li class="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                      <div class="min-w-0">
+                        <p class="text-xs font-semibold text-[var(--text-primary)]">{device.name}</p>
+                        <p class="text-[11px] text-[var(--text-muted)]">
+                          {device.role} · {t("settings.remoteLastSeen", { time: remoteTime(device.last_seen_at) })}
+                        </p>
+                      </div>
+                      <Button size="sm" variant="outline" class="h-7 gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={() => revokeRemoteDevice(device.id)} disabled={remoteBusy}>
+                        <Trash2 class="size-3" /> {t("settings.remoteRevoke")}
+                      </Button>
+                    </li>
+                  {/each}
+                </ul>
+              {/if}
+            </div>
+
+            {#if remoteStatus?.audit?.length}
+              <div class="p-5 rounded-2xl border bg-card/60 space-y-2" style="border-color: {currentTheme.borderHex};">
+                <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.remoteAudit")}</h4>
+                <ul class="space-y-1 font-mono text-[11px] text-[var(--text-muted)]">
+                  {#each remoteStatus.audit.slice(0, 20) as entry (entry.id)}
+                    <li class="flex flex-wrap items-center gap-2">
+                      <span class="text-[var(--text-secondary)]">{entry.device_name || "local"}</span>
+                      <span>{entry.method}</span>
+                      <span class="truncate">{entry.path}</span>
+                      <span class={entry.status >= 400 ? "text-danger" : "text-success"}>{entry.status}</span>
+                      <span class="ml-auto">{remoteTime(entry.created_at)}</span>
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+
       {#if activeSection === "diagnostics"}
         <div class="flex-1 overflow-y-auto no-scrollbar p-6">
-          <div class="max-w-3xl mx-auto space-y-6">
+          <div class="max-w-4xl mx-auto space-y-6">
             <div>
               <h3 class="text-lg font-bold text-[var(--text-primary)] flex items-center gap-2">
                 <Activity class="size-5 text-[var(--text-tertiary)]" /> Diagnostics
               </h3>
-              <p class="text-sm text-[var(--text-tertiary)] mt-1">Recent runs, their state, cost, and any error that stopped them.</p>
+              <p class="text-sm text-[var(--text-tertiary)] mt-1">Recent runs and the fleet-wide audit trail: model spend, tool calls, file and network access.</p>
             </div>
             <div class="p-5 rounded-2xl border bg-card/60" style="border-color: {currentTheme.borderHex};">
               <RunsPanel />
             </div>
+            <div class="p-5 rounded-2xl border bg-card/60" style="border-color: {currentTheme.borderHex};">
+              <AuditLogPanel {bots} onClose={onClose} />
+            </div>
+          </div>
+        </div>
+      {/if}
+
+      {#if activeSection === "memory"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="max-w-3xl mx-auto">
+            <MemoryEmbeddingSettings />
+          </div>
+        </div>
+      {/if}
+
+      {#if activeSection === "notifications"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="max-w-2xl mx-auto">
+            <NotificationSettings />
+          </div>
+        </div>
+      {/if}
+
+      {#if activeSection === "browser"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="max-w-3xl mx-auto">
+            <BrowserProfilesPanel />
           </div>
         </div>
       {/if}
@@ -1427,6 +3191,74 @@
                 </div>
               {/if}
             </div>
+            <div class="p-5 rounded-2xl border bg-card/60" style="border-color: {currentTheme.borderHex};">
+              <div class="flex flex-wrap items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <p class="text-xs font-bold text-[var(--text-primary)]">{t("settings.accountTitle")}</p>
+                  <p class="text-sm text-[var(--text-secondary)] mt-1">
+                    {currentAccount?.username || "—"}
+                    <span class="text-[11px] text-[var(--text-muted)]"> · {t("settings.accountWorkspace")}: {currentAccount?.workspace || "—"}</span>
+                  </p>
+                  <p class="text-[11px] text-[var(--text-muted)] mt-1">
+                    {accountRoleLabel(currentAccount?.role)} · {t("settings.accountIsolation")}
+                  </p>
+                </div>
+                <Button size="sm" variant="outline" class="gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={logoutAccount} disabled={accountBusy}>
+                  <LogOut class="size-3.5" /> {t("settings.accountLogout")}
+                </Button>
+              </div>
+              {#if accountError}
+                <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2 mt-3">{accountError}</p>
+              {/if}
+            </div>
+            {#if currentAccount?.role === "owner"}
+              <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+                <div>
+                  <p class="text-xs font-bold text-[var(--text-primary)]">{t("settings.workspaceAccessTitle")}</p>
+                  <p class="text-[11px] text-[var(--text-tertiary)] mt-1">{t("settings.workspaceAccessDesc")}</p>
+                </div>
+                {#if workspaceGrants.length > 0}
+                  <ul class="divide-y divide-[var(--hairline)]">
+                    {#each workspaceGrants as [name, role] (name)}
+                      <li class="flex items-center justify-between gap-2 py-2">
+                        <div class="min-w-0">
+                          <p class="text-xs font-semibold text-[var(--text-primary)]">{name}</p>
+                          <p class="text-[11px] text-[var(--text-muted)]">{role}</p>
+                        </div>
+                        <Button size="sm" variant="outline" class="h-7 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={() => revokeWorkspaceAccess(name)} disabled={grantBusy}>
+                          {t("settings.workspaceGrantRevoke")}
+                        </Button>
+                      </li>
+                    {/each}
+                  </ul>
+                {:else}
+                  <p class="text-[11px] text-[var(--text-muted)]">{t("settings.workspaceGrantEmpty")}</p>
+                {/if}
+                <div class="flex flex-wrap items-end gap-2">
+                  <label class="text-[11px] text-[var(--text-muted)] flex-1 min-w-40">
+                    <span class="block mb-1">{t("settings.workspaceGrantUsername")}</span>
+                    <Input bind:value={grantUsername} class="h-9" placeholder="alice" />
+                  </label>
+                  <label class="text-[11px] text-[var(--text-muted)]">
+                    <span class="block mb-1">{t("settings.workspaceGrantRole")}</span>
+                    <SimpleSelect
+                      value={grantRole}
+                      class="h-9"
+                      options={[
+                        { value: "viewer", label: t("settings.accountRoleViewer") },
+                        { value: "operator", label: t("settings.accountRoleOperator") },
+                        { value: "owner", label: t("settings.accountRoleOwner") },
+                      ]}
+                      onValueChange={(value) => (grantRole = value)}
+                    />
+                  </label>
+                  <Button size="sm" class="h-9" onclick={grantWorkspaceAccess} disabled={grantBusy || !grantUsername.trim()}>{t("settings.workspaceGrantButton")}</Button>
+                </div>
+                {#if grantError}
+                  <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2">{grantError}</p>
+                {/if}
+              </div>
+            {/if}
             <div class="p-5 rounded-2xl border bg-card/60" style="border-color: {currentTheme.borderHex};">
               <Label for="settings-locale" class="text-xs font-bold">{t("settings.language")}</Label>
               <p class="text-sm text-[var(--text-tertiary)] mt-0.5 mb-2">{t("settings.languageDesc")}</p>
@@ -1528,9 +3360,109 @@
                 </div>
               {/if}
               <p class="text-xs text-[var(--text-muted)]">
-                {t("settings.installOllamaA")} <a href="https://ollama.com" target="_blank" class="text-[var(--brand-text)] hover:underline">ollama.com</a>{t("settings.installOllamaB")}
+                {t("settings.installOllamaA")} <button type="button" onclick={() => openExternal("https://ollama.com")} class="text-[var(--brand-text)] hover:underline cursor-pointer">ollama.com</button>{t("settings.installOllamaB")}
                 <code class="block mt-1 p-2 rounded bg-[var(--surface-0)] text-[11px] font-mono text-[var(--text-secondary)]">ollama pull llama3.1</code>
               </p>
+            </div>
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <div class="flex items-center gap-2">
+                <Power class="size-4 text-[var(--brand-text)]" />
+                <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.autostart")}</h4>
+              </div>
+              <p class="text-xs text-[var(--text-tertiary)] leading-relaxed">{t("settings.autostartDesc")}</p>
+              <div class="flex items-center gap-2">
+                <Button size="sm" class="gap-1.5" onclick={toggleAutostart} disabled={autostartBusy}>
+                  {#if autostartBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Power class="size-3.5" />{/if}
+                  {autostartEnabled ? t("settings.autostartDisable") : t("settings.autostartEnable")}
+                </Button>
+                <span class="text-[11px] font-mono {autostartEnabled ? 'text-success' : 'text-[var(--text-muted)]'}">
+                  {autostartEnabled ? t("settings.autostartOn") : t("settings.autostartOff")}
+                </span>
+              </div>
+            </div>
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="flex items-center gap-2">
+                  <Power class="size-4 text-[var(--brand-text)]" />
+                  <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.backgroundService")}</h4>
+                </div>
+                {#if serviceStatus}
+                  <span class="text-[11px] font-mono px-2 py-0.5 rounded-full {serviceStatus.running ? 'text-success bg-success/10' : serviceStatus.installed ? 'text-warning bg-warning/10' : 'text-[var(--text-muted)] bg-[var(--surface-2)]'}">
+                    {#if !serviceStatus.supported}{t("settings.backgroundUnavailable")}
+                    {:else if serviceStatus.running}{t("settings.backgroundRunning")}
+                    {:else if serviceStatus.installed}{t("settings.backgroundInstalled")}
+                    {:else}{t("settings.backgroundNotInstalled")}{/if}
+                  </span>
+                {/if}
+              </div>
+              <p class="text-xs text-[var(--text-tertiary)] leading-relaxed">{t("settings.backgroundServiceDesc")}</p>
+              {#if serviceStatus && !serviceStatus.supported}
+                <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">{t("settings.backgroundUnsupported")}</p>
+              {:else if serviceStatus}
+                <div class="grid grid-cols-2 gap-x-4 gap-y-1.5 text-[11px]">
+                  <span class="text-[var(--text-muted)]">{t("settings.backgroundPlatform")}</span>
+                  <span class="font-mono text-[var(--text-secondary)]">{serviceStatus.platform}</span>
+                  <span class="text-[var(--text-muted)]">{t("settings.backgroundEnabled")}</span>
+                  <span class="font-mono text-[var(--text-secondary)]">{serviceStatus.enabled ? t("settings.backgroundOn") : t("settings.backgroundOff")}</span>
+                  <span class="text-[var(--text-muted)]">{t("settings.backgroundRunningLabel")}</span>
+                  <span class="font-mono text-[var(--text-secondary)]">{serviceStatus.running ? t("settings.backgroundOn") : t("settings.backgroundOff")}</span>
+                  {#if serviceStatus.linger !== null}
+                    <span class="text-[var(--text-muted)]">{t("settings.backgroundLinger")}</span>
+                    <span class="font-mono text-[var(--text-secondary)]">{serviceStatus.linger ? t("settings.backgroundOn") : t("settings.backgroundOff")}</span>
+                  {/if}
+                </div>
+                <p class="text-[11px] font-mono text-[var(--text-muted)] break-all">{serviceStatus.path}</p>
+                {#if serviceStatus.installed}
+                  <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed">{t("settings.backgroundInstalledHint")}</p>
+                {/if}
+                <div class="flex flex-wrap items-center gap-2">
+                  {#if !serviceStatus.installed}
+                    <Button size="sm" class="gap-1.5" onclick={installService} disabled={serviceBusy}>
+                      {#if serviceBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Power class="size-3.5" />{/if}
+                      {t("settings.backgroundInstall")}
+                    </Button>
+                  {:else}
+                    <Button size="sm" class="gap-1.5" onclick={handoffService} disabled={serviceBusy || serviceStatus.running}>
+                      {#if serviceBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Power class="size-3.5" />{/if}
+                      {t("settings.backgroundHandoff")}
+                    </Button>
+                    <Button size="sm" variant="outline" class="gap-1.5 border-[var(--hairline-strong)]" onclick={uninstallService} disabled={serviceBusy}>
+                      <Trash2 class="size-3.5" /> {t("settings.backgroundUninstall")}
+                    </Button>
+                  {/if}
+                  {#if serviceStatus.linger !== null}
+                    <Button size="sm" variant="outline" class="gap-1.5 border-[var(--hairline-strong)]" onclick={toggleServiceLinger} disabled={serviceBusy}>
+                      <Shield class="size-3.5" /> {serviceStatus.linger ? t("settings.backgroundLingerDisable") : t("settings.backgroundLingerEnable")}
+                    </Button>
+                  {/if}
+                  <Button size="sm" variant="ghost" class="gap-1.5" onclick={loadServiceStatus} disabled={serviceBusy}>
+                    <RefreshCw class="size-3.5" /> {t("settings.refresh")}
+                  </Button>
+                </div>
+                {#if serviceStatus.linger === false}
+                  <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">{t("settings.backgroundLingerHint")}</p>
+                {/if}
+                <p class="text-[11px] text-[var(--text-muted)] leading-relaxed">{t("settings.backgroundDisplayNote")}</p>
+              {/if}
+              {#if serviceError}
+                <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2">{serviceError}</p>
+              {/if}
+            </div>
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <div class="flex items-center gap-2">
+                <Shield class="size-4 text-[var(--brand-text)]" />
+                <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.privateNetwork")}</h4>
+              </div>
+              <p class="text-xs text-[var(--text-tertiary)] leading-relaxed">{t("settings.privateNetworkDesc")}</p>
+              <div class="flex items-center gap-2">
+                <Button size="sm" class="gap-1.5" onclick={togglePrivateNetwork} disabled={privateNetworkBusy}>
+                  {#if privateNetworkBusy}<Loader2 class="size-3.5 animate-spin" />{:else}<Shield class="size-3.5" />{/if}
+                  {allowPrivateNetwork ? t("settings.privateNetworkDisable") : t("settings.privateNetworkEnable")}
+                </Button>
+                <span class="text-[11px] font-mono {allowPrivateNetwork ? 'text-warning' : 'text-success'}">
+                  {allowPrivateNetwork ? t("settings.privateNetworkOn") : t("settings.privateNetworkOff")}
+                </span>
+              </div>
             </div>
             <div class="p-5 rounded-2xl border bg-warning/5 border-warning/20">
               <div class="flex items-center gap-2 text-warning text-sm font-bold mb-2"><AlertCircle class="size-4" /> {t("settings.experimental")}</div>

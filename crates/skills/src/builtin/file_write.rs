@@ -81,6 +81,10 @@ impl Skill for FileWriteSkill {
 
         // Resolve against the office's project folders (confined).
         let resolved = context.resolve_path(path)?;
+        if let Some(reason) = crate::safety::protected_path_reason(&resolved, &context.working_dirs)
+        {
+            return Err(SkillError::PermissionDenied(reason));
+        }
         let path = resolved.as_path();
 
         // Check if file exists for create_only mode

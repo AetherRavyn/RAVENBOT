@@ -59,20 +59,26 @@ pub async fn download_model(repo: &str) -> Result<PathBuf, ModelError> {
         .build()
         .map_err(|e| ModelError::DownloadFailed(e.to_string()))?;
 
-    let resp = client.get(&url).send().await
-        .map_err(|e| ModelError::DownloadFailed(format!("Failed to reach Hugging Face: {}", e)))?;
+    let resp =
+        client.get(&url).send().await.map_err(|e| {
+            ModelError::DownloadFailed(format!("Failed to reach Hugging Face: {}", e))
+        })?;
 
     if !resp.status().is_success() {
         return Err(ModelError::DownloadFailed(format!(
             "Repo '{}' not accessible (HTTP {}). Check the name and your network.",
-            repo, resp.status()
+            repo,
+            resp.status()
         )));
     }
 
-    let tree: serde_json::Value = resp.json().await
+    let tree: serde_json::Value = resp
+        .json()
+        .await
         .map_err(|e| ModelError::DownloadFailed(format!("Bad response: {}", e)))?;
 
-    let files = tree.as_array()
+    let files = tree
+        .as_array()
         .ok_or_else(|| ModelError::DownloadFailed("Unexpected tree format".to_string()))?;
 
     let mut downloaded = 0;
@@ -91,13 +97,21 @@ pub async fn download_model(repo: &str) -> Result<PathBuf, ModelError> {
         }
 
         // Skip if already present and non-empty.
-        if file_path.exists() && std::fs::metadata(&file_path).map(|m| m.len() == size).unwrap_or(false) {
+        if file_path.exists()
+            && std::fs::metadata(&file_path)
+                .map(|m| m.len() == size)
+                .unwrap_or(false)
+        {
             continue;
         }
 
-        let data = client.get(&file_url).send().await
+        let data = client
+            .get(&file_url)
+            .send()
+            .await
             .map_err(|e| ModelError::DownloadFailed(format!("Failed to download {}: {}", path, e)))?
-            .bytes().await
+            .bytes()
+            .await
             .map_err(|e| ModelError::DownloadFailed(format!("Failed to read {}: {}", path, e)))?;
 
         std::fs::write(&file_path, &data)?;
@@ -117,14 +131,19 @@ pub async fn download_model(repo: &str) -> Result<PathBuf, ModelError> {
 /// Check if a model is already cached locally.
 pub fn is_cached(repo: &str) -> bool {
     let d = model_dir(repo);
-    d.exists() && d.read_dir().map(|mut i| i.next().is_some()).unwrap_or(false)
+    d.exists()
+        && d.read_dir()
+            .map(|mut i| i.next().is_some())
+            .unwrap_or(false)
 }
 
 /// Find the model weights file in a downloaded model dir.
 pub fn find_weights(dir: &std::path::Path) -> Option<PathBuf> {
     for name in &["model.safetensors", "pytorch_model.bin", "model.bin"] {
         let p = dir.join(name);
-        if p.exists() { return Some(p); }
+        if p.exists() {
+            return Some(p);
+        }
     }
     // Recurse one level (some repos nest under a subdir).
     if let Ok(entries) = std::fs::read_dir(dir) {

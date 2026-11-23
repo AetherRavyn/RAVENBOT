@@ -6,6 +6,7 @@
 use ravenbot_core::ModelProvider;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 
 pub mod anthropic;
@@ -24,6 +25,46 @@ pub mod streaming;
 pub use discovery::{DiscoveredModel, ModelDiscovery};
 pub use manager::ProviderManager;
 pub use streaming::StreamAccumulator;
+
+/// Seconds from an environment variable, with a positive-value floor.
+fn env_secs(name: &str, default: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+/// HTTP client for model providers.
+///
+/// A request total-timeout would kill long generations and SSE streams, so
+/// this uses a connect timeout and an idle read timeout instead: the stream can
+/// run for as long as it keeps producing data, but a dead socket cannot pin an
+/// agent forever. Both limits are environment-tunable for slow networks.
+pub fn http_client() -> reqwest::Client {
+    http_client_with_timeouts(
+        Duration::from_secs(env_secs("RAVENBOT_MODEL_CONNECT_TIMEOUT_SECS", 15)),
+        Duration::from_secs(env_secs("RAVENBOT_MODEL_READ_TIMEOUT_SECS", 300)),
+    )
+}
+
+pub fn http_client_with_timeouts(connect: Duration, read: Duration) -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent("ravenbot/0.2.0 (https://github.com/AetherRavyn/RAVENBOT)")
+        .connect_timeout(connect)
+        .read_timeout(read)
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            match ravenbot_core::net::validate_http_url(attempt.url().as_str()) {
+                Ok(_) => attempt.follow(),
+                Err(error) => attempt.error(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    error,
+                )),
+            }
+        }))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
 
 /// One piece of a streamed model response.
 ///
@@ -86,6 +127,10 @@ pub enum ModelError {
     RateLimited { retry_after_secs: u64 },
     #[error("Auth error: {0}")]
     Auth(String),
+    /// The HTTP stream ended without the provider's terminal signal. The
+    /// partial text is preserved so the runtime can persist it honestly.
+    #[error("model stream ended before completion")]
+    IncompleteStream { partial: String },
 }
 
 /// A message in the conversation
@@ -366,5 +411,66 @@ pub fn create_provider(
             base_url.unwrap_or_default(),
             "",
         )),
+    }
+}
+
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use std::time::Instant;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn a_stalled_provider_connection_hits_the_read_timeout() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = [0u8; 2048];
+            let _ = socket.read(&mut request).await;
+            // Accept the request and never answer. This is the black-hole
+            // provider that used to pin an agent indefinitely.
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        });
+
+        let client = http_client_with_timeouts(Duration::from_secs(2), Duration::from_millis(300));
+        let started = Instant::now();
+        let error = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect_err("a stalled response must fail");
+        assert!(error.is_timeout(), "expected a timeout, got {error:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_redirect_to_cloud_metadata_is_blocked() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("test listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept");
+            let mut request = [0u8; 2048];
+            let _ = socket.read(&mut request).await;
+            let response = "HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data\r\nContent-Length: 0\r\n\r\n";
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+
+        let client = http_client_with_timeouts(Duration::from_secs(2), Duration::from_secs(2));
+        let error = client
+            .get(format!("http://{address}/"))
+            .send()
+            .await
+            .expect_err("a metadata redirect must be blocked");
+        assert!(
+            error.to_string().contains("metadata") || error.is_redirect(),
+            "unexpected redirect error: {error:?}"
+        );
+        server.abort();
     }
 }

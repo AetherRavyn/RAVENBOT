@@ -20,6 +20,10 @@ use tokio::net::{TcpListener, TcpStream};
 
 use crate::scheduler::RoutineExecutor;
 
+/// Called after a valid workflow webhook is accepted. The receiver only routes
+/// and acknowledges; the desktop process owns execution.
+pub type WorkflowTrigger = std::sync::Arc<dyn Fn(uuid::Uuid) + Send + Sync>;
+
 /// Hard cap on a request's header block (protects against a client that never
 /// sends a blank line).
 const MAX_HEADER_BYTES: usize = 16 * 1024;
@@ -66,6 +70,7 @@ impl WebhookServer {
     pub async fn start(
         pool: SqlitePool,
         executor: RoutineExecutor,
+        workflow_trigger: Option<WorkflowTrigger>,
         config: WebhookConfig,
     ) -> Result<Self, String> {
         let bind = format!("{}:{}", config.bind, config.port);
@@ -82,8 +87,11 @@ impl WebhookServer {
                     Ok((stream, _peer)) => {
                         let pool = pool.clone();
                         let executor = executor.clone();
+                        let workflow_trigger = workflow_trigger.clone();
                         tokio::spawn(async move {
-                            if let Err(e) = handle_connection(stream, pool, executor).await {
+                            if let Err(e) =
+                                handle_connection(stream, pool, executor, workflow_trigger).await
+                            {
                                 tracing::debug!(error = %e, "webhook connection error");
                             }
                         });
@@ -110,15 +118,13 @@ async fn handle_connection(
     mut stream: TcpStream,
     pool: SqlitePool,
     executor: RoutineExecutor,
+    workflow_trigger: Option<WorkflowTrigger>,
 ) -> Result<(), String> {
     let mut buf = Vec::with_capacity(1024);
     let mut chunk = [0u8; 1024];
     // Read until end of headers, bounded.
     loop {
-        let n = stream
-            .read(&mut chunk)
-            .await
-            .map_err(|e| e.to_string())?;
+        let n = stream.read(&mut chunk).await.map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
@@ -155,12 +161,27 @@ async fn handle_connection(
         return respond(&mut stream, 405, "method not allowed").await;
     }
 
-    // Extract the secret from the path (/hooks/<secret>) or the bearer header.
-    let path_secret = path
-        .strip_prefix("/hooks/")
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    // Extract the secret and its route. `/workflows/<secret>` addresses a saved
+    // workflow; `/hooks/<secret>` keeps the routine route. A bearer token with
+    // no route is resolved against routines first, then workflows.
+    #[derive(Clone, Copy)]
+    enum Route {
+        Routine,
+        Workflow,
+    }
+    let (path_route, path_secret) = if let Some(secret) = path.strip_prefix("/hooks/") {
+        (
+            Some(Route::Routine),
+            Some(secret.trim().to_string()).filter(|s| !s.is_empty()),
+        )
+    } else if let Some(secret) = path.strip_prefix("/workflows/") {
+        (
+            Some(Route::Workflow),
+            Some(secret.trim().to_string()).filter(|s| !s.is_empty()),
+        )
+    } else {
+        (None, None)
+    };
     let bearer = authorization
         .as_deref()
         .and_then(|v| v.strip_prefix("Bearer "))
@@ -171,13 +192,66 @@ async fn handle_connection(
         return respond(&mut stream, 401, "missing webhook secret").await;
     };
 
-    let routine_id = match WebhookQueries::routine_for_secret(&pool, &secret).await {
-        Ok(Some(id)) => id,
-        Ok(None) => return respond(&mut stream, 404, "unknown or disabled webhook").await,
-        Err(e) => {
-            tracing::warn!(error = %e, "webhook lookup failed");
-            return respond(&mut stream, 500, "lookup failed").await;
+    let routine_id = match path_route {
+        Some(Route::Routine) | None => {
+            match WebhookQueries::routine_for_secret(&pool, &secret).await {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(error = %e, "webhook routine lookup failed");
+                    return respond(&mut stream, 500, "lookup failed").await;
+                }
+            }
         }
+        Some(Route::Workflow) => None,
+    };
+    let workflow_id = match path_route {
+        Some(Route::Workflow) => {
+            match ravenbot_db::queries::WorkflowWebhookQueries::workflow_for_secret(&pool, &secret)
+                .await
+            {
+                Ok(id) => id,
+                Err(e) => {
+                    tracing::warn!(error = %e, "webhook workflow lookup failed");
+                    return respond(&mut stream, 500, "lookup failed").await;
+                }
+            }
+        }
+        Some(Route::Routine) => None,
+        None => {
+            if routine_id.is_some() {
+                None
+            } else {
+                match ravenbot_db::queries::WorkflowWebhookQueries::workflow_for_secret(
+                    &pool, &secret,
+                )
+                .await
+                {
+                    Ok(id) => id,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "webhook workflow lookup failed");
+                        return respond(&mut stream, 500, "lookup failed").await;
+                    }
+                }
+            }
+        }
+    };
+
+    if let Some(workflow_id) = workflow_id {
+        let Some(trigger) = workflow_trigger.as_ref() else {
+            return respond(
+                &mut stream,
+                503,
+                "workflow triggers are not available in this process",
+            )
+            .await;
+        };
+        trigger(workflow_id);
+        tracing::info!(workflow_id = %workflow_id, "Webhook triggered workflow");
+        return respond(&mut stream, 202, "accepted").await;
+    }
+
+    let Some(routine_id) = routine_id else {
+        return respond(&mut stream, 404, "unknown or disabled webhook").await;
     };
 
     // Load the routine and dispatch through the same executor cron uses.
@@ -250,7 +324,9 @@ mod tests {
 
     async fn seed_routine(db: &ravenbot_db::Database, secret: &str) -> uuid::Uuid {
         let bot = ravenbot_core::Bot::new("WebhookBot", "test");
-        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
         let routine = Routine::new(bot.id, "Hook routine", "0 9 * * *", "do work");
         sqlx::query(
             "INSERT INTO routines (id, bot_id, name, description, schedule, instruction, is_enabled, created_at, updated_at)
@@ -264,13 +340,17 @@ mod tests {
         .execute(db.pool())
         .await
         .unwrap();
-        WebhookQueries::set(db.pool(), routine.id, Some(secret), true).await.unwrap();
+        WebhookQueries::set(db.pool(), routine.id, Some(secret), true)
+            .await
+            .unwrap();
         routine.id
     }
 
     async fn post(addr: SocketAddr, path: &str, auth: Option<&str>) -> String {
         let mut stream = TcpStream::connect(addr).await.unwrap();
-        let auth_header = auth.map(|a| format!("Authorization: Bearer {}\r\n", a)).unwrap_or_default();
+        let auth_header = auth
+            .map(|a| format!("Authorization: Bearer {}\r\n", a))
+            .unwrap_or_default();
         let req = format!(
             "POST {} HTTP/1.1\r\nHost: localhost\r\n{}Content-Length: 0\r\nConnection: close\r\n\r\n",
             path, auth_header
@@ -300,7 +380,11 @@ mod tests {
         let server = WebhookServer::start(
             db.pool().clone(),
             executor,
-            WebhookConfig { bind: "127.0.0.1".into(), port: 0 },
+            None,
+            WebhookConfig {
+                bind: "127.0.0.1".into(),
+                port: 0,
+            },
         )
         .await
         .expect("start server");
@@ -308,7 +392,9 @@ mod tests {
 
         // Health is open.
         let mut s = TcpStream::connect(addr).await.unwrap();
-        s.write_all(b"GET /health HTTP/1.1\r\nConnection: close\r\n\r\n").await.unwrap();
+        s.write_all(b"GET /health HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
         let mut health = String::new();
         s.read_to_string(&mut health).await.unwrap();
         assert!(health.contains("200"), "health: {health}");
@@ -319,7 +405,9 @@ mod tests {
 
         // Wrong method → 405.
         let mut s = TcpStream::connect(addr).await.unwrap();
-        s.write_all(b"GET /hooks/x HTTP/1.1\r\nConnection: close\r\n\r\n").await.unwrap();
+        s.write_all(b"GET /hooks/x HTTP/1.1\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
         let mut getresp = String::new();
         s.read_to_string(&mut getresp).await.unwrap();
         assert!(getresp.contains("405"), "get: {getresp}");
@@ -341,5 +429,74 @@ mod tests {
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         assert_eq!(calls.load(Ordering::SeqCst), 2, "two valid triggers");
+    }
+
+    #[tokio::test]
+    async fn workflow_webhooks_route_to_the_trigger_callback() {
+        let db = temp_db().await;
+        let workflow_id = uuid::Uuid::new_v4();
+        let tasks = serde_json::to_string(&vec![ravenbot_db::queries::WorkflowTaskRecord {
+            bot_id: uuid::Uuid::new_v4().to_string(),
+            node_type: "agent".to_string(),
+            label: "Audit".to_string(),
+            depends_on: vec![],
+            condition: None,
+            data_from: None,
+            retries: 0,
+            output_schema: None,
+            loop_iterations: 1,
+            loop_until: None,
+            loop_group: None,
+            loop_group_terminal: false,
+            loop_group_iterations: 1,
+            loop_group_stop: None,
+        }])
+        .unwrap();
+        ravenbot_db::queries::WorkflowQueries::upsert(
+            db.pool(),
+            &workflow_id.to_string(),
+            "Triggered workflow",
+            "Audit the release",
+            &tasks,
+            None,
+        )
+        .await
+        .unwrap();
+        ravenbot_db::queries::WorkflowWebhookQueries::enable(
+            db.pool(),
+            workflow_id,
+            "workflow-secret",
+        )
+        .await
+        .unwrap();
+
+        let executor: RoutineExecutor = Arc::new(|_routine: Routine| Box::pin(async { Ok(()) }));
+        let calls = Arc::new(std::sync::Mutex::new(Vec::<uuid::Uuid>::new()));
+        let calls_cb = calls.clone();
+        let trigger: WorkflowTrigger = Arc::new(move |id| calls_cb.lock().unwrap().push(id));
+        let server = WebhookServer::start(
+            db.pool().clone(),
+            executor,
+            Some(trigger),
+            WebhookConfig {
+                bind: "127.0.0.1".into(),
+                port: 0,
+            },
+        )
+        .await
+        .expect("start server");
+        let addr = server.addr();
+
+        assert!(post(addr, "/workflows/wrong", None).await.contains("404"));
+        assert!(post(addr, "/workflows/workflow-secret", None)
+            .await
+            .contains("202"));
+        assert!(post(addr, "/workflows/", Some("workflow-secret"))
+            .await
+            .contains("202"));
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let calls = calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert!(calls.iter().all(|id| *id == workflow_id));
     }
 }

@@ -26,6 +26,8 @@
     streamTail?: string;
     /** Pre-formatted timestamp for the meta line (empty hides the line). */
     time?: string;
+    /** Optimistic user row that the backend has not accepted yet. */
+    pending?: boolean;
     /**
      * The agent's reasoning, shown above the answer.
      *
@@ -85,6 +87,8 @@
     onReact?: (emoji: string) => void;
     /** Stable DOM id, used by in-thread search to scroll to a hit. */
     rowId?: string;
+    /** The persisted message id, used by the selection toolbar to quote this row. */
+    messageId?: string;
     /** This row matches the active search query. */
     searchHit?: boolean;
     /** This is the match the search is currently sitting on. */
@@ -94,7 +98,7 @@
     aboveBubble?: Snippet;
     belowBubble?: Snippet;
     userExtras?: Snippet;
-    onOpenArtifact?: (artifact: any) => void;
+    onOpenArtifact?: (code: string, lang: string) => void;
   }
 
   let {
@@ -102,6 +106,7 @@
     text,
     streamTail = "",
     time = "",
+    pending = false,
     reasoning = null,
     tools = [],
     spans = [],
@@ -125,6 +130,7 @@
     reactions = [],
     onReact,
     rowId = "",
+    messageId = "",
     searchHit = false,
     searchCurrent = false,
     errorCard,
@@ -218,6 +224,7 @@
 <div
   use:entrance
   id={rowId || undefined}
+  data-message-id={messageId || undefined}
   class="message-entry flex gap-3.5 {isUser ? 'justify-end' : 'justify-start'} group"
   class:message-search-hit={searchHit}
   class:message-search-hit--current={searchCurrent}
@@ -322,6 +329,11 @@
 
     {#if (showMeta && time) || text.trim()}
       <div class="message-meta flex items-center gap-0.5 px-3 {isUser ? 'justify-end' : 'justify-start'}">
+        {#if pending}
+          <span class="text-[11px] text-[var(--text-muted)]" role="status">
+            {t("thread.sending")}
+          </span>
+        {/if}
         {#if showMeta && time}
           <span class="message-time">{time}</span>
         {/if}

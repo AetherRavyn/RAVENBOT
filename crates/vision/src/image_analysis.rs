@@ -71,12 +71,15 @@ impl ImageAnalyzer {
     }
 
     /// Analyze a screenshot
-    pub async fn analyze_screenshot(&self, _screenshot: &Screenshot) -> Result<AnalysisResult, AnalysisError> {
+    pub async fn analyze_screenshot(
+        &self,
+        _screenshot: &Screenshot,
+    ) -> Result<AnalysisResult, AnalysisError> {
         // In production, send to vision model (GPT-4V, Claude Vision, etc.)
         // For now, return a placeholder
-        
+
         tracing::info!("Analyzing screenshot");
-        
+
         Ok(AnalysisResult {
             description: "Screenshot captured. Vision analysis would be performed here using a multimodal model.".to_string(),
             elements: vec![
@@ -98,7 +101,11 @@ impl ImageAnalyzer {
     }
 
     /// Analyze an image file
-    pub async fn analyze_image(&self, image_data: &[u8], format: &str) -> Result<AnalysisResult, AnalysisError> {
+    pub async fn analyze_image(
+        &self,
+        image_data: &[u8],
+        format: &str,
+    ) -> Result<AnalysisResult, AnalysisError> {
         if !matches!(format, "png" | "jpeg" | "jpg" | "gif" | "webp") {
             return Err(AnalysisError::UnsupportedFormat(format.to_string()));
         }

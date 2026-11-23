@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/svelte";
 import QuestionCard from "./QuestionCard.svelte";
 import { setLocale } from "$lib/i18n";
+import { a11yViolations } from "$lib/test/a11y";
 
 describe("QuestionCard", () => {
   beforeEach(() => {
@@ -27,6 +28,7 @@ describe("QuestionCard", () => {
     expect(container.querySelectorAll(".chat-question__chip")).toHaveLength(2);
     await fireEvent.click(getByText("Staging"));
     expect(onAnswer).toHaveBeenCalledWith("Staging");
+    expect(await a11yViolations(container)).toEqual([]);
   });
 
   it("answers with typed text and refuses an empty submit", async () => {

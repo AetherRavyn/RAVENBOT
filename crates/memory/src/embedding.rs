@@ -39,7 +39,7 @@ impl LocalEmbedding {
     fn simple_hash_embedding(&self, text: &str) -> Vec<f32> {
         let mut embedding = vec![0.0; self.dimension];
         let bytes = text.as_bytes();
-        
+
         for (i, &byte) in bytes.iter().enumerate() {
             let idx = (i * 7 + byte as usize) % self.dimension;
             embedding[idx] += 1.0;
@@ -64,11 +64,64 @@ impl EmbeddingProvider for LocalEmbedding {
     }
 
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        Ok(texts.iter().map(|t| self.simple_hash_embedding(t)).collect())
+        Ok(texts
+            .iter()
+            .map(|t| self.simple_hash_embedding(t))
+            .collect())
     }
 
     fn dimension(&self) -> usize {
         self.dimension
+    }
+}
+
+/// A shared, replaceable embedding provider.
+///
+/// Each memory store keeps a clone of this handle. Configuring a different
+/// backend swaps the provider for every store at once, without rebuilding the
+/// runtime or its open database handles.
+#[derive(Clone)]
+pub struct EmbeddingHandle {
+    current: std::sync::Arc<std::sync::RwLock<std::sync::Arc<dyn EmbeddingProvider>>>,
+}
+
+impl EmbeddingHandle {
+    pub fn new(provider: std::sync::Arc<dyn EmbeddingProvider>) -> Self {
+        Self {
+            current: std::sync::Arc::new(std::sync::RwLock::new(provider)),
+        }
+    }
+
+    pub fn replace(&self, provider: std::sync::Arc<dyn EmbeddingProvider>) {
+        let mut current = self
+            .current
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = provider;
+    }
+
+    pub fn current(&self) -> std::sync::Arc<dyn EmbeddingProvider> {
+        self.current
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+}
+
+#[async_trait]
+impl EmbeddingProvider for EmbeddingHandle {
+    async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
+        let provider = self.current();
+        provider.embed(text).await
+    }
+
+    async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+        let provider = self.current();
+        provider.embed_batch(texts).await
+    }
+
+    fn dimension(&self) -> usize {
+        self.current().dimension()
     }
 }
 
@@ -98,10 +151,34 @@ mod tests {
         let provider = LocalEmbedding::new(128);
         let embedding = provider.embed("Hello, world!").await.unwrap();
         assert_eq!(embedding.len(), 128);
-        
+
         // Check normalization
         let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    async fn embedding_handle_replaces_the_provider_for_every_clone() {
+        struct Fixed(Vec<f32>);
+        #[async_trait]
+        impl EmbeddingProvider for Fixed {
+            async fn embed(&self, _text: &str) -> Result<Vec<f32>, EmbeddingError> {
+                Ok(self.0.clone())
+            }
+            async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
+                Ok(texts.iter().map(|_| self.0.clone()).collect())
+            }
+            fn dimension(&self) -> usize {
+                self.0.len()
+            }
+        }
+
+        let handle = EmbeddingHandle::new(std::sync::Arc::new(Fixed(vec![1.0, 0.0])));
+        let clone = handle.clone();
+        assert_eq!(handle.embed("x").await.unwrap(), vec![1.0, 0.0]);
+        handle.replace(std::sync::Arc::new(Fixed(vec![0.0, 1.0, 0.0])));
+        assert_eq!(clone.embed("x").await.unwrap(), vec![0.0, 1.0, 0.0]);
+        assert_eq!(clone.dimension(), 3);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Self-review system for learning from runs
 
 use crate::store::MemoryStore;
-use ravenbot_core::{Run, RunOutcome, Message, MessageRole};
+use ravenbot_core::{Message, MessageRole, Run, RunOutcome};
 use sqlx::SqlitePool;
 use uuid::Uuid;
 
@@ -39,10 +39,7 @@ pub struct SelfReviewer {
 
 impl SelfReviewer {
     pub fn new(pool: SqlitePool, memory_store: MemoryStore) -> Self {
-        Self {
-            pool,
-            memory_store,
-        }
+        Self { pool, memory_store }
     }
 
     /// Review a completed run and extract learnings
@@ -74,38 +71,59 @@ impl SelfReviewer {
         }
 
         // Analyze tool usage
-        let tool_calls: Vec<&Message> = messages.iter()
+        let tool_calls: Vec<&Message> = messages
+            .iter()
             .filter(|m| matches!(m.role, MessageRole::Tool))
             .collect();
-        
+
         if !tool_calls.is_empty() {
             successes.push(format!("Used {} tools successfully", tool_calls.len()));
         }
 
         // Extract facts from assistant responses
-        let assistant_msgs: Vec<&Message> = messages.iter()
+        let assistant_msgs: Vec<&Message> = messages
+            .iter()
             .filter(|m| matches!(m.role, MessageRole::Assistant))
             .collect();
 
         for msg in assistant_msgs {
+            // Only messages produced by this run. Re-reading the whole thread
+            // promoted every old answer again on every run, so memory grew
+            // quadratically and the prompt filled with stale solutions.
+            if msg.created_at < run.created_at {
+                continue;
+            }
             if let ravenbot_core::MessageContent::Text { text, .. } = &msg.content {
-                // Simple fact extraction (in production, use NLP)
-                if text.len() > 50 && text.contains('.') {
-                    facts.push(text.clone());
-                    
-                    memory_updates.push(MemoryUpdate {
-                        content: text.clone(),
-                        importance: 0.6,
-                        is_new: true,
-                    });
+                let text = text.trim();
+                if text.len() < 50 || !text.contains('.') {
+                    continue;
                 }
+                // A memory is a fact, not a transcript. Cap the stored text
+                // instead of copying an entire report into the prompt.
+                let memory = text.chars().take(500).collect::<String>();
+                facts.push(memory.clone());
+                memory_updates.push(MemoryUpdate {
+                    content: memory,
+                    importance: 0.6,
+                    is_new: false,
+                });
             }
         }
 
         // Calculate quality score
-        let quality_score = if run.outcome.as_ref().map(|o| matches!(o, RunOutcome::Success { .. })).unwrap_or(false) {
+        let quality_score = if run
+            .outcome
+            .as_ref()
+            .map(|o| matches!(o, RunOutcome::Success { .. }))
+            .unwrap_or(false)
+        {
             0.9
-        } else if run.outcome.as_ref().map(|o| matches!(o, RunOutcome::PartialSuccess { .. })).unwrap_or(false) {
+        } else if run
+            .outcome
+            .as_ref()
+            .map(|o| matches!(o, RunOutcome::PartialSuccess { .. }))
+            .unwrap_or(false)
+        {
             0.6
         } else {
             0.3_f32
@@ -114,7 +132,11 @@ impl SelfReviewer {
         // Factor in efficiency (tokens used vs. expected)
         let efficiency_bonus: f32 = if run.tokens_consumed > 0 {
             // More tokens doesn't always mean worse, but extreme usage is concerning
-            if run.tokens_consumed < 10000 { 0.1 } else { 0.0 }
+            if run.tokens_consumed < 10000 {
+                0.1
+            } else {
+                0.0
+            }
         } else {
             0.0
         };
@@ -134,24 +156,32 @@ impl SelfReviewer {
     pub async fn apply_updates(
         &self,
         bot_id: Uuid,
+        thread_id: Uuid,
+        run_id: Uuid,
         updates: &[MemoryUpdate],
     ) -> Result<u32, String> {
         let mut applied = 0;
 
         for update in updates {
             // Check for similar existing memories
-            let has_similar = self.memory_store.has_similar_memory(
-                bot_id,
-                &update.content,
-                0.8,
-            ).await?;
+            let has_similar = self
+                .memory_store
+                .has_similar_memory(bot_id, &update.content, 0.8)
+                .await?;
 
-            if !has_similar || update.is_new {
-                self.memory_store.add(
-                    bot_id,
-                    &update.content,
-                    update.importance,
-                ).await?;
+            // Deduplicate on content. `is_new` was always true here, which made
+            // the check below a no-op and stored every answer again.
+            if !has_similar {
+                self.memory_store
+                    .add_with_provenance(
+                        bot_id,
+                        &update.content,
+                        update.importance,
+                        "self-review",
+                        Some(thread_id),
+                        Some(run_id),
+                    )
+                    .await?;
                 applied += 1;
             }
         }

@@ -123,7 +123,7 @@ fn scope_covers(granted: &str, needed: &str) -> bool {
     n.starts_with(g.trim_end_matches('/')) && n.len() > g.len() && n.as_bytes()[g.len()] == b'/'
 }
 
-fn domain_covers(granted: &str, needed: &str) -> bool {
+pub fn domain_covers(granted: &str, needed: &str) -> bool {
     let g = granted.trim().to_lowercase();
     let n = needed.trim().to_lowercase();
     if g == "*" || g.is_empty() {
@@ -158,6 +158,23 @@ impl GrantMode {
         } else {
             GrantMode::Narrowed
         }
+    }
+}
+
+/// The agent's network scope as a concrete list. `None` means the list is not
+/// narrowing; `Some([])` means the agent is narrowed and has no network grant.
+pub fn network_grant(bot: &Bot) -> Option<Vec<String>> {
+    match GrantMode::of(bot) {
+        GrantMode::Unrestricted => None,
+        GrantMode::Narrowed => Some(
+            bot.permissions
+                .iter()
+                .find_map(|permission| match permission {
+                    Permission::Network { domains } => Some(domains.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default(),
+        ),
     }
 }
 

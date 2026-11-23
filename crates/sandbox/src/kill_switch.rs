@@ -35,11 +35,11 @@ impl KillSwitch {
         let mut state = self.state.write().await;
         let mut r = self.reason.write().await;
         let mut t = self.triggered_at.write().await;
-        
+
         *state = KillSwitchState::Triggered;
         *r = Some(reason.into());
         *t = Some(chrono::Utc::now());
-        
+
         tracing::warn!("Kill switch triggered");
     }
 
@@ -48,11 +48,11 @@ impl KillSwitch {
         let mut state = self.state.write().await;
         let mut r = self.reason.write().await;
         let mut t = self.triggered_at.write().await;
-        
+
         *state = KillSwitchState::Active;
         *r = None;
         *t = None;
-        
+
         tracing::info!("Kill switch released");
     }
 

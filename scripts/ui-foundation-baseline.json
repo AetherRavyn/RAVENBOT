@@ -1,0 +1,13 @@
+{
+  "nativeSelect": {
+    "src/lib/components/AuditBackupPanel.svelte": 1,
+    "src/lib/components/AuditLogPanel.svelte": 5,
+    "src/lib/components/PluginsStore.svelte": 1,
+    "src/lib/components/Settings.svelte": 1,
+    "src/lib/components/chat/ConfirmBlock.svelte": 1,
+    "src/lib/components/chat/FormBlock.svelte": 1,
+    "src/lib/components/chat/WorkflowLibrary.svelte": 1,
+    "src/lib/components/workspace/BrowserDock.svelte": 1,
+    "src/lib/components/workspace/TeamChannelsView.svelte": 2
+  }
+}

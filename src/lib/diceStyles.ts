@@ -257,12 +257,39 @@ export function currentDiceBearUrl(
   const query = new URLSearchParams(found.params);
   if (speed) query.set("animationVariant", speed);
   else query.delete("animationVariant");
+  // 9.x accepted a comma-separated list here. 10.x validates the raw query
+  // string against a single colour and answers the old value with a 400 — a
+  // blank avatar in the office, not a visible error. Keep the agent's first
+  // colour when it is valid, and otherwise use its stable palette colour.
+  const background = query.get("backgroundColor");
+  if (background !== null) {
+    query.set("backgroundColor", acceptedAvatarBackground(background, found.seed));
+  }
 
   return {
     url: `https://api.dicebear.com/${DICEBEAR_VERSION}/${found.style}/svg?${query.toString()}`,
     style: found.style,
     animates: Boolean(speed),
   };
+}
+
+/** The one background value DiceBear 10.x accepts, without a leading `#`. */
+const SINGLE_BACKGROUND = /^#?([a-fA-F0-9]{3}|[a-fA-F0-9]{4}|[a-fA-F0-9]{6}|[a-fA-F0-9]{8})$/;
+
+/**
+ * Reduce a stored background parameter to a value the current API accepts.
+ *
+ * Older URLs carried several colours separated by commas so DiceBear could
+ * choose one. The current API rejects that list with a 400, so the first valid
+ * colour is kept and an entirely invalid value falls back to the agent's own
+ * stable colour rather than leaving a blank frame.
+ */
+export function acceptedAvatarBackground(raw: string, seed: string): string {
+  for (const candidate of raw.split(",")) {
+    const colour = candidate.trim().replace(/^#/, "");
+    if (SINGLE_BACKGROUND.test(colour)) return colour;
+  }
+  return avatarBackground(seed);
 }
 
 /**

@@ -11,6 +11,7 @@
   import { Textarea } from "$lib/components/ui/textarea";
   import { Badge } from "$lib/components/ui/badge";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
+  import MemoryManager from "$lib/components/MemoryManager.svelte";
   import { getDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/utils";
   import { notify } from "$lib/toast";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -22,6 +23,7 @@
   } from "$lib/model-catalog";
   import {
     Bot,
+    Brain,
     Cpu,
     Sliders,
     FileCode,
@@ -63,9 +65,11 @@
   let maxTokens = $state(4096);
   let customPrompt = $state("");
   let isOrchestrator = $state(false);
-  // Approval mode: ask (default) / auto / full — "bots ask before they act".
+  // Approval mode: ask / auto / full. Full is the default: safe work runs
+  // automatically, and destructive shell/database/file operations are blocked
+  // by the hard safety policy before they reach a card.
   type ApprovalModeId = "ask" | "auto" | "full";
-  let approvalMode = $state<ApprovalModeId>("ask");
+  let approvalMode = $state<ApprovalModeId>("full");
   let fallbackProvider = $state("");
   let maxToolRounds = $state(12);
   // Voice & auto-read (per-bot TTS voice)
@@ -520,7 +524,9 @@
       maxTokens = bot.config?.max_tokens || 4096;
       customPrompt = bot.config?.custom_prompt || "";
       isOrchestrator = Boolean(bot.is_orchestrator);
-      approvalMode = (bot.approval_mode === "auto" || bot.approval_mode === "full") ? bot.approval_mode : "ask";
+      approvalMode = (bot.approval_mode === "ask" || bot.approval_mode === "auto" || bot.approval_mode === "full")
+        ? bot.approval_mode
+        : "full";
       fallbackProvider = bot.config?.fallback_provider || "";
       maxToolRounds = bot.config?.max_tool_rounds || 20;
       sandboxTier = bot.config?.sandbox_tier || "OsLevel";
@@ -532,14 +538,18 @@
       // the "not narrowed" case, and must round-trip as one.
       const stored: any[] = bot.permissions ?? [];
       narrowing = stored.length > 0;
-      capabilityToggles = {
+      // Build the map locally and assign it once. Reading the reactive
+      // `capabilityToggles` back inside this effect made it depend on the very
+      // state it writes, so any bot with a stored permission re-triggered the
+      // hydration on every pass — the event loop died on opening the builder.
+      const toggles: Record<CapabilityKey, boolean> = {
         FileSystem: false, Network: false, Shell: false, Screenshot: false,
         InputControl: false, AudioCapture: false, AudioPlayback: false,
         Clipboard: false, Delegation: false,
       };
       for (const p of stored) {
         const key = Object.keys(p ?? {})[0] as CapabilityKey | undefined;
-        if (key && key in capabilityToggles) capabilityToggles[key] = true;
+        if (key && key in toggles) toggles[key] = true;
         if (key === "FileSystem") {
           const paths = (p as any).FileSystem?.paths ?? [];
           fsPaths = paths.length ? paths.join(", ") : "/";
@@ -549,6 +559,7 @@
           netDomains = domains.length ? domains.join(", ") : "*";
         }
       }
+      capabilityToggles = toggles;
       // ── Everything below is deliberately untracked ──────────────────────
       //
       // This effect exists to re-hydrate when `bot` changes. It must not
@@ -625,7 +636,7 @@
         </div>
 
         <Tabs.Root bind:value={activeTab} class="w-full mt-3">
-          <Tabs.List class="grid w-full grid-cols-3 bg-[var(--surface-2)] border border-[var(--hairline)] p-1 rounded-xl">
+          <Tabs.List class="grid w-full grid-cols-4 bg-[var(--surface-2)] border border-[var(--hairline)] p-1 rounded-xl">
             <Tabs.Trigger value="model" class="gap-1.5 text-xs font-medium data-[state=active]:bg-[var(--brand)] data-[state=active]:text-[var(--text-on-light)]">
               <Cpu class="size-3.5" />
               {t("bot.tabModel")}
@@ -637,6 +648,10 @@
             <Tabs.Trigger value="prompt" class="gap-1.5 text-xs font-medium data-[state=active]:bg-[var(--brand)] data-[state=active]:text-[var(--text-on-light)]">
               <FileCode class="size-3.5" />
               {t("bot.tabPrompt")}
+            </Tabs.Trigger>
+            <Tabs.Trigger value="memory" class="gap-1.5 text-xs font-medium data-[state=active]:bg-[var(--brand)] data-[state=active]:text-[var(--text-on-light)]">
+              <Brain class="size-3.5" />
+              {t("bot.tabMemory")}
             </Tabs.Trigger>
           </Tabs.List>
         </Tabs.Root>
@@ -1124,6 +1139,8 @@
               </p>
             </div>
           </div>
+        {:else if activeTab === "memory"}
+          <MemoryManager scope="agent" targetId={bot.id} />
         {/if}
       </div>
 

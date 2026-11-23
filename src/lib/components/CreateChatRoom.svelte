@@ -663,7 +663,7 @@
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-0.5">
                 {#each blueprint.roles as role}
                   <div class="flex items-center gap-2 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] px-2.5 py-1.5 min-w-0">
-                    <span class="size-1.5 rounded-full shrink-0" style="background-color: {role.is_lead ? '#8b5cf6' : '#79b8ff'}"></span>
+                    <span class="size-1.5 rounded-full shrink-0" style="background-color: {role.is_lead ? 'var(--brand)' : 'var(--status-running)'}"></span>
                     <span class="text-[11px] font-bold text-[var(--text-primary)] truncate">{role.name}</span>
                     <span class="text-[11px] text-[var(--text-tertiary)] truncate">— {role.rank}</span>
                     <span class="ml-auto text-[11px] font-mono text-[var(--text-muted)] shrink-0 text-right">
@@ -725,7 +725,7 @@
                       <div class="flex items-center gap-1.5 mt-0.5">
                         <span
                           class="text-[11px] py-0 px-1.5 rounded text-[var(--text-primary)] font-mono font-bold"
-                          style="background-color: {rankInfo?.color || '#79b8ff'}"
+                          style="background-color: {rankInfo?.color || 'var(--brand)'}"
                         >
                           {mem.rank}
                         </span>

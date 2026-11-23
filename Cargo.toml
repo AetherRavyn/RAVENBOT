@@ -15,6 +15,7 @@ members = [
     "crates/governance",
     "crates/sync",
     "crates/ipc",
+    "crates/remote",
     "src-tauri",
 ]
 
@@ -63,8 +64,10 @@ base64 = "0.22"
 # WASM runtime
 wasmtime = "28"
 
-# OS keychain
-keyring = "3"
+# OS keychain. The platform stores are explicit: keyring's default build is an
+# in-memory mock, which would look like a vault while forgetting every key on
+# restart.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
 
 # Random
 rand = "0.8"

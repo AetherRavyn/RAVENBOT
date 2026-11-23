@@ -119,7 +119,10 @@ pub fn plan_prompt(
          Otherwise respond with ONLY a JSON object, no prose and no code fence, in exactly this shape:\n\
          {\"tasks\":[{\"bot\":\"<teammate name>\",\"instruction\":\"<self-contained task>\",\"depends_on\":[]}],\"final_summary_from\":\"<teammate name>\"}\n\
          Rules:\n\
-         - Use at most 6 tasks; \"bot\" must be one of the teammate names above.\n\
+         - Plan ONE milestone for this cycle, not the whole product. The office will run another cycle after this one if the product is still incomplete.\n\
+         - Use 3-5 tasks for a milestone and never more than 6; \"bot\" must be one of the teammate names above.\n\
+         - Do not assign work already marked done on the board or in Shared/STATUS.md. Continue from the first unfinished milestone.\n\
+         - A task that only writes a plan, status update, or briefing is not a deliverable. Pair it with a concrete artifact, implementation step, or verification.\n\
          - \"depends_on\" is a list of task indices (0-based) that must finish first, so a teammate can build on or review another's output. Independent tasks leave it empty so they run in parallel.\n\
          - Match the task to the teammate's rank/specialty: planners plan, builders implement, testers write/run tests, QA verifies. Never assign specialist work to the lead.\n\
          - For any request that produces or changes an artifact (code, document, design, campaign), include an explicit verification task (tester/QA) that DEPENDS ON the producing task, and a final review/acceptance step.\n\

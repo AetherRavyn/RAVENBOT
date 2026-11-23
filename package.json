@@ -7,15 +7,17 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+    "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json && node scripts/check-ui-foundation.mjs",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
     "test": "vitest run",
-    "tauri": "WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 tauri"
+    "tauri": "WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 tauri",
+    "check:ui": "node scripts/check-ui-foundation.mjs",
+    "check:ui:update": "node scripts/check-ui-foundation.mjs --update"
   },
   "license": "MIT",
   "dependencies": {
     "@fontsource-variable/fira-code": "^5.3.0",
-    "@tauri-apps/api": "2.11.1",
+    "@tauri-apps/api": "2.12.5",
     "@tauri-apps/plugin-dialog": "2.7.3",
     "@tauri-apps/plugin-opener": "2.5.4",
     "class-variance-authority": "^0.7.1",
@@ -47,6 +49,7 @@
     "tw-animate-css": "^1.4.0",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.0",
+    "axe-core": "4.14.1"
   }
 }

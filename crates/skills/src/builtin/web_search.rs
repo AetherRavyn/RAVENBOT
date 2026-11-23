@@ -31,7 +31,7 @@ struct SearchResult {
 impl WebSearchSkill {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http::http_client(),
         }
     }
 }
@@ -85,7 +85,7 @@ impl Skill for WebSearchSkill {
 
     async fn execute(
         &self,
-        _context: &SkillContext,
+        context: &SkillContext,
         arguments: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let query = arguments
@@ -104,6 +104,9 @@ impl Skill for WebSearchSkill {
             urlencoding::encode(query)
         );
 
+        context
+            .ensure_network_allowed(&url)
+            .map_err(SkillError::InvalidArguments)?;
         let response = self
             .client
             .get(&url)
@@ -121,6 +124,7 @@ impl Skill for WebSearchSkill {
         let results = parse_ddg_results(&html, max_results);
 
         Ok(SkillResult::success(serde_json::json!({
+            "provider": "duckduckgo",
             "query": query,
             "results": results
         })))

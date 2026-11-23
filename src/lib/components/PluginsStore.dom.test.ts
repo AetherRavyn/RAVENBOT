@@ -129,6 +129,16 @@ describe("PluginsStore catalog", () => {
     cleanup();
   });
 
+  it("opens the catalog without an agent and explains that equip is disabled", async () => {
+    render(PluginsStore, {
+      props: { bot: null, open: true, onClose: () => {} },
+    });
+
+    await waitFor(() => expect(cardFor("Stripe")).toBeTruthy());
+    expect(document.body.textContent).toContain("your workspace");
+    expect(document.body.textContent).toContain("Pick an agent to equip plugins");
+  });
+
   it("renders the live directory and marks installed apps", async () => {
     render(PluginsStore, {
       props: { bot: { id: "bot-1", name: "Billing" }, open: true, onClose: () => {} },

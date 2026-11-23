@@ -186,6 +186,10 @@ pub fn office_workspace(name: &str) -> PathBuf {
         }
     }
     let _ = std::fs::create_dir_all(&dir);
+    // Mark the directory this call created. Without the marker the next
+    // `office_workspace` call treats its own folder as an unrelated collision,
+    // steps over it, and gives the agent a new empty workspace every run.
+    let _ = mark_office_dir(&dir);
     dir
 }
 
@@ -266,8 +270,14 @@ pub fn default_db_path() -> PathBuf {
             return path;
         }
     }
-    ensure_dir(&raven_root());
-    raven_root().join("ravenbot.db")
+    let root = raven_root();
+    ensure_dir(&root);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700));
+    }
+    root.join("ravenbot.db")
 }
 
 #[cfg(test)]
@@ -304,18 +314,27 @@ mod tests {
 
     #[test]
     fn raven_root_follows_home_then_the_override() {
-        with_env(&[("RAVENBOT_HOME", None), ("HOME", Some("/home/tester"))], || {
-            assert_eq!(raven_root(), PathBuf::from("/home/tester/RAVENBOT"));
-        });
         with_env(
-            &[("RAVENBOT_HOME", Some("/srv/data")), ("HOME", Some("/home/tester"))],
+            &[("RAVENBOT_HOME", None), ("HOME", Some("/home/tester"))],
+            || {
+                assert_eq!(raven_root(), PathBuf::from("/home/tester/RAVENBOT"));
+            },
+        );
+        with_env(
+            &[
+                ("RAVENBOT_HOME", Some("/srv/data")),
+                ("HOME", Some("/home/tester")),
+            ],
             || {
                 assert_eq!(raven_root(), PathBuf::from("/srv/data"));
             },
         );
         // A blank override must not be read as "the current directory".
         with_env(
-            &[("RAVENBOT_HOME", Some("   ")), ("HOME", Some("/home/tester"))],
+            &[
+                ("RAVENBOT_HOME", Some("   ")),
+                ("HOME", Some("/home/tester")),
+            ],
             || {
                 assert_eq!(raven_root(), PathBuf::from("/home/tester/RAVENBOT"));
             },
@@ -393,15 +412,22 @@ mod tests {
         // consults, so the test does not depend on the host.
         let vars: Vec<(&'static str, Option<String>)> = vec![
             ("HOME", Some(tmp.to_str().unwrap().to_string())),
-            ("XDG_DATA_HOME", Some(os_root.parent().unwrap().to_str().unwrap().to_string())),
-            ("APPDATA", Some(os_root.parent().unwrap().to_str().unwrap().to_string())),
-            ("RAVENBOT_HOME", Some(tmp.join("new").to_str().unwrap().to_string())),
+            (
+                "XDG_DATA_HOME",
+                Some(os_root.parent().unwrap().to_str().unwrap().to_string()),
+            ),
+            (
+                "APPDATA",
+                Some(os_root.parent().unwrap().to_str().unwrap().to_string()),
+            ),
+            (
+                "RAVENBOT_HOME",
+                Some(tmp.join("new").to_str().unwrap().to_string()),
+            ),
             ("RAVENBOT_DB", None),
         ];
-        let borrowed: Vec<(&str, Option<&str>)> = vars
-            .iter()
-            .map(|(k, v)| (*k, v.as_deref()))
-            .collect();
+        let borrowed: Vec<(&str, Option<&str>)> =
+            vars.iter().map(|(k, v)| (*k, v.as_deref())).collect();
         with_env(&borrowed, || {
             assert_eq!(legacy_db_path().as_deref(), Some(old.as_path()));
 
@@ -446,7 +472,11 @@ mod tests {
             ],
             || {
                 let first = office_workspace("Acme Corp");
-                assert!(first.ends_with("projects/acme-corp"), "got {}", first.display());
+                assert!(
+                    first.ends_with("projects/acme-corp"),
+                    "got {}",
+                    first.display()
+                );
                 assert!(first.is_dir());
                 mark_office_dir(&first);
                 assert!(first.join(".ravenbot-office").is_file());
@@ -460,6 +490,29 @@ mod tests {
                 let stranger = projects_dir().join("other");
                 std::fs::create_dir_all(&stranger).unwrap();
                 assert_eq!(office_workspace("other"), projects_dir().join("other-2"));
+            },
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn office_workspace_is_stable_without_an_explicit_marker_call() {
+        let tmp = std::env::temp_dir().join(format!("rb-stable-{}", uuid::Uuid::new_v4()));
+        with_env(
+            &[
+                ("RAVENBOT_HOME", Some(tmp.to_str().unwrap())),
+                ("RAVENBOT_PROJECTS_DIR", None),
+                ("RAVENBOT_DB", None),
+            ],
+            || {
+                let first = office_workspace("Stable Office");
+                let second = office_workspace("Stable Office");
+                assert_eq!(
+                    first, second,
+                    "the default workspace must not drift between calls"
+                );
+                assert!(first.join(".ravenbot-office").is_file());
+                assert!(!projects_dir().join("stable-office-2").exists());
             },
         );
         let _ = std::fs::remove_dir_all(&tmp);

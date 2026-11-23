@@ -80,6 +80,8 @@ impl Skill for FileTreeSkill {
         .await?;
         let stdout = String::from_utf8_lossy(&out.stdout);
 
+        let total_lines = stdout.lines().count();
+        let truncated = total_lines > 400;
         let mut entries: Vec<serde_json::Value> = Vec::new();
         for line in stdout.lines().take(400) {
             let mut parts = line.splitn(3, ' ');
@@ -105,6 +107,8 @@ impl Skill for FileTreeSkill {
             "depth": depth.parse::<u64>().unwrap_or(2),
             "entries": entries,
             "count": entries.len(),
+            "total": total_lines,
+            "truncated": truncated,
             "dirs": dirs,
             "files": files,
         })))

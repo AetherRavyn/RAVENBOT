@@ -54,7 +54,9 @@ impl Skill for ScreenshotSkill {
     }
 
     fn risk(&self) -> SkillRisk {
-        SkillRisk::ReadOnly
+        // A screenshot can contain passwords, private messages, and the whole
+        // desktop. Gated in `Ask` even though it does not mutate anything.
+        SkillRisk::Low
     }
 
     async fn execute(

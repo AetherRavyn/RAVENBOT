@@ -97,6 +97,7 @@
   }
 
   let { bot, open, onClose }: Props = $props();
+  const agentName = $derived(bot?.name || t("store.noAgent"));
 
   let plugins = $state<PluginSummary[]>([]);
   let catalog = $state<CatalogEntry[]>([]);
@@ -403,7 +404,10 @@
   }
 
   async function toggle(plugin: PluginSummary) {
-    if (!bot?.id) return;
+    if (!bot?.id) {
+      notify(t("store.pickAgentFirst"), "info");
+      return;
+    }
     if (plugin.operations === 0) {
       notify(t("store.importFirst"), "error");
       return;
@@ -568,10 +572,10 @@
         </span>
         <div class="plugin-modal__heading">
           <Dialog.Title class="plugin-modal__title">
-            {t("store.title", { name: bot?.name ?? "" })}
+            {t("store.title", { name: agentName })}
           </Dialog.Title>
           <Dialog.Description class="plugin-modal__subtitle">
-            {t("store.desc", { name: bot?.name ?? "" })}
+            {t("store.desc", { name: agentName })}
           </Dialog.Description>
         </div>
       </div>
@@ -609,6 +613,12 @@
       <span class="plugin-statusbar__divider">·</span>
       <span class="plugin-statusbar__item"><strong>{botPlugins.size}</strong> {t("store.equipped")}</span>
     </div>
+
+    {#if !bot}
+      <p class="px-4 py-2 text-xs text-[var(--warning-text)]" role="status">
+        {t("store.pickAgent")}
+      </p>
+    {/if}
 
     <div class="plugin-toolbar">
       <label class="plugin-search">
@@ -1114,7 +1124,7 @@
 
     <footer class="plugin-modal__footer">
       <span class="plugin-footer__summary">
-        <strong>{filtered.length}</strong> {t("store.countAvailable")} · <strong>{botPlugins.size}</strong> {t("store.countEquipped", { name: bot?.name ?? "" })}
+        <strong>{filtered.length}</strong> {t("store.countAvailable")} · <strong>{botPlugins.size}</strong> {t("store.countEquipped", { name: agentName })}
       </span>
       <Button size="sm" class="plugin-button plugin-button--primary" onclick={onClose}>
         {t("ui.done")}

@@ -61,7 +61,11 @@ pub struct ChatRoom {
 }
 
 impl ChatRoom {
-    pub fn new(name: impl Into<String>, description: impl Into<String>, office_template: impl Into<String>) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        office_template: impl Into<String>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: Uuid::new_v4(),

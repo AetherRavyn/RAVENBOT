@@ -1,9 +1,83 @@
 //! Bot bundle export/import
 
+use base64::{engine::general_purpose, Engine as _};
 use ravenbot_core::{BotBundle, MemoryFact};
-use base64::{Engine as _, engine::general_purpose};
 use sqlx::SqlitePool;
 use uuid::Uuid;
+
+/// Open (or create) the persisted Ed25519 signer.
+///
+/// Shared by bot bundles and signed audit exports so one installation has one
+/// stable public identity. The seed lives in the OS keychain when available,
+/// with the existing owner-only database fallback.
+pub async fn open_signer(pool: SqlitePool) -> Result<crate::signing::BundleSigner, String> {
+    sqlx::query(
+        r#"CREATE TABLE IF NOT EXISTS bundle_signing_key (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            private_key TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"#,
+    )
+    .execute(&pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT private_key FROM bundle_signing_key WHERE id = 1")
+            .fetch_optional(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+
+    let signer = match row {
+        Some((seed_b64,)) => {
+            let seed_b64 = if seed_b64 == ravenbot_db::secrets::KEYCHAIN_MARKER {
+                ravenbot_db::secrets::get_signing_seed().await.ok_or_else(|| {
+                    "The signing seed is in the OS keychain but could not be read. Unlock the keychain and try again.".to_string()
+                })?
+            } else {
+                // Legacy plaintext seed: move it when the platform store
+                // accepts it, otherwise keep it usable.
+                if ravenbot_db::secrets::set_signing_seed(&seed_b64).await {
+                    let _ =
+                        sqlx::query("UPDATE bundle_signing_key SET private_key = ? WHERE id = 1")
+                            .bind(ravenbot_db::secrets::KEYCHAIN_MARKER)
+                            .execute(&pool)
+                            .await;
+                }
+                seed_b64
+            };
+            let seed_bytes = general_purpose::STANDARD
+                .decode(seed_b64.trim())
+                .map_err(|e| format!("Corrupt bundle signing key: {}", e))?;
+            let seed = <[u8; 32]>::try_from(seed_bytes.as_slice())
+                .map_err(|_| "Corrupt bundle signing key length".to_string())?;
+            crate::signing::BundleSigner::from_bytes(seed)
+        }
+        None => {
+            use rand::RngCore;
+            let mut seed = [0u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut seed);
+            let signer = crate::signing::BundleSigner::from_bytes(seed);
+            let seed_b64 = general_purpose::STANDARD.encode(signer.private_key_bytes());
+            let stored = if ravenbot_db::secrets::set_signing_seed(&seed_b64).await {
+                ravenbot_db::secrets::KEYCHAIN_MARKER
+            } else {
+                seed_b64.as_str()
+            };
+            sqlx::query(
+                "INSERT OR REPLACE INTO bundle_signing_key (id, private_key, created_at) VALUES (1, ?, ?)",
+            )
+            .bind(stored)
+            .bind(chrono::Utc::now().to_rfc3339())
+            .execute(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
+            signer
+        }
+    };
+
+    Ok(signer)
+}
 
 /// Bundle manager for export/import
 pub struct BundleManager {
@@ -25,50 +99,7 @@ impl BundleManager {
     /// exported bundle signatures are stable across app restarts — required
     /// for other machines to TOFU-verify our bundles.
     pub async fn open(pool: SqlitePool) -> Result<Self, String> {
-        sqlx::query(
-            r#"CREATE TABLE IF NOT EXISTS bundle_signing_key (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                private_key TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )"#,
-        )
-        .execute(&pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        let row: Option<(String,)> =
-            sqlx::query_as("SELECT private_key FROM bundle_signing_key WHERE id = 1")
-                .fetch_optional(&pool)
-                .await
-                .map_err(|e| e.to_string())?;
-
-        let signer = match row {
-            Some((seed_b64,)) => {
-                let seed_bytes = general_purpose::STANDARD
-                    .decode(seed_b64.trim())
-                    .map_err(|e| format!("Corrupt bundle signing key: {}", e))?;
-                let seed = <[u8; 32]>::try_from(seed_bytes.as_slice())
-                    .map_err(|_| "Corrupt bundle signing key length".to_string())?;
-                crate::signing::BundleSigner::from_bytes(seed)
-            }
-            None => {
-                use rand::RngCore;
-                let mut seed = [0u8; 32];
-                rand::rngs::OsRng.fill_bytes(&mut seed);
-                let signer = crate::signing::BundleSigner::from_bytes(seed);
-                let seed_b64 = general_purpose::STANDARD.encode(signer.private_key_bytes());
-                sqlx::query(
-                    "INSERT OR REPLACE INTO bundle_signing_key (id, private_key, created_at) VALUES (1, ?, ?)",
-                )
-                .bind(&seed_b64)
-                .bind(chrono::Utc::now().to_rfc3339())
-                .execute(&pool)
-                .await
-                .map_err(|e| e.to_string())?;
-                signer
-            }
-        };
-
+        let signer = open_signer(pool.clone()).await?;
         Ok(Self { pool, signer })
     }
 
@@ -113,13 +144,12 @@ impl BundleManager {
     }
 
     async fn is_trusted(&self, fingerprint: &str) -> Result<bool, String> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT fingerprint FROM trusted_bundle_pubkeys WHERE fingerprint = ?",
-        )
-        .bind(fingerprint)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT fingerprint FROM trusted_bundle_pubkeys WHERE fingerprint = ?")
+                .bind(fingerprint)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
         Ok(row.is_some())
     }
 
@@ -196,13 +226,12 @@ impl BundleManager {
 
             // Per-bot binding: if this bot was imported before with a known
             // signer, only that signer may re-import it
-            let recorded: Option<(String,)> = sqlx::query_as(
-                "SELECT fingerprint FROM bot_trusted_fingerprint WHERE bot_id = ?",
-            )
-            .bind(bot_id.to_string())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| e.to_string())?;
+            let recorded: Option<(String,)> =
+                sqlx::query_as("SELECT fingerprint FROM bot_trusted_fingerprint WHERE bot_id = ?")
+                    .bind(bot_id.to_string())
+                    .fetch_optional(&self.pool)
+                    .await
+                    .map_err(|e| e.to_string())?;
 
             if let Some((recorded_fp,)) = recorded {
                 if recorded_fp != fingerprint {
@@ -228,7 +257,8 @@ impl BundleManager {
                 // First import from this signer: verify, then TOFU-trust
                 if !crate::signing::BundleSigner::verify_with(&bot_bytes, sig, pubkey_b64) {
                     return Err(
-                        "Bundle rejected: invalid Ed25519 signature (possible tampering)".to_string(),
+                        "Bundle rejected: invalid Ed25519 signature (possible tampering)"
+                            .to_string(),
                     );
                 }
                 let label = bundle.bot.name.clone();
@@ -294,28 +324,36 @@ impl BundleManager {
     }
 
     /// Export bot to JSON
-    pub async fn export_to_json(&self, bot_id: Uuid, include_memory: bool) -> Result<String, String> {
+    pub async fn export_to_json(
+        &self,
+        bot_id: Uuid,
+        include_memory: bool,
+    ) -> Result<String, String> {
         let bundle = self.export_bot(bot_id, include_memory).await?;
-        serde_json::to_string_pretty(&bundle)
-            .map_err(|e| e.to_string())
+        serde_json::to_string_pretty(&bundle).map_err(|e| e.to_string())
     }
 
     /// Export bot to file
-    pub async fn export_to_file(&self, bot_id: Uuid, path: &str, include_memory: bool) -> Result<(), String> {
+    pub async fn export_to_file(
+        &self,
+        bot_id: Uuid,
+        path: &str,
+        include_memory: bool,
+    ) -> Result<(), String> {
         let json = self.export_to_json(bot_id, include_memory).await?;
         tokio::fs::write(path, json)
             .await
             .map_err(|e| e.to_string())?;
-        
+
         tracing::info!(path = path, "Bot exported to file");
         Ok(())
     }
 
     /// Import bot from JSON
     pub async fn import_from_json(&self, json: &str) -> Result<Uuid, String> {
-        let bundle: BotBundle = serde_json::from_str(json)
-            .map_err(|e| format!("Invalid bundle format: {}", e))?;
-        
+        let bundle: BotBundle =
+            serde_json::from_str(json).map_err(|e| format!("Invalid bundle format: {}", e))?;
+
         self.import_bot(&bundle).await
     }
 
@@ -324,7 +362,7 @@ impl BundleManager {
         let json = tokio::fs::read_to_string(path)
             .await
             .map_err(|e| format!("Failed to read file: {}", e))?;
-        
+
         self.import_from_json(&json).await
     }
 
@@ -336,8 +374,22 @@ impl BundleManager {
 
     /// Get memory for a bot
     async fn get_bot_memory(&self, bot_id: Uuid) -> Result<Vec<MemoryFact>, String> {
-        let rows: Vec<(String, String, String, Option<Vec<u8>>, f32, i32, String, String)> = sqlx::query_as(
-            "SELECT id, bot_id, content, embedding, importance, access_count, last_accessed, created_at
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            Option<Vec<u8>>,
+            f32,
+            i32,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, bot_id, content, embedding, importance, access_count, last_accessed, created_at,
+                    source, source_thread_id, source_run_id, updated_at
              FROM memory_facts WHERE bot_id = ?"
         )
         .bind(bot_id.to_string())
@@ -345,7 +397,8 @@ impl BundleManager {
         .await
         .map_err(|e| e.to_string())?;
 
-        let facts = rows.iter()
+        let facts = rows
+            .iter()
             .filter_map(|row| {
                 Some(MemoryFact {
                     id: Uuid::parse_str(&row.0).ok()?,
@@ -360,6 +413,18 @@ impl BundleManager {
                     created_at: chrono::DateTime::parse_from_rfc3339(&row.7)
                         .map(|dt| dt.with_timezone(&chrono::Utc))
                         .unwrap_or_else(|_| chrono::Utc::now()),
+                    source: row.8.clone(),
+                    source_thread_id: row
+                        .9
+                        .as_deref()
+                        .and_then(|value| Uuid::parse_str(value).ok()),
+                    source_run_id: row
+                        .10
+                        .as_deref()
+                        .and_then(|value| Uuid::parse_str(value).ok()),
+                    updated_at: chrono::DateTime::parse_from_rfc3339(&row.11)
+                        .map(|dt| dt.with_timezone(&chrono::Utc))
+                        .unwrap_or_else(|_| chrono::Utc::now()),
                 })
             })
             .collect();
@@ -370,22 +435,23 @@ impl BundleManager {
     /// Import a memory fact
     async fn import_memory_fact(&self, bot_id: Uuid, fact: &MemoryFact) -> Result<(), String> {
         // Check if fact already exists
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT id FROM memory_facts WHERE bot_id = ? AND content = ?"
-        )
-        .bind(bot_id.to_string())
-        .bind(&fact.content)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
+        let existing: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM memory_facts WHERE bot_id = ? AND content = ?")
+                .bind(bot_id.to_string())
+                .bind(&fact.content)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
 
         if existing.is_some() {
             return Ok(()); // Already exists
         }
 
         sqlx::query(
-            "INSERT INTO memory_facts (id, bot_id, content, importance, access_count, last_accessed, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO memory_facts
+             (id, bot_id, content, importance, access_count, last_accessed, created_at,
+              source, source_thread_id, source_run_id, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(fact.id.to_string())
         .bind(bot_id.to_string())
@@ -394,6 +460,10 @@ impl BundleManager {
         .bind(fact.access_count as i32)
         .bind(fact.last_accessed.to_rfc3339())
         .bind(fact.created_at.to_rfc3339())
+        .bind("import")
+        .bind(Option::<String>::None)
+        .bind(Option::<String>::None)
+        .bind(chrono::Utc::now().to_rfc3339())
         .execute(&self.pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -412,7 +482,53 @@ mod tofu_tests {
         let path = PathBuf::from(std::env::temp_dir())
             .join(format!("ravenbot-sync-test-{}.db", Uuid::new_v4()));
         let db = ravenbot_db::Database::new(&path).await.expect("temp db");
-        BundleManager::open(db.pool().clone()).await.expect("manager")
+        BundleManager::open(db.pool().clone())
+            .await
+            .expect("manager")
+    }
+
+    #[tokio::test]
+    async fn imported_memory_is_marked_as_imported() {
+        let manager = temp_manager().await;
+        let bot = Bot::new("Import Memory", "sync test bot");
+        ravenbot_db::queries::BotQueries::insert(manager.pool_ref(), &bot)
+            .await
+            .unwrap();
+        let now = chrono::Utc::now();
+        let fact = MemoryFact {
+            id: Uuid::new_v4(),
+            bot_id: bot.id,
+            content: "A fact from another installation".to_string(),
+            embedding: None,
+            importance: 0.6,
+            access_count: 3,
+            last_accessed: now,
+            created_at: now,
+            source: "agent".to_string(),
+            source_thread_id: Some(Uuid::new_v4()),
+            source_run_id: Some(Uuid::new_v4()),
+            updated_at: now,
+        };
+        manager
+            .import_memory_fact(bot.id, &fact)
+            .await
+            .expect("import memory");
+
+        let row: (String, Option<String>, Option<String>, String) = sqlx::query_as(
+            "SELECT source, source_thread_id, source_run_id, updated_at
+             FROM memory_facts WHERE id = ?",
+        )
+        .bind(fact.id.to_string())
+        .fetch_one(manager.pool_ref())
+        .await
+        .unwrap();
+        assert_eq!(row.0, "import");
+        assert!(
+            row.1.is_none(),
+            "foreign thread ids must not survive import"
+        );
+        assert!(row.2.is_none(), "foreign run ids must not survive import");
+        assert!(!row.3.is_empty());
     }
 
     #[tokio::test]

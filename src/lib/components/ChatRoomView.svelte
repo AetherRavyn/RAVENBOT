@@ -12,6 +12,7 @@
   import { cn } from "$lib/utils.js";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { t } from "$lib/i18n";
+  import { sessionRole } from "$lib/sessionRole.svelte";
   import { recordUtterance, transcribeBlob, voiceErrorMessage } from "$lib/voice";
   import {
     ACCEPTED_IMAGE_MIMES,
@@ -23,26 +24,70 @@
   } from "$lib/attachments";
   import { onMount, onDestroy, tick } from "svelte";
   import { notify } from "$lib/toast";
+  import { announceAttentionChanged } from "$lib/attention.svelte";
   import OfficeSettings from "$lib/components/OfficeSettings.svelte";
   import OfficeMemoryPanel from "$lib/components/OfficeMemoryPanel.svelte";
   import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
+  import TranscriptRail from "$lib/components/chat/TranscriptRail.svelte";
+  import { workflowRunOutcome } from "$lib/workflowRuns";
+  import {
+    WORKFLOW_TEMPLATES,
+    materializeWorkflowTemplate,
+    type WorkflowTemplate,
+  } from "$lib/workflowTemplates";
+  import {
+    mergeOlderMessages,
+    oldestMessageId,
+    MESSAGE_PAGE_SIZE,
+  } from "$lib/chat/messagePaging";
+  import {
+    mergeReplyTargets,
+    replyTargetsToLoad,
+  } from "$lib/chat/replyResolution";
+  import MessageSelectionToolbar from "$lib/components/chat/MessageSelectionToolbar.svelte";
+  import { quoteAsMarkdown, type SelectionQuote } from "$lib/chat/selection";
   import { isPersistedMessageId, toggleReaction as nextReactions } from "$lib/chat/reactions";
   import { matchingMessageIds, messageKey, stepMatchIndex } from "$lib/chat/search";
   import { replyQuoteFor } from "$lib/chat/replies";
+  import { messageDayKey, messageDayLabel } from "$lib/chat/dayMarkers";
   import { isEditableTarget, navigateMessage } from "$lib/chat/navigation";
   import { anchoredScrollTop, transcriptWindow } from "$lib/chat/messageWindow";
+  import { drafts, officeDraftKey } from "$lib/chat/drafts";
+  import {
+    applyMention,
+    filterMentionItems,
+    mentionAtCaret,
+    type MentionItem,
+    type MentionSigil,
+    type MentionToken,
+  } from "$lib/chat/mentions";
+  import ComposerMentionMenu from "$lib/components/chat/ComposerMentionMenu.svelte";
   import ApprovalCard from "$lib/components/chat/ApprovalCard.svelte";
-  import QuestionCard from "$lib/components/chat/QuestionCard.svelte";
+  import InteractionBlockCard from "$lib/components/chat/InteractionBlock.svelte";
+  import type {
+    InteractionBlock as InteractionBlockPayload,
+    QuestionKind,
+  } from "$lib/chat/blocks";
   import PlanDag from "$lib/components/chat/PlanDag.svelte";
   import OfficeBoard from "$lib/components/chat/OfficeBoard.svelte";
-  import type { BoardNode, BotTodo } from "$lib/components/chat/OfficeBoard.svelte";
+  import WorkflowLibrary from "$lib/components/chat/WorkflowLibrary.svelte";
+  import OfficeTaskCard from "$lib/components/chat/OfficeTaskCard.svelte";
+  import WorkItemDrawer from "$lib/components/chat/WorkItemDrawer.svelte";
+  import AwaitingReplies from "$lib/components/chat/AwaitingReplies.svelte";
+  import type { BoardNode, BotTodo, BoardWorkItem } from "$lib/components/chat/OfficeBoard.svelte";
   import RunTimelineStrip from "$lib/components/chat/RunTimeline.svelte";
   import { RunTimeline as RunTimelineState } from "$lib/chat/runTimeline.svelte";
   import { showAuthorHeader, authorHue, isGhostContent } from "$lib/chat/grouping";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { handoffs } from "$lib/handoffs.svelte";
+  import { workspace } from "$lib/workspace.svelte";
+  import { sidePanel } from "$lib/workspace/sidePanel.svelte";
+  import { makeArtifact } from "$lib/artifact";
+  import { artifactStore } from "$lib/artifacts.svelte";
+  import { requestThreadFocus } from "$lib/chat/messageFocus";
   import { reasoning } from "$lib/chat/reasoning.svelte";
   import { contextUsage, type ContextUsage } from "$lib/chat/contextUsage.svelte";
+  import { persistedContextUsage } from "$lib/chat/contextPersistence";
   import ContextMeter from "$lib/components/chat/ContextMeter.svelte";
   import ImageGallery from "$lib/components/chat/ImageGallery.svelte";
   import FileAttachmentCard from "$lib/components/chat/FileAttachmentCard.svelte";
@@ -173,9 +218,36 @@
 
   // ── Quoted replies ─────────────────────────────────────────────────────
   let replyingTo = $state<any | null>(null);
+  let replyTargets = $state<any[]>([]);
+  const replyLoadPending = new Set<string>();
+  const messagesForReplies = $derived(mergeReplyTargets(messages, replyTargets));
+
+  async function resolveReplyTargets(threadId: string, msgs: any[]) {
+    const known = new Set(
+      [...msgs, ...replyTargets].map((message) => String(message.id)),
+    );
+    const missing = replyTargetsToLoad(msgs, known, replyLoadPending);
+    if (missing.length === 0) return;
+    for (const id of missing) replyLoadPending.add(id);
+    try {
+      const fetched: any[] = await invoke("get_messages_by_ids", {
+        threadId,
+        ids: missing,
+      });
+      replyTargets = mergeReplyTargets(
+        replyTargets,
+        Array.isArray(fetched) ? fetched : [],
+      );
+    } catch {
+      /* the quote falls back to the unavailable label */
+    } finally {
+      for (const id of missing) replyLoadPending.delete(id);
+    }
+  }
+
   const activeReply = $derived(
     replyQuoteFor(
-      messages,
+      messagesForReplies,
       replyingTo?.id,
       roomReplyAuthor,
       t("thread.replyUnavailable"),
@@ -198,6 +270,23 @@
 
   function cancelReply() {
     replyingTo = null;
+  }
+
+  function messageById(id: string) {
+    return messages.find((message) => messageKey(message) === id) ?? null;
+  }
+
+  function replyFromSelection(messageId: string) {
+    const message = messageById(messageId);
+    if (message) startReply(message);
+  }
+
+  function quoteFromSelection(selection: SelectionQuote) {
+    const message = messageById(selection.messageId);
+    if (!message) return;
+    startReply(message);
+    newMessage = `${quoteAsMarkdown(selection.text)}\n\n${newMessage}`.trimStart();
+    void tick().then(() => composerRef?.focus());
   }
 
   async function jumpToMessage(id: string) {
@@ -230,6 +319,15 @@
     }
   }
   let newMessage = $state("");
+  let draftRoomId: string | null = null;
+  let mentionOpen = $state(false);
+  let mentionSigil = $state<MentionSigil>("#");
+  let mentionToken = $state<MentionToken | null>(null);
+  let mentionItems = $state<MentionItem[]>([]);
+  let mentionIndex = $state(0);
+  let addressedTo = $state<{ id: string; label: string } | null>(null);
+  let fileMentions = $state<MentionItem[]>([]);
+  let skillMentions = $state<MentionItem[]>([]);
   let threadId: string | null = $state(null);
   /**
    * Handoffs in this conversation, newest first.
@@ -240,6 +338,7 @@
   const threadHandoffs = $derived(threadId ? handoffs.forThread(threadId) : []);
 
   let sending = $state(false);
+  let pendingMessageId = $state<string | null>(null);
   /** Continuous office work; the header badge is the switch. */
   let autonomyOn = $state(true);
   let autonomyBusy = $state(false);
@@ -262,6 +361,15 @@
   let queueBusy = $state(false);
   /** The newest node context; office nodes run on threads other than the room. */
   let officeContext = $state<ContextUsage | null>(null);
+
+  $effect(() => {
+    if (!threadId) return;
+    const current = messages.filter((message) => message.thread_id === threadId);
+    const persisted = persistedContextUsage(current);
+    if (!persisted) return;
+    contextUsage.hydrate(threadId, current);
+    officeContext = persisted;
+  });
   /** Resolves `send()` when the detached office turn reports `done`. */
   let dispatchDone: (() => void) | null = null;
   let dispatchTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -274,7 +382,35 @@
   // Plan mode
   let showPlanModal = $state(false);
   let planGoal = $state("");
-  let planTasks = $state<Array<{ id: string; botId: string; label: string; dependsOn: number[] }>>([]);
+  type PlanCondition = {
+    source: number;
+    operator: string;
+    value: string;
+  };
+  type PlanLoopStop = {
+    operator: string;
+    value: string;
+  };
+  let planTasks = $state<
+    Array<{
+      id: string;
+      botId: string;
+      label: string;
+      dependsOn: number[];
+      condition: PlanCondition | null;
+      dataFrom: number[] | null;
+      retries: number;
+      outputSchema: string;
+      loopIterations: number;
+      loopUntil: PlanLoopStop | null;
+      loopGroup: string;
+      loopGroupTerminal: boolean;
+      loopGroupIterations: number;
+      loopGroupStop: PlanLoopStop | null;
+      nodeType: string;
+    }>
+  >([]);
+  let loadedWorkflow = $state<{ id: string; version: number; name: string } | null>(null);
   let planGenerating = $state(false);
   let planError = $state<string | null>(null);
   let draftingPlan = $state(false);
@@ -417,22 +553,40 @@
     hireProvisioning = true;
     hireError = null;
     try {
+      const roles = hireRoles.map((r) => ({
+        name: r.name,
+        rank: r.rank,
+        specialty: r.specialty,
+        system_prompt: r.system_prompt || null,
+        is_lead: r.is_lead,
+        skills: r.skills,
+      }));
+      let removeMissing = false;
+      try {
+        const preview: any = await invoke("preview_office_provisioning", {
+          chatroomId: room.id,
+          roles,
+        });
+        const stale = Array.isArray(preview?.remove) ? preview.remove : [];
+        if (stale.length > 0) {
+          const names = stale.map((member: any) => String(member.name || member.bot_id)).join(", ");
+          removeMissing = confirm(t("room.removeMissingConfirm", { names }));
+        }
+      } catch {
+        // A preview failure must not block staffing. It only means the
+        // destructive removal option is unavailable for this run.
+      }
       const res: any = await invoke("provision_office_org", {
         chatroomId: room.id,
-        roles: hireRoles.map((r) => ({
-          name: r.name,
-          rank: r.rank,
-          specialty: r.specialty,
-          system_prompt: r.system_prompt || null,
-          is_lead: r.is_lead,
-          skills: r.skills,
-        })),
+        roles,
         provider: null,
         model: null,
+        removeMissing,
       });
       const createdCount = Array.isArray(res?.created) ? res.created.length : 0;
       const reusedCount = Array.isArray(res?.reused) ? res.reused.length : 0;
-      hireResult = `Hired ${createdCount} new agent${createdCount === 1 ? "" : "s"} · reused ${reusedCount} existing from the fleet.`;
+      const removedCount = Array.isArray(res?.removed) ? res.removed.length : 0;
+      hireResult = `Hired ${createdCount} new agent${createdCount === 1 ? "" : "s"} · reused ${reusedCount} existing from the fleet${removedCount > 0 ? ` · removed ${removedCount}` : ""}.`;
       window.dispatchEvent(new CustomEvent("bots-changed"));
       await load();
     } catch (e: any) {
@@ -461,6 +615,16 @@
   // Office board (planner → kanban → live DAG) fed by plan_ready/node_* events
   let boardGoal = $state("");
   let boardNodes = $state<BoardNode[]>([]);
+  // Durable work items from earlier cycles; the live board only knows this run.
+  let workItems = $state<BoardWorkItem[]>([]);
+  // The durable task record opened from a board card.
+  let selectedBoardNode = $state<BoardNode | null>(null);
+  // A task record belongs to one office; switching rooms must not leave the
+  // previous office's drawer over the new conversation.
+  $effect(() => {
+    room?.id;
+    selectedBoardNode = null;
+  });
   // Threads owned by the current room run: every node thread opened so far.
   // Events from any other thread are ignored (no cross-run clobbering).
   const activeThreads = new Set<string>();
@@ -498,6 +662,7 @@
   interface PendingQuestion {
     id: string; bot_id: string; thread_id: string; run_id: string;
     header: string; question: string; options: string[]; allow_custom: boolean;
+    kind?: QuestionKind | null; payload?: InteractionBlockPayload | null;
     status: string; created_at: string;
   }
   let pendingApprovals = $state<PendingApproval[]>([]);
@@ -525,6 +690,7 @@
     try {
       await invoke("decide_approval", { approvalId: id, allowed, note: null });
       pendingApprovals = pendingApprovals.filter((a) => a.id !== id);
+      announceAttentionChanged();
     } catch (e) {
       notify(`Failed to decide approval: ${String(e)}`, "error");
     } finally {
@@ -539,6 +705,7 @@
     try {
       await invoke("answer_question", { questionId: id, answer: value });
       pendingQuestions = pendingQuestions.filter((q) => q.id !== id);
+      announceAttentionChanged();
     } catch (e) {
       notify(`Failed to answer: ${String(e)}`, "error");
     } finally {
@@ -577,6 +744,18 @@
       if (!live.has(key)) r.track("");
     }
   });
+
+  function openBoardNodeThread(node: BoardNode) {
+    if (!node.nodeThreadId) return;
+    workspace.selectBot(node.botId);
+    requestThreadFocus({ botId: node.botId, threadId: node.nodeThreadId });
+  }
+
+  function openHandoffThread(handoff: { toBotId: string; childThreadId: string | null }) {
+    if (!handoff.childThreadId) return;
+    workspace.selectBot(handoff.toBotId);
+    requestThreadFocus({ botId: handoff.toBotId, threadId: handoff.childThreadId });
+  }
 
   function memberForBot(botId: string) {
     return members.find((m: any) => m.bot?.id === botId);
@@ -864,6 +1043,7 @@
   const MESSAGE_WINDOW = 30;
   const MESSAGE_WINDOW_STEP = 30;
   let messageWindow = $state(MESSAGE_WINDOW);
+  let hasEarlier = $state(false);
   let loadingEarlier = $state(false);
   // 0 means "follow the tail"; a number pins the window while the reader is
   // in older history so incoming messages cannot shift the rows under them.
@@ -874,16 +1054,72 @@
   const visibleStart = $derived(windowBounds.start);
   const visibleEnd = $derived(windowBounds.end);
   const visibleMessages = $derived(messages.slice(visibleStart, visibleEnd));
+
+  let railEntries = $derived(
+    visibleMessages
+      .filter((msg) => {
+        if (!isUserMessage(msg)) return false;
+        const text =
+          typeof msg.content === "string"
+            ? msg.content
+            : msg.content?.text || "";
+        return !text.startsWith("[Autonomous cycle]");
+      })
+      .map((msg) => {
+        const text =
+          typeof msg.content === "string"
+            ? msg.content
+            : msg.content?.text || "";
+        return {
+          id: `message-${messageKey(msg)}`,
+          kind: "user" as const,
+          label: text.trim().slice(0, 80) || t("thread.you"),
+        };
+      }),
+  );
+
+  function jumpToRail(id: string) {
+    document
+      .getElementById(id)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+
   const hiddenBefore = $derived(visibleStart);
 
+  async function fetchMessageTail(targetThread: string): Promise<any[]> {
+    const page: any = await invoke("list_messages_page", {
+      threadId: targetThread,
+      beforeId: null,
+      limit: MESSAGE_PAGE_SIZE,
+    });
+    hasEarlier = !!page?.has_more;
+    const messages = Array.isArray(page?.messages) ? page.messages : [];
+    void resolveReplyTargets(targetThread, messages);
+    return messages;
+  }
+
   async function loadEarlier() {
-    if (loadingEarlier || hiddenBefore <= 0) return;
+    if (loadingEarlier || (hiddenBefore <= 0 && !hasEarlier)) return;
     const el = chatContainer;
     const previousTop = el?.scrollTop ?? 0;
     const previousHeight = el?.scrollHeight ?? 0;
     loadingEarlier = true;
     try {
-      messageWindow += MESSAGE_WINDOW_STEP;
+      if (hiddenBefore > 0) {
+        messageWindow += MESSAGE_WINDOW_STEP;
+      } else if (threadId) {
+        const page: any = await invoke("list_messages_page", {
+          threadId,
+          beforeId: oldestMessageId(messages),
+          limit: MESSAGE_PAGE_SIZE,
+        });
+        const older = Array.isArray(page?.messages) ? page.messages : [];
+        hasEarlier = !!page?.has_more;
+        if (older.length === 0) return;
+        messages = mergeOlderMessages(messages, older);
+        messageWindow += older.length;
+        void resolveReplyTargets(threadId, messages);
+      }
       await tick();
       if (el) {
         el.scrollTop = anchoredScrollTop(
@@ -904,14 +1140,14 @@
     if (windowEnd !== 0) {
       // The bottom of a pinned window is not the bottom of the transcript.
       stickToLatest = false;
-      if (nearTop && hiddenBefore > 0) void loadEarlier();
+      if (nearTop && (hiddenBefore > 0 || hasEarlier)) void loadEarlier();
       return;
     }
     stickToLatest = el.scrollHeight - el.scrollTop - el.clientHeight <= 80;
     if (stickToLatest) unseenMessages = 0;
     // History loads as the reader reaches the old edge; the button remains the
     // explicit path for keyboard and pointer users.
-    if (nearTop && hiddenBefore > 0) void loadEarlier();
+    if (nearTop && (hiddenBefore > 0 || hasEarlier)) void loadEarlier();
   }
 
   function jumpToLatest() {
@@ -981,6 +1217,8 @@
     seenMessageCount = 0;
     messageWindow = MESSAGE_WINDOW;
     windowEnd = 0;
+    hasEarlier = false;
+    replyTargets = [];
     staticEntries = true;
     try {
       const mems = (await invoke("list_chatroom_members", { chatroomId: room.id })) as any[];
@@ -993,11 +1231,12 @@
       const tid = await invoke("get_chatroom_thread", { chatroomId: room.id });
       if (tid) {
         threadId = tid as string;
-        messages = (await invoke("list_messages", { threadId })) as any[];
+        messages = await fetchMessageTail(threadId);
         await rehydratePersistedBoard();
       } else {
         threadId = null;
         messages = [];
+        hasEarlier = false;
       }
       await tick();
       scrollToBottom(true);
@@ -1005,6 +1244,36 @@
       console.error(e);
     } finally {
       staticEntries = false;
+    }
+  }
+
+  async function stopOfficeTurn() {
+    if (!room?.id) return;
+    try {
+      const cancelled = await invoke<number>("cancel_office_turn", { chatroomId: room.id });
+      notify(
+        cancelled > 0
+          ? `Stopped ${cancelled} active office run${cancelled === 1 ? "" : "s"}.`
+          : "The office has no active run to stop.",
+        "success",
+      );
+      await refreshOfficeRuntime();
+      await refreshQueue();
+    } catch (e) {
+      notify(`Could not stop the office: ${String(e)}`, "error");
+    }
+  }
+
+  async function refreshWorkItems() {
+    if (!room?.id) return;
+    try {
+      const items = await invoke<BoardWorkItem[]>("list_work_items", {
+        officeId: room.id,
+        limit: 200,
+      });
+      workItems = Array.isArray(items) ? items : [];
+    } catch {
+      /* transient IPC failure: keep the last known backlog */
     }
   }
 
@@ -1031,8 +1300,69 @@
       queuePaused = next;
       if (!next) void refreshOfficeRuntime();
       await refreshQueue();
+      announceAttentionChanged();
     } catch (e) {
       notify(`Could not change the office queue: ${String(e)}`, "error");
+    } finally {
+      queueBusy = false;
+    }
+  }
+
+  function pendingQueueItems(): OfficeQueueItemView[] {
+    return queueItems.filter((item) => item.state === "pending");
+  }
+
+  function canMoveQueueItem(item: OfficeQueueItemView, delta: -1 | 1): boolean {
+    if (item.state !== "pending" || queueBusy) return false;
+    const pending = pendingQueueItems();
+    const index = pending.findIndex((candidate) => candidate.id === item.id);
+    return index >= 0 && index + delta >= 0 && index + delta < pending.length;
+  }
+
+  async function runQueueItemNext(item: OfficeQueueItemView) {
+    if (!room?.id || queueBusy || item.state !== "pending") return;
+    queueBusy = true;
+    try {
+      const started = await invoke<boolean>("run_office_queue_item_next", {
+        chatroomId: room.id,
+        id: item.id,
+      });
+      await refreshQueue();
+      announceAttentionChanged();
+      if (started) await refreshOfficeRuntime();
+    } catch (e) {
+      notify(`Could not start the queued message: ${String(e)}`, "error");
+    } finally {
+      queueBusy = false;
+    }
+  }
+
+  async function moveQueueItem(item: OfficeQueueItemView, delta: -1 | 1) {
+    if (!room?.id || !canMoveQueueItem(item, delta)) return;
+    const pending = pendingQueueItems();
+    const index = pending.findIndex((candidate) => candidate.id === item.id);
+    const target = pending[index + delta];
+    if (!target) return;
+
+    // Reorder the visible list, not just the pending subset: the backend
+    // persists one position per row, and leaving the running/failed rows out
+    // would let their old positions overtake the chosen order on reload.
+    const ordered = [...queueItems];
+    const from = ordered.findIndex((candidate) => candidate.id === item.id);
+    const to = ordered.findIndex((candidate) => candidate.id === target.id);
+    if (from < 0 || to < 0) return;
+    [ordered[from], ordered[to]] = [ordered[to], ordered[from]];
+
+    queueBusy = true;
+    try {
+      await invoke("reorder_office_queue", {
+        chatroomId: room.id,
+        orderedIds: ordered.map((candidate) => candidate.id),
+      });
+      await refreshQueue();
+      announceAttentionChanged();
+    } catch (e) {
+      notify(`Could not reorder the office queue: ${String(e)}`, "error");
     } finally {
       queueBusy = false;
     }
@@ -1075,6 +1405,7 @@
       // cannot keep claiming the office is autonomous after it stopped.
       if (!autonomyBusy) autonomyOn = autonomy;
       void refreshQueue();
+      void refreshWorkItems();
       if (wasActive && !active) {
         await load();
         await rehydratePersistedBoard(true);
@@ -1105,18 +1436,31 @@
       queueItems = [];
       queuePaused = false;
       queueBusy = false;
+      workItems = [];
       officeTokens = 0;
       officeCost = 0;
+      // Drafts and attachments are scoped to the room being left; the room
+      // being opened restores its own draft.
+      if (draftRoomId && draftRoomId !== room.id) {
+        drafts.saveNow(officeDraftKey(draftRoomId), newMessage);
+      }
+      draftRoomId = room.id;
+      newMessage = drafts.load(officeDraftKey(room.id));
+      pendingAttachments = [];
       load();
     }
   });
 
   function handleTryLocalSkill(event: Event) {
     const prompt = (event as CustomEvent<{ prompt?: string }>).detail?.prompt;
-    if (prompt) newMessage = prompt;
+    if (prompt) {
+      newMessage = prompt;
+      if (room?.id) drafts.save(officeDraftKey(room.id), prompt);
+    }
   }
 
   onMount(() => {
+    void loadMentionSources();
     window.addEventListener("local-skill-try", handleTryLocalSkill);
     listen<any>("agent-stream", (event) => {
         const p = event.payload;
@@ -1162,6 +1506,14 @@
               nodeThreadId: nodeTid,
             });
           }
+          return;
+        }
+        if (kind === "node_iteration") {
+          const nodeId = String(p.node_id ?? "");
+          patchNode(nodeId, {
+            state: "running",
+            preview: clipPreview(String(p.preview || "")),
+          });
           return;
         }
         if (kind === "node_finished") {
@@ -1326,6 +1678,7 @@
   function openPlanModal() {
     planGoal = "";
     planTasks = [];
+    loadedWorkflow = null;
     planError = null;
     planQuestion = null;
     planTasks = members.map((m, i) => ({
@@ -1333,25 +1686,79 @@
       botId: m.bot_id,
       label: "Address your part of the goal",
       dependsOn: [] as number[],
+      condition: null,
+      dataFrom: null,
+      retries: 0,
+      outputSchema: "",
+      loopIterations: 1,
+      loopUntil: null,
+      loopGroup: "",
+      loopGroupTerminal: false,
+      loopGroupIterations: 2,
+      loopGroupStop: null,
+      nodeType: "agent",
     }));
     showPlanModal = true;
   }
 
   function addPlanTask() {
-    planTasks = [...planTasks, { id: String(planTasks.length), botId: members[0]?.bot_id ?? "", label: "New task", dependsOn: [] }];
+    loadedWorkflow = null;
+    planTasks = [
+      ...planTasks,
+      {
+        id: String(planTasks.length),
+        botId: members[0]?.bot_id ?? "",
+        label: "New task",
+        dependsOn: [],
+        condition: null,
+        dataFrom: null,
+        retries: 0,
+        outputSchema: "",
+        loopIterations: 1,
+        loopUntil: null,
+        loopGroup: "",
+        loopGroupTerminal: false,
+        loopGroupIterations: 2,
+        loopGroupStop: null,
+        nodeType: "agent",
+      },
+    ];
   }
 
   function removePlanTask(idx: number) {
-    planTasks = planTasks.filter((_, i) => i !== idx).map((t, i) => ({ ...t, id: String(i), dependsOn: t.dependsOn.filter((d) => d !== idx).map((d) => d > idx ? d - 1 : d) }));
+    loadedWorkflow = null;
+    planTasks = planTasks
+      .filter((_, i) => i !== idx)
+      .map((task, i) => {
+        const dependsOn = task.dependsOn
+          .filter((d) => d !== idx)
+          .map((d) => (d > idx ? d - 1 : d));
+        let condition = task.condition;
+        if (condition && condition.source === idx) {
+          condition = null;
+        } else if (condition && condition.source > idx) {
+          condition = { ...condition, source: condition.source - 1 };
+        }
+        let dataFrom = task.dataFrom;
+        if (dataFrom !== null) {
+          dataFrom = dataFrom
+            .filter((d) => d !== idx)
+            .map((d) => (d > idx ? d - 1 : d));
+          if (dataFrom.length === dependsOn.length) dataFrom = null;
+        }
+        return { ...task, id: String(i), dependsOn, condition, dataFrom };
+      });
   }
 
   function updatePlanTaskLabel(idx: number, label: string) {
+    loadedWorkflow = null;
     planTasks = planTasks.map((t, i) => (i === idx ? { ...t, label } : t));
   }
 
   // Let the room's lead draft the plan from the goal, then let the user edit it.
   async function draftPlan() {
     if (!planGoal.trim()) { planError = "Describe the goal first."; return; }
+    loadedWorkflow = null;
     planError = null;
     planQuestion = null;
     draftingPlan = true;
@@ -1375,6 +1782,17 @@
         botId: t.bot_id,
         label: t.instruction,
         dependsOn: Array.isArray(t.depends_on) ? t.depends_on : [],
+        condition: t.condition ?? null,
+        dataFrom: t.data_from ?? null,
+        retries: t.retries ?? 0,
+        outputSchema: t.output_schema ?? "",
+        loopIterations: t.loop_iterations ?? 1,
+        loopUntil: t.loop_until ?? null,
+        loopGroup: t.loop_group ?? "",
+        loopGroupTerminal: Boolean(t.loop_group_terminal),
+        loopGroupIterations: t.loop_group_iterations ?? 2,
+        loopGroupStop: t.loop_group_stop ?? null,
+        nodeType: t.node_type ?? "agent",
       }));
     } catch (e: any) {
       planError = String(e);
@@ -1383,23 +1801,224 @@
     }
   }
 
+  function applyWorkflowTemplate(template: WorkflowTemplate) {
+    const applied = materializeWorkflowTemplate(template, members);
+    loadedWorkflow = null;
+    planError = null;
+    planQuestion = null;
+    planGoal = applied.goal;
+    planTasks = applied.tasks;
+  }
+
+  function updatePlanNodeType(idx: number, nodeType: string) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === idx ? { ...task, nodeType } : task,
+    );
+  }
+
   function updateTaskBot(idx: number, botId: string) {
+    loadedWorkflow = null;
     planTasks = planTasks.map((t, i) => (i === idx ? { ...t, botId } : t));
   }
 
   function togglePlanDep(taskIdx: number, depIdx: number) {
+    loadedWorkflow = null;
     planTasks = planTasks.map((t, i) => {
       if (i !== taskIdx) return t;
       const has = t.dependsOn.includes(depIdx);
-      return { ...t, dependsOn: has ? t.dependsOn.filter((d) => d !== depIdx) : [...t.dependsOn, depIdx] };
+      const dependsOn = has
+        ? t.dependsOn.filter((d) => d !== depIdx)
+        : [...t.dependsOn, depIdx];
+      const condition =
+        t.condition && dependsOn.includes(t.condition.source)
+          ? t.condition
+          : null;
+      let dataFrom = t.dataFrom;
+      if (dataFrom !== null) {
+        dataFrom = dataFrom.filter((d) => dependsOn.includes(d));
+        if (dataFrom.length === dependsOn.length) dataFrom = null;
+      }
+      return { ...t, dependsOn, condition, dataFrom };
     });
+  }
+
+  function togglePlanInput(taskIdx: number, depIdx: number) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) => {
+      if (index !== taskIdx) return task;
+      const current = task.dataFrom ?? task.dependsOn;
+      const has = current.includes(depIdx);
+      const next = has
+        ? current.filter((d) => d !== depIdx)
+        : [...current, depIdx];
+      const dataFrom =
+        next.length === task.dependsOn.length ? null : next;
+      return { ...task, dataFrom };
+    });
+  }
+
+  function updatePlanCondition(
+    taskIdx: number,
+    patch: Partial<PlanCondition>,
+  ) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) => {
+      if (index !== taskIdx) return task;
+      const current =
+        task.condition ??
+        ({
+          source: task.dependsOn[0] ?? 0,
+          operator: "contains",
+          value: "",
+        } satisfies PlanCondition);
+      return { ...task, condition: { ...current, ...patch } };
+    });
+  }
+
+  function updatePlanRetries(taskIdx: number, value: string) {
+    const retries = Math.max(0, Math.min(3, Number(value) || 0));
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === taskIdx ? { ...task, retries } : task,
+    );
+  }
+
+  function updatePlanOutputSchema(taskIdx: number, value: string) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === taskIdx ? { ...task, outputSchema: value } : task,
+    );
+  }
+
+  function updatePlanLoopIterations(taskIdx: number, value: string) {
+    const loopIterations = Math.max(1, Math.min(10, Number(value) || 1));
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === taskIdx
+        ? {
+            ...task,
+            loopIterations,
+            loopUntil:
+              loopIterations > 1
+                ? (task.loopUntil ?? {
+                    operator: "contains",
+                    value: "",
+                  })
+                : null,
+          }
+        : task,
+    );
+  }
+
+  function updatePlanLoopUntil(
+    taskIdx: number,
+    patch: Partial<PlanLoopStop>,
+  ) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) => {
+      if (index !== taskIdx) return task;
+      const current =
+        task.loopUntil ??
+        ({
+          operator: "contains",
+          value: "",
+        } satisfies PlanLoopStop);
+      return { ...task, loopUntil: { ...current, ...patch } };
+    });
+  }
+
+  function clearPlanLoopUntil(taskIdx: number) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === taskIdx ? { ...task, loopUntil: null } : task,
+    );
+  }
+
+  function updatePlanLoopGroup(taskIdx: number, value: string) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === taskIdx
+        ? {
+            ...task,
+            loopGroup: value,
+            loopGroupTerminal: value.trim() ? task.loopGroupTerminal : false,
+            loopGroupStop: value.trim() ? task.loopGroupStop : null,
+          }
+        : task,
+    );
+  }
+
+  function updatePlanGroupTerminal(taskIdx: number, terminal: boolean) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === taskIdx
+        ? {
+            ...task,
+            loopGroupTerminal: terminal,
+            loopGroupStop: terminal
+              ? (task.loopGroupStop ?? { operator: "contains", value: "" })
+              : null,
+          }
+        : task,
+    );
+  }
+
+  function updatePlanGroupIterations(taskIdx: number, value: string) {
+    const loopGroupIterations = Math.max(2, Math.min(10, Number(value) || 2));
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === taskIdx ? { ...task, loopGroupIterations } : task,
+    );
+  }
+
+  function updatePlanGroupUntil(
+    taskIdx: number,
+    patch: Partial<PlanLoopStop>,
+  ) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) => {
+      if (index !== taskIdx) return task;
+      const current =
+        task.loopGroupStop ??
+        ({ operator: "contains", value: "" } satisfies PlanLoopStop);
+      return { ...task, loopGroupStop: { ...current, ...patch } };
+    });
+  }
+
+  function clearPlanGroupUntil(taskIdx: number) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === taskIdx ? { ...task, loopGroupStop: null } : task,
+    );
+  }
+
+  function clearPlanCondition(taskIdx: number) {
+    loadedWorkflow = null;
+    planTasks = planTasks.map((task, index) =>
+      index === taskIdx ? { ...task, condition: null } : task,
+    );
   }
 
   async function dispatchPlan() {
     if (!planGoal.trim()) { planError = "Describe the goal first."; return; }
     if (planTasks.length === 0) { planError = "Add at least one task."; return; }
+    const workflowRun = loadedWorkflow;
+    const runGoal = planGoal;
     planError = null;
     planGenerating = true;
+    let workflowRunId: string | null = null;
+    if (workflowRun) {
+      try {
+        workflowRunId = await invoke<string>("begin_workflow_run", {
+          workflowId: workflowRun.id,
+          workflowVersion: workflowRun.version,
+          goal: runGoal,
+        });
+      } catch {
+        /* the plan can still run even if history could not be opened */
+      }
+    }
     resetRun();
     // Optimistically show the dispatched goal in the room feed.
     const tempUserMsg = {
@@ -1409,6 +2028,7 @@
       created_at: new Date().toISOString(),
     };
     messages = [...messages, tempUserMsg];
+    pendingMessageId = tempUserMsg.id;
     // An explicit dispatch always returns the feed to the bottom (OpenBot).
     scrollToBottom(true);
     // Close the modal immediately: the room streams live lanes while the DAG
@@ -1420,6 +2040,25 @@
         bot_id: t.botId,
         instruction: `Goal: ${planGoal}\n\nYour task: ${t.label}`,
         depends_on: t.dependsOn,
+        condition: t.condition,
+        data_from: t.dataFrom,
+        retries: t.retries,
+        output_schema: t.outputSchema.trim() ? t.outputSchema : null,
+        loop_iterations: t.loopIterations,
+        loop_until:
+          t.loopIterations > 1 && t.loopUntil?.value.trim()
+            ? t.loopUntil
+            : null,
+        loop_group: t.loopGroup.trim() || null,
+        loop_group_terminal: Boolean(t.loopGroupTerminal),
+        loop_group_iterations: t.loopGroupIterations,
+        loop_group_stop:
+          t.loopGroupTerminal &&
+          t.loopGroupIterations > 1 &&
+          t.loopGroupStop?.value.trim()
+            ? t.loopGroupStop
+            : null,
+        node_type: t.nodeType,
       }));
       // Prefer an explicit orchestrator/lead; otherwise let the backend resolve
       // the room's lead (pass a nil UUID).
@@ -1438,13 +2077,33 @@
       if (tid) {
         threadId = tid;
         staticEntries = true;
-        messages = (await invoke("list_messages", { threadId: tid })) as any[];
+        messages = await fetchMessageTail(tid);
         await tick();
         staticEntries = false;
         scrollToBottom(true);
       }
       rehydrateBoard(res);
+      const outcome = workflowRunOutcome(res);
+      if (workflowRunId) {
+        void invoke("finish_workflow_run", {
+          runId: workflowRunId,
+          stateName: outcome.stateName,
+          threadId: res.thread_id ?? null,
+          detail: outcome.detail,
+        }).catch(() => undefined);
+      }
+      if (outcome.stateName === "failed") {
+        notify("Plan finished with incomplete tasks.", "error");
+      }
     } catch (e: any) {
+      if (workflowRunId) {
+        void invoke("finish_workflow_run", {
+          runId: workflowRunId,
+          stateName: "failed",
+          threadId: null,
+          detail: String(e),
+        }).catch(() => undefined);
+      }
       notify(`Plan dispatch failed: ${String(e)}`, "error");
     } finally {
       planGenerating = false;
@@ -1503,9 +2162,141 @@
     finish?.();
   }
 
+  const agentMentions = $derived<MentionItem[]>(
+    members
+      .map((member: any) => ({
+        id: String(member.bot?.id || member.bot_id || ""),
+        label: String(member.bot?.name || member.bot_id || ""),
+        detail: String(member.specialty || member.rank || ""),
+        kind: "agent" as const,
+      }))
+      .filter((item: MentionItem) => item.id && item.label),
+  );
+
+  async function loadMentionSources() {
+    try {
+      const files = (await invoke<any[]>("list_recent_file_changes", { limit: 200 })) || [];
+      const paths = [...new Set(files.map((file) => String(file.path || "")).filter(Boolean))];
+      fileMentions = paths.slice(0, 100).map((path) => ({
+        id: path,
+        label: path,
+        detail: "recent file",
+        kind: "file" as const,
+      }));
+    } catch {
+      fileMentions = [];
+    }
+    try {
+      const skills = (await invoke<any[]>("list_all_skills")) || [];
+      skillMentions = skills.slice(0, 100).map((skill: any) => ({
+        id: String(skill.id || ""),
+        label: String(skill.id || ""),
+        detail: String(skill.description || ""),
+        kind: "skill" as const,
+      })).filter((item: MentionItem) => item.id);
+    } catch {
+      skillMentions = [];
+    }
+  }
+
+  function closeMentions() {
+    mentionOpen = false;
+    mentionToken = null;
+  }
+
+  function updateMentions(value: string, caret: number) {
+    const token = mentionAtCaret(value, caret);
+    if (!token) {
+      closeMentions();
+      return;
+    }
+    const source =
+      token.sigil === "@"
+        ? agentMentions
+        : token.sigil === "#"
+          ? fileMentions
+          : skillMentions;
+    if (source.length === 0) {
+      closeMentions();
+      return;
+    }
+    mentionToken = token;
+    mentionSigil = token.sigil;
+    mentionItems = filterMentionItems(source, token.query);
+    mentionIndex = 0;
+    mentionOpen = mentionItems.length > 0;
+  }
+
+  function handleComposerInput(event: Event) {
+    const target = event.target as HTMLTextAreaElement;
+    const value = target.value;
+    if (addressedTo && !value.includes(`@${addressedTo.label}`)) {
+      addressedTo = null;
+    }
+    if (room?.id) drafts.save(officeDraftKey(room.id), value);
+    updateMentions(value, target.selectionStart ?? value.length);
+  }
+
+  function chooseMention(item: MentionItem) {
+    if (!mentionToken || !room?.id) return;
+    const applied = applyMention(newMessage, mentionToken, item.label);
+    newMessage = applied.text;
+    if (item.kind === "agent") {
+      addressedTo = { id: item.id, label: item.label };
+    }
+    closeMentions();
+    drafts.save(officeDraftKey(room.id), applied.text);
+    void tick().then(() => {
+      composerRef?.focus();
+      composerRef?.setSelectionRange(applied.caret, applied.caret);
+    });
+  }
+
+  function clearAddressee() {
+    if (!addressedTo || !room?.id) return;
+    newMessage = newMessage
+      .replace(`@${addressedTo.label}`, "")
+      .replace(/[ \t]{2,}/gu, " ")
+      .trimStart();
+    addressedTo = null;
+    drafts.save(officeDraftKey(room.id), newMessage);
+    closeMentions();
+    void tick().then(() => composerRef?.focus());
+  }
+
+  function handleMentionKeydown(event: KeyboardEvent): boolean {
+    if (!mentionOpen) return false;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const total = mentionItems.length;
+      mentionIndex = total > 0 ? (mentionIndex + delta + total) % total : 0;
+      return true;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      const item = mentionItems[mentionIndex];
+      if (item) chooseMention(item);
+      return true;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMentions();
+      return true;
+    }
+    return false;
+  }
+
   async function send(taskText?: string) {
+    if (sessionRole.role === "viewer") return;
     const typed = (taskText || newMessage).trim();
     if (sending) return;
+    // Sending starts a fresh turn and clears the local HITL cards. If a run is
+    // parked on a decision, that would strand it with no way to answer.
+    if (pendingApprovals.length > 0 || pendingQuestions.length > 0) {
+      notify("Resolve the pending decision before sending a new task.", "error");
+      return;
+    }
     const attachments = pendingAttachments;
     if (!typed && attachments.length === 0) return;
     const text = typed || "(shared files)";
@@ -1538,17 +2329,26 @@
     scrollToBottom(true);
 
     try {
+      const recipientBotId =
+        addressedTo && text.includes(`@${addressedTo.label}`)
+          ? addressedTo.id
+          : undefined;
       const res: any = await invoke("send_to_chatroom", {
         chatroomId: room.id,
         content: text,
         attachments: attachments.length ? attachments : undefined,
         replyToId,
+        recipientBotId,
       });
       replyingTo = null;
+      addressedTo = null;
+      drafts.clear(officeDraftKey(room.id));
       if (res?.queued) {
+        announceAttentionChanged();
         // The queued message is not part of the transcript until its turn
         // starts; the queue panel is the honest place to show it.
         messages = messages.filter((message) => message.id !== tempUserMsg.id);
+        pendingMessageId = null;
         if (res.thread_id) threadId = res.thread_id;
         await refreshQueue();
         if (res.started) {
@@ -1556,7 +2356,7 @@
           // completion, then the queue worker will start the next item.
           if (threadId) {
             staticEntries = true;
-            messages = (await invoke("list_messages", { threadId })) as any[];
+            messages = await fetchMessageTail(threadId);
             await tick();
             staticEntries = false;
             scrollToBottom(true);
@@ -1564,7 +2364,7 @@
           await waitForDispatchDone();
           if (threadId) {
             staticEntries = true;
-            messages = (await invoke("list_messages", { threadId })) as any[];
+            messages = await fetchMessageTail(threadId);
             await tick();
             staticEntries = false;
             commitLanes();
@@ -1578,7 +2378,8 @@
       }
       if (res.thread_id) threadId = res.thread_id;
       staticEntries = true;
-      messages = (await invoke("list_messages", { threadId })) as any[];
+      if (threadId) messages = await fetchMessageTail(threadId);
+      pendingMessageId = null;
       await tick();
       staticEntries = false;
       rehydrateBoard(res);
@@ -1591,7 +2392,7 @@
         await waitForDispatchDone();
         if (threadId) {
           staticEntries = true;
-          messages = (await invoke("list_messages", { threadId })) as any[];
+          messages = await fetchMessageTail(threadId);
           await tick();
           staticEntries = false;
           commitLanes();
@@ -1600,13 +2401,17 @@
         }
       }
     } catch (e) {
-      // Never swallow the failure: toast it, and still refetch so persisted
-      // agent replies surface even if the call rejected late.
+      // Never swallow the failure: toast it, restore the draft, and still
+      // refetch so persisted agent replies surface even if the call rejected
+      // late.
+      newMessage = text;
+      drafts.saveNow(officeDraftKey(room.id), text);
+      pendingMessageId = null;
       notify(`Office dispatch failed: ${String(e)}`, "error");
       if (threadId) {
         try {
           staticEntries = true;
-          messages = (await invoke("list_messages", { threadId })) as any[];
+          messages = await fetchMessageTail(threadId);
         } catch {
           /* keep the optimistic row if the refetch also failed */
         } finally {
@@ -1614,6 +2419,7 @@
         }
       }
     } finally {
+      pendingMessageId = null;
       if (shouldSignalDone) signalDispatchDone();
       sending = false;
       commitLanes();
@@ -1747,7 +2553,7 @@
 
 <svelte:window onkeydown={handleMessageNavKey} />
 
-<div class="flex flex-col h-full overflow-hidden select-none bg-[var(--surface-0)] text-[var(--text-primary)] font-sans">
+<div class="flex flex-col h-full overflow-hidden bg-[var(--surface-0)] text-[var(--text-primary)] font-sans">
   <!-- Office header. Three things, three places: who this office is (left),
        what it is doing (under the name), and who is in it plus the office
        actions (right).
@@ -1767,7 +2573,7 @@
       <div class="flex items-center gap-2 min-w-0">
         <span class="font-semibold text-sm text-[var(--text-primary)] truncate">{room.name}</span>
         <span class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-tertiary)] capitalize shrink-0">
-          {room.office_template.replace("-", " ")}
+          {(room.office_template || "custom").replace("-", " ")}
         </span>
         <button
           type="button"
@@ -1786,6 +2592,18 @@
           {/if}
           {autonomyOn ? t("room.autonomous") : t("room.autonomyPaused")}
         </button>
+        {#if officeActive || sending}
+          <button
+            type="button"
+            class="text-[11px] px-1.5 py-0.5 rounded border shrink-0 inline-flex items-center gap-1 cursor-pointer bg-[var(--danger-soft)] text-[var(--danger-text)] border-[var(--danger-border)] hover:bg-[var(--danger-soft-hover)]"
+            title="Stop the active office run"
+            aria-label="Stop the active office run"
+            onclick={() => void stopOfficeTurn()}
+          >
+            <XCircle class="size-2.5" strokeWidth={2} />
+            Stop
+          </button>
+        {/if}
       </div>
       <!-- One meta line. The lane is a fact about the office, not a status
            claim — the dot carries the status, so an idle office no longer
@@ -1958,8 +2776,10 @@
           nodes={boardNodes}
           {members}
           todos={botTodos}
+          {workItems}
           runActive={teamActive}
           variant="rail"
+          onSelect={(node) => (selectedBoardNode = node)}
         />
       </aside>
     {/if}
@@ -1992,20 +2812,24 @@
   <div class="flex-1 flex flex-col overflow-hidden bg-[var(--surface-0)]">
     <div class="relative flex-1 min-h-0">
     <div bind:this={chatContainer} onscroll={handleFeedScroll} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" class="h-full overflow-y-auto p-4 sm:p-6 space-y-6 {staticEntries ? 'entries-static' : ''}">
-      <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto space-y-6">
-        {#if hiddenBefore > 0}
+      <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto min-h-full flex flex-col justify-end gap-6">
+        {#if hiddenBefore > 0 || hasEarlier}
           <div class="load-earlier-row">
             <button
               type="button"
               class="load-earlier"
               onclick={() => void loadEarlier()}
             >
-              {t("thread.loadEarlier", { count: hiddenBefore })}
+              {t("thread.loadEarlier", {
+                count: hiddenBefore > 0 ? hiddenBefore : MESSAGE_PAGE_SIZE,
+              })}
             </button>
           </div>
         {/if}
         {#each visibleMessages as msg, vi (msg.id || msg.created_at)}
           {@const mi = visibleStart + vi}
+          {@const dayKey = messageDayKey(msg.created_at)}
+          {@const previousDayKey = mi > 0 ? messageDayKey(messages[mi - 1]?.created_at) : ""}
           {@const isUser = isUserMessage(msg)}
           {@const isError = typeof msg.content === "string" && msg.content.includes("⚠️ **Model Error:**")}
           {@const rawText = typeof msg.content === "string" ? msg.content : msg.content?.text || JSON.stringify(msg.content)}
@@ -2059,6 +2883,18 @@
             {/if}
           {/snippet}
 
+          {#if dayKey && dayKey !== previousDayKey}
+            <div
+              class="flex items-center gap-3 px-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]"
+              role="separator"
+              aria-label={messageDayLabel(msg.created_at)}
+            >
+              <span class="h-px flex-1 bg-[var(--hairline)]" aria-hidden="true"></span>
+              <span>{messageDayLabel(msg.created_at)}</span>
+              <span class="h-px flex-1 bg-[var(--hairline)]" aria-hidden="true"></span>
+            </div>
+          {/if}
+
           {#if autonomousCycle}
             <div class="flex items-center gap-3 px-1 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-muted)]">
               <span class="h-px flex-1 bg-[var(--hairline)]" aria-hidden="true"></span>
@@ -2073,10 +2909,11 @@
             {isUser}
             {isError}
             rowId={`message-${messageKey(msg)}`}
+            messageId={isPersistedMessageId(msg.id) ? msg.id : undefined}
             searchHit={roomSearchOpen && roomSearchMatchSet.has(messageKey(msg))}
             searchCurrent={roomSearchOpen && roomCurrentSearchKey === messageKey(msg)}
             replyTo={replyQuoteFor(
-              messages,
+              messagesForReplies,
               msg.reply_to_id,
               roomReplyAuthor,
               t("thread.replyUnavailable"),
@@ -2088,10 +2925,15 @@
               ? (emoji) => void reactToMessage(msg, emoji)
               : undefined}
             text={rawText}
+            onOpenArtifact={(code, lang) => {
+              artifactStore.open(makeArtifact(code, lang));
+              sidePanel.select("artifacts", sidePanel.scope());
+            }}
             reasoning={typeof msg.content === "object" ? (msg.content?.reasoning ?? null) : null}
             tools={(typeof msg.content === "object" && msg.content?.tools) || []}
             spans={(typeof msg.content === "object" && msg.content?.spans) || []}
             time={formatTime(msg.created_at)}
+            pending={msg.id === pendingMessageId}
             grouped={!showAuthorHeader(messages, mi)}
             gutter={!isUser}
             gutterName={showAuthorHeader(messages, mi) ? (senderName || senderBot?.name || "") : ""}
@@ -2206,12 +3048,14 @@
         {/each}
 
         {#each pendingQuestions as q (q.id)}
-          <QuestionCard
+          <InteractionBlockCard
             botName={agentNameFor(q.bot_id)}
             header={q.header}
             question={q.question}
             options={q.options || []}
             allowCustom={q.allow_custom !== false}
+            kind={q.kind || "question"}
+            payload={q.payload || null}
             answering={answeringQuestion === q.id}
             onAnswer={(answer) => answerQuestion(q.id, answer)}
           />
@@ -2257,6 +3101,15 @@
                 <span class="flex-1 min-w-0 text-[11px] text-[var(--text-muted)] truncate" title={h.instruction}>
                   {h.error ?? h.instruction}
                 </span>
+                {#if h.childThreadId}
+                  <button
+                    type="button"
+                    class="text-[11px] text-[var(--brand-text)] hover:underline shrink-0 cursor-pointer"
+                    onclick={() => openHandoffThread(h)}
+                  >
+                    {t("attention.open")}
+                  </button>
+                {/if}
                 {#if h.response}
                   <button
                     type="button"
@@ -2385,6 +3238,11 @@
         {/if}
       </div>
     </div>
+      <MessageSelectionToolbar
+        container={chatContainer}
+        onReply={replyFromSelection}
+        onQuote={quoteFromSelection}
+      />
       {#if !stickToLatest}
         <button
           type="button"
@@ -2408,11 +3266,28 @@
           <span>{t("room.jumpLatest")}</span>
         </button>
       {/if}
+      <TranscriptRail
+        container={chatContainer}
+        entries={railEntries}
+        onJump={jumpToRail}
+      />
     </div>
 
     <!-- Grok Floating Capsule Compose Bar -->
     <div class="p-4 bg-[var(--surface-0)] shrink-0">
-      <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]  p-3 shadow-2xl transition-all duration-200 focus-within:border-[var(--brand)]">
+      <div class="relative max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]  p-3 shadow-2xl transition-all duration-200 focus-within:border-[var(--brand)]">
+        {#if boardNodes.length > 0}
+          <OfficeTaskCard
+            nodes={boardNodes}
+            nameFor={agentNameFor}
+            onOpen={openBoardNodeThread}
+          />
+        {/if}
+        <AwaitingReplies
+          items={threadHandoffs}
+          nameFor={agentNameFor}
+          onOpen={openHandoffThread}
+        />
         {#if queueItems.length > 0 || queuePaused}
           <div class="office-queue" aria-label={t("room.queueTitle", { count: queueItems.length })}>
             <div class="office-queue-head">
@@ -2437,6 +3312,40 @@
               {#each queueItems as item, index (item.id)}
                 <div class="office-queue-item" data-state={item.state}>
                   <span class="office-queue-index">{index + 1}</span>
+                  {#if item.state === "pending"}
+                    <span class="office-queue-move">
+                      <button
+                        type="button"
+                        class="office-queue-move-button"
+                        aria-label={t("room.queueRunNext")}
+                        title={t("room.queueRunNext")}
+                        disabled={queueBusy}
+                        onclick={() => void runQueueItemNext(item)}
+                      >
+                        <Play class="size-3" />
+                      </button>
+                      <button
+                        type="button"
+                        class="office-queue-move-button"
+                        aria-label={t("room.queueMoveUp")}
+                        title={t("room.queueMoveUp")}
+                        disabled={!canMoveQueueItem(item, -1)}
+                        onclick={() => void moveQueueItem(item, -1)}
+                      >
+                        <ArrowUp class="size-3" />
+                      </button>
+                      <button
+                        type="button"
+                        class="office-queue-move-button"
+                        aria-label={t("room.queueMoveDown")}
+                        title={t("room.queueMoveDown")}
+                        disabled={!canMoveQueueItem(item, 1)}
+                        onclick={() => void moveQueueItem(item, 1)}
+                      >
+                        <ArrowDown class="size-3" />
+                      </button>
+                    </span>
+                  {/if}
                   <span class="office-queue-text" title={item.visible || item.content}>
                     {item.visible || item.content}
                   </span>
@@ -2521,6 +3430,27 @@
             {/each}
           </div>
         {/if}
+        {#if addressedTo}
+          <div class="composer-addressee" role="status">
+            <span class="composer-addressee__sigil">@</span>
+            <span class="composer-addressee__label">{t("room.addressedTo", { name: addressedTo.label })}</span>
+            <button
+              type="button"
+              class="composer-addressee__clear"
+              aria-label={t("room.clearAddressee")}
+              title={t("room.clearAddressee")}
+              onclick={clearAddressee}
+            >✕</button>
+          </div>
+        {/if}
+        {#if mentionOpen}
+          <ComposerMentionMenu
+            sigil={mentionSigil}
+            items={mentionItems}
+            activeIndex={mentionIndex}
+            onPick={chooseMention}
+          />
+        {/if}
         <textarea
           bind:this={composerRef}
           bind:value={newMessage}
@@ -2530,7 +3460,9 @@
             : t("room.taskPh", { name: room.name, n: members.length })}
           rows={1}
           class="w-full bg-transparent text-xs sm:text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
+          oninput={handleComposerInput}
           onkeydown={(e) => {
+            if (handleMentionKeydown(e)) return;
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               send();
@@ -2663,8 +3595,87 @@
               {/if}
             </button>
           </div>
-          <textarea id="plan-goal" bind:value={planGoal} rows={2} placeholder={t("room.planGoalPlaceholder")} class="w-full px-3 py-2 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus:border-[var(--brand)]/50"></textarea>
+          <textarea id="plan-goal" bind:value={planGoal} oninput={() => (loadedWorkflow = null)} rows={2} placeholder={t("room.planGoalPlaceholder")} class="w-full px-3 py-2 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus:border-[var(--brand)]/50"></textarea>
         </div>
+
+        {#if members.length > 0}
+        <div class="space-y-1.5">
+          <p class="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)]">{t("room.templates")}</p>
+          <div class="flex flex-wrap gap-1.5">
+            {#each WORKFLOW_TEMPLATES as template (template.id)}
+              <button
+                type="button"
+                onclick={() => applyWorkflowTemplate(template)}
+                title={template.description}
+                class="px-2.5 py-1 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-[11px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:border-[var(--brand)]/40 cursor-pointer"
+              >
+                {template.name}
+              </button>
+            {/each}
+          </div>
+          <p class="text-[11px] text-[var(--text-muted)]">{t("room.templatesHint")}</p>
+        </div>
+        {/if}
+
+        <WorkflowLibrary
+          officeId={room.id}
+          {members}
+          goal={planGoal}
+          tasks={planTasks}
+          onLoad={(
+            loadedGoal: string,
+            loadedTasks: Array<{
+              id: string;
+              botId: string;
+              label: string;
+              dependsOn: number[];
+              condition: PlanCondition | null;
+              dataFrom: number[] | null;
+              retries: number;
+              outputSchema: string;
+              loopIterations: number;
+              loopUntil: PlanLoopStop | null;
+              loopGroup: string;
+              loopGroupTerminal: boolean;
+              loopGroupIterations: number;
+              loopGroupStop: PlanLoopStop | null;
+              nodeType: string;
+            }>,
+            meta: { id: string; version: number; name: string },
+          ) => {
+            planGoal = loadedGoal;
+            planTasks = loadedTasks;
+            loadedWorkflow = meta;
+            planError = null;
+          }}
+          onRun={(
+            runGoal: string,
+            runTasks: Array<{
+              id: string;
+              botId: string;
+              label: string;
+              dependsOn: number[];
+              condition: PlanCondition | null;
+              dataFrom: number[] | null;
+              retries: number;
+              outputSchema: string;
+              loopIterations: number;
+              loopUntil: PlanLoopStop | null;
+              loopGroup: string;
+              loopGroupTerminal: boolean;
+              loopGroupIterations: number;
+              loopGroupStop: PlanLoopStop | null;
+              nodeType: string;
+            }>,
+            meta: { id: string; version: number; name: string },
+          ) => {
+            planGoal = runGoal;
+            planTasks = runTasks;
+            loadedWorkflow = meta;
+            planError = null;
+            void tick().then(() => void dispatchPlan());
+          }}
+        />
 
         {#if planQuestion}
           <div class="p-3 rounded-xl bg-[var(--brand-soft)] border border-[var(--brand)]/40 text-xs text-[var(--brand-text)] space-y-1">
@@ -2691,12 +3702,40 @@
             <div class="p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] space-y-2">
               <div class="flex items-center gap-2">
                 <SimpleSelect
+                  value={task.nodeType}
+                  options={[
+                    { value: "trigger", label: t("room.nodeTrigger") },
+                    { value: "agent", label: t("room.nodeAgent") },
+                    { value: "llm", label: t("room.nodeLlm") },
+                    { value: "approval", label: t("room.nodeApproval") },
+                    { value: "output", label: t("room.nodeOutput") },
+                  ]}
+                  onValueChange={(v) => updatePlanNodeType(idx, v)}
+                  class="h-7 w-28 text-[11px] rounded-lg"
+                />
+                <SimpleSelect
                   value={task.botId}
                   options={members.map((m: any) => ({ value: m.bot_id, label: `${m.bot?.name || m.rank} · ${m.specialty}` }))}
                   onValueChange={(v) => updateTaskBot(idx, v)}
                   class="h-7 w-44 text-[11px] rounded-lg"
                 />
                 <input bind:value={task.label} oninput={(e) => updatePlanTaskLabel(idx, (e.target as HTMLInputElement).value)} class="flex-1 h-7 px-2 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-[var(--brand)]/50" placeholder={t("room.taskPlaceholder")} />
+                <label class="flex shrink-0 items-center gap-1 text-[11px] text-[var(--text-muted)]" title={t("room.retriesHint")}>
+                  {t("room.retries")}
+                  <input
+                    type="number"
+                    min="0"
+                    max="3"
+                    value={task.retries}
+                    aria-label={t("room.retries")}
+                    oninput={(event) =>
+                      updatePlanRetries(
+                        idx,
+                        (event.target as HTMLInputElement).value,
+                      )}
+                    class="h-7 w-11 px-1 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-[var(--brand)]/50"
+                  />
+                </label>
                 <button type="button" onclick={() => removePlanTask(idx)} aria-label="Remove task" class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
               </div>
               {#if idx > 0}
@@ -2717,6 +3756,262 @@
                   {/each}
                 </div>
               {/if}
+              {#if task.dependsOn.length > 0}
+                <div class="flex flex-wrap items-center gap-1">
+                  <span class="text-[11px] font-mono text-[var(--text-muted)] uppercase tracking-wider">
+                    {t("room.runIf")}
+                  </span>
+                  {#if task.condition}
+                    <SimpleSelect
+                      value={String(task.condition.source)}
+                      options={task.dependsOn.map((dep) => ({
+                        value: String(dep),
+                        label: `#${dep + 1}`,
+                      }))}
+                      onValueChange={(value) =>
+                        updatePlanCondition(idx, { source: Number(value) })}
+                      class="h-6 w-14 text-[11px] rounded-md"
+                    />
+                    <SimpleSelect
+                      value={task.condition.operator}
+                      options={[
+                        { value: "contains", label: t("room.contains") },
+                        {
+                          value: "not_contains",
+                          label: t("room.notContains"),
+                        },
+                      ]}
+                      onValueChange={(value) =>
+                        updatePlanCondition(idx, { operator: value })}
+                      class="h-6 w-32 text-[11px] rounded-md"
+                    />
+                    <input
+                      value={task.condition.value}
+                      oninput={(event) =>
+                        updatePlanCondition(idx, {
+                          value: (event.target as HTMLInputElement).value,
+                        })}
+                      aria-label={t("room.conditionValue")}
+                      placeholder={t("room.conditionValue")}
+                      class="min-w-32 flex-1 h-6 px-2 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-md focus:outline-none focus:border-[var(--brand)]/50"
+                    />
+                    <button
+                      type="button"
+                      onclick={() => clearPlanCondition(idx)}
+                      class="text-[11px] text-[var(--text-muted)] hover:text-danger cursor-pointer"
+                    >
+                      {t("room.removeCondition")}
+                    </button>
+                  {:else}
+                    <button
+                      type="button"
+                      onclick={() => updatePlanCondition(idx, {})}
+                      class="text-[11px] text-[var(--brand-text)] hover:underline cursor-pointer"
+                    >
+                      {t("room.addCondition")}
+                    </button>
+                  {/if}
+                </div>
+              {/if}
+              {#if task.dependsOn.length > 0}
+                <div class="flex flex-wrap items-center gap-1">
+                  <span class="text-[11px] font-mono text-[var(--text-muted)] uppercase tracking-wider">
+                    {t("room.inputs")}
+                  </span>
+                  {#each task.dependsOn as dep}
+                    {@const inputOn = (task.dataFrom ?? task.dependsOn).includes(dep)}
+                    <button
+                      type="button"
+                      onclick={() => togglePlanInput(idx, dep)}
+                      aria-pressed={inputOn}
+                      class="h-5 px-1.5 text-[11px] font-mono rounded-md border cursor-pointer {inputOn
+                        ? 'border-[var(--brand)]/60 bg-[var(--brand-soft)] text-[var(--brand-text)]'
+                        : 'border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-muted)] hover:text-[var(--text-secondary)]'}"
+                    >#{dep + 1}</button>
+                  {/each}
+                  <span class="text-[11px] text-[var(--text-muted)]">
+                    {t("room.inputsHint")}
+                  </span>
+                </div>
+              {/if}
+              <details class="rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)]/50">
+                <summary class="cursor-pointer px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
+                  {t("room.typedOutput")}
+                  {#if task.outputSchema.trim()}
+                    <span class="ml-1 text-[var(--brand-text)]">· {t("room.typedOutputOn")}</span>
+                  {/if}
+                </summary>
+                <div class="px-2 pb-2 space-y-1">
+                  <textarea
+                    value={task.outputSchema}
+                    oninput={(event) =>
+                      updatePlanOutputSchema(
+                        idx,
+                        (event.target as HTMLTextAreaElement).value,
+                      )}
+                    rows={4}
+                    spellcheck="false"
+                    aria-label={t("room.typedOutput")}
+                    placeholder={t("room.typedOutputPlaceholder")}
+                    class="w-full px-2 py-1.5 font-mono text-[11px] bg-[var(--surface-1)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-md resize-y focus:outline-none focus:border-[var(--brand)]/50"
+                  ></textarea>
+                  <p class="text-[11px] text-[var(--text-muted)]">
+                    {t("room.typedOutputHint")}
+                  </p>
+                </div>
+              </details>
+              <details class="rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)]/50">
+                <summary class="cursor-pointer px-2 py-1 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
+                  {t("room.repeat")}
+                  {#if task.loopIterations > 1}
+                    <span class="ml-1 text-[var(--brand-text)]">· {task.loopIterations}×</span>
+                  {/if}
+                </summary>
+                <div class="px-2 pb-2 space-y-1.5">
+                  <div class="flex flex-wrap items-center gap-2">
+                    <label class="flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
+                      {t("room.repeatRuns")}
+                      <input
+                        type="number"
+                        min="1"
+                        max="10"
+                        value={task.loopIterations}
+                        aria-label={t("room.repeatRuns")}
+                        oninput={(event) =>
+                          updatePlanLoopIterations(
+                            idx,
+                            (event.target as HTMLInputElement).value,
+                          )}
+                        class="h-7 w-12 px-1 text-[11px] bg-[var(--surface-1)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-md focus:outline-none focus:border-[var(--brand)]/50"
+                      />
+                    </label>
+                    {#if task.loopIterations > 1}
+                      <span class="text-[11px] text-[var(--text-muted)]">
+                        {t("room.repeatStopWhen")}
+                      </span>
+                      <SimpleSelect
+                        value={task.loopUntil?.operator ?? "contains"}
+                        options={[
+                          { value: "contains", label: t("room.contains") },
+                          {
+                            value: "not_contains",
+                            label: t("room.notContains"),
+                          },
+                        ]}
+                        onValueChange={(value) =>
+                          updatePlanLoopUntil(idx, { operator: value })}
+                        class="h-7 w-32 text-[11px] rounded-lg"
+                      />
+                      <input
+                        value={task.loopUntil?.value ?? ""}
+                        oninput={(event) =>
+                          updatePlanLoopUntil(idx, {
+                            value: (event.target as HTMLInputElement).value,
+                          })}
+                        aria-label={t("room.repeatPhrase")}
+                        placeholder={t("room.repeatPhrase")}
+                        class="min-w-28 flex-1 h-7 px-2 text-[11px] bg-[var(--surface-1)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-md focus:outline-none focus:border-[var(--brand)]/50"
+                      />
+                      {#if task.loopUntil}
+                        <button
+                          type="button"
+                          onclick={() => clearPlanLoopUntil(idx)}
+                          class="text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
+                        >
+                          {t("room.repeatClearStop")}
+                        </button>
+                      {/if}
+                    {/if}
+                  </div>
+                  <div class="pt-2 border-t border-[var(--hairline)] space-y-1.5">
+                    <div class="flex items-center gap-2">
+                      <span class="text-[11px] text-[var(--text-muted)] shrink-0">{t("room.loopGroup")}</span>
+                      <input
+                        value={task.loopGroup}
+                        oninput={(event) =>
+                          updatePlanLoopGroup(
+                            idx,
+                            (event.target as HTMLInputElement).value,
+                          )}
+                        aria-label={t("room.loopGroup")}
+                        placeholder={t("room.loopGroupPlaceholder")}
+                        class="min-w-24 flex-1 h-7 px-2 text-[11px] bg-[var(--surface-1)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-md focus:outline-none focus:border-[var(--brand)]/50"
+                      />
+                      {#if task.loopGroup.trim()}
+                        <label class="flex items-center gap-1 text-[11px] text-[var(--text-muted)] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={task.loopGroupTerminal}
+                            onchange={(event) =>
+                              updatePlanGroupTerminal(
+                                idx,
+                                (event.target as HTMLInputElement).checked,
+                              )}
+                            aria-label={t("room.loopGroupTerminal")}
+                          />
+                          {t("room.loopGroupTerminal")}
+                        </label>
+                      {/if}
+                    </div>
+                    {#if task.loopGroup.trim() && task.loopGroupTerminal}
+                      <div class="flex flex-wrap items-center gap-2">
+                        <label class="flex items-center gap-1 text-[11px] text-[var(--text-muted)]">
+                          {t("room.loopGroupRuns")}
+                          <input
+                            type="number"
+                            min="2"
+                            max="10"
+                            value={task.loopGroupIterations}
+                            aria-label={t("room.loopGroupRuns")}
+                            oninput={(event) =>
+                              updatePlanGroupIterations(
+                                idx,
+                                (event.target as HTMLInputElement).value,
+                              )}
+                            class="h-7 w-12 px-1 text-[11px] bg-[var(--surface-1)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-md focus:outline-none focus:border-[var(--brand)]/50"
+                          />
+                        </label>
+                        <span class="text-[11px] text-[var(--text-muted)]">{t("room.loopGroupStop")}</span>
+                        <SimpleSelect
+                          value={task.loopGroupStop?.operator ?? "contains"}
+                          options={[
+                            { value: "contains", label: t("room.contains") },
+                            { value: "not_contains", label: t("room.notContains") },
+                          ]}
+                          onValueChange={(value) =>
+                            updatePlanGroupUntil(idx, { operator: value })}
+                          class="h-7 w-32 text-[11px] rounded-lg"
+                        />
+                        <input
+                          value={task.loopGroupStop?.value ?? ""}
+                          oninput={(event) =>
+                            updatePlanGroupUntil(idx, {
+                              value: (event.target as HTMLInputElement).value,
+                            })}
+                          aria-label={t("room.repeatPhrase")}
+                          placeholder={t("room.repeatPhrase")}
+                          class="min-w-28 flex-1 h-7 px-2 text-[11px] bg-[var(--surface-1)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-md focus:outline-none focus:border-[var(--brand)]/50"
+                        />
+                        {#if task.loopGroupStop}
+                          <button
+                            type="button"
+                            onclick={() => clearPlanGroupUntil(idx)}
+                            class="text-[11px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] cursor-pointer"
+                          >
+                            {t("room.repeatClearStop")}
+                          </button>
+                        {/if}
+                      </div>
+                    {/if}
+                    {#if task.loopGroup.trim()}
+                      <p class="text-[11px] text-[var(--text-muted)]">{t("room.loopGroupHint")}</p>
+                    {/if}
+                  </div>
+                  <p class="text-[11px] text-[var(--text-muted)]">
+                    {t("room.repeatHint")}
+                  </p>
+                </div>
+              </details>
             </div>
           {:else}
             <div class="py-6 text-center text-xs text-[var(--text-muted)] border border-dashed border-[var(--hairline)] rounded-xl">{t("room.noTasks")}</div>
@@ -2987,4 +4282,13 @@
       onUpdated={(updated: any) => { handleAgentUpdated(updated); }}
     />
   {/await}
+{/if}
+
+{#if selectedBoardNode}
+  <WorkItemDrawer
+    itemId={selectedBoardNode.nodeId}
+    label={selectedBoardNode.label}
+    botName={agentNameFor(selectedBoardNode.botId)}
+    onClose={() => (selectedBoardNode = null)}
+  />
 {/if}

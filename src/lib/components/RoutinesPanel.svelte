@@ -67,11 +67,26 @@
   let copied = $state(false);
 
   onMount(async () => {
-    await load();
     try {
       schedulerStatus = await invoke("get_scheduler_status");
     } catch (e) {
       console.error(e);
+    }
+  });
+
+  // The panel is reused across bots by the Workspace switcher. Reloading only
+  // onMount left the previous bot's routines on screen, so Create/Delete could
+  // act on the wrong bot.
+  let loadedBotId: string | null = null;
+  $effect(() => {
+    const id = bot?.id;
+    if (id && id !== loadedBotId) {
+      loadedBotId = id;
+      showCreate = false;
+      webhookUrl = null;
+      newName = "";
+      newInstruction = "";
+      void load();
     }
   });
 
@@ -107,7 +122,7 @@
   async function copyWebhook() {
     if (!webhookUrl) return;
     try {
-      await navigator.clipboard.writeText(webhookUrl.url);
+      await navigator.clipboard.writeText(`${webhookUrl.url}\n${webhookUrl.header}`);
       copied = true;
       setTimeout(() => (copied = false), 1500);
     } catch (e) {
@@ -372,7 +387,10 @@
             <div class="mt-1.5 rounded-lg border border-success/30 bg-success/20 p-2 space-y-1">
               <div class="text-[11px] text-success">{t("routines.webhookHint")}</div>
               <div class="flex items-center gap-1.5">
-                <code class="flex-1 text-[11px] font-mono text-success break-all">{webhookUrl.url}</code>
+                <div class="flex-1 min-w-0 space-y-0.5">
+                  <code class="block text-[11px] font-mono text-success break-all">{webhookUrl.url}</code>
+                  <code class="block text-[11px] font-mono text-success break-all">{webhookUrl.header}</code>
+                </div>
                 <button
                   type="button"
                   aria-label="Copy webhook URL"

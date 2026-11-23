@@ -63,6 +63,15 @@ impl Skill for CodeEditSkill {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
+        // Models trained in Codex-style environments put `*** Begin Patch`
+        // into code_edit as well. Route it to the parser that understands it
+        // instead of failing a round trip on a format mismatch.
+        if patch.trim_start().starts_with("*** Begin Patch") {
+            return crate::builtin::file_edit::FileEditSkill::new()
+                .execute(ctx, args.clone())
+                .await;
+        }
+
         exec::validate_patch_targets(ctx, patch)?;
 
         // The scratch file lives in the run's own temp directory rather than
@@ -94,8 +103,15 @@ impl Skill for CodeEditSkill {
         }
         if !check.status.success() {
             let _ = tokio::fs::remove_file(&tmp).await;
+            let hint = if check_out.contains("ends in middle of line")
+                || check_out.contains("Only garbage")
+            {
+                "\nThe diff appears truncated or malformed. Resend the complete unified diff, or use file_edit with a *** Begin Patch / exact old-new replacement."
+            } else {
+                ""
+            };
             return Ok(SkillResult::failure(format!(
-                "Patch check failed, nothing was changed:\n{check_out}"
+                "Patch check failed, nothing was changed:\n{check_out}{hint}"
             )));
         }
 
@@ -199,6 +215,23 @@ mod tests {
         assert!(
             err.to_string().contains("not a path inside the office"),
             "{err}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_codex_patch_is_routed_to_file_edit() {
+        let root = sandbox();
+        let skill = CodeEditSkill::new();
+        let patch = "*** Begin Patch\n*** Update File: a.txt\n@@\n-one\n+two\n*** End Patch";
+        let result = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(skill.execute(&ctx(&root), serde_json::json!({"patch": patch})))
+            .expect("codex patch should be handled");
+        assert!(result.success, "{:?}", result.error);
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "two\n"
         );
         let _ = std::fs::remove_dir_all(&root);
     }

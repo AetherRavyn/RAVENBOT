@@ -32,7 +32,10 @@ pub fn line_changes(before: &str, after: &str) -> (usize, usize) {
     }
 
     let common = lcs_len(&old, &new);
-    (new.len().saturating_sub(common), old.len().saturating_sub(common))
+    (
+        new.len().saturating_sub(common),
+        old.len().saturating_sub(common),
+    )
 }
 
 /// Exact longest-common-subsequence length over lines, with a rolling row.
@@ -200,7 +203,12 @@ pub fn unified(before: &str, after: &str, path: &str) -> Option<String> {
     // git never emits and which reads as the same lines twice.
     let mut groups: Vec<(usize, usize)> = changed
         .into_iter()
-        .map(|k| (k.saturating_sub(HUNK_CONTEXT), (k + HUNK_CONTEXT).min(rows.len() - 1)))
+        .map(|k| {
+            (
+                k.saturating_sub(HUNK_CONTEXT),
+                (k + HUNK_CONTEXT).min(rows.len() - 1),
+            )
+        })
         .collect();
     let mut merged: Vec<(usize, usize)> = Vec::with_capacity(groups.len());
     for (start, end) in groups.drain(..) {
@@ -219,14 +227,28 @@ pub fn unified(before: &str, after: &str, path: &str) -> Option<String> {
         // contributes *up to this point*.
         let old_before = rows[..start].iter().filter(|(r, _)| *r != Row::Add).count();
         let new_before = rows[..start].iter().filter(|(r, _)| *r != Row::Del).count();
-        let old_span = rows[start..=end].iter().filter(|(r, _)| *r != Row::Add).count();
-        let new_span = rows[start..=end].iter().filter(|(r, _)| *r != Row::Del).count();
+        let old_span = rows[start..=end]
+            .iter()
+            .filter(|(r, _)| *r != Row::Add)
+            .count();
+        let new_span = rows[start..=end]
+            .iter()
+            .filter(|(r, _)| *r != Row::Del)
+            .count();
 
         out.push_str(&format!(
             "@@ -{},{} +{},{} @@\n",
-            if old_span == 0 { old_before } else { old_before + 1 },
+            if old_span == 0 {
+                old_before
+            } else {
+                old_before + 1
+            },
             old_span,
-            if new_span == 0 { new_before } else { new_before + 1 },
+            if new_span == 0 {
+                new_before
+            } else {
+                new_before + 1
+            },
             new_span,
         ));
 
@@ -288,13 +310,19 @@ pub fn patch_file_diffs(patch: &str) -> Vec<FilePatch> {
     // is not attributed to whatever section came before it.
     let mut pending_minus = false;
 
-    let push = |out: &mut Vec<FilePatch>, cur: &mut Option<usize>, path: &str| {
-        match out.iter().position(|p| p.path == path) {
-            Some(i) => *cur = Some(i),
-            None => {
-                out.push(FilePatch { path: path.to_string(), added: 0, deleted: 0, text: String::new() });
-                *cur = Some(out.len() - 1);
-            }
+    let push = |out: &mut Vec<FilePatch>, cur: &mut Option<usize>, path: &str| match out
+        .iter()
+        .position(|p| p.path == path)
+    {
+        Some(i) => *cur = Some(i),
+        None => {
+            out.push(FilePatch {
+                path: path.to_string(),
+                added: 0,
+                deleted: 0,
+                text: String::new(),
+            });
+            *cur = Some(out.len() - 1);
         }
     };
     let echo = |out: &mut Vec<FilePatch>, cur: Option<usize>, line: &str| {
@@ -371,7 +399,10 @@ pub fn patch_file_diffs(patch: &str) -> Vec<FilePatch> {
 /// git prefixes paths with `a/` and `b/`; the journal wants the path the
 /// project actually uses, because that is what a reader will search for.
 fn strip_prefix_marker(target: &str) -> &str {
-    target.strip_prefix("a/").or_else(|| target.strip_prefix("b/")).unwrap_or(target)
+    target
+        .strip_prefix("a/")
+        .or_else(|| target.strip_prefix("b/"))
+        .unwrap_or(target)
 }
 
 #[cfg(test)]
@@ -392,13 +423,22 @@ mod tests {
     fn a_replacement_is_one_of_each_not_a_pure_addition() {
         // The bug this guards: counting the new file's lines instead of diffing
         // makes a one-line fix look like the line was invented.
-        assert_eq!(line_changes("fn main() {}\n", "fn main() { run() }\n"), (1, 1));
+        assert_eq!(
+            line_changes("fn main() {}\n", "fn main() { run() }\n"),
+            (1, 1)
+        );
     }
 
     #[test]
     fn a_full_rewrite_reports_both_sides() {
-        let before = (0..500).map(|i| format!("old {i}")).collect::<Vec<_>>().join("\n");
-        let after = (0..500).map(|i| format!("new {i}")).collect::<Vec<_>>().join("\n");
+        let before = (0..500)
+            .map(|i| format!("old {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let after = (0..500)
+            .map(|i| format!("new {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(line_changes(&before, &after), (500, 500));
     }
 
@@ -427,7 +467,9 @@ mod tests {
      */
     #[test]
     fn falls_back_to_the_multiset_method_on_large_files() {
-        let old: Vec<String> = (0..MAX_LCS_LINES + 10).map(|i| format!("line {i}")).collect();
+        let old: Vec<String> = (0..MAX_LCS_LINES + 10)
+            .map(|i| format!("line {i}"))
+            .collect();
         let mut new = old.clone();
         new.push("inserted".to_string());
         let (added, removed) = line_changes(&old.join("\n"), &new.join("\n"));
@@ -438,7 +480,9 @@ mod tests {
     fn a_moved_block_reads_as_unchanged_on_the_fallback() {
         // Deliberate: for a statistic, a move is neither added nor deleted, and
         // this is the only place the fallback differs from the exact method.
-        let mut lines: Vec<String> = (0..MAX_LCS_LINES + 10).map(|i| format!("line {i}")).collect();
+        let mut lines: Vec<String> = (0..MAX_LCS_LINES + 10)
+            .map(|i| format!("line {i}"))
+            .collect();
         let head: Vec<String> = lines.drain(..3).collect();
         lines.extend(head);
         assert_eq!(line_changes(&lines.join("\n"), &lines.join("\n")), (0, 0));
@@ -463,8 +507,12 @@ mod tests {
 
     #[test]
     fn builds_a_unified_diff_for_a_one_line_change() {
-        let out = unified("fn a() {}\nfn b() {}\nfn c() {}\n", "fn a() {}\nfn B() {}\nfn c() {}\n", "x.rs")
-            .expect("small file, diff expected");
+        let out = unified(
+            "fn a() {}\nfn b() {}\nfn c() {}\n",
+            "fn a() {}\nfn B() {}\nfn c() {}\n",
+            "x.rs",
+        )
+        .expect("small file, diff expected");
         assert!(out.contains("--- a/x.rs"), "{out}");
         assert!(out.contains("+++ b/x.rs"), "{out}");
         assert!(out.contains("@@ -1,3 +1,3 @@"), "{out}");
@@ -496,7 +544,10 @@ mod tests {
         // One change at each end of a 40-line file with 2 lines of context
         // cannot be one hunk without carrying 30 unchanged lines between them.
         assert_eq!(hunks, 2, "{out}");
-        assert!(out.contains("-old head") && out.contains("-old tail"), "{out}");
+        assert!(
+            out.contains("-old head") && out.contains("-old tail"),
+            "{out}"
+        );
     }
 
     #[test]
@@ -521,7 +572,10 @@ mod tests {
         // A diff that silently omits most of the file would disagree with the
         // counts stored beside it, and a number that cannot be expanded to the
         // lines it claims is a number nobody can check.
-        let big = (0..MAX_DIFF_LINES + 1).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n");
+        let big = (0..MAX_DIFF_LINES + 1)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         assert_eq!(unified(&big, &big, "gen.rs"), None);
     }
 
@@ -564,7 +618,10 @@ diff --git a/src/mod.rs b/src/mod.rs
 @@ -1 +0,0 @@
 -gone()
 ";
-        assert_eq!(patch_file_changes(patch), vec![("old.rs".to_string(), 0, 1)]);
+        assert_eq!(
+            patch_file_changes(patch),
+            vec![("old.rs".to_string(), 0, 1)]
+        );
     }
 
     #[test]
@@ -577,7 +634,10 @@ diff --git a/src/mod.rs b/src/mod.rs
  keep()
  keep()
 ";
-        assert_eq!(patch_file_changes(patch), Vec::<(String, usize, usize)>::new());
+        assert_eq!(
+            patch_file_changes(patch),
+            Vec::<(String, usize, usize)>::new()
+        );
     }
 
     #[test]
@@ -594,7 +654,10 @@ diff --git a/src/mod.rs b/src/mod.rs
         let diffs = patch_file_diffs(patch);
         assert_eq!(diffs.len(), 1);
         let text = &diffs[0].text;
-        assert!(text.starts_with("--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,3 @@\n"), "{text}");
+        assert!(
+            text.starts_with("--- a/x.rs\n+++ b/x.rs\n@@ -1,2 +1,3 @@\n"),
+            "{text}"
+        );
         // The git envelope is dropped: each entry is a bare unified diff, not
         // a git diff wrapped around a smaller one.
         assert!(!text.contains("diff --git"), "{text}");

@@ -54,3 +54,43 @@ export class RunTimeline {
     this.events = [];
   }
 }
+
+export interface BotRunSummary {
+  botId: string;
+  phase: RunPhase;
+  detail?: string;
+  /** Last event time, so the strip can order the chips. */
+  at: number;
+  /** Tool calls started in this run. */
+  toolCalls: number;
+  /** Tool calls that finished. */
+  toolsDone: number;
+}
+
+/**
+ * Collapse a chronological trail into one chip per agent.
+ *
+ * The strip used to render every event. A long office run therefore produced a
+ * horizontal wall of "Tester finished a tool" pills that pushed the useful
+ * state off-screen. The per-agent latest phase plus a tool count carries the
+ * same information in one glance.
+ */
+export function summarizeRun(events: RunEntry[]): BotRunSummary[] {
+  const byBot = new Map<string, BotRunSummary>();
+  for (const event of events) {
+    const current = byBot.get(event.botId) ?? {
+      botId: event.botId,
+      phase: "start" as RunPhase,
+      at: event.at,
+      toolCalls: 0,
+      toolsDone: 0,
+    };
+    current.phase = event.phase;
+    current.detail = event.detail;
+    current.at = event.at;
+    if (event.phase === "tool") current.toolCalls += 1;
+    if (event.phase === "tool-done") current.toolsDone += 1;
+    byBot.set(event.botId, current);
+  }
+  return [...byBot.values()].sort((a, b) => a.at - b.at);
+}

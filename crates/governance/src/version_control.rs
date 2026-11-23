@@ -24,23 +24,16 @@ impl PromptVersionControl {
         _description: Option<&str>,
     ) -> Result<BotVersion, String> {
         // Get current version number
-        let current_version: (Option<i64>,) = sqlx::query_as(
-            "SELECT MAX(version_number) FROM bot_versions WHERE bot_id = ?"
-        )
-        .bind(bot_id.to_string())
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
+        let current_version: (Option<i64>,) =
+            sqlx::query_as("SELECT MAX(version_number) FROM bot_versions WHERE bot_id = ?")
+                .bind(bot_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| e.to_string())?;
 
         let new_version_number = current_version.0.unwrap_or(0) as u32 + 1;
 
-        let version = BotVersion::new(
-            bot_id,
-            new_version_number,
-            system_prompt,
-            config,
-            source,
-        );
+        let version = BotVersion::new(bot_id, new_version_number, system_prompt, config, source);
 
         sqlx::query(
             "INSERT INTO bot_versions (id, bot_id, version_number, system_prompt, config, source, description, created_at)
@@ -85,7 +78,8 @@ impl PromptVersionControl {
         .await
         .map_err(|e| e.to_string())?;
 
-        let versions = rows.iter()
+        let versions = rows
+            .iter()
             .filter_map(|row| {
                 let source = match row.5.as_str() {
                     "user" => VersionSource::User,
@@ -130,13 +124,11 @@ impl PromptVersionControl {
                     _ => VersionSource::User,
                 };
 
-                let id = Uuid::parse_str(&row.0)
-                    .map_err(|e| e.to_string())?;
-                let bot_id = Uuid::parse_str(&row.1)
-                    .map_err(|e| e.to_string())?;
-                let config: serde_json::Value = serde_json::from_str(&row.4)
-                    .map_err(|e| e.to_string())?;
-                
+                let id = Uuid::parse_str(&row.0).map_err(|e| e.to_string())?;
+                let bot_id = Uuid::parse_str(&row.1).map_err(|e| e.to_string())?;
+                let config: serde_json::Value =
+                    serde_json::from_str(&row.4).map_err(|e| e.to_string())?;
+
                 Ok(Some(BotVersion {
                     id,
                     bot_id,
@@ -156,7 +148,9 @@ impl PromptVersionControl {
 
     /// Rollback to a specific version
     pub async fn rollback(&self, bot_id: Uuid, version_id: Uuid) -> Result<BotVersion, String> {
-        let version = self.get_version(version_id).await?
+        let version = self
+            .get_version(version_id)
+            .await?
             .ok_or_else(|| "Version not found".to_string())?;
 
         if version.bot_id != bot_id {
@@ -170,14 +164,23 @@ impl PromptVersionControl {
             version.config.clone(),
             VersionSource::User,
             Some(&format!("Rollback to version {}", version.version_number)),
-        ).await
+        )
+        .await
     }
 
     /// Compare two versions
-    pub async fn diff(&self, version_id_a: Uuid, version_id_b: Uuid) -> Result<VersionDiff, String> {
-        let version_a = self.get_version(version_id_a).await?
+    pub async fn diff(
+        &self,
+        version_id_a: Uuid,
+        version_id_b: Uuid,
+    ) -> Result<VersionDiff, String> {
+        let version_a = self
+            .get_version(version_id_a)
+            .await?
             .ok_or_else(|| "Version A not found".to_string())?;
-        let version_b = self.get_version(version_id_b).await?
+        let version_b = self
+            .get_version(version_id_b)
+            .await?
             .ok_or_else(|| "Version B not found".to_string())?;
 
         let prompt_changed = version_a.system_prompt != version_b.system_prompt;
@@ -186,11 +189,15 @@ impl PromptVersionControl {
         // Simple line-by-line diff for prompts
         let prompt_diff = if prompt_changed {
             Some(LineDiff {
-                removed: version_a.system_prompt.lines()
+                removed: version_a
+                    .system_prompt
+                    .lines()
                     .filter(|line| !version_b.system_prompt.contains(line))
                     .map(|s| s.to_string())
                     .collect(),
-                added: version_b.system_prompt.lines()
+                added: version_b
+                    .system_prompt
+                    .lines()
                     .filter(|line| !version_a.system_prompt.contains(line))
                     .map(|s| s.to_string())
                     .collect(),

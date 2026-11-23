@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { t, type TranslationKey } from "$lib/i18n";
   import { highlightParts, matchesQuery } from "$lib/search/highlight";
@@ -14,6 +15,7 @@
     DollarSign,
     GitBranch,
     Globe,
+    Inbox,
     Info,
     Key,
     Layers,
@@ -54,7 +56,7 @@
     onNewChat?: () => void;
     onOpenSettings: (section?: string) => void;
     onNavigate?: (
-      dest: "home" | "agents" | "offices" | "projects" | "channels" | "connectors" | "routines",
+      dest: "home" | "inbox" | "agents" | "offices" | "projects" | "channels" | "connectors" | "routines",
     ) => void;
     onOpenPlugins?: () => void;
     onOpenSkills?: () => void;
@@ -219,6 +221,15 @@
       run: onCreateBot,
     });
     if (onNavigate) {
+      actions.push({
+        key: "action:inbox",
+        kind: "action",
+        title: t("rail.inbox"),
+        subtitle: t("attention.subtitle"),
+        icon: Inbox,
+        keywords: "inbox attention approvals questions queue needs you",
+        run: () => onNavigate?.("inbox"),
+      });
       actions.push({
         key: "action:offices",
         kind: "action",
@@ -448,7 +459,13 @@
       messageHits = [];
       messageError = null;
       messageLoading = false;
-      setTimeout(() => inputRef?.focus(), 40);
+      // WebKitGTK can drop the first focus call while the conditional overlay
+      // is still being inserted, which leaves the palette open but unable to
+      // receive typing. Focus after the DOM update and once more after paint.
+      void tick().then(() => {
+        inputRef?.focus();
+        setTimeout(() => inputRef?.focus(), 80);
+      });
     } else {
       messageHits = [];
       messageError = null;
@@ -530,7 +547,25 @@
     }
     // Arrow/Enter navigation belongs to the search field. Let a focused tab
     // or result button keep its native keyboard activation.
-    if (event.target !== inputRef) return;
+    if (event.target !== inputRef) {
+      // If focus landed on the dialog instead of the search field, keep the
+      // palette typable: route printable keys and Backspace into the query.
+      if (
+        event.key.length === 1 &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        query += event.key;
+        inputRef?.focus();
+        event.preventDefault();
+      } else if (event.key === "Backspace") {
+        query = query.slice(0, -1);
+        inputRef?.focus();
+        event.preventDefault();
+      }
+      return;
+    }
     if (event.key === "ArrowDown") {
       event.preventDefault();
       selectedIndex = itemCount ? Math.min(selectedIndex + 1, itemCount - 1) : 0;

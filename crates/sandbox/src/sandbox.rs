@@ -1,7 +1,7 @@
 //! Core sandbox implementation
 
-use crate::resource_limits::ResourceLimits;
 use crate::network_policy::NetworkPolicy;
+use crate::resource_limits::ResourceLimits;
 use ravenbot_core::SandboxTier;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -22,6 +22,10 @@ pub struct SandboxConfig {
     pub allowed_paths: Vec<String>,
     /// Blocked paths (takes precedence over allowed)
     pub blocked_paths: Vec<String>,
+    /// Optional container image for the Docker tier. Falls back to
+    /// `RAVENBOT_DOCKER_IMAGE` and then `debian:bookworm-slim`.
+    #[serde(default)]
+    pub docker_image: Option<String>,
 }
 
 impl Default for SandboxConfig {
@@ -36,6 +40,7 @@ impl Default for SandboxConfig {
                 "/etc/passwd".to_string(),
                 "~/.ssh".to_string(),
             ],
+            docker_image: None,
         }
     }
 }
@@ -137,7 +142,7 @@ impl Sandbox {
     pub async fn is_over_limit(&self) -> bool {
         let usage = self.usage.read().await;
         let limits = &self.config.resource_limits;
-        
+
         usage.cpu_percent > limits.max_cpu_percent
             || usage.memory_mb > limits.max_memory_mb
             || usage.disk_read_mb > limits.max_disk_read_mb
@@ -212,7 +217,10 @@ impl SandboxManager {
 
     /// Get sandbox for a bot
     pub fn get_for_bot(&self, bot_id: &Uuid) -> Option<Arc<Sandbox>> {
-        self.sandboxes.values().find(|s| s.bot_id == *bot_id).cloned()
+        self.sandboxes
+            .values()
+            .find(|s| s.bot_id == *bot_id)
+            .cloned()
     }
 
     /// Stop all sandboxes (kill switch)

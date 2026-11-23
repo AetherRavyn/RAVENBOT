@@ -1,6 +1,6 @@
+use crate::approval::ApprovalMode;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::approval::ApprovalMode;
 
 use uuid::Uuid;
 
@@ -192,8 +192,19 @@ impl Bot {
 
     /// Pick a dicebear style deterministically from name hash — ensures animated variety if user doesn't choose
     pub fn style_for_name(name: &str) -> String {
-        let styles = ["avataaars", "bottts", "personas", "lorelei", "adventurer", "micah", "notionists", "fun-emoji"];
-        let hash = name.bytes().fold(0u32, |a, b| a.wrapping_add(b as u32 * 31));
+        let styles = [
+            "avataaars",
+            "bottts",
+            "personas",
+            "lorelei",
+            "adventurer",
+            "micah",
+            "notionists",
+            "fun-emoji",
+        ];
+        let hash = name
+            .bytes()
+            .fold(0u32, |a, b| a.wrapping_add(b as u32 * 31));
         styles[(hash as usize) % styles.len()].to_string()
     }
 
@@ -205,15 +216,17 @@ impl Bot {
             urlencoding::encode(seed)
         )
     }
-
 }
 
 mod urlencoding {
     pub fn encode(s: &str) -> String {
         let mut out = String::new();
         for b in s.bytes() {
-            if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' { out.push(b as char); }
-            else { out.push_str(&format!("%{:02X}", b)); }
+            if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.' || b == b'~' {
+                out.push(b as char);
+            } else {
+                out.push_str(&format!("%{:02X}", b));
+            }
         }
         out
     }
@@ -237,8 +250,7 @@ mod tests {
             auto_read: true,
             ..BotConfig::default()
         };
-        let back: BotConfig =
-            serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
+        let back: BotConfig = serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
         assert_eq!(back.voice_id.as_deref(), Some("nova"));
         assert!(back.auto_read);
     }

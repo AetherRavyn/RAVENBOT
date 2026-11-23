@@ -21,7 +21,7 @@ impl Skill for BrowserSkill {
         "Browser Navigate"
     }
     fn description(&self) -> &str {
-        "Navigate browser, click, fill, screenshot — local computer control"
+        "Headless page fetch: retrieve a URL as readable text. It cannot click, fill, or inspect a live DOM. Use browser_open then browser_dom for an interactive page; use computer_control for the desktop."
     }
     fn version(&self) -> &str {
         "1.0.0"
@@ -38,7 +38,7 @@ impl Skill for BrowserSkill {
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type":"object","properties":{
-                "action":{"type":"string","enum":["navigate","click","fill","screenshot","scroll","wait"],"description":"Browser action"},
+                "action":{"type":"string","enum":["navigate","click","fill","screenshot","scroll","wait"],"description":"navigate = headless text fetch. click/fill/scroll are desktop-input fallbacks; prefer browser_dom for page elements. screenshot captures the desktop, not the page."},
                 "url":{"type":"string","description":"URL for navigate"},
                 "selector":{"type":"string","description":"CSS selector for click/fill"},
                 "text":{"type":"string","description":"Text to fill"},
@@ -49,10 +49,9 @@ impl Skill for BrowserSkill {
     }
     async fn execute(
         &self,
-        _ctx: &SkillContext,
+        ctx: &SkillContext,
         args: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
-        let client = reqwest::Client::new();
         let action = args
             .get("action")
             .and_then(|v| v.as_str())
@@ -63,12 +62,15 @@ impl Skill for BrowserSkill {
                     .get("url")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| SkillError::InvalidArguments("Missing url".into()))?;
-                if !url.starts_with("http://") && !url.starts_with("https://") {
-                    return Err(SkillError::InvalidArguments("URL must be http(s)".into()));
-                }
+                let url = ctx
+                    .ensure_network_allowed(url)
+                    .map_err(SkillError::InvalidArguments)?;
+                let (client, url) = crate::http::pinned_client(url.as_str())
+                    .await
+                    .map_err(SkillError::Network)?;
                 // Real navigation: fetch + readable text extraction (no stub)
                 let res = client
-                    .get(url)
+                    .get(url.clone())
                     .header("User-Agent", "RAVENBOT/1.0")
                     .send()
                     .await
@@ -81,7 +83,7 @@ impl Skill for BrowserSkill {
                 let (title, text) = extract_readable(&html, 8000);
                 Ok(SkillResult::success(serde_json::json!({
                     "action": "navigate",
-                    "url": url,
+                    "url": url.as_str(),
                     "status": status,
                     "title": title,
                     "text": text
@@ -96,6 +98,13 @@ impl Skill for BrowserSkill {
                     args.get("x").and_then(|v| v.as_f64()),
                     args.get("y").and_then(|v| v.as_f64()),
                 ) {
+                    // The browser tool drives the same host input backend as
+                    // computer_control; a user takeover must pause it too.
+                    if ravenbot_core::computer_control_paused() {
+                        return Ok(SkillResult::failure(
+                            "The user has taken over the computer. Release control before clicking by coordinates.",
+                        ));
+                    }
                     let injector = ravenbot_vision::InputInjector::detect();
                     if !injector.is_available() {
                         return Ok(SkillResult::failure(
@@ -124,6 +133,11 @@ impl Skill for BrowserSkill {
                 // Typing is real; targeting a selector is not.
                 if let Some(text) = args.get("text").and_then(|v| v.as_str()) {
                     if sel.is_empty() {
+                        if ravenbot_core::computer_control_paused() {
+                            return Ok(SkillResult::failure(
+                                "The user has taken over the computer. Release control before typing.",
+                            ));
+                        }
                         let injector = ravenbot_vision::InputInjector::detect();
                         if !injector.is_available() {
                             return Ok(SkillResult::failure(
@@ -157,6 +171,11 @@ impl Skill for BrowserSkill {
                 ))
             }
             "scroll" => {
+                if ravenbot_core::computer_control_paused() {
+                    return Ok(SkillResult::failure(
+                        "The user has taken over the computer. Release control before scrolling.",
+                    ));
+                }
                 let injector = ravenbot_vision::InputInjector::detect();
                 if !injector.is_available() {
                     return Ok(SkillResult::failure(
@@ -246,6 +265,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_description_names_the_real_capability_and_the_interactive_tools() {
+        let skill = BrowserSkill::new();
+        let description = skill.description().to_lowercase();
+        assert!(description.contains("headless"));
+        assert!(description.contains("browser_open"));
+        assert!(description.contains("browser_dom"));
+        assert!(description.contains("cannot click"));
+    }
+
+    #[test]
     fn extracts_title_and_text() {
         let (title, text) = extract_readable(
             "<html><head><title>Rust Blog</title></head><body><h1>Hello</h1><p>World</p></body></html>",
@@ -288,6 +317,10 @@ mod tests {
     #[tokio::test]
     async fn coordinate_click_reports_backend_honestly() {
         use uuid::Uuid;
+        let _takeover = crate::TAKEOVER_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        ravenbot_core::set_computer_control_paused(false);
         let skill = BrowserSkill::new();
         let ctx = crate::traits::SkillContext::with_default_tier(
             Uuid::new_v4(),

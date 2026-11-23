@@ -8,7 +8,7 @@ pub struct ArxivSkill {
 impl ArxivSkill {
     pub fn new() -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client: crate::http::http_client(),
         }
     }
 }
@@ -41,7 +41,7 @@ impl Skill for ArxivSkill {
 
     async fn execute(
         &self,
-        _ctx: &SkillContext,
+        ctx: &SkillContext,
         args: serde_json::Value,
     ) -> Result<SkillResult, SkillError> {
         let query = args
@@ -57,6 +57,8 @@ impl Skill for ArxivSkill {
             urlencoding(query),
             max
         );
+        ctx.ensure_network_allowed(&url)
+            .map_err(SkillError::InvalidArguments)?;
         let resp = self
             .client
             .get(&url)

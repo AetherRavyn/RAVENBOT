@@ -2,8 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
-use tokio::net::{TcpListener, TcpStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
 
 /// Sync protocol version
@@ -15,20 +15,14 @@ const PROTOCOL_VERSION: u32 = 1;
 #[serde(tag = "type")]
 pub enum SyncMessage {
     /// Discovery broadcast
-    Discovery {
-        instance_id: Uuid,
-        name: String,
-    },
+    Discovery { instance_id: Uuid, name: String },
     /// Pairing request
     PairRequest {
         instance_id: Uuid,
         pairing_code: String,
     },
     /// Pairing response
-    PairResponse {
-        instance_id: Uuid,
-        accepted: bool,
-    },
+    PairResponse { instance_id: Uuid, accepted: bool },
     /// Sync request
     SyncRequest {
         instance_id: Uuid,
@@ -40,9 +34,7 @@ pub enum SyncMessage {
         bundles: Vec<serde_json::Value>,
     },
     /// Sync complete
-    SyncComplete {
-        instance_id: Uuid,
-    },
+    SyncComplete { instance_id: Uuid },
 }
 
 /// Local sync server/client
@@ -75,7 +67,7 @@ impl LocalSync {
 
     /// Start the sync server
     pub async fn start_server(&self, port: u16) -> Result<(), String> {
-        let addr = format!("0.0.0.0:{}", port);
+        let addr = format!("127.0.0.1:{}", port);
         let listener = TcpListener::bind(&addr)
             .await
             .map_err(|e| format!("Failed to bind: {}", e))?;
@@ -98,12 +90,12 @@ impl LocalSync {
     /// Handle a sync connection
     async fn handle_connection(mut socket: TcpStream) {
         let mut buffer = vec![0u8; 1024 * 1024]; // 1MB max message
-        
+
         match socket.read(&mut buffer).await {
             Ok(n) => {
                 if n > 0 {
                     let message: Result<SyncMessage, _> = serde_json::from_slice(&buffer[..n]);
-                    
+
                     match message {
                         Ok(msg) => {
                             tracing::debug!(message = ?msg, "Received sync message");
@@ -133,10 +125,11 @@ impl LocalSync {
             name: self.name.clone(),
         };
 
-        let json = serde_json::to_vec(&message)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let json =
+            serde_json::to_vec(&message).map_err(|e| format!("Serialization error: {}", e))?;
 
-        socket.write_all(&json)
+        socket
+            .write_all(&json)
             .await
             .map_err(|e| format!("Write error: {}", e))?;
 
@@ -164,33 +157,33 @@ impl LocalSync {
             pairing_code: pairing_code.to_string(),
         };
 
-        let json = serde_json::to_vec(&message)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let json =
+            serde_json::to_vec(&message).map_err(|e| format!("Serialization error: {}", e))?;
 
-        socket.write_all(&json)
+        socket
+            .write_all(&json)
             .await
             .map_err(|e| format!("Write error: {}", e))?;
 
         // Read response
         let mut buffer = vec![0u8; 1024];
-        let n = socket.read(&mut buffer)
+        let n = socket
+            .read(&mut buffer)
             .await
             .map_err(|e| format!("Read error: {}", e))?;
 
-        let response: SyncMessage = serde_json::from_slice(&buffer[..n])
-            .map_err(|e| format!("Invalid response: {}", e))?;
+        let response: SyncMessage =
+            serde_json::from_slice(&buffer[..n]).map_err(|e| format!("Invalid response: {}", e))?;
 
         match response {
             SyncMessage::PairResponse { accepted: true, .. } => {
                 tracing::info!(address = address, "Pairing accepted");
                 Ok(())
             }
-            SyncMessage::PairResponse { accepted: false, .. } => {
-                Err("Pairing rejected".to_string())
-            }
-            _ => {
-                Err("Invalid response".to_string())
-            }
+            SyncMessage::PairResponse {
+                accepted: false, ..
+            } => Err("Pairing rejected".to_string()),
+            _ => Err("Invalid response".to_string()),
         }
     }
 
@@ -206,21 +199,23 @@ impl LocalSync {
             last_sync: None, // In production, track last sync time
         };
 
-        let json = serde_json::to_vec(&message)
-            .map_err(|e| format!("Serialization error: {}", e))?;
+        let json =
+            serde_json::to_vec(&message).map_err(|e| format!("Serialization error: {}", e))?;
 
-        socket.write_all(&json)
+        socket
+            .write_all(&json)
             .await
             .map_err(|e| format!("Write error: {}", e))?;
 
         // Read sync data
         let mut buffer = vec![0u8; 10 * 1024 * 1024]; // 10MB
-        let n = socket.read(&mut buffer)
+        let n = socket
+            .read(&mut buffer)
             .await
             .map_err(|e| format!("Read error: {}", e))?;
 
-        let response: SyncMessage = serde_json::from_slice(&buffer[..n])
-            .map_err(|e| format!("Invalid response: {}", e))?;
+        let response: SyncMessage =
+            serde_json::from_slice(&buffer[..n]).map_err(|e| format!("Invalid response: {}", e))?;
 
         match response {
             SyncMessage::SyncData { bundles, .. } => {
@@ -229,9 +224,7 @@ impl LocalSync {
                 // In production, import the bundles
                 Ok(count)
             }
-            _ => {
-                Err("Invalid sync response".to_string())
-            }
+            _ => Err("Invalid sync response".to_string()),
         }
     }
 

@@ -30,10 +30,14 @@
     preview = null;
     loading = true;
     try {
-      preview =
-        mode === "url"
-          ? await invoke("fetch_and_preview_team", { url: url.trim() })
-          : await invoke("preview_team", { markdown });
+      if (mode === "url") {
+        preview = await invoke("fetch_and_preview_team", { url: url.trim() });
+        // The backend fetches the document; keep the exact bytes so Import
+        // sends the previewed team rather than an empty paste buffer.
+        markdown = String(preview?.markdown ?? "");
+      } else {
+        preview = await invoke("preview_team", { markdown });
+      }
     } catch (e: any) {
       error = String(e);
     } finally {
@@ -46,6 +50,7 @@
     importing = true;
     try {
       result = await invoke("import_team", { markdown });
+      window.dispatchEvent(new CustomEvent("fleet-changed"));
       onImported?.(result);
     } catch (e: any) {
       error = String(e);

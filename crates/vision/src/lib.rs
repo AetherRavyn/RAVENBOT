@@ -3,19 +3,19 @@
 //! This crate provides screenshot capture, image analysis,
 //! and computer control through vision models.
 
+pub mod audio;
+pub mod computer_control;
+pub mod image_analysis;
+pub mod input;
 pub mod screenshot;
 pub mod window_control;
-pub mod image_analysis;
-pub mod computer_control;
-pub mod input;
-pub mod audio;
 
-pub use screenshot::ScreenshotCapture;
-pub use image_analysis::ImageAnalyzer;
-pub use computer_control::{ComputerController, ComputerAction, MouseButton, ActionResult};
-pub use input::InputInjector;
-pub use window_control::{focus_window, list_windows, DesktopWindow};
 pub use audio::{AudioTranscriber, TextToSpeech};
+pub use computer_control::{ActionResult, ComputerAction, ComputerController, MouseButton};
+pub use image_analysis::ImageAnalyzer;
+pub use input::InputInjector;
+pub use screenshot::ScreenshotCapture;
+pub use window_control::{focus_window, list_windows, DesktopWindow};
 
 /// Resize image bytes so the longest edge ≤ max_edge. Returns PNG bytes.
 /// Used to keep vision prompts reasonable (most providers downsample anyway,

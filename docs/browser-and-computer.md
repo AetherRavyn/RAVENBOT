@@ -50,9 +50,11 @@ bridge.
 ### The host desktop
 
 `computer_control` drives the real desktop through `xdotool` (X11) or
-`ydotool`/`wtype` (Wayland). Every mutating action is high-risk and goes through
-the approval broker unless the agent is in Full mode. Host control is also
-**off by default** per agent and must be enabled in the agent's settings.
+`ydotool`/`wtype` (Wayland). Mutating actions are high-risk. Under the default
+Full ("YOLO") policy they run without a card; RAVENBOT's safety policy still
+hard-blocks destructive shell/database/file operations. Choose Ask or Auto on
+an agent that should still present approval cards. Host control is **off by
+default** per agent and must be enabled in the agent's settings.
 
 Actions:
 
@@ -92,9 +94,10 @@ The panel opens from an agent's chat header and shows:
   every mutating action.
 - Read-only inspection (`snapshot`, `text`, `html`, `scroll`, `highlight`,
   `back`, `forward`, `wait`; computer `windows`, `screenshot`,
-  `screenshot_window`, `wait`) bypasses the approval card. `click`, `fill`,
-  `press`, `reload`, `eval`, `focus_window`, and all pointer/keyboard actions
-  remain high-risk. Reload is high-risk because it can resubmit a form.
+  `screenshot_window`, `wait`) never needs a card. With Full (the default),
+  `click`, `fill`, `press`, `reload`, `eval`, `focus_window`, and pointer/keyboard
+  actions also run without a card; Ask/Auto can gate them. Reload remains
+  high-risk because it can resubmit a form.
 - Activity events contain action, selector/coordinates, and result, **never
   typed text, single-character key presses, or page contents**.
 - The remote page cannot reach the app IPC bridge.

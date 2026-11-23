@@ -16,7 +16,7 @@ pub struct BotRow {
     pub rank: Option<String>,
     pub specialty: Option<String>,
     pub status: String,
-    pub config: String, // JSON
+    pub config: String,      // JSON
     pub permissions: String, // JSON array
     pub is_orchestrator: bool,
     pub delegate_to: String, // JSON array
@@ -125,7 +125,7 @@ pub struct MessageRow {
     pub id: String,
     pub thread_id: String,
     pub role: String,
-    pub content: String, // JSON
+    pub content: String,     // JSON
     pub attachments: String, // JSON
     /// Which bot spoke (migration 011; None on old DBs / human messages)
     pub sender_bot_id: Option<String>,
@@ -133,6 +133,17 @@ pub struct MessageRow {
     pub sender_name: Option<String>,
     /// Message this quotes (user reply or office discussion)
     pub reply_to_id: Option<String>,
+    /// Estimated prompt tokens at the model call for this assistant turn.
+    pub context_used_tokens: Option<i64>,
+    /// Model context window used for the same estimate.
+    pub context_window_tokens: Option<i64>,
+    /// Whether that turn compacted history before the call.
+    pub context_compacted: Option<i64>,
+    /// Disjoint prompt-token buckets captured with the turn.
+    pub context_system_tokens: Option<i64>,
+    pub context_tool_tokens: Option<i64>,
+    pub context_memory_tokens: Option<i64>,
+    pub context_message_tokens: Option<i64>,
     pub created_at: String,
 }
 
@@ -145,9 +156,11 @@ pub struct RunRow {
     pub parent_run_id: Option<String>,
     pub state: String,
     pub checkpoint: Option<String>, // JSON
-    pub outcome: Option<String>, // JSON
+    pub outcome: Option<String>,    // JSON
     pub tokens_consumed: i64,
     pub cost_estimate: f64,
+    pub model_cost: f64,
+    pub tool_cost: f64,
     pub created_at: String,
     pub updated_at: String,
     pub completed_at: Option<String>,
@@ -238,10 +251,7 @@ mod status_tests {
             BotStatus::WaitingOnUser,
             BotStatus::Paused,
         ] {
-            assert_eq!(
-                bot_status_from_db(Some(bot_status_to_db(s.clone()))),
-                s
-            );
+            assert_eq!(bot_status_from_db(Some(bot_status_to_db(s.clone()))), s);
         }
     }
 
@@ -259,6 +269,9 @@ mod status_tests {
         // The frontend switches on these exact strings, and `BotStatus` itself
         // serialises as PascalCase because it has no serde rename.
         assert_eq!(bot_status_to_db(BotStatus::RunningTool), "running_tool");
-        assert_eq!(bot_status_to_db(BotStatus::WaitingOnUser), "waiting_on_user");
+        assert_eq!(
+            bot_status_to_db(BotStatus::WaitingOnUser),
+            "waiting_on_user"
+        );
     }
 }

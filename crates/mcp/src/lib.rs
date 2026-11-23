@@ -8,4 +8,4 @@ pub mod team;
 
 pub use client::{McpClient, McpTool};
 pub use registry::McpRegistry;
-pub use servers::{McpServerConfig, McpServerSummary, McpTestResult, all_servers, category_of};
+pub use servers::{all_servers, category_of, McpServerConfig, McpServerSummary, McpTestResult};

@@ -7,9 +7,9 @@
 //! Protocol: JSON-RPC 2.0, line-delimited JSON on stdin/stdout (MCP stdio).
 
 use ravenbot_db::Database;
-use ravenbot_skills::{SkillContext, SkillRegistry};
-use std::sync::Arc;
+use ravenbot_skills::{SkillContext, SkillRegistry, SkillRisk};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use uuid::Uuid;
 
@@ -113,18 +113,47 @@ async fn handle(
     }
 }
 
+fn danger_refused(name: &str) -> serde_json::Value {
+    serde_json::json!({
+        "content": [{
+            "type": "text",
+            "text": format!(
+                "RAVENBOT refused '{name}': this tool can execute commands, write files, or reach the network. Start the server with RAVENBOT_MCP_ALLOW_DANGEROUS=1 if you intend to grant that access."
+            )
+        }],
+        "isError": true
+    })
+}
+
 /// Execute a skill as an MCP tool call.
 async fn call_tool(
     db: &Database,
     registry: &SkillRegistry,
     req: &serde_json::Value,
 ) -> serde_json::Value {
-    let name = req.pointer("/params/name").and_then(|v| v.as_str()).unwrap_or("");
-    let args = req.pointer("/params/arguments").cloned().unwrap_or(serde_json::json!({}));
+    let name = req
+        .pointer("/params/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let args = req
+        .pointer("/params/arguments")
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+
+    let allow_dangerous = std::env::var("RAVENBOT_MCP_ALLOW_DANGEROUS")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
     // Team control plane first: bounded fleet operations (`ravenbot_*`).
-    if let Some(result) = crate::team::call(db, name, &args).await {
-        return result;
+    // Sending a task can run any bot, including its shell tools, so it is not
+    // safe by default for an unauthenticated local MCP client.
+    if crate::team::is_team_tool(name) {
+        if !allow_dangerous {
+            return danger_refused(name);
+        }
+        if let Some(result) = crate::team::call(db, name, &args).await {
+            return result;
+        }
     }
 
     let Some(skill) = registry.get(name) else {
@@ -133,6 +162,16 @@ async fn call_tool(
             "isError": true
         });
     };
+
+    // `mcp-serve` is a stdio server for other agents, with no approval card and
+    // no operator watching. A `High` risk tool (shell, docker, ssh, file write,
+    // http egress, computer control) is opt-in, not the default.
+    if !allow_dangerous && matches!(skill.risk(), SkillRisk::High) {
+        return danger_refused(name);
+    }
+    if name == "db_query" && !allow_dangerous {
+        return danger_refused(name);
+    }
 
     // Honor the headless kill switch env so operators can pause remote drives
     if std::env::var("RAVENBOT_KILL_SWITCH")
@@ -145,11 +184,12 @@ async fn call_tool(
         });
     }
 
-    let context = SkillContext::with_default_tier(
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-        Uuid::new_v4(),
-    );
+    // Confine file tools to a dedicated MCP workspace. Without roots the
+    // context is unconfined and `file_read` can open /etc/passwd.
+    let workspace = ravenbot_core::raven_root().join("projects").join("mcp");
+    let _ = std::fs::create_dir_all(&workspace);
+    let context = SkillContext::with_default_tier(Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4())
+        .with_working_dirs(vec![workspace]);
 
     tracing::info!(tool = %name, "MCP tool call");
     let _ = db; // database opened for parity with the desktop app; tools use env/keychain
