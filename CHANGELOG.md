@@ -37,7 +37,10 @@ All notable changes to RAVENBOT are documented here.
   heartbeat, so goals continue without a window.
 - **Lifecycle** — start, pause, resume and stop are persisted. Stop also
   cancels the round in flight, and a background round emits a small event so
-  the open conversation refreshes its banner and transcript.
+  the open conversation refreshes its banner and transcript. A goal that
+  finishes, parks, or exhausts its budget raises one short OS notification
+  with no prompt text, so an unattended run can ask for attention without
+  leaking its contents onto a lock screen.
 
 ### Snapshot and revert
 

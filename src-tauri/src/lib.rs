@@ -19260,6 +19260,12 @@ async fn run_thread_goal_turn(
     let budget_exhausted = recorded.as_ref().is_some_and(|record| {
         record.status == "paused" && record.rounds_used >= record.max_rounds.max(1)
     });
+    match recorded.as_ref().map(|record| record.status.as_str()) {
+        Some("done") => notify_goal_outcome("done"),
+        Some("blocked") => notify_goal_outcome("blocked"),
+        Some("paused") if budget_exhausted => notify_goal_outcome("paused"),
+        _ => {}
+    }
     let suffix = if budget_exhausted {
         "\n\nThe automatic round budget is exhausted. Resume the goal to continue with a fresh round budget."
     } else {
@@ -19292,6 +19298,49 @@ async fn run_thread_goal_turn(
         }),
     );
     Ok(())
+}
+
+/// A short, non-sensitive OS notification for a goal that stopped running.
+///
+/// The objective and the transcript never enter a notification: they can carry
+/// prompts, credentials, or customer data and would land on a lock screen.
+fn goal_notification_text(kind: &str) -> Option<(&'static str, &'static str)> {
+    match kind {
+        "done" => Some((
+            "Goal complete",
+            "An unattended goal finished. Open RAVENBOT to review the result.",
+        )),
+        "blocked" => Some((
+            "Goal blocked",
+            "An unattended goal needs a person or a credential. Open RAVENBOT to review it.",
+        )),
+        "paused" => Some((
+            "Goal paused",
+            "An unattended goal reached its budget. Open RAVENBOT to raise it or stop the goal.",
+        )),
+        "failed" => Some((
+            "Goal stopped",
+            "An unattended goal could not obtain a verdict. Open RAVENBOT to check the agent and provider.",
+        )),
+        _ => None,
+    }
+}
+
+fn notify_goal_outcome(kind: &str) {
+    let Some((title, body)) = goal_notification_text(kind) else {
+        return;
+    };
+    let title = title.to_string();
+    let body = body.to_string();
+    // The notifier can block on a missing DBus session. A detached thread keeps
+    // the goal heartbeat moving; a failure is not worth logging every round.
+    std::thread::spawn(move || {
+        let _ = notify_rust::Notification::new()
+            .appname("RAVENBOT")
+            .summary(&title)
+            .body(&body)
+            .show();
+    });
 }
 
 /// The 1:1 goal heartbeat.
@@ -19335,6 +19384,7 @@ async fn thread_goal_loop(
                         "Five automatic goal rounds could not obtain a completion verdict. Check the model/provider, then resume the goal.",
                     )
                     .await;
+                    notify_goal_outcome("failed");
                 }
                 continue;
             }
@@ -19376,6 +19426,7 @@ async fn thread_goal_loop(
                     format!("⏸ **Goal paused**\n\n{message}"),
                 )
                 .await;
+                notify_goal_outcome("paused");
                 continue;
             }
             if let Err(error) = run_thread_goal_turn(&db, &runtime, &events, &goal).await {
@@ -26405,6 +26456,19 @@ mod work_retry_tests {
             updated_at: chrono::Utc::now().to_rfc3339(),
             completed_at: None,
         }
+    }
+
+    #[test]
+    fn goal_notifications_never_carry_the_prompt() {
+        let (title, body) = goal_notification_text("done").expect("done notification");
+        assert_eq!(title, "Goal complete");
+        for forbidden in ["{{", "objective", "prompt", "transcript"] {
+            assert!(!body.to_lowercase().contains(forbidden), "{body}");
+        }
+        for kind in ["blocked", "paused", "failed"] {
+            assert!(goal_notification_text(kind).is_some(), "{kind}");
+        }
+        assert!(goal_notification_text("continue").is_none());
     }
 
     #[test]
