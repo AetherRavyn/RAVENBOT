@@ -1,276 +1,423 @@
-# RAVENBOT — Sovereign, Local-First, Rust-Native Multi-Agent Desktop OS
+<p align="center">
+  <img src="docs/media/ravenbot-logo.png" width="180" alt="RAVENBOT logo: a black raven with a blue lightning bolt inside a hexagonal frame">
+</p>
 
-> **Not a chatbot — a fleet of persistent, specialized agents that live entirely on your machine.**
+<h1 align="center">RAVENBOT</h1>
 
-Each bot has an identity, a model, a skill set, a memory, a sandboxed computer, and a thread. One orchestrates the rest — exactly like your team. And unlike other AI apps, RAVENBOT both **consumes MCP** (135+ connector catalog) and **is an MCP server** — external agents like Claude Code can drive your entire fleet.
+<p align="center">
+  <strong>A local-first agent workspace for people who need to know what their agents did.</strong><br>
+  Persistent agents. Real tools. Offices that hand work to each other. All on your machine.
+</p>
 
-[![Release](https://img.shields.io/github/v/release/AetherRavyn/RAVENBOT?sort=semver&label=release)](https://github.com/AetherRavyn/RAVENBOT/releases/latest)
-[![CI](https://github.com/AetherRavyn/RAVENBOT/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/AetherRavyn/RAVENBOT/actions/workflows/ci.yml)
-![License: MIT](https://img.shields.io/badge/License-MIT-indigo.svg)
-![Rust](https://img.shields.io/badge/Rust-1.77%2B-orange.svg)
-![Tauri](https://img.shields.io/badge/Tauri-2.x-blue.svg)
-![Svelte](https://img.shields.io/badge/Svelte-5-ff3e00.svg)
-![a11y](https://img.shields.io/badge/a11y-WCAG%202.1%20AA-green.svg)
-![i18n](https://img.shields.io/badge/i18n-6%20locales-lightgrey.svg)
+<p align="center">
+  <a href="https://github.com/AetherRavyn/RAVENBOT/actions/workflows/ci.yml"><img src="https://github.com/AetherRavyn/RAVENBOT/actions/workflows/ci.yml/badge.svg?branch=master" alt="CI status"></a>
+  <a href="https://github.com/AetherRavyn/RAVENBOT/releases/latest"><img src="https://img.shields.io/github/v/release/AetherRavyn/RAVENBOT?sort=semver&label=release" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/license-MIT-3b82f6.svg" alt="MIT license">
+  <img src="https://img.shields.io/badge/Rust-edition%202021-b7410e.svg" alt="Rust edition 2021">
+  <img src="https://img.shields.io/badge/Tauri-2-24c8db.svg" alt="Tauri 2">
+  <img src="https://img.shields.io/badge/Svelte-5-ff3e00.svg" alt="Svelte 5">
+  <img src="https://img.shields.io/badge/locales-6-64748b.svg" alt="Six locales">
+</p>
 
 ---
+
+RAVENBOT is a desktop application, a headless daemon, and a CLI built around one
+idea: an AI agent should be a real worker you can inspect, not a chat window
+that forgets what happened yesterday.
+
+Each agent has a name, a model, a set of tools, a memory, a sandbox, and its
+own conversation. A lead agent can bring specialists into an **office** with a
+shared workspace and a task board. Routines and offices keep running when the
+window is closed. You can watch every tool call, approve the dangerous ones,
+pause a run, cancel it, or stop the whole fleet with a kill switch.
+
+The default model is local **Ollama**. You can also bring an API key for
+OpenRouter, Anthropic, OpenAI, OpenCode Go, or any OpenAI-compatible endpoint.
+Your database, memories, files, and audit trail live in `~/RAVENBOT`. No account
+is required, and RAVENBOT does not send first-party telemetry.
+
+> RAVENBOT is under active development. Linux is the most complete target;
+> macOS and Windows builds exist, with the platform limits listed
+> [below](#status-and-limits).
+
+**Contents:** [Screenshots](#screenshots) · [Why RAVENBOT](#why-ravenbot) ·
+[What you get](#what-you-get) · [Quick start](#quick-start) ·
+[Providers](#providers) · [CLI](#cli) · [MCP](#use-ravenbot-from-another-mcp-client) ·
+[Architecture](#architecture) · [Quality](#quality) · [Status and limits](#status-and-limits) ·
+[Documentation](#documentation) · [Contributing](#contributing) · [License](#license)
+
+## Why RAVENBOT
+
+Most "AI agent" products are a chat box with a tool-call animation. RAVENBOT is
+built like an operating layer:
+
+- **You own the runtime.** Rust + SQLite + your filesystem. Bring a local model
+  or a key you already pay for. Nothing needs to leave the machine.
+- **Agents do actual work.** Read and edit files, run builds and tests, use Git,
+  query databases, call HTTP APIs, drive a browser, control a desktop, and
+  export documents, decks, charts, and video.
+- **Work can be handed off.** Offices give each specialist a role, tools,
+  memory, and a thread. A DAG-style plan runs independent nodes in parallel and
+  writes the result back to the office board.
+- **Nothing is a black box.** Every turn has a trace. Every tool call is in the
+  audit ledger. Approvals, budgets, sandboxes, and the kill switch are enforced
+  by the runtime, not by a system prompt.
+- **It keeps going.** A per-user service owns routines, scheduled workflows,
+  offices, credential refresh, attention alerts, and remote access when the
+  desktop window is gone.
 
 ## Screenshots
 
-Captured from a running build at 1920×1080. The office captures below use the same UI against a deterministic IPC preview harness, so the streaming state is reproducible.
+<p align="center">
+  <img src="docs/media/chat.png" alt="The RAVENBOT chat surface: streaming answer, tool trace, composer, and fleet rail" width="49%">
+  <img src="docs/media/connectors.png" alt="The connector centre with MCP servers, categories, credentials, and connection status" width="49%">
+</p>
 
-<img src="docs/media/chat.png" alt="The RAVENBOT chat surface: composer with DeepSearch and Think toggles, per-conversation model switcher, fleet rail listing the agent, and the reactive logo" width="49%"> <img src="docs/media/connectors.png" alt="Connectors and Tools: 133 catalogued MCP connectors with status and category filters, and per-card scope, verified-launcher state and missing-key hints" width="49%">
+**Left:** a conversation with live streaming, reasoning, tool traces, and the
+fleet rail. **Right:** the connector centre, where a server names the exact
+credential it needs before it can be assigned.
 
-**Left** — the chat surface: composer with `[DeepSearch]` and `[Think]` toggles, the per-conversation model switcher, the fleet rail, and the reactive logo.
-**Right** — the connector centre: 133 catalogued MCP servers, each card naming the exact environment key it needs and whether its launcher is verified.
+<p align="center">
+  <img src="docs/media/office-designer.png" alt="Creating an office from a one-line mission: the proposed charter, a clarifying question, and the specialist roster" width="49%">
+  <img src="docs/media/office-reasoning.png" alt="A live office run with reasoning above the answer and tool rounds kept separate" width="49%">
+</p>
 
-<img src="docs/media/office-designer.png" alt="Creating an office from a name and one line of mission: the AI-written charter, the one clarifying question, and the four proposed agents with their tool counts" width="49%"> <img src="docs/media/office-reasoning.png" alt="A live office run: the agent's reasoning panel above its streamed markdown answer, split into rounds by the tool call" width="49%">
+**Left:** an office being designed from a mission, with a proposed roster and a
+single clarifying question. **Right:** a live office run, with each agent's
+reasoning kept separate from its answer.
 
-**Left** — creating an office from a name and a one-line mission. The default model writes the charter, asks the one question that matters, and proposes the team before anything is created; the template is only the fallback.
-**Right** — an office run in flight. Each agent's reasoning is visible above its answer, split by tool round, while the answer streams in rendered Markdown.
+## What you get
 
-### Office design and request coordination
+### A fleet, not a single chat
 
-On first run, RAVENBOT asks for two things: a provider key and **The Raven**, the default agent — a real agent with a name and a model. The Raven leads the fleet and designs every office. `draft_office_blueprint` gives it a live catalog of the built-in skills, the **enabled and configured MCP connectors**, and the **installed plugin toolkits** on this machine, then filters every returned assignment against that catalog. A role carries `skills`, `mcp_servers`, and `plugins`; provisioning assigns all three and rewrites `OFFICE.md` with the actual roster. An agent is never given a connector that is not installed, disabled, or missing its credentials.
+Give each agent a rank, a specialty, a model, a skill set, and its own workspace.
+The lead agent (`The Raven` by default) designs offices from a one-line mission,
+proposes the roster, and assigns only the skills and connectors that are actually
+installed and configured on this machine. You can talk to the lead, mention a
+specialist directly, or open any agent's thread and work with it one to one.
 
-<img src="docs/media/office-architect-setup.png" alt="First-run setup asking for The Raven, the default agent: its name and model, with a note that it reads the tools, connectors, skills, and plugins installed here" width="64%">
+### Offices with real coordination
 
-Office graph nodes run in batches of three, and every model call passes through a per-provider governor: three requests in flight, spaced starts, and a shared cooldown after a 429 — so seven agents no longer become seven simultaneous requests and seven copies of the same error. A configuration-class failure (bad key, no credit, protocol mismatch) stops the run before the next batch.
+An office has a goal, a policy, shared memory, a document workspace, and a task
+board. The planner builds a DAG, independent nodes run in parallel, and each node
+gets its own thread so its reasoning and tool calls stay attributable. A node
+that fails is reported as a failure instead of a misleading "done" card. A
+background heartbeat starts the next turn when the office is idle, and stops on
+a pending question, a budget ceiling, a kill switch, or repeated no-progress
+cycles.
 
-If the planner's JSON is unusable, RAVENBOT uses a deterministic role plan: the lead writes the milestone to `Shared/STATUS.md`, and each specialist gets a distinct, specialty-scoped task instead of every agent receiving the same request. Native tool loops are also stopped — the second identical call is skipped, and a repeated loop is forced to a final answer.
+### Memory that is retrieved, not dumped
 
-### Autonomous offices, with a hard denylist
+Agent and office memories are stored in SQLite. Retrieval is hybrid: an FTS5
+BM25 pass finds lexical candidates, then the configured embedding reranks them.
+The default local embedding is a fast, offline word/bigram/character model; point
+it at Ollama or an OpenAI-compatible embedding endpoint when you want true
+semantic recall. Memory edits and deletes are visible in the UI, carry
+source/thread/run provenance, and emit audit events. A fixed 50-fact benchmark in
+Settings reports hybrid and vector-only Recall@5/MRR, so "it remembers" is a
+measurement rather than a slogan.
 
-Office agents run without Allow/Deny cards. The safety boundary is a workspace-aware command denylist enforced in `shell_exec`, `task_runner`, and `docker`, not a prompt:
+### Tools that reach the real world
 
-- recursive deletes are allowed **inside any configured office folder**, including custom folders and multiple project roots
-- the office root itself, a top-level wildcard, `.git`, any path outside the roots, and symlinks pointing outside are blocked
-- `cd`/`pushd` out of the workspace is blocked, so a relative `rm` cannot escape
-- destructive git (`reset --hard`, `clean -fdx`, force-push, `branch -D`, history rewrite), disk/partition/power commands, and privileged/host-mount Docker are blocked
+RAVENBOT ships with built-in skills for files, search, code edits, shell, Git,
+Docker, databases, HTTP, memory, todos, questions, documents, slides, images,
+voice, and computer control. It also supports:
 
-A blocked command returns an explicit failure and is never executed; the agent can choose a safe alternative.
+- **MCP in both directions.** Use catalogued MCP servers from GitHub, Jira,
+  Notion, Figma, Kubernetes, cloud providers, databases, and more. Run
+  `ravenbot mcp-serve` to expose every RAVENBOT skill to Claude Code or any other
+  MCP client.
+- **OpenAPI plugins.** Import an OpenAPI document as a local toolkit.
+- **Community skills.** Search and install versioned skills from the VoltAgent
+  marketplace, or write your own with the built-in skill authoring tools.
+- **Native chat channels.** Telegram, Slack, Discord, WhatsApp, and Microsoft
+  Teams, with pairing codes, thread routing, attachments, and approval cards.
+- **A browser dock and desktop control.** A real webview beside the conversation,
+  DOM snapshots and actions for the agent, plus opt-in window/screen control on
+  Linux.
 
-Offices also keep working when the window is elsewhere. A background heartbeat starts the next office turn, persists the board independently of the view, and stops on the kill switch, the header's **Autonomous** toggle, or a pending question. Runs are spawned outside the IPC call, so leaving the office no longer belongs to the run's lifetime. The board is docked to the right of the conversation, and a node that finishes without an answer is reported as an issue instead of a misleading done card.
+### Output people can open
 
-### Agent harness
+Chat is not the only artifact. Agents can produce DOCX, PDF, PPTX, and HTML
+documents; 1920×1080 designed slide decks; SVG charts; Mermaid diagrams; KaTeX
+math; interactive HTML visuals; images; and MP4 motion graphics. Tool traces
+carry a preview or an Open button, so the result is one click away instead of a
+path buried in a paragraph.
 
-The loop has a written contract: tool discipline (use `file_tree`/`code_search`/`file_read`, not whole-machine shell scans), a two-round convergence warning, a tools-disabled final-report call when the budget is exhausted, a deterministic evidence report if the model still returns nothing, office handoff through `Shared/STATUS.md`, and the safety/scan/repeat guards. The design and its sources (Anthropic long-running harnesses, DeepSeek Harness, OpenCode, Grok Build) are documented in [docs/agent-harness.md](docs/agent-harness.md).
+### Autonomy with brakes
 
-### OpenCode Go (models auto-synced)
+The default posture is useful autonomy, not blind autonomy:
 
-`opencode-go` is a first-class provider. Its model list is **not hardcoded**: RAVENBOT reads `https://opencode.ai/inference/go/v1/models` and enriches it from `https://models.dev/api.json` with name, context window, price, tool/vision/reasoning flags, and the wire protocol each model uses. The catalog refreshes when Settings opens. Claude models are routed to Go's Anthropic endpoint automatically; models served only over OpenAI Responses or Google's native protocol are hidden until those adapters exist. A stable `x-opencode-session` header is sent on every request.
+- Reads, writes, builds, tests, and safe shell work proceed.
+- A workspace-aware denylist blocks destructive disk, database, git-history, and
+  out-of-workspace commands before an approval card is ever shown.
+- Destructive operations require an explicit decision in `Ask` mode; `Auto`
+  gates high-risk calls; `Full` is the deliberate opt-in.
+- The approval, question, and budget-confirmation waits all honor cancel and
+  pause within 400 ms. Pausing parks a resumable run with a checkpoint.
+- Budgets are checked before every model round. A provider circuit breaker stops
+  repeated failures from burning time and money.
+- The OS keychain is preferred for secrets. Without it, RAVENBOT seals secrets
+  with XChaCha20-Poly1305 under `config/sealed-secrets` and keeps only a marker in
+  SQLite. A copied database alone does not reveal them.
 
-<img src="docs/media/opencode-go.png" alt="Settings provider list showing OpenCode Go connected with auto-synced models, alongside OpenCode Zen and the other providers" width="72%">
+### Run it headless
 
-## The Chat Experience (GROK-quality, local)
+`ravenbot daemon` owns the fleet with no window or display. It runs routines,
+scheduled and webhook-triggered workflows, offices, audit maintenance, credential
+refresh, attention notifications, and remote access. A per-user systemd unit,
+macOS LaunchAgent, or Windows logon task can start it. An exclusive fleet lock
+prevents two schedulers from fighting over the same database.
 
-| Feature | What you get |
-|---------|--------------|
-| **Token streaming** | Live SSE streaming from OpenRouter, Anthropic, OpenAI, and Ollama — tokens render as they arrive with a blinking cursor, typing dots, and shimmer skeletons while tools run |
-| **Live citations** | DeepSearch harvests sources from search/browser tools into numbered, clickable source chips — live while streaming, persisted on the answer |
-| **Artifacts & canvas** | Qualifying code blocks (≥8 lines) open in a split canvas panel: code view, sandboxed HTML preview, rendered Markdown, copy + download |
-| **Charts & slides** | Fenced `chart` JSON renders as themed SVG (bar, line, area, pie, donut, scatter) with SVG download; `slides` is a keyboard-navigable, fullscreen-presentable deck with progress; `mermaid` renders diagrams. Everything fits the message column, even at 620 px |
-| **Designed slide images** | `make_slides` renders a deck from code-defined vector layouts — type, icons, shapes, stats, timelines, and native charts — to 1920×1080 PNGs. By default it writes a `.pptx` with every image full-bleed on a blank 16:9 slide, so PowerPoint cannot reflow the design. The tool trace shows a thumbnail strip and an Open PPTX button |
-| **Interactive visuals** | Fenced `visual` HTML runs scripts in a separate-origin sandbox: dashboards, calculators, animated explainers, and click-through prototypes. Height is reported back to the chat, links open safely, and fullscreen is one click |
-| **Image viewer** | Click a markdown image or an image attachment to open a focused viewer with download, caption, gallery stepping, Escape, and backdrop close |
-| **Message queue and steering** | Sending while an office is working queues the message instead of rejecting it: FIFO, pause/resume, cancel, persisted across restart. In a 1:1 thread, sending while a tool is running steers the active run at its next model step; the message is persisted and appears live |
-| **Browser dock** | A real native webview beside the conversation — URL bar, back/forward/reload, page title, downloads, and a session that survives closing the panel. Remote sites load because it is not an iframe. `browser_open` shows the page; `browser_dom` snapshots interactive elements with selectors, then clicks, fills, highlights, presses, scrolls, navigates, or evaluates. **Take over** pauses agent actions while you drive, and the dock names the agent and its last action |
-| **Computer use** | `computer_control` can list and focus windows, capture one window or the full screen, click, type, press keys, scroll, and wait. The Computer panel shows a live preview, an agent activity feed, a click marker, a window list with focus/capture, and **Take over / Release control**. Host control is per-agent opt-in and fail-closed on Wayland. With the default YOLO policy, safe actions run without a card; destructive shell/database/file operations are blocked by the hard safety policy |
-| **Context meter** | The composer shows the estimated model-window usage (warning at 80%, danger at 95%), a system/tools/memory/messages breakdown, the last compaction delta, restores the total and breakdown from the assistant message after a reload, and can request a compaction on the next turn |
-| **Math (KaTeX)** | Inline `$...$` / `\(...\)` and block `$$...$$` / `\[...\]` LaTeX rendered as real typeset math — formulas, derivations, matrices, and aligned equations display properly instead of as raw source |
-| **Extended thinking** | `[Think]` mode and providers that emit `reasoning_content` (DeepSeek, OpenCode Go, Kimi, most gateways) stream chain-of-thought into a collapsible 🧠 Reasoning panel — kept separate from the answer, split by tool round, and persisted across reloads |
-| **Vision** | Paste or drop images into the composer — inline base64 flows to OpenAI / Anthropic / Ollama vision formats; `analyze_image` auto-equips |
-| **Image generation** | `image_gen` skill: OpenAI DALL-E 3 when keyed, keyless Pollinations fallback. Results are downloaded into the local image cache and attached to the final message, so they survive URL expiry and can be sent through chat adapters. The tool trace shows a generated-image card with prompt, provider, size and open link; a live card appears while generating, and failures show the provider error |
-| **Documents** | `make_document` writes real DOCX, PDF, PPTX, or HTML with Pandoc — headings, tables, code, and math preserved. The tool trace shows an Open card for the exported file. Use its PPTX only when editable slide text is wanted |
-| **Motion graphics** | `fframes` workflow: scaffold a Rust/SVG video, inspect frames and contact sheets, check loudness, and render an MP4. If fframes is not installed, a tested ffmpeg slideshow/captions/loudness fallback still ships a video |
-| **Voice mode** | Hands-free loop: speech-to-text → auto-send → response spoken aloud → listening resumes |
-| **Ephemeral chats** | 👻 Temporary threads that never feed agent memory (RAG + self-review skipped) |
-| **Message UX** | Regenerate, edit-and-resend (turn rewritten, response rebuilt), per-conversation model switcher (Ollama/OpenRouter/Anthropic/OpenAI + custom id), actionable error hints, automatic retry on transient failures |
-| **Global search** | `⌘K` searches agents, offices, message content, settings pages, and actions. Tabs, match highlighting, keyboard navigation, and message hits open the exact thread and message |
-| **Usage & spend** | Settings → Usage reads the run ledger: cost, tokens, runs, success rate, and a per-agent breakdown for 7 days, 30 days, or all time |
-| **Searchable settings** | The settings nav filters as you type, so providers, models, themes, budgets, usage, and diagnostics are one word away |
-| **Turn trace** | Each agent turn collapses to `N steps · duration` with a failure count, a proportional timeline of model/tool/memory spans, and expandable input/output details |
+Remote access is off by default. When enabled, a paired phone or browser gets a
+read/write client with viewer, operator, or admin roles, hashed tokens, device
+revocation, and an audit trail. There are no shell, filesystem, or settings
+endpoints on the remote listener.
 
-## The Moat (what GROK doesn't have)
+## Quick start
 
-| Capability | Detail |
-|------------|--------|
-| **Offices (multi-agent teams)** | Rank + specialty bots with goals, policy, shared office memory — an orchestrator routes your message and runs specialists **in parallel via a DAG** with blackboard sharing and checklist summaries; an `@agent` mention dispatches that specialist first, and the lead still synthesizes |
-| **Team channels** | A shared timeline and task board with one owner per task: Start, Stop, Reassign, Archive, Restore. A finished run posts its answer back into the channel. Ownership is a conditional database update, not a convention |
-| **Versioned local skills** | `~/RAVENBOT/skills` keeps immutable versions and an installed copy per skill. Agents create and revise with tools; Settings previews, installs, rolls back, searches the live VoltAgent marketplace, and protects local edits. Supporting scripts/references/assets are data, never executed on registration |
-| **Local accounts & shared workspaces** | Argon2id passwords, remembered 30-day login sessions, per-account data roots/keychain namespaces, a real login launcher, account rename/delete, shared workspaces with owner/operator/viewer grants and a server-side IPC gate, concurrent account windows, and per-account daemon units. See `docs/ACCOUNTS.md` |
-| **135+ connector catalog** | Preconfigured MCP servers (GitHub, Jira, Notion, Figma, K8s, AWS/GCP/Azure, Postgres/Mongo, Playwright, …) with per-bot and global assignment, multi-agent batch assign, preset stacks (including a **Chat apps** stack for Slack, Discord, Teams, Telegram and WhatsApp), live connection tests. **Telegram, Slack, Discord, WhatsApp and Microsoft Teams are also native**: bot or app tokens, pairing codes, long polling, Socket Mode, the Discord gateway, signed WhatsApp webhooks or the Bot Framework, thread routing, inbound/outbound attachments, interactive approval cards and per-conversation throttling |
-| **Headless fleet daemon** | Per-user systemd unit / launchd agent / Windows logon task installed from Settings: no window or display, runs routines, scheduled and webhook workflows, offices, credential refresh, attention webhooks/email and remote access, restarts on failure, survives logout on Linux with lingering, uses systemd hardening on Linux, shares an exclusive fleet lock with the desktop app, and exposes `ravenbot remote` for headless pairing and device control |
-| **Remote access + RBAC** | Off by default; one-time pairing, hashed tokens, viewer/operator/admin roles, mutation audit, device revocation, optional self-signed HTTPS, and a mobile web client. No shell/files/settings endpoints |
-| **Attention island** | Compact always-on-top window for pending approvals/questions and running runs, with Open and Hide actions |
-| **Own MCP server** | `ravenbot mcp-serve` exposes **every RAVENBOT skill as an MCP tool over stdio** — Claude Code, GROK, or anything MCP-speaking can drive your fleet |
-| **Real memory & learning** | Runtime-native `memory_save`/`memory_recall` (vector store), RAG context injection, self-review with memory promotion, skill proficiency tracking |
-| **Routines** | Cron-scheduled agent runs (real executor — threads are created and the bot actually runs), enable/disable, run-now, scheduler status |
-| **Fleet sync with TOFU** | Ed25519-signed bot bundles (agent + skills + memories); **Trust-On-First-Use** registry with per-bot key binding — tampered or key-swapped bundles are rejected |
-| **Sovereign safety** | Default YOLO for safe reads, writes and builds; destructive database/disk/git-history/codebase commands and writes to RAVENBOT's own database, keys and config are hard-blocked before approval. Sandbox + resource quotas, per-run network policies, global kill switch (also `RAVENBOT_KILL_SWITCH=1` headless), budgets, a signed-export audit log, prompt version control with diff/rollback |
+### Install a prebuilt release
 
----
+Prebuilt bundles are attached to [GitHub Releases](https://github.com/AetherRavyn/RAVENBOT/releases/latest):
 
-## Own CLI
-
-One binary, dual personality:
+| Platform | Bundle |
+|---|---|
+| Linux | AppImage, `.deb`, `.rpm` |
+| macOS | `.dmg` (Apple Silicon + Intel) |
+| Windows | NSIS `.exe`, WiX `.msi` |
 
 ```bash
-ravenbot                       # the desktop app
-ravenbot list-bots             # headless: list agents
-ravenbot run --bot RANO --message "Summarize the repo"
-ravenbot mcp-serve             # MCP server over stdio
-ravenbot daemon                # headless fleet owner (service mode)
-ravenbot service status        # install/start/stop the user service
-ravenbot remote pair --role operator   # pair a phone with no window
+# Linux AppImage
+chmod +x RAVENBOT_*.AppImage
+./RAVENBOT_*.AppImage
+```
+
+The current artifacts are unsigned. macOS may require right-click → **Open**, and
+Windows may show SmartScreen. Verify the release checksums before running a
+downloaded binary.
+
+### Build from source
+
+You need **Rust stable**, **Node 20+**, and the Tauri system dependencies for
+your platform.
+
+```bash
+git clone git@github.com:AetherRavyn/RAVENBOT.git
+cd RAVENBOT
+
+npm install
+npm run tauri dev
+```
+
+Linux packages (Debian/Ubuntu names):
+
+```bash
+sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev \
+  libayatana-appindicator3-dev librsvg2-dev libdbus-1-dev \
+  patchelf bubblewrap libssl-dev
+```
+
+macOS needs the Xcode command-line tools. Windows needs the MSVC build tools and
+WebView2. For a release build:
+
+```bash
+npm run tauri build
+```
+
+The binary lands in `target/release/ravenbot`. The app uses `~/RAVENBOT` for its
+database and data root; `RAVENBOT_DB` overrides the database path.
+
+### First run
+
+1. Start Ollama and pull a tool-capable model (for example
+   `ollama pull llama3.1`), or add an API key in **Settings → Providers**.
+2. RAVENBOT creates **The Raven**, the default lead agent. Give it a name and a
+   model, or keep the defaults.
+3. Start a thread and ask for something real: "read this repository and tell me
+   what is broken", "run the tests and fix the first failure", or "design an
+   office that audits this project".
+4. Open the right-hand panels to inspect tool calls, reasoning, artifacts,
+   approvals, and usage.
+
+## Providers
+
+RAVENBOT supports 20 providers, including local and custom endpoints.
+
+| Provider | Notes |
+|---|---|
+| **Ollama** | Default; local, no key, no external model calls |
+| **Local (in-process)** | Scaffolded provider; use Ollama for local inference today |
+| **OpenRouter** | One key for many hosted models |
+| **Anthropic** | Claude models |
+| **OpenAI** | GPT models, including vision |
+| **OpenCode / OpenCode Go** | Model lists synced from the live catalog; Claude routed to Go's Anthropic endpoint |
+| **DeepSeek, Groq, Gemini, Mistral, Together, Perplexity, Cohere, xAI, MiMo, Cline, TokenRouter, Command Code** | Hosted APIs and compatible gateways |
+| **Custom** | Any OpenAI-compatible, Anthropic-compatible, or Ollama endpoint |
+
+Models are configured per agent and can be switched per conversation. A provider
+manager tracks keys, base URLs, custom headers, rate limits, cooldowns, and a
+circuit breaker. The same runtime handles streaming, tool calls, reasoning
+channels, vision input, and token/cost accounting.
+
+## CLI
+
+The desktop app and the headless fleet share one binary.
+
+```bash
+ravenbot                                   # launch the desktop app
+ravenbot --hidden                          # start in the tray
+ravenbot run --bot Raven --message "Run the tests and fix the first failure"
+ravenbot list-bots
+ravenbot daemon                            # headless fleet owner
+ravenbot service status                    # systemd/launchd/logon task
+ravenbot service install
+ravenbot remote pair --role operator       # pair a phone without a window
+ravenbot mcp-serve                         # MCP server over stdio
 ravenbot --help
 ```
 
-`RAVENBOT_DB` overrides the database path. Headless tool calls pause when `RAVENBOT_KILL_SWITCH=1`.
+Headless tool calls pause when `RAVENBOT_KILL_SWITCH=1` is set.
 
-### Drive RAVENBOT from any MCP client
+### Use RAVENBOT from another MCP client
 
 ```json
 {
   "mcpServers": {
-    "ravenbot": { "command": "ravenbot", "args": ["mcp-serve"] }
+    "ravenbot": {
+      "command": "ravenbot",
+      "args": ["mcp-serve"]
+    }
   }
 }
 ```
 
----
+Any MCP-speaking client can then list and call RAVENBOT's tools. The server uses
+stdio, keeps the same database, and respects the same approval and safety
+policy as the desktop app.
 
-## Install
+## Architecture
 
-Prebuilt installers are attached to every [GitHub Release](https://github.com/AetherRavyn/RAVENBOT/releases/latest), built by CI on all three platforms:
-
-| Platform | File |
-|----------|------|
-| Linux | `RAVENBOT_*_amd64.AppImage` · `*.deb` · `*.rpm` |
-| macOS | `RAVENBOT_*.dmg` — universal (Apple Silicon + Intel) |
-| Windows | `RAVENBOT_*.exe` (NSIS) · `*.msi` (WiX) |
-
-```bash
-# verify before you run it
-sha256sum -c SHA256SUMS.txt
-
-# Linux, AppImage
-chmod +x RAVENBOT_*.AppImage && ./RAVENBOT_*.AppImage   # needs libfuse2
-# Linux, deb / rpm
-sudo apt  install ./RAVENBOT_*_amd64.deb
-sudo dnf  install ./RAVENBOT-*.x86_64.rpm
+```mermaid
+flowchart LR
+    UI["Svelte 5 UI and Tauri shell"] --> RT["Rust runtime"]
+    RT --> DB[("SQLite data store")]
+    RT --> MODELS["Model providers"]
+    RT --> TOOLS["Skills and MCP tools"]
+    RT --> SAND["Sandbox"]
+    RT --> MEM["Memory: FTS5 plus vectors"]
+    RT --> DAEMON["Headless daemon"]
+    DAEMON --> DB
+    DAEMON --> CHANNELS["Chat channels and remote access"]
+    MODELS --> PROVIDERS["Ollama, OpenAI-compatible, Anthropic"]
+    TOOLS --> CONNECTORS["MCP servers, OpenAPI plugins, channels"]
 ```
 
-- **Linux** — the AppImage needs FUSE: `sudo apt install libfuse2` (`libfuse2t64` on Ubuntu 24.04+).
-- **macOS** — unsigned until a signing certificate is configured, so right-click → **Open** on first launch, or `xattr -dr com.apple.quarantine /Applications/RAVENBOT.app`.
-- **Windows** — SmartScreen warns on unsigned binaries: **More info → Run anyway**.
+| Crate / directory | Responsibility |
+|---|---|
+| `crates/runtime` | Agent loop, offices, goals, approvals, tool dispatch, run ledger |
+| `crates/models` | Provider clients, streaming, retries, token/cost accounting |
+| `crates/skills` | Built-in tools, safety policy, skill registry |
+| `crates/sandbox` | Bubblewrap, Seatbelt, Docker isolation and resource limits |
+| `crates/memory` | Hybrid retrieval, local/remote embeddings, dedupe, self-review |
+| `crates/db` | Schema migrations, queries, secrets, audit storage |
+| `crates/mcp` | MCP client, connector catalog, MCP server |
+| `crates/remote` | Remote listener, pairing, RBAC, public conversation shares |
+| `src-tauri` | Desktop commands, CLI, daemon, service manager |
+| `src` | Svelte UI, components, themes, i18n |
 
----
+The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
+[`docs/design-system.md`](docs/design-system.md).
 
-## Build from source
+## Quality
 
-```bash
-npm install
-npm run tauri dev      # dev — hot reload, live token streaming
-npm run tauri build    # release — 27 MB, LTO, stripped
-```
+RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
+sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-New bots default to **local Ollama (sovereign)** — override with `RAVENBOT_DEFAULT_PROVIDER` / `RAVENBOT_DEFAULT_MODEL`, or switch per-conversation in the header.
+- **980 Rust tests** across the workspace, including 210 Tauri/command tests,
+  240 runtime tests, 170 skill tests, 101 database tests, 35 memory tests, 33 MCP
+  tests, and 15 remote-access tests.
+- **777 frontend tests** across 120 files.
+- `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
+  `npm run check`, and `npm test` are the local gates.
+- CI runs the Rust workspace, the Docker sandbox live test, frontend checks, the
+  frontend suite, `cargo audit`, `cargo-deny`, and macOS/Windows service
+  contracts.
 
-| Provider | Key | Local? |
-|----------|-----|--------|
-| Ollama | none | **yes — zero external calls (default)** |
-| OpenRouter | `sk-or-…` | no |
-| Anthropic | `sk-ant-…` | no |
-| OpenAI | `sk-…` | no |
-| TokenRouter | `sk-…` | no |
-| Local (candle/llama.cpp) | none | **yes — fully offline** |
+Useful evidence lives in [`CHANGELOG.md`](CHANGELOG.md) and
+[`docs/COMPETITIVE-AUDIT-2026.md`](docs/COMPETITIVE-AUDIT-2026.md); both record
+what changed and what is still missing.
 
----
+## Status and limits
 
-## Skills (60+ built-in tools and workflows)
+This is a working product, not a mock-up, but some edges are still honest
+limitations rather than finished features:
 
-`web_search` · `tavily_search` · `browser_navigate` (headless fetch + readable extraction) · `browser_open` (real dock page) · `browser_dom` (snapshot/click/fill/eval) · `file_read` / `file_write` / `file_tree` · `code_search` / `code_edit` · `shell_exec` · `git` · `docker` · `db_query` · `http_request` · `memory_save` / `memory_recall` (real vector store) · `todo` · `ask_user` · `calendar` · `youtube_transcript` · `arxiv_search` · `screenshot` / `analyze_image` / `computer_control` · `image_gen` · `make_document` (DOCX/PDF/PPTX/HTML) · `make_slides` (1920×1080 PNGs + image PPTX) · `voice_input` / `voice_output` · `delegate` · `task_runner` · `note_manager` · `env_manager` · `package_manager` · `system_monitor` · `ssh_remote` · `api_tester` · `create_skill` / `revise_skill` / `list_local_skills` / `read_local_skill` / `install_local_skill` — plus **1,497+ curated community skills** on demand, OpenAPI-imported plugins, and a searchable **2,500+ app OpenAPI directory**.
+- **Linux is the primary target.** Desktop, sandbox, daemon, Docker isolation,
+  and desktop control are exercised here.
+- **macOS** builds and ships a default-deny Seatbelt profile, but it still needs
+  real-machine validation before it should be treated as equal to Linux.
+- **Windows** builds and supports the desktop app, headless daemon, and logon
+  task, but the command sandbox backend is not implemented yet. Agent shell
+  commands are blocked rather than silently run unsandboxed.
+- **Release artifacts are unsigned.** macOS Gatekeeper and Windows SmartScreen
+  will warn until signing and notarization are configured.
+- **The default memory backend is lexical, not neural.** It is fast and fully
+  offline; use Ollama or an OpenAI-compatible embedding endpoint when you need
+  semantic paraphrase recall. No bundled neural model is shipped.
+- **In-process local inference is scaffolded, not shipped.** Ollama is the
+  supported offline model path today; the `Local` provider returns an explicit
+  "engine not linked" error instead of pretending to run.
+- **Remote access is off by default.** It is a local listener with pairing and
+  RBAC, not a hosted cloud service.
+- **No first-party telemetry.** Provider calls, MCP servers, and optional remote
+  alerts are the only outbound traffic the app initiates, and only when you
+  configure them.
 
----
+The roadmap is tracked in [`ROADMAP.md`](ROADMAP.md). The current competitive
+analysis, including the remaining trust and product gaps, is in
+[`docs/COMPETITIVE-AUDIT-2026.md`](docs/COMPETITIVE-AUDIT-2026.md).
 
-## Tests & Quality
+## Documentation
 
-- **789 Rust tests** across the workspace + **700 frontend tests** (112 files) across the stack: runtime integration (kill switch, bad provider, ephemeral, **full E2E happy-path with a scripted MockProvider**), streaming accumulators, MCP resolution (prefix heuristic, cache, per-bot isolation), sync TOFU (roundtrip, tampering, key-swap rejection), sandbox (bubblewrap and Docker isolation, vmem cap, network block), scheduler cron, i18n (full key coverage × 6 locales), artifact detection, local-skill versioning/rollback, document export, and designed-slide rendering
+| Document | What it covers |
+|---|---|
+| [`docs/agent-harness.md`](docs/agent-harness.md) | Tool discipline, budgets, guards, handoff, and verification |
+| [`docs/ACCOUNTS.md`](docs/ACCOUNTS.md) | Local accounts, sessions, and workspace roles |
+| [`docs/REMOTE-ACCESS.md`](docs/REMOTE-ACCESS.md) | Pairing, RBAC, and the remote listener |
+| [`docs/SERVICE.md`](docs/SERVICE.md) | systemd, launchd, and Windows logon service |
+| [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
+| [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
+| [`docs/LIVE-CHECKS.md`](docs/LIVE-CHECKS.md) | Opt-in provider and platform checks |
+| [`docs/OPENCODE-PARITY.md`](docs/OPENCODE-PARITY.md) | Harness and rendering parity audit |
+| [`ROADMAP.md`](ROADMAP.md) | Milestones and remaining work |
 
-Opt-in live provider checks and the macOS/Windows platform contract jobs are documented in `docs/LIVE-CHECKS.md`.
-- `cargo test --workspace` / `cargo clippy` — run on every push by [CI](https://github.com/AetherRavyn/RAVENBOT/actions/workflows/ci.yml)
-- `svelte-check` — 0 errors, 0 warnings
+## Contributing
 
----
-
-## Verified Performance
-
-Measured via [`scripts/bench.sh`](scripts/bench.sh) on the release build:
-
-| Metric | Target | Measured |
-|--------|--------|----------|
-| Release binary | < 40 MB | **12 MB** ✓ (LTO, stripped) |
-| Headless cold start (db + migrations + query) | < 300 ms | **75 ms** ✓ |
-| MCP roundtrip (initialize + tools/list) | — | **68 ms**, 118 tools exposed ✓ |
-| `cargo test` | all pass | **560 passed, 0 failed** ✓ |
-| `svelte-check` | 0 errors | **0 errors, 0 warnings** ✓ |
-| Tool discovery | once per TTL | **10-min cache** ✓ (no per-message MCP spawns) |
-
-See [`ROADMAP.md`](ROADMAP.md) for the full 21-phase milestone table, and
-[`docs/COMPETITIVE-AUDIT-2026.md`](docs/COMPETITIVE-AUDIT-2026.md) for the
-current gap analysis against OpenBot, Grok Bot and Muse, plus the trust
-roadmap, and [`docs/OPENBOT-TEARDOWN-2026.md`](docs/OPENBOT-TEARDOWN-2026.md)
-for the source-level OpenBot 0.65.0 teardown and the next rendering/UI
-sprint.
-
----
-
-## Design
-
-- **Window & shell** — frameless, dark-first, compact prompt bar with DeepSearch/Think toggles
-- **Thread view** — live streaming, citation chips, artifact canvas, reasoning panel, attachment thumbnails
-- **Chat system** — three bubble variants, quiet tool-action rows, permission and question cards with suggested replies, quoted replies with transcript jump-back, persisted message reactions, in-thread search with wrap-around navigation, `Alt+↑`/`Alt+↓` message navigation, a counted new-message tally, windowed transcripts with "load earlier", keyboard-visible focus, and reduced-motion states
-- **Themes** — a full light theme (Paper Light) alongside the dark catalogue, with native `color-scheme`, light-tuned status colours, and preview cards that stay readable
-- **Content surfaces** — native SVG charts, KaTeX math, code and table cards, isolated interactive visuals, presentable slide decks, image lightbox, and document attachment cards with download
-- **Command Center** — connectors (135+), API keys, multi-agent assignment, themes, local models
-- **Global** — `⌘K` command palette, `⌘,` settings, kill switch UI, Fleet Sync & Backup modal
-
-Design tokens live in [`src/lib/styles/tokens.css`](src/lib/styles/tokens.css); the shared grammar and component contract are in [`docs/design-system.md`](docs/design-system.md). No templated defaults.
-
-## Accessibility & i18n
-
-- Full keyboard navigation, focus trap, visible focus rings
-- `aria-label`, `aria-live` announcements, focus management, reduced-motion support
-- **6 fully translated locales**: English, Español, Français, Deutsch, 日本語, 中文 — per-locale key coverage enforced by test
-
----
-
-## Safety
-
-- Per-bot sandbox (bubblewrap/Seatbelt/Docker, OS-level default) + CPU/mem/net quotas
-- Per-run network allowlist, confirmation gate on high-risk actions
-- Global kill switch — one control pauses all bots and revokes net access
-- `audit_log` — every tool call, request, file write, permission decision
-- `cargo audit` / `deny` + CycloneDX SBOM per release + signed-update tooling (`scripts/generate-update-keys.sh`)
-
----
-
-## Development
+Issues and pull requests are welcome. Before opening a PR:
 
 ```bash
-make dev          # run dev
-make build        # release build
-make test         # cargo test + svelte-check
-make lint         # clippy + svelte-check -D warnings
-make audit        # cargo audit
-make deny         # cargo deny check all
-make sbom         # CycloneDX
-npm test          # frontend test suite (vitest)
+cargo fmt --all
+cargo clippy --workspace --all-targets
+cargo test --workspace
+npm run check
+npm test
 ```
 
----
+Keep changes consistent with the surrounding code, add a regression test for a
+bug fix, and describe the user-visible effect in the PR. Security-sensitive
+changes should say what was attacked and what now blocks it. See
+[`SECURITY.md`](SECURITY.md) for reporting a vulnerability.
 
 ## License
 
-MIT — no account, no required server, no forced telemetry.
+MIT. See [`LICENSE`](LICENSE).
+
+---
+
+<p align="center">
+  <img src="docs/media/ravenbot-logo.png" width="72" alt="RAVENBOT logo">
+</p>
+
+<p align="center">
+  <strong>RAVENBOT</strong> — give your agents a real workspace, then watch what they do with it.
+</p>
