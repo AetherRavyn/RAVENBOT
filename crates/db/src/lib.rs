@@ -162,28 +162,23 @@ mod tests {
         let _ = std::fs::remove_file(shm);
     }
 
-    /// The plugin and MCP tables are owned by migrations, not by the runtime.
-    ///
-    /// `Runtime::new` used to re-create them from a spawned task "just in case",
-    /// which raced the caller's first query for the SQLite write lock. On a
-    /// current-thread runtime — what every `#[tokio::test]` gives you — that
-    /// race is a deadlock rather than a delay: the caller's sqlite busy-wait
-    /// blocks the only thread, so the task holding the lock is never polled to
-    /// completion and `busy_timeout` expires as "database is locked". It
-    /// surfaced as an unrelated-looking flake in a runtime test.
-    ///
-    /// Asserting the ownership is what stops it coming back: if these tables
-    /// ever stop being created here, the runtime would have to start doing DDL
-    /// again in order to keep working.
+    /// A keychain-less host still gets private-at-rest storage: the database
+    /// holds markers and the values live in the sealed vault.
     #[tokio::test]
-    async fn secrets_fall_back_to_the_database_when_the_keychain_is_disabled() {
+    async fn secrets_use_the_encrypted_vault_when_the_keychain_is_disabled() {
         let path = std::env::temp_dir().join(format!(
             "ravenbot-secret-fallback-{}-{}.db",
             std::process::id(),
             uuid::Uuid::new_v4()
         ));
+        let vault_dir = std::env::temp_dir().join(format!(
+            "ravenbot-secret-vault-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
         let db = Database::new(&path).await.expect("temp db");
         std::env::set_var("RAVENBOT_DISABLE_KEYCHAIN", "1");
+        std::env::set_var("RAVENBOT_SECRET_VAULT", &vault_dir);
 
         queries::ProviderKeyQueries::set(db.pool(), "test-provider", "sk-test-value")
             .await
@@ -201,7 +196,15 @@ mod tests {
                 .fetch_one(db.pool())
                 .await
                 .unwrap();
-        assert_eq!(stored, "sk-test-value", "the fallback must remain readable");
+        assert_eq!(
+            stored,
+            secrets::KEYCHAIN_MARKER,
+            "the database must only hold a marker"
+        );
+        assert!(
+            !stored.contains("sk-test-value"),
+            "the provider key must not be persisted in plaintext"
+        );
 
         queries::CustomProviderQueries::upsert(
             db.pool(),
@@ -225,6 +228,13 @@ mod tests {
                 .and_then(|row| row.7.as_deref()),
             Some(r#"{"X-Test":"header-secret"}"#)
         );
+        let stored_headers: String =
+            sqlx::query_scalar("SELECT headers_json FROM custom_providers WHERE id = ?")
+                .bind("test-provider")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(stored_headers, secrets::KEYCHAIN_MARKER);
 
         queries::VaultQueries::upsert(
             db.pool(),
@@ -248,14 +258,35 @@ mod tests {
                 .as_deref(),
             Some(r#"{"password":"hunter2"}"#)
         );
+        let stored_secret: String =
+            sqlx::query_scalar("SELECT secret FROM vault_items WHERE id = 'vault-1'")
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(stored_secret, secrets::KEYCHAIN_MARKER);
 
         std::env::remove_var("RAVENBOT_DISABLE_KEYCHAIN");
+        std::env::remove_var("RAVENBOT_SECRET_VAULT");
         drop(db);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
+        let _ = std::fs::remove_dir_all(&vault_dir);
     }
 
+    /// The plugin and MCP tables are owned by migrations, not by the runtime.
+    ///
+    /// `Runtime::new` used to re-create them from a spawned task "just in case",
+    /// which raced the caller's first query for the SQLite write lock. On a
+    /// current-thread runtime — what every `#[tokio::test]` gives you — that
+    /// race is a deadlock rather than a delay: the caller's sqlite busy-wait
+    /// blocks the only thread, so the task holding the lock is never polled to
+    /// completion and `busy_timeout` expires as "database is locked". It
+    /// surfaced as an unrelated-looking flake in a runtime test.
+    ///
+    /// Asserting the ownership is what stops it coming back: if these tables
+    /// ever stop being created here, the runtime would have to start doing DDL
+    /// again in order to keep working.
     #[tokio::test]
     async fn migrations_create_the_plugin_and_mcp_tables() {
         let path = std::env::temp_dir().join(format!(

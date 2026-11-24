@@ -300,7 +300,14 @@ working tree; the second is the remaining P0/P1 backlog.
 | **Office graph could hang on an early node error** | `execute_node` marked a node running and then used `?` without terminalizing it; a DB/thread error left the office wedged. | The executor wraps node work in a terminal-state guard and fails any node still `Running` after a panicked task, with the normal skip cascade. Regression tests cover a missing bot and a condition-skip distinction. |
 | **Office errors were recorded as success** | `office_turn` returned `Ok` with an empty checklist on executor failure; the queue item was marked done. | The turn returns `status: failed` plus the failure list, the queue item is marked failed, and failed/skipped nodes make workflow runs fail. Branch-condition skips stay successful. |
 
-### 4.2 Remaining P0 — trust and correctness
+### 4.2 P0 — trust and correctness
+
+> **Update on the secret finding below:** the OS keychain remains the preferred
+> store, and a keychain-less host now gets an encrypted, 0600 local vault
+> instead of plaintext SQLite. Startup migrates legacy provider, vault, plugin,
+> MCP, webhook, signing and app-setting secrets. The remaining boundary is
+> explicit: an attacker who can read the user's config directory can read the
+> fallback key, which is why the OS keychain remains preferred.
 
 | Finding | Evidence | Impact | Fix |
 |---|---|---|---|

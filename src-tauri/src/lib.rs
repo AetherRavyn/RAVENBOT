@@ -22625,6 +22625,25 @@ pub fn run() {
                 Err(error) => tracing::warn!("Chat webhook receiver disabled: {error}"),
             }
 
+            // Move legacy plaintext secrets into the OS keychain or the
+            // encrypted local fallback. New writes never use plaintext; this
+            // closes old rows written before that fallback existed.
+            {
+                let secret_pool = db.pool().clone();
+                tauri::async_runtime::spawn(async move {
+                    match ravenbot_db::secrets::migrate_plaintext_at_rest(&secret_pool).await {
+                        Ok(0) => {}
+                        Ok(count) => tracing::info!(
+                            count,
+                            "Migrated legacy plaintext secrets into protected storage"
+                        ),
+                        Err(error) => {
+                            tracing::warn!(%error, "Legacy secret migration did not complete")
+                        }
+                    }
+                });
+            }
+
             // Start the scheduler tick loop
             tauri::async_runtime::spawn(async move {
                 scheduler.start().await;

@@ -104,6 +104,17 @@ pub async fn run() -> Result<(), String> {
         let scheduler = scheduler.clone();
         tokio::spawn(async move { scheduler.start().await })
     };
+    let secret_pool = db.pool().clone();
+    tokio::spawn(async move {
+        match ravenbot_db::secrets::migrate_plaintext_at_rest(&secret_pool).await {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(
+                count,
+                "Migrated legacy plaintext secrets into protected storage"
+            ),
+            Err(error) => tracing::warn!(%error, "Legacy secret migration did not complete"),
+        }
+    });
 
     // Workflow webhooks feed the same headless runner as scheduled workflows.
     let (workflow_tx, workflow_rx) = tokio::sync::mpsc::unbounded_channel::<Uuid>();

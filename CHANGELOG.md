@@ -4,6 +4,19 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Secrets at rest
+
+- **Encrypted keychain fallback** — when the OS keychain is unavailable and the
+  config directory is writable, new secrets are sealed with XChaCha20-Poly1305 under
+  `<RAVENBOT_HOME>/config/sealed-secrets` instead of being written to SQLite in
+  plaintext. The key file and entries are 0600 and the store is account-bound.
+  Startup migrates legacy plaintext provider, vault, plugin, MCP, webhook,
+  bundle-signing and app-setting secrets; reads continue to work through the
+  marker. A copied database alone no longer reveals credentials, while a host
+  that can read the config directory remains outside this threat model.
+- Tests cover vault round-trip, private ciphertext files, tamper rejection,
+  cross-instance key reuse, and legacy provider-key migration.
+
 ### Provider resilience
 
 - **Circuit breaker** — the shared provider governor now counts final failures
