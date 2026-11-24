@@ -9322,6 +9322,79 @@ async fn cancel_thread_goal(
         .ok_or_else(|| "The goal was not found.".to_string())
 }
 
+/// The conversation's opt-in worktree setting and active checkout.
+#[tauri::command]
+async fn get_thread_worktree(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<ravenbot_runtime::worktree::WorktreeStatus, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    ravenbot_runtime::worktree::status(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Turn isolated runs on or off for one conversation.
+#[tauri::command]
+async fn set_thread_worktree_isolation(
+    state: State<'_, AppState>,
+    thread_id: String,
+    enabled: bool,
+) -> Result<ravenbot_runtime::worktree::WorktreeStatus, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    ravenbot_db::queries::ThreadQueries::get(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The conversation was not found.".to_string())?;
+    ravenbot_runtime::worktree::set_isolation(state.db.pool(), thread_id, enabled)
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_runtime::worktree::status(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// The diff and file list for the active isolated checkout.
+#[tauri::command]
+async fn review_thread_worktree(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<ravenbot_runtime::worktree::WorktreeReview, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    ravenbot_runtime::worktree::review(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Apply the isolated checkout to the project and remove it.
+#[tauri::command]
+async fn apply_thread_worktree(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<ravenbot_runtime::worktree::WorktreeReview, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    ravenbot_runtime::worktree::apply(&state.db, thread_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// Throw the isolated checkout away without touching the project.
+#[tauri::command]
+async fn discard_thread_worktree(
+    state: State<'_, AppState>,
+    thread_id: String,
+) -> Result<ravenbot_runtime::worktree::WorktreeReview, String> {
+    let thread_id =
+        Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
+    ravenbot_runtime::worktree::discard(&state.db, thread_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// List the durable work items for one office.
 #[tauri::command]
 async fn list_work_items(
@@ -19220,8 +19293,42 @@ async fn run_thread_goal_turn(
         .clone()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| board.clone());
-    let has_implementation = root_has_implementation(&root);
-    let workspace = thread_workspace_snapshot(&root);
+    // If this round ran in the conversation's isolated checkout, review and
+    // gate the worktree, not the untouched main folder. The `last_run_id`
+    // check avoids treating an old worktree as this round's output when the
+    // toggle was turned off between the run starting and its review.
+    let latest_run: Option<String> = sqlx::query_scalar(
+        "SELECT id FROM runs WHERE thread_id = ? AND created_at >= ?
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(thread_id.to_string())
+    .bind(&start)
+    .fetch_optional(db.pool())
+    .await
+    .ok()
+    .flatten();
+    let review_root =
+        match ravenbot_db::queries::ThreadWorktreeQueries::active_for_thread(db.pool(), thread_id)
+            .await
+            .ok()
+            .flatten()
+        {
+            Some(worktree) if worktree.last_run_id.as_deref() == latest_run.as_deref() => {
+                let agent_path = if worktree.agent_path.trim().is_empty() {
+                    std::path::PathBuf::from(&worktree.worktree_path)
+                } else {
+                    std::path::PathBuf::from(&worktree.agent_path)
+                };
+                if agent_path.is_dir() {
+                    agent_path
+                } else {
+                    root.clone()
+                }
+            }
+            _ => root.clone(),
+        };
+    let has_implementation = root_has_implementation(&review_root);
+    let workspace = thread_workspace_snapshot(&review_root);
     let history = if goal.last_reason.trim().is_empty() {
         Vec::new()
     } else {
@@ -19240,7 +19347,7 @@ async fn run_thread_goal_turn(
         &failures,
         0,
         (goal.rounds_used.max(0) as i64) < goal.max_rounds,
-        Some(&root),
+        Some(&review_root),
         &gates,
     )
     .await;
@@ -19293,16 +19400,22 @@ async fn run_thread_goal_turn(
     } else {
         ""
     };
+    let worktree_note = if review_root != root {
+        "\n\nThe changes are in this conversation's isolated worktree. Review and apply them from the banner above the composer."
+    } else {
+        ""
+    };
     let _ = post_bot_message(
         db.pool(),
         thread_id,
         bot.id,
         bot.name.clone(),
         format!(
-            "{label} — round {round} of {}\n\n{}{}",
+            "{label} — round {round} of {}\n\n{}{}{}",
             goal.max_rounds.max(1),
             truncate_chars(reason.trim(), 1600),
-            suffix
+            suffix,
+            worktree_note
         ),
     )
     .await;
@@ -21639,6 +21752,11 @@ pub fn run() {
         pause_thread_goal,
         resume_thread_goal,
         cancel_thread_goal,
+        get_thread_worktree,
+        set_thread_worktree_isolation,
+        review_thread_worktree,
+        apply_thread_worktree,
+        discard_thread_worktree,
         list_work_items,
         get_work_item,
         add_work_comment,

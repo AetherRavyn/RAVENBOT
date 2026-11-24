@@ -12,6 +12,7 @@
   import MessageSelectionToolbar from "$lib/components/chat/MessageSelectionToolbar.svelte";
   import { quoteAsMarkdown, type SelectionQuote } from "$lib/chat/selection";
   import ChatEmptyState from "$lib/components/chat/ChatEmptyState.svelte";
+  import DiffView from "$lib/components/workspace/DiffView.svelte";
   import { matchingMessageIds, messageKey, stepMatchIndex } from "$lib/chat/search";
   import { agentActivity } from "$lib/agentActivity.svelte";
   import {
@@ -134,6 +135,7 @@
     Hash,
     Users,
     Target,
+    GitBranch,
   } from "@lucide/svelte";
 
   interface Props {
@@ -157,6 +159,13 @@
   let goalBusy = $state(false);
   let goalError = $state("");
   let goalObjectiveRef = $state<HTMLTextAreaElement | null>(null);
+
+  /** Conversation-scoped Git worktree isolation and its review. */
+  let worktree = $state<any | null>(null);
+  let worktreeReview = $state<any | null>(null);
+  let worktreeBusy = $state(false);
+  let worktreeError = $state("");
+  let worktreeReviewEl = $state<HTMLElement | null>(null);
   /** The first thread load, so a focus request can wait for it instead of racing it. */
   let initialLoad: Promise<void> | null = null;
   let loadedBotId: string | null = null;
@@ -991,6 +1000,7 @@
             activeRunId = null;
             pausedRunId = null;
             if (selectedThreadId) {
+              void loadThreadWorktree(selectedThreadId);
               if (bot) {
                 refreshApprovals(bot.id);
                 refreshQuestions(bot.id);
@@ -1002,6 +1012,11 @@
             // Live status ring (thinking / running_tool / done → idle)
             if (payload?.bot_id === bot.id) {
               const nextStatus = payload.state === "done" ? "idle" : payload.state;
+              if (nextStatus === "idle" && selectedThreadId) {
+                // A run can create or fail to create an isolated checkout
+                // before it ever reaches a `done` event.
+                void loadThreadWorktree(selectedThreadId);
+              }
               if (bot.status !== nextStatus) {
                 onBotUpdated?.({ ...bot, status: nextStatus });
                 if (nextStatus === "emulating_tools" || nextStatus === "waiting_on_user" || nextStatus === "paused") {
@@ -1052,6 +1067,7 @@
         const tid = String(event.payload?.thread_id || "");
         if (!tid || tid !== selectedThreadId) return;
         void loadThreadGoal(tid);
+        void loadThreadWorktree(tid);
         void loadMessages(tid);
       });
     } catch (e) {
@@ -1182,6 +1198,8 @@
     const changed = threadId !== selectedThreadId;
     if (changed) {
       replyingTo = null;
+      worktreeReview = null;
+      worktreeError = "";
       if (bot?.id) {
         drafts.saveNow(threadDraftKey(bot.id, selectedThreadId), newMessage);
       }
@@ -1193,6 +1211,7 @@
     windowEnd = 0;
     selectedThreadId = threadId;
     void loadThreadGoal(threadId);
+    void loadThreadWorktree(threadId);
     if (changed && bot?.id) {
       newMessage = drafts.load(threadDraftKey(bot.id, threadId));
       void tick().then(() => {
@@ -1240,6 +1259,11 @@
   $effect(() => {
     if (!goalOpen || !goalObjectiveRef) return;
     void tick().then(() => goalObjectiveRef?.focus());
+  });
+
+  $effect(() => {
+    if (!worktreeReview) return;
+    void tick().then(() => worktreeReviewEl?.focus());
   });
 
   async function loadThreadGoal(threadId: string | null) {
@@ -1340,6 +1364,85 @@
     }
   }
 
+  async function loadThreadWorktree(threadId: string | null) {
+    if (!threadId) {
+      worktree = null;
+      return;
+    }
+    try {
+      const value = await invoke("get_thread_worktree", { threadId });
+      if (threadId === selectedThreadId) worktree = value;
+    } catch (error) {
+      console.debug("thread worktree unavailable:", error);
+      if (threadId === selectedThreadId) worktree = null;
+    }
+  }
+
+  async function toggleWorktreeIsolation() {
+    const threadId = selectedThreadId;
+    if (!threadId || worktreeBusy) return;
+    worktreeBusy = true;
+    worktreeError = "";
+    try {
+      const value = await invoke("set_thread_worktree_isolation", {
+        threadId,
+        enabled: !worktree?.enabled,
+      });
+      if (threadId === selectedThreadId) worktree = value;
+    } catch (error) {
+      if (threadId === selectedThreadId) worktreeError = String(error);
+    } finally {
+      worktreeBusy = false;
+    }
+  }
+
+  async function openWorktreeReview() {
+    const threadId = selectedThreadId;
+    if (!threadId || worktreeBusy) return;
+    worktreeBusy = true;
+    worktreeError = "";
+    try {
+      const review = await invoke("review_thread_worktree", { threadId });
+      if (threadId === selectedThreadId) worktreeReview = review;
+    } catch (error) {
+      if (threadId === selectedThreadId) worktreeError = String(error);
+    } finally {
+      worktreeBusy = false;
+    }
+  }
+
+  async function applyWorktree() {
+    const threadId = selectedThreadId;
+    if (!threadId || worktreeBusy) return;
+    worktreeBusy = true;
+    worktreeError = "";
+    try {
+      const review = await invoke("apply_thread_worktree", { threadId });
+      if (threadId === selectedThreadId) worktreeReview = review;
+      await loadThreadWorktree(threadId);
+    } catch (error) {
+      if (threadId === selectedThreadId) worktreeError = String(error);
+    } finally {
+      worktreeBusy = false;
+    }
+  }
+
+  async function discardWorktree() {
+    const threadId = selectedThreadId;
+    if (!threadId || worktreeBusy) return;
+    worktreeBusy = true;
+    worktreeError = "";
+    try {
+      const review = await invoke("discard_thread_worktree", { threadId });
+      if (threadId === selectedThreadId) worktreeReview = review;
+      await loadThreadWorktree(threadId);
+    } catch (error) {
+      if (threadId === selectedThreadId) worktreeError = String(error);
+    } finally {
+      worktreeBusy = false;
+    }
+  }
+
   async function createNewThread() {
     try {
       const thread = await invoke("create_thread", {
@@ -1352,6 +1455,10 @@
       selectedThreadId = (thread as any).id;
       messages = [];
       threadGoal = null;
+      worktree = null;
+      worktreeReview = null;
+      worktreeError = "";
+      void loadThreadWorktree((thread as any).id);
       replyingTo = null;
       showThreadDropdown = false;
       await tick();
@@ -2429,6 +2536,26 @@
                 <div class="p-3 text-center text-xs text-[var(--text-muted)]">{t("thread.noPrev")}</div>
               {/each}
             </div>
+
+            <div class="border-t border-[var(--hairline)] px-2 pt-2 pb-1 space-y-1">
+              <button
+                type="button"
+                class="w-full flex items-center gap-2 rounded-xl px-2 py-1.5 text-xs transition-colors cursor-pointer disabled:opacity-50 {worktree?.enabled
+                  ? 'text-[var(--brand-text)]'
+                  : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
+                onclick={() => void toggleWorktreeIsolation()}
+                disabled={!selectedThreadId || worktreeBusy}
+                aria-pressed={Boolean(worktree?.enabled)}
+                title="Requires a clean Git repository with one project folder"
+              >
+                <GitBranch class="size-3.5 shrink-0" />
+                <span class="min-w-0 flex-1 text-left">Isolated Git worktree</span>
+                <span class="font-mono text-[11px]">{worktree?.enabled ? "On" : "Off"}</span>
+              </button>
+              <p class="px-2 text-[11px] leading-snug text-[var(--text-muted)]">
+                Runs write to a separate checkout until you review and apply them. Requires a clean Git repository; ignored local files are copied for reading, not applied.
+              </p>
+            </div>
           </div>
         {/if}
       </div>
@@ -3177,6 +3304,41 @@
         />
       </div>
 
+      {#if worktree?.active}
+        <div class="px-4 pb-1 shrink-0">
+          <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto flex items-center gap-2 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2">
+            <GitBranch class="size-3.5 shrink-0 text-[var(--brand-text)]" />
+            <div class="min-w-0 flex-1">
+              <div class="flex items-center gap-2 text-xs font-medium text-[var(--text-primary)]">
+                <span>Isolated worktree</span>
+                <span class="shrink-0 rounded border border-[var(--hairline)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-tertiary)]">
+                  not applied
+                </span>
+              </div>
+              <p class="truncate text-[11px] text-[var(--text-muted)]">
+                Runs in this conversation write to a Git checkout. Review and apply them to the project.
+              </p>
+            </div>
+            <button
+              type="button"
+              class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] text-[11px] text-[var(--text-secondary)] hover:bg-[var(--surface-3)] cursor-pointer disabled:opacity-50 flex items-center gap-1.5"
+              onclick={() => void openWorktreeReview()}
+              disabled={worktreeBusy}
+            >
+              {#if worktreeBusy}<Loader2 class="size-3 animate-spin" />{/if}
+              Review
+            </button>
+          </div>
+        </div>
+      {/if}
+      {#if worktreeError && !worktreeReview}
+        <div class="px-4 pb-1 shrink-0">
+          <p class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] px-3 py-1.5 text-[11px] text-[var(--danger)]">
+            {worktreeError}
+          </p>
+        </div>
+      {/if}
+
       {#if threadGoal?.goal}
         <div class="px-4 pb-1 shrink-0">
           <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto flex items-center gap-2 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] px-3 py-2">
@@ -3717,6 +3879,90 @@
         {#if !threadGoal?.goal || ["done", "cancelled", "failed"].includes(threadGoal.goal.status)}
           <Button size="sm" disabled={goalBusy || !goalObjective.trim()} onclick={() => void startThreadGoal()}>
             {goalBusy ? "Starting…" : "Start goal"}
+          </Button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- Isolated Worktree Review Modal -->
+{#if worktreeReview}
+  {@const review = worktreeReview}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-50 bg-[var(--scrim)] flex items-center justify-center p-4 animate-in fade-in"
+    onclick={() => (worktreeReview = null)}
+  >
+    <div
+      class="modal-panel w-full max-w-3xl p-5 space-y-3 max-h-[86vh] flex flex-col"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="worktree-review-title"
+      tabindex="-1"
+      bind:this={worktreeReviewEl}
+      onclick={(e) => e.stopPropagation()}
+    >
+      <div class="flex items-start justify-between gap-3 border-b border-[var(--hairline)] pb-2 shrink-0">
+        <div class="min-w-0">
+          <h2 id="worktree-review-title" class="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-1.5">
+            <GitBranch class="size-4 text-[var(--brand-text)]" />
+            Isolated worktree
+          </h2>
+          <p class="mt-0.5 text-[11px] text-[var(--text-muted)]">
+            {review.note || (review.status === "active"
+              ? "These changes are not in your project yet."
+              : "This worktree is finished.")}
+          </p>
+        </div>
+        <button
+          type="button"
+          class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono shrink-0"
+          onclick={() => (worktreeReview = null)}
+          aria-label="Close worktree review"
+        >
+          ✕
+        </button>
+      </div>
+
+      {#if review.files.length}
+        <div class="rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 max-h-28 overflow-auto shrink-0">
+          {#each review.files as file}
+            <p class="font-mono text-[11px] text-[var(--text-secondary)] break-all">{file}</p>
+          {/each}
+        </div>
+      {/if}
+
+      {#if review.diff}
+        <div class="min-h-0 flex-1 overflow-auto rounded-lg border border-[var(--hairline)] bg-[var(--surface-0)]">
+          <DiffView diff={review.diff} />
+        </div>
+        {#if review.truncated}
+          <p class="shrink-0 text-[11px] text-[var(--warning-text)]">
+            The preview is truncated; Apply uses the complete change.
+          </p>
+        {/if}
+      {:else}
+        <p class="text-xs text-[var(--text-muted)]">
+          {review.note || "The isolated checkout has no changes."}
+        </p>
+      {/if}
+
+      {#if worktreeError}
+        <p class="shrink-0 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] px-3 py-2 text-[11px] text-[var(--danger)]" role="alert">
+          {worktreeError}
+        </p>
+      {/if}
+
+      <div class="flex items-center justify-end gap-2 border-t border-[var(--hairline)] pt-3 shrink-0">
+        <Button size="sm" variant="ghost" onclick={() => (worktreeReview = null)}>Close</Button>
+        {#if review.status === "active"}
+          <Button size="sm" variant="outline" disabled={worktreeBusy} onclick={() => void discardWorktree()}>
+            Discard
+          </Button>
+          <Button size="sm" disabled={worktreeBusy} onclick={() => void applyWorktree()}>
+            {worktreeBusy ? "Working…" : "Apply to project"}
           </Button>
         {/if}
       </div>

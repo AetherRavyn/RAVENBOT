@@ -85,10 +85,10 @@ but not the general one; **Missing** = no implementation.
 | Multi-agent office | plan graph, roster, review judge, goal autopilot | subagents/agents | **Present** |
 | Goal loop for a 1:1 agent | durable thread goal, one-node graph pinned to the user thread, office review/gates, pause/resume/stop, restart-safe scheduling, same heartbeat in the headless daemon | session goal/todo loop | **Present** |
 | File snapshot / revert | content-addressed before-images, run/file revert previews, conflict checks, Projects and Runs actions | `packages/core/src/snapshot.ts`, VCS | **Present** |
-| **Isolated worktrees** | not present | `packages/core/src/worktree.ts` | **Missing (P1)** |
+| Isolated worktrees | opt-in conversation-scoped `git worktree`, fail-closed on dirty/non-Git projects, review + checked apply/discard, goal/snapshot aware | `packages/core/src/worktree.ts` | **Present** |
 | **LSP / project diagnostics** | no LSP client; code edits rely on compiler/test tools | project LSP settings in app | **Missing (P1)** |
 | Unified patch tool | `file_edit` (also `apply_patch`) parses standard unified diffs and Codex patches in-process, validates every hunk, writes atomically, and journals each file | `tool/patch*` | **Present** |
-| **Timeline virtualisation** | history paginated, all loaded rows remain mounted | `session/timeline/virtualizer.tsx` | **Partial (P1)** |
+| **Timeline virtualisation** | message windows (30/50) bound the mounted rows; no row recycling | `session/timeline/virtualizer.tsx` | **Partial (P1)** |
 | **Worker markdown/highlight** | marked + custom tokens on the UI thread | `markdown.worker.ts` | **Missing (P2)** |
 | **MCP event-triggered jobs** | MCP client only; scheduler triggers are cron/webhook | automation from MCP events | **Missing (P2)** |
 | **Public session share** | remote access/device pairing, no public share link | share UI | **Missing (P3)** |
@@ -156,11 +156,26 @@ a standard unified diff without shelling out to `patch(1)`.
   `file_changes` ledger receive each file's absolute path, diff, and hashes.
 - `code_edit` remains for callers that explicitly want the system patch tool.
 
-### P1 — worktrees and LSP
+### Shipped — isolated Git worktrees
 
-- **Worktrees:** a task gets its own `git worktree` so a failed 24/7 run cannot
-  dirty the main checkout. Reuse the existing project folder as the base and
-  list/remove worktrees from the project settings.
+A conversation can opt into a real Git checkout so a long run cannot dirty the
+project the user is still editing.
+
+- The first run creates `git worktree add --detach` under the RAVENBOT home and
+  records it per thread; later runs reuse the same checkout.
+- Creation fails closed unless the project is a Git repository with a clean
+  working tree. Isolation never silently degrades to the main folder.
+- The conversation banner reviews the diff and applies it with a checked
+  `git apply`, or discards it. A conflicting main checkout is reported and the
+  worktree stays available.
+- Goal review, workspace snapshots and gates use the checkout that actually
+  produced the round. Turning isolation off leaves an active checkout intact
+  for review.
+- Small Git-ignored local files (for example `.env`) are copied into the
+  checkout for reading. Ignored changes are not part of Apply.
+
+### P1 — LSP diagnostics
+
 - **LSP:** start the language server for the project root, surface diagnostics
   after writes and before “done”; this catches type errors that tests miss.
 
@@ -209,3 +224,10 @@ a standard unified diff without shelling out to `patch(1)`.
 - Patch tool: `patch::tests` covers multi-file parsing, add/delete, CRLF,
   no-final-newline, mismatched context, and rename rejection; the file-edit
   tests cover the real atomic write path.
+- Worktrees: `an_isolated_run_writes_to_a_worktree_not_the_project` proves a
+  real run writes only to the checkout and journals worktree paths;
+  `a_clean_repo_is_checkout_shared_then_applied` covers reuse, a commit inside
+  the checkout, review and checked apply; `discard_leaves_the_project_untouched`
+  and `isolation_refuses_a_dirty_or_non_git_folder` cover the safety edges.
+  `a_thread_has_one_active_checkout_and_a_finished_history` covers the DB
+  lifecycle.

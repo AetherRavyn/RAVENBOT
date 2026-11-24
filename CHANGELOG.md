@@ -12,9 +12,9 @@ All notable changes to RAVENBOT are documented here.
   list-item spacing, hover-only link underlines, and quiet 8%-fill inline
   code. The token renderer and its HTML/link safety checks are unchanged.
 - **Harness audit** — `docs/OPENCODE-PARITY.md` maps OpenCode's desktop and
-  markdown worker/cache system against RAVENBOT, and lists the remaining
-  24/7 gaps: snapshot/revert, worktrees, LSP diagnostics, and a unified patch
-  tool.
+  markdown worker/cache system against RAVENBOT. Its remaining 24/7 gaps are
+  LSP diagnostics and the optional renderer performance work; the P0/P1
+  harness gaps are shipped.
 
 ### Persistent 1:1 goal loop
 
@@ -88,6 +88,29 @@ All notable changes to RAVENBOT are documented here.
   before/after hashes, so a patch is as revertable as any other write.
 - `code_edit` remains available for the system `patch(1)` path, but the common
   edit loop no longer depends on that binary.
+
+### Isolated Git worktrees
+
+- **Opt-in per conversation** — a thread can mark future runs as isolated. The
+  first run creates a real `git worktree` under `<RAVENBOT_HOME>/worktrees`;
+  later runs in the same conversation reuse it, so a multi-round goal sees its
+  own previous work. The main checkout is untouched until the user applies.
+  The checkout is built from HEAD; small Git-ignored local files (for example
+  an `.env`) are copied in for reading, but ignored changes are not part of the
+  apply patch.
+- **Strict, fail-closed setup** — isolation requires a Git repository with no
+  uncommitted or untracked changes. A dirty or non-Git project stops the run
+  with a clear message rather than silently writing to the main folder.
+- **Review, apply or discard** — the conversation banner shows an active
+  checkout and opens a diff/file-list review. Apply runs a checked
+  `git apply` against the original checkout and removes the worktree; a
+  conflicting main checkout is refused and the worktree stays available.
+  Discard removes the checkout without touching the project.
+- **Coherent with goals and snapshots** — goal review, workspace snapshots and
+  quality gates run against the checkout that actually produced the round.
+  Run snapshots and per-run revert continue to work on the isolated paths.
+- Turning isolation off does not throw away an active checkout; the banner
+  remains until it is applied or discarded.
 
 ### Platform, remote and product surfaces
 

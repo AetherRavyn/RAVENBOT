@@ -13,6 +13,7 @@ pub mod state;
 pub mod tree;
 pub mod work;
 pub mod workspace;
+pub mod worktree;
 
 use base64::engine::general_purpose;
 use ravenbot_core::{Run, RunState};
@@ -4582,6 +4583,16 @@ impl Runtime {
         {
             return Ok(());
         }
+
+        // A conversation with worktree isolation on gets the checkout instead
+        // of the main folder. Do this only after small talk has returned: a
+        // greeting should not create a full checkout. A failure here stops the
+        // run rather than pretending a main-checkout run was isolated.
+        let working_dirs = match crate::worktree::maybe_isolate(&self.db, run, &working_dirs).await
+        {
+            Ok(dirs) => dirs,
+            Err(error) => return Err(RuntimeError::TaskFailed(error.to_string())),
+        };
 
         let memory_context = if thread_ephemeral {
             String::new()
@@ -11326,6 +11337,97 @@ mod parity_tests {
             .unwrap();
         let run = ravenbot_core::Run::new(bot.id, thread.id);
         (thread, run)
+    }
+
+    #[tokio::test]
+    async fn an_isolated_run_writes_to_a_worktree_not_the_project() {
+        let Some(repo) = crate::worktree::temporary_repo() else {
+            return;
+        };
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+
+        let mut bot = Bot::new("Isolated", "writes in a checkout");
+        bot.config.working_folder = Some(repo.display().to_string());
+        bot.skills = vec!["file_write".to_string()];
+        bot.permissions = vec![ravenbot_core::Permission::FileSystem {
+            paths: vec!["/".to_string()],
+        }];
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (thread, mut run) = seed_run(&db, &bot).await;
+        crate::worktree::set_isolation(db.pool(), thread.id, true)
+            .await
+            .expect("enable isolation");
+
+        let script = vec![
+            ModelResponse {
+                content: None,
+                tool_calls: vec![tool_call(
+                    "file_write",
+                    serde_json::json!({
+                        "path": "note.txt",
+                        "content": "isolated\n"
+                    }),
+                    "call-isolated-write",
+                )],
+                usage: Usage {
+                    input_tokens: 5,
+                    output_tokens: 3,
+                },
+                reasoning: None,
+            },
+            ModelResponse {
+                content: Some("Wrote the isolated note.".to_string()),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 7,
+                    output_tokens: 2,
+                },
+                reasoning: None,
+            },
+        ];
+        runtime
+            .set_provider_override(Some(
+                Arc::new(ScriptProvider::new(script)) as Arc<dyn ModelProviderTrait>
+            ))
+            .await;
+
+        runtime.execute_run(&mut run).await.expect("isolated run");
+
+        let checkout = crate::worktree::status(db.pool(), thread.id)
+            .await
+            .expect("status")
+            .active
+            .expect("active checkout");
+        assert_eq!(
+            std::fs::read_to_string(repo.join("note.txt")).unwrap(),
+            "one\n",
+            "the main checkout was not touched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(PathBuf::from(&checkout.worktree_path).join("note.txt"))
+                .unwrap(),
+            "isolated\n"
+        );
+        let change = ravenbot_db::queries::FileChangeQueries::for_run(db.pool(), run.id)
+            .await
+            .unwrap()
+            .pop()
+            .expect("journaled write");
+        assert!(
+            change
+                .snapshot_path
+                .as_deref()
+                .is_some_and(|path| path.starts_with(&checkout.worktree_path)),
+            "the ledger points at the worktree, not the project: {change:?}"
+        );
+
+        crate::worktree::discard(&db, thread.id)
+            .await
+            .expect("discard");
+        let _ = std::fs::remove_dir_all(&repo);
     }
 
     #[tokio::test]

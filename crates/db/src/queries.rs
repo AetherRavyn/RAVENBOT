@@ -7655,6 +7655,183 @@ impl FileChangeQueries {
     }
 }
 
+/// One conversation's opt-in Git worktree.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadWorktreeRecord {
+    pub thread_id: String,
+    pub original_root: String,
+    pub worktree_path: String,
+    /// The directory the agent itself used (a subdirectory of the checkout
+    /// when the configured project folder was nested).
+    pub agent_path: String,
+    pub base_commit: String,
+    /// The most recent run that used this checkout.
+    pub last_run_id: Option<String>,
+    pub status: String,
+    pub note: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub finished_at: Option<String>,
+}
+
+pub struct ThreadWorktreeQueries;
+
+type ThreadWorktreeRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+);
+
+fn thread_worktree_from_row(row: ThreadWorktreeRow) -> ThreadWorktreeRecord {
+    ThreadWorktreeRecord {
+        thread_id: row.0,
+        original_root: row.1,
+        worktree_path: row.2,
+        agent_path: row.3,
+        base_commit: row.4,
+        last_run_id: row.5,
+        status: row.6,
+        note: row.7,
+        created_at: row.8,
+        updated_at: row.9,
+        finished_at: row.10,
+    }
+}
+
+impl ThreadWorktreeQueries {
+    const COLUMNS: &'static str = "thread_id, original_root, worktree_path, agent_path, \
+         base_commit, last_run_id, status, note, created_at, updated_at, finished_at";
+
+    /// The checkout still accepting edits, if this conversation has one.
+    pub async fn active_for_thread(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+    ) -> Result<Option<ThreadWorktreeRecord>, sqlx::Error> {
+        let row: Option<ThreadWorktreeRow> = sqlx::query_as(&format!(
+            "SELECT {} FROM thread_worktrees WHERE thread_id = ? AND status = 'active'",
+            Self::COLUMNS
+        ))
+        .bind(thread_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(thread_worktree_from_row))
+    }
+
+    /// The most recent checkout for a conversation, including a finished one.
+    pub async fn latest_for_thread(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+    ) -> Result<Option<ThreadWorktreeRecord>, sqlx::Error> {
+        let row: Option<ThreadWorktreeRow> = sqlx::query_as(&format!(
+            "SELECT {} FROM thread_worktrees WHERE thread_id = ?
+             ORDER BY updated_at DESC LIMIT 1",
+            Self::COLUMNS
+        ))
+        .bind(thread_id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(thread_worktree_from_row))
+    }
+
+    /// Start a new active checkout for a conversation.
+    ///
+    /// A previous applied/discarded row is replaced; history is represented by
+    /// the run ledger and the worktree's own committed base, not by keeping
+    /// every checkout row forever.
+    pub async fn activate(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+        original_root: &str,
+        worktree_path: &str,
+        agent_path: &str,
+        base_commit: &str,
+        run_id: Uuid,
+    ) -> Result<ThreadWorktreeRecord, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO thread_worktrees
+                (thread_id, original_root, worktree_path, agent_path, base_commit,
+                 last_run_id, status, note, created_at, updated_at, finished_at)
+             VALUES (?, ?, ?, ?, ?, ?, 'active', '', ?, ?, NULL)
+             ON CONFLICT(thread_id) DO UPDATE SET
+                original_root = excluded.original_root,
+                worktree_path = excluded.worktree_path,
+                agent_path = excluded.agent_path,
+                base_commit = excluded.base_commit,
+                last_run_id = excluded.last_run_id,
+                status = 'active',
+                note = '',
+                created_at = excluded.created_at,
+                updated_at = excluded.updated_at,
+                finished_at = NULL",
+        )
+        .bind(thread_id.to_string())
+        .bind(original_root)
+        .bind(worktree_path)
+        .bind(agent_path)
+        .bind(base_commit)
+        .bind(run_id.to_string())
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        Self::active_for_thread(pool, thread_id)
+            .await?
+            .ok_or(sqlx::Error::RowNotFound)
+    }
+
+    /// Record that an existing checkout is serving a new run.
+    pub async fn touch_run(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+        run_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        let changed = sqlx::query(
+            "UPDATE thread_worktrees SET last_run_id = ?, updated_at = ?
+             WHERE thread_id = ? AND status = 'active'",
+        )
+        .bind(run_id.to_string())
+        .bind(Utc::now().to_rfc3339())
+        .bind(thread_id.to_string())
+        .execute(pool)
+        .await?
+        .rows_affected();
+        Ok(changed == 1)
+    }
+
+    /// Close an active checkout after it was applied or discarded.
+    pub async fn finish(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+        status: &str,
+        note: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let changed = sqlx::query(
+            "UPDATE thread_worktrees
+             SET status = ?, note = ?, updated_at = ?, finished_at = ?
+             WHERE thread_id = ? AND status = 'active'",
+        )
+        .bind(status)
+        .bind(note)
+        .bind(&now)
+        .bind(&now)
+        .bind(thread_id.to_string())
+        .execute(pool)
+        .await?
+        .rows_affected();
+        Ok(changed == 1)
+    }
+}
+
 /// One run's revert snapshot.
 ///
 /// Created lazily on the first file-writing tool call. `root` is the
@@ -9846,6 +10023,74 @@ mod gate_tests {
         assert_eq!(failed.exit_code, Some(1));
         assert_eq!(failed.command, "npm test");
         assert!(failed.output_tail.contains("FAIL"));
+    }
+}
+
+#[cfg(test)]
+mod thread_worktree_tests {
+    use super::*;
+    use crate::migrations;
+
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    #[tokio::test]
+    async fn a_thread_has_one_active_checkout_and_a_finished_history() {
+        let pool = db().await;
+        let thread = Uuid::new_v4();
+        let run = Uuid::new_v4();
+        let first = ThreadWorktreeQueries::activate(
+            &pool,
+            thread,
+            "/project",
+            "/worktrees/first",
+            "/worktrees/first",
+            "abc123",
+            run,
+        )
+        .await
+        .expect("activate");
+        assert_eq!(first.status, "active");
+        assert!(ThreadWorktreeQueries::active_for_thread(&pool, thread)
+            .await
+            .expect("active")
+            .is_some());
+
+        assert!(ThreadWorktreeQueries::finish(&pool, thread, "applied", "")
+            .await
+            .expect("finish"));
+        assert!(ThreadWorktreeQueries::active_for_thread(&pool, thread)
+            .await
+            .expect("active")
+            .is_none());
+        let latest = ThreadWorktreeQueries::latest_for_thread(&pool, thread)
+            .await
+            .expect("latest")
+            .expect("row");
+        assert_eq!(latest.status, "applied");
+        assert!(latest.finished_at.is_some());
+
+        let second_run = Uuid::new_v4();
+        let second = ThreadWorktreeQueries::activate(
+            &pool,
+            thread,
+            "/project",
+            "/worktrees/second",
+            "/worktrees/second",
+            "def456",
+            second_run,
+        )
+        .await
+        .expect("reactivate");
+        assert_eq!(second.worktree_path, "/worktrees/second");
+        assert_eq!(second.status, "active");
     }
 }
 

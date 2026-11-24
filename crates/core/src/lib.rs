@@ -50,7 +50,7 @@ pub use office_memory::*;
 pub use paths::{
     agent_workspace, app_data_dir, cache_dir, config_dir, data_dir, default_db_path, ensure_dir,
     expand_home, keys_dir, legacy_db_path, logs_dir, mark_office_dir, office_workspace,
-    projects_dir, raven_root, slugify, snapshots_dir, APP_IDENTIFIER,
+    projects_dir, raven_root, slugify, snapshots_dir, worktrees_dir, APP_IDENTIFIER,
 };
 pub use question::*;
 pub use routine::*;

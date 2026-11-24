@@ -17,6 +17,7 @@
 //!   logs/                  runtime logs
 //!   cache/                 scratch + downloaded model weights
 //!   snapshots/             content-addressed before-images for revert
+//!   worktrees/<thread>/    opt-in isolated Git checkouts for a conversation
 //!   projects/<office>/     an office workspace (the agents' room)
 //!   agents/<bot>/          a private workspace for 1:1 conversations
 //! ```
@@ -110,6 +111,14 @@ fn under_root(name: &str) -> PathBuf {
 /// the agents can put back.
 pub fn snapshots_dir() -> PathBuf {
     under_root("snapshots")
+}
+
+/// Where opt-in, conversation-scoped Git worktrees live.
+///
+/// A worktree is a real checkout of a project at `HEAD`; keeping it under the
+/// RAVENBOT root makes the isolated edits easy to find and easy to delete.
+pub fn worktrees_dir() -> PathBuf {
+    under_root("worktrees")
 }
 
 /// Where settings, cached provider metadata, and UI preferences live.

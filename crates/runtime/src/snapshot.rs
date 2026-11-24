@@ -52,6 +52,7 @@ const EXCLUDED_DIRS: &[&str] = &[
     ".git",
     ".hg",
     "snapshots",
+    "worktrees",
     ".svn",
     "node_modules",
     "target",
