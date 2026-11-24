@@ -923,6 +923,11 @@
             }
             if (payload?.bot_id === bot.id) {
               onBotUpdated?.({ ...bot, status: "paused" });
+              // A pause can interrupt a parked approval/question. The runtime
+              // expires or denies that row and emits `paused`; reload the cards
+              // so a decision the user can no longer make cannot linger.
+              void refreshApprovals(bot.id);
+              void refreshQuestions(bot.id);
             }
             break;
           case "delta":

@@ -4,6 +4,18 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Interruptible human waits
+
+- **Pause and cancel stop parked runs** — approval, `ask_user` and budget
+  confirmation waits now check the kill switch, cancellation and the run's
+  pause flag every 400ms instead of only at the next tool-round boundary. A
+  pause parks a resumable `Paused` run with a checkpoint, denies the approval
+  or expires the question, and ThreadView reloads the card lists so a decision
+  the user can no longer make cannot linger. Cancellation ends the run
+  immediately instead of waiting out the ten-minute timeout.
+- Tests cover pause during approval, question and budget waits, and prompt
+  cancellation of a parked approval. The paused tool never runs.
+
 ### Memory retrieval
 
 - **FTS5 hybrid retrieval** — migration 75 adds full-text indexes for agent and

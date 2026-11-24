@@ -347,6 +347,10 @@ pub enum RuntimeError {
     WaitingOnApproval(String),
     #[error("Cancelled: {0}")]
     Cancelled(String),
+    /// The run was parked on a human card and the user asked to pause it.
+    /// `execute_run` turns this into a resumable Paused run, not a failure.
+    #[error("Paused: {0}")]
+    Paused(String),
     /// The provider stream ended without its terminal signal. The partial text
     /// is preserved and the run is finalized as PartialSuccess.
     #[error("model stream ended before completion")]
@@ -3174,6 +3178,12 @@ impl Runtime {
                 let _ = ravenbot_db::queries::QuestionQueries::expire(self.db.pool(), req.id).await;
                 return Err(RuntimeError::Cancelled("User cancelled".to_string()));
             }
+            if self.is_pause_requested(run.id) {
+                let _ = ravenbot_db::queries::QuestionQueries::expire(self.db.pool(), req.id).await;
+                return Err(RuntimeError::Paused(
+                    "Run paused while waiting on budget approval".to_string(),
+                ));
+            }
             match ravenbot_db::queries::QuestionQueries::get(self.db.pool(), req.id).await {
                 Ok(Some(current)) if current.status == ravenbot_core::QuestionStatus::Answered => {
                     self.emit(StreamEvent::QuestionAnswered {
@@ -3324,6 +3334,27 @@ impl Runtime {
                     allowed: false,
                 });
                 return Err(RuntimeError::Cancelled("User cancelled".to_string()));
+            }
+            if self.is_pause_requested(run.id) {
+                // Deny rather than leave the row pending: resuming re-asks the
+                // same question with fresh arguments, and a stale pending card
+                // in another window must not be able to authorize a tool after
+                // the user has moved on.
+                let _ = ravenbot_db::queries::ApprovalQueries::decide(
+                    self.db.pool(),
+                    req.id,
+                    false,
+                    Some("run paused"),
+                )
+                .await;
+                self.emit(StreamEvent::ApprovalDecided {
+                    thread_id: run.thread_id,
+                    approval_id: req.id,
+                    allowed: false,
+                });
+                return Err(RuntimeError::Paused(
+                    "Run paused while waiting on approval".to_string(),
+                ));
             }
             let current = ravenbot_db::queries::ApprovalQueries::get(self.db.pool(), req.id)
                 .await
@@ -3675,6 +3706,17 @@ impl Runtime {
             if self.is_cancelled(run.id) {
                 let _ = ravenbot_db::queries::QuestionQueries::expire(self.db.pool(), req.id).await;
                 return serde_json::json!({ "error": "run cancelled before the user answered" });
+            }
+            if self.is_pause_requested(run.id) {
+                let _ = ravenbot_db::queries::QuestionQueries::expire(self.db.pool(), req.id).await;
+                // The tool pass records its results and checkpoints after this
+                // returns; the run is parked at that boundary before another
+                // model call can start.
+                return serde_json::json!({
+                    "paused": true,
+                    "error": "run paused before the user answered",
+                    "note": "Do not retry; the run will resume from its checkpoint."
+                });
             }
             match ravenbot_db::queries::QuestionQueries::get(self.db.pool(), req.id).await {
                 Ok(Some(current)) if current.status == ravenbot_core::QuestionStatus::Answered => {
@@ -4555,6 +4597,21 @@ impl Runtime {
         )
         .await;
         let result = self.execute_run_inner(run).await;
+        // A human card (approval, question, budget confirmation) can be parked
+        // for up to ten minutes. A pause request must not have to wait for that
+        // timeout, so the wait loops return `Paused` and the run is parked here
+        // with the same checkpoint/resume path as a tool-round pause.
+        if let Err(RuntimeError::Paused(reason)) = &result {
+            if let Err(error) = self.park_run_paused(run).await {
+                tracing::warn!(run_id = %run.id, %error, "could not persist a paused run");
+            }
+            // A pause is a deliberate, resumable stop, not an error: do not
+            // stamp the ledger's `last_error` with it.
+            let paused: Result<(), RuntimeError> = Ok(());
+            self.record_terminal_progress(run, &paused).await;
+            tracing::info!(run_id = %run.id, %reason, "run paused while waiting on the user");
+            return Ok(());
+        }
         let mut recovered_incomplete = false;
         if let Err(error) = &result {
             if !matches!(
@@ -5933,20 +5990,13 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
             // Resumable pause: park here with the checkpoint written at the end
             // of the previous round; `resume_run` re-enters from that state.
             if self.is_pause_requested(run.id) {
-                run.state = ravenbot_core::RunState::Paused;
                 if run.checkpoint.is_none() {
                     run.checkpoint(serde_json::json!({
                         "model_messages": &model_messages,
                         "rounds": resumed_rounds,
                     }));
                 }
-                ravenbot_db::queries::RunQueries::update(self.db.pool(), run).await?;
-                self.clear_cancel(run.id);
-                self.emit(StreamEvent::Status {
-                    bot_id: bot.id,
-                    thread_id: run.thread_id,
-                    state: "paused".to_string(),
-                });
+                self.park_run_paused(run).await?;
                 return Ok(());
             }
 
@@ -6501,6 +6551,18 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
             let _ = ravenbot_db::queries::RunQueries::update(self.db.pool(), run).await;
             self.touch_run_progress(run.id, "checkpoint", None).await;
 
+            // A pause requested while a tool was parked on `ask_user` (or while
+            // any other tool was running) lands here, after the results and
+            // checkpoint are durable. Resume re-enters with those results
+            // instead of replaying the tool.
+            if self.is_cancelled(run.id) {
+                return Err(RuntimeError::Cancelled("User cancelled".to_string()));
+            }
+            if self.is_pause_requested(run.id) {
+                self.park_run_paused(run).await?;
+                return Ok(());
+            }
+
             // A new model round begins: clear the streamed text so tool-round
             // fragments don't mix with the final streamed response.
             self.emit(StreamEvent::Clear {
@@ -6862,6 +6924,26 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
             run.updated_at = chrono::Utc::now();
         }
         ravenbot_db::queries::RunQueries::update(self.db.pool(), run).await?;
+        Ok(())
+    }
+
+    /// Persist a resumable pause and tell the UI. Shared by the tool-round
+    /// boundary and the human-card wait loops so a parked run behaves the same
+    /// no matter where the pause arrived.
+    async fn park_run_paused(&self, run: &mut Run) -> Result<(), RuntimeError> {
+        run.state = RunState::Paused;
+        if run.checkpoint.is_none() {
+            run.checkpoint(serde_json::json!({}));
+        }
+        run.updated_at = chrono::Utc::now();
+        ravenbot_db::queries::RunQueries::update(self.db.pool(), run).await?;
+        self.clear_cancel(run.id);
+        self.emit(StreamEvent::Status {
+            bot_id: run.bot_id,
+            thread_id: run.thread_id,
+            state: "paused".to_string(),
+        });
+        tracing::info!(run_id = %run.id, "run parked as paused");
         Ok(())
     }
 
@@ -12530,6 +12612,311 @@ mod parity_tests {
             other => panic!("unexpected content: {other:?}"),
         };
         assert!(text.contains("resumed and finished"), "persisted: {text}");
+    }
+
+    #[tokio::test]
+    async fn pause_while_waiting_for_approval_parks_the_run_without_running_the_tool() {
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+        let mut bot = Bot::new("Paused Approver", "approval pause test");
+        bot.approval_mode = ravenbot_core::ApprovalMode::Ask;
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (_thread, mut run) = seed_run(&db, &bot).await;
+        let run_id = run.id;
+
+        let provider = Arc::new(ScriptProvider::new(vec![
+            ModelResponse {
+                content: None,
+                tool_calls: vec![tool_call(
+                    "memory_save",
+                    serde_json::json!({ "content": "must not be saved" }),
+                    "approval-pause",
+                )],
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                },
+                reasoning: None,
+            },
+            ModelResponse {
+                content: Some("done".to_string()),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 3,
+                    output_tokens: 1,
+                },
+                reasoning: None,
+            },
+        ]));
+        runtime
+            .set_provider_override(Some(provider as Arc<dyn ModelProviderTrait>))
+            .await;
+
+        let task_runtime = runtime.clone();
+        let handle = tokio::spawn(async move {
+            let result = task_runtime.execute_run(&mut run).await;
+            (result, run)
+        });
+
+        let approval_id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(Some((id,))) = sqlx::query_as::<_, (String,)>(
+                    "SELECT id FROM approvals WHERE run_id = ? AND status = 'pending' LIMIT 1",
+                )
+                .bind(run_id.to_string())
+                .fetch_optional(db.pool())
+                .await
+                {
+                    return id;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("an approval card must be parked");
+
+        runtime.request_pause(run_id);
+        let (result, run) = handle.await.expect("run task");
+        result.expect("a paused run is not a failure");
+        assert_eq!(
+            run.state,
+            ravenbot_core::RunState::Paused,
+            "pause must interrupt the approval wait"
+        );
+        assert!(run.checkpoint.is_some(), "a resume checkpoint is required");
+
+        let (status, note): (String, Option<String>) =
+            sqlx::query_as("SELECT status, note FROM approvals WHERE id = ?")
+                .bind(approval_id)
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(status, "denied");
+        assert!(
+            note.as_deref().is_some_and(|note| note.contains("paused")),
+            "the denial must say why: {note:?}"
+        );
+
+        let saved: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memory_facts WHERE bot_id = ?")
+            .bind(bot.id.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(saved.0, 0, "the paused tool must not run");
+    }
+
+    #[tokio::test]
+    async fn cancel_while_waiting_for_approval_ends_the_run_promptly() {
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+        let mut bot = Bot::new("Cancelled Approver", "approval cancel test");
+        bot.approval_mode = ravenbot_core::ApprovalMode::Ask;
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (_thread, mut run) = seed_run(&db, &bot).await;
+        let run_id = run.id;
+
+        let provider = Arc::new(ScriptProvider::new(vec![ModelResponse {
+            content: None,
+            tool_calls: vec![tool_call(
+                "memory_save",
+                serde_json::json!({ "content": "must not be saved" }),
+                "approval-cancel",
+            )],
+            usage: Usage {
+                input_tokens: 2,
+                output_tokens: 1,
+            },
+            reasoning: None,
+        }]));
+        runtime
+            .set_provider_override(Some(provider as Arc<dyn ModelProviderTrait>))
+            .await;
+
+        let task_runtime = runtime.clone();
+        let handle = tokio::spawn(async move {
+            let result = task_runtime.execute_run(&mut run).await;
+            (result, run)
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(Some((_id,))) = sqlx::query_as::<_, (String,)>(
+                    "SELECT id FROM approvals WHERE run_id = ? AND status = 'pending' LIMIT 1",
+                )
+                .bind(run_id.to_string())
+                .fetch_optional(db.pool())
+                .await
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("an approval card must be parked");
+
+        runtime.request_cancel(run_id);
+        let (result, run) = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+            .await
+            .expect("cancel must not wait for the approval timeout")
+            .expect("run task");
+        result.expect("a cancelled run is a normal incomplete exit");
+        assert_eq!(run.state, ravenbot_core::RunState::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn pause_while_waiting_for_a_question_parks_the_run_and_expires_the_card() {
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+        let bot = Bot::new("Paused Question", "question pause test");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (_thread, mut run) = seed_run(&db, &bot).await;
+        let run_id = run.id;
+
+        let provider = Arc::new(ScriptProvider::new(vec![
+            ModelResponse {
+                content: None,
+                tool_calls: vec![tool_call(
+                    "ask_user",
+                    serde_json::json!({
+                        "question": "Which deployment should I use?",
+                        "options": ["staging", "production"]
+                    }),
+                    "question-pause",
+                )],
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                },
+                reasoning: None,
+            },
+            ModelResponse {
+                content: Some("done".to_string()),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 3,
+                    output_tokens: 1,
+                },
+                reasoning: None,
+            },
+        ]));
+        runtime
+            .set_provider_override(Some(provider as Arc<dyn ModelProviderTrait>))
+            .await;
+
+        let task_runtime = runtime.clone();
+        let handle = tokio::spawn(async move {
+            let result = task_runtime.execute_run(&mut run).await;
+            (result, run)
+        });
+
+        let question_id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(Some((id,))) = sqlx::query_as::<_, (String,)>(
+                    "SELECT id FROM questions WHERE run_id = ? AND status = 'pending' LIMIT 1",
+                )
+                .bind(run_id.to_string())
+                .fetch_optional(db.pool())
+                .await
+                {
+                    return id;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("a question card must be parked");
+
+        runtime.request_pause(run_id);
+        let (result, run) = handle.await.expect("run task");
+        result.expect("a paused run is not a failure");
+        assert_eq!(
+            run.state,
+            ravenbot_core::RunState::Paused,
+            "pause must interrupt the question wait"
+        );
+        assert!(run.checkpoint.is_some(), "a resume checkpoint is required");
+
+        let status: (String,) = sqlx::query_as("SELECT status FROM questions WHERE id = ?")
+            .bind(question_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(
+            status.0, "expired",
+            "a paused question must not stay answerable"
+        );
+    }
+
+    #[tokio::test]
+    async fn pause_while_waiting_for_a_budget_decision_parks_the_run() {
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+        let bot = Bot::new("Paused Budget", "budget pause test");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (_thread, mut run) = seed_run(&db, &bot).await;
+        let run_id = run.id;
+        let budgets = BudgetManager::new(db.pool().clone());
+        let mut budget = ravenbot_core::Budget::new(
+            bot.id,
+            ravenbot_core::BudgetLimit::Cost { max: 0.0 },
+            ravenbot_core::BudgetPeriod::Total,
+        );
+        budget.behavior = ravenbot_core::BudgetBehavior::AskUser;
+        budgets.set_budget(&budget).await.unwrap();
+        runtime
+            .set_provider_override(Some(Arc::new(ScriptProvider::new(vec![ModelResponse {
+                content: Some("done".to_string()),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                },
+                reasoning: None,
+            }])) as Arc<dyn ModelProviderTrait>))
+            .await;
+
+        let task_runtime = runtime.clone();
+        let handle = tokio::spawn(async move {
+            let result = task_runtime.execute_run(&mut run).await;
+            (result, run)
+        });
+
+        let question_id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(Some((id,))) = sqlx::query_as::<_, (String,)>(
+                    "SELECT id FROM questions WHERE run_id = ? AND status = 'pending' LIMIT 1",
+                )
+                .bind(run_id.to_string())
+                .fetch_optional(db.pool())
+                .await
+                {
+                    return id;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("a budget question must be parked");
+
+        runtime.request_pause(run_id);
+        let (result, run) = handle.await.expect("run task");
+        result.expect("a paused run is not a failure");
+        assert_eq!(run.state, ravenbot_core::RunState::Paused);
+        let status: (String,) = sqlx::query_as("SELECT status FROM questions WHERE id = ?")
+            .bind(question_id)
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(status.0, "expired");
     }
 
     #[tokio::test]

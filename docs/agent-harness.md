@@ -308,6 +308,7 @@ other.
 | Encrypted secret fallback | The OS keychain is used when available. Without it (and when the config directory is writable), secrets are sealed with XChaCha20-Poly1305 under `config/sealed-secrets` (directory 0700, key and entries 0600) and the database keeps only `__RAVENBOT_KEYCHAIN__`. Startup migrates legacy plaintext provider, vault, plugin, MCP, webhook, signing and app-setting secrets. A copied `ravenbot.db` alone cannot reveal them. |
 | Provider circuit breaker | Four consecutive final failures open a provider-wide circuit for 30s (or the provider's longer retry window). New requests skip that provider and fall back immediately; one success resets it, and a half-open probe after the window decides whether to close or reopen it. |
 | Memory retrieval | FTS5 (migration 75) supplies a BM25-ranked candidate set, which the configured embedding reranks. The local lexical backend narrows to those candidates and falls back to a full vector pass only when the query has no indexed term; a semantic Ollama/OpenAI backend keeps the full vector pass. A fact with no embedding is still findable, and deleting a fact removes its FTS row. |
+| Human-card waits | Approval, question and budget-confirmation polls check the kill switch, cancellation and pause every 400ms. Pause parks a resumable run with a checkpoint, denies the approval or expires the question, and the UI reloads the card lists so a stale card cannot authorize later work. |
 | Per-round budget | The bot's budget is checked before the first model call and before every later model/tool round, not only at run start. `HardStop` fails before the overspending call; `AskUser` asks once per run and a Continue override covers the remaining rounds. |
 | Empty node result | The executor marks a node failed and skips its dependents instead of showing a misleading `Done · No response`. |
 
@@ -343,6 +344,12 @@ The runtime is tested at the harness boundary, not just the happy path:
   row. The office store has the same regression test.
 - `the_default_local_backend_meets_the_hybrid_recall_target` — the local hybrid
   path clears the 0.8 Recall@5 target on the fixed 50-fact fixture.
+- `pause_while_waiting_for_approval_parks_the_run_without_running_the_tool`,
+  `pause_while_waiting_for_a_question_parks_the_run_and_expires_the_card`,
+  `pause_while_waiting_for_a_budget_decision_parks_the_run`, and
+  `cancel_while_waiting_for_approval_ends_the_run_promptly` — a human-card wait
+  is interruptible, the tool does not run, and the card cannot be answered
+  after the run has paused or cancelled.
 - `workspace_fingerprint_changes_only_with_real_edits` — edits and new files
   change the progress fingerprint; virtualenv and build churn do not.
 - `an_office_rejects_a_second_turn_while_one_is_active` — the office claim is
