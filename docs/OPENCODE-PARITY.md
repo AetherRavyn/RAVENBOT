@@ -100,8 +100,9 @@ but not the general one; **Missing** = no implementation.
 The office already had planner → graph → verify → judge → continue. A 1:1
 agent had one turn. That gap is now closed:
 
-- `GoalQueries` owns a thread-scoped goal with a round budget, objective,
-  outcome, constraints and optional verification gate.
+- `GoalQueries` owns a thread-scoped goal with round and token budgets,
+  objective, outcome, constraints and an optional verification gate. A paused
+  goal can raise either budget on resume without resetting its history.
 - `thread_goal_loop` reads only active, due, office-less goals in SQL; it is
   serial across goals and yields to any live or paused run in the same thread.
 - `run_thread_goal_turn` builds a one-node graph and pins the node to the
@@ -195,7 +196,9 @@ a standard unified diff without shelling out to `patch(1)`.
   interrupted goal round is closed and the active goal is re-armed.
 - Scheduling: `a_thread_goal_is_created_once_with_its_round_budget` and
   `a_thread_goal_yields_to_a_live_run` cover the due query, round budget and
-  the live/paused-run guard.
+  the live/paused-run guard. `raising_a_goal_budget_keeps_its_history` and
+  `raising_the_token_budget_lets_the_next_turn_start` cover budget edits and
+  the pause/resume path.
 - Snapshot/revert: `a_file_write_is_journaled_with_a_revertable_before_image`
   exercises capture → journal → restore through the real tool path;
   `an_apply_patch_alias_applies_a_unified_diff_and_journals_it` does the same

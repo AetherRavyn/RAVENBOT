@@ -153,6 +153,7 @@
   let goalOutcome = $state("");
   let goalGate = $state("");
   let goalRounds = $state(8);
+  let goalTokens = $state(0);
   let goalBusy = $state(false);
   let goalError = $state("");
   let goalObjectiveRef = $state<HTMLTextAreaElement | null>(null);
@@ -1262,6 +1263,7 @@
     goalOutcome = threadGoal?.goal?.contract?.outcome || "";
     goalGate = threadGoal?.gates?.[0]?.command || "";
     goalRounds = threadGoal?.goal?.max_rounds || 8;
+    goalTokens = threadGoal?.goal?.contract?.max_tokens || 0;
     goalOpen = true;
   }
 
@@ -1280,6 +1282,7 @@
         outcome: goalOutcome || null,
         gate: goalGate || null,
         maxRounds: Number(goalRounds) || 8,
+        maxTokens: Number(goalTokens) || 0,
       });
       if (threadId === selectedThreadId) {
         threadGoal = goal;
@@ -1292,7 +1295,7 @@
     }
   }
 
-  async function threadGoalAction(action: "pause" | "resume" | "cancel") {
+  async function threadGoalAction(action: "pause" | "cancel") {
     const threadId = selectedThreadId;
     if (!threadId) return;
     goalBusy = true;
@@ -1300,6 +1303,36 @@
     try {
       const goal = await invoke(`${action}_thread_goal`, { threadId });
       if (threadId === selectedThreadId) threadGoal = goal;
+    } catch (error) {
+      if (threadId === selectedThreadId) goalError = String(error);
+    } finally {
+      goalBusy = false;
+    }
+  }
+
+  /**
+   * Resume a paused/blocked goal.
+   *
+   * The banner resumes with the saved budget; the dialog resumes with the
+   * values in its inputs, so a user who hit the token ceiling can raise it
+   * before the next round spends anything.
+   */
+  async function resumeThreadGoal(withBudget = false) {
+    const threadId = selectedThreadId;
+    if (!threadId) return;
+    goalBusy = true;
+    goalError = "";
+    try {
+      const args: Record<string, unknown> = { threadId };
+      if (withBudget) {
+        args.maxRounds = Number(goalRounds) || 8;
+        args.maxTokens = Number(goalTokens) || 0;
+      }
+      const goal = await invoke("resume_thread_goal", args);
+      if (threadId === selectedThreadId) {
+        threadGoal = goal;
+        goalOpen = false;
+      }
     } catch (error) {
       if (threadId === selectedThreadId) goalError = String(error);
     } finally {
@@ -3152,7 +3185,9 @@
               <div class="flex items-center gap-2 text-xs font-medium text-[var(--text-primary)]">
                 <span class="truncate">{threadGoal.goal.objective}</span>
                 <span class="shrink-0 rounded border border-[var(--hairline)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--text-tertiary)]">
-                  {threadGoal.goal.status} · {threadGoal.goal.rounds_used}/{threadGoal.goal.max_rounds}
+                  {threadGoal.goal.status} · {threadGoal.goal.rounds_used}/{threadGoal.goal.max_rounds}{threadGoal.goal.contract?.max_tokens > 0
+                    ? ` · ${Number(threadGoal.goal.tokens_used || 0).toLocaleString()}/${Number(threadGoal.goal.contract.max_tokens).toLocaleString()} tok`
+                    : ""}
                 </span>
               </div>
               {#if threadGoal.goal.last_reason}
@@ -3164,7 +3199,7 @@
                 <Pause class="size-3.5" />
               </button>
             {:else if threadGoal.goal.status === "paused" || threadGoal.goal.status === "blocked"}
-              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void threadGoalAction("resume")} title="Resume goal" aria-label="Resume goal" disabled={goalBusy}>
+              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void resumeThreadGoal(false)} title="Resume goal" aria-label="Resume goal" disabled={goalBusy}>
                 <Play class="size-3.5" />
               </button>
             {/if}
@@ -3561,11 +3596,41 @@
           {#if threadGoal.goal.last_reason}
             <p class="text-[11px] text-[var(--text-muted)]">{threadGoal.goal.last_reason}</p>
           {/if}
+          {#if threadGoal.goal.status === "paused" || threadGoal.goal.status === "blocked"}
+            <div class="grid grid-cols-2 gap-3 pt-1">
+              <div>
+                <label class="block text-[11px] font-medium text-[var(--text-secondary)]" for="thread-goal-resume-rounds">
+                  Rounds on resume
+                </label>
+                <input
+                  id="thread-goal-resume-rounds"
+                  bind:value={goalRounds}
+                  type="number"
+                  min="1"
+                  max="64"
+                  class="mt-1 w-full rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/50"
+                />
+              </div>
+              <div>
+                <label class="block text-[11px] font-medium text-[var(--text-secondary)]" for="thread-goal-resume-tokens">
+                  Token budget (0 = unlimited)
+                </label>
+                <input
+                  id="thread-goal-resume-tokens"
+                  bind:value={goalTokens}
+                  type="number"
+                  min="0"
+                  step="1000"
+                  class="mt-1 w-full rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/50"
+                />
+              </div>
+            </div>
+          {/if}
           <div class="flex gap-2 pt-1">
             {#if threadGoal.goal.status === "active"}
               <Button size="sm" variant="outline" disabled={goalBusy} onclick={() => void threadGoalAction("pause")}>Pause</Button>
             {:else if threadGoal.goal.status === "paused" || threadGoal.goal.status === "blocked"}
-              <Button size="sm" variant="outline" disabled={goalBusy} onclick={() => void threadGoalAction("resume")}>Resume</Button>
+              <Button size="sm" variant="outline" disabled={goalBusy} onclick={() => void resumeThreadGoal(true)}>Resume</Button>
             {/if}
             {#if !["done", "cancelled", "failed"].includes(threadGoal.goal.status)}
               <Button size="sm" variant="outline" disabled={goalBusy} onclick={() => void threadGoalAction("cancel")}>Stop</Button>
@@ -3610,17 +3675,34 @@
             class="w-full rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 font-mono text-xs text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--brand)]/50"
           />
 
-          <label class="block text-[11px] font-medium text-[var(--text-secondary)]" for="thread-goal-rounds">
-            Automatic rounds
-          </label>
-          <input
-            id="thread-goal-rounds"
-            bind:value={goalRounds}
-            type="number"
-            min="1"
-            max="64"
-            class="w-24 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/50"
-          />
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-[11px] font-medium text-[var(--text-secondary)]" for="thread-goal-rounds">
+                Automatic rounds
+              </label>
+              <input
+                id="thread-goal-rounds"
+                bind:value={goalRounds}
+                type="number"
+                min="1"
+                max="64"
+                class="mt-1 w-full rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/50"
+              />
+            </div>
+            <div>
+              <label class="block text-[11px] font-medium text-[var(--text-secondary)]" for="thread-goal-tokens">
+                Token budget (0 = unlimited)
+              </label>
+              <input
+                id="thread-goal-tokens"
+                bind:value={goalTokens}
+                type="number"
+                min="0"
+                step="1000"
+                class="mt-1 w-full rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/50"
+              />
+            </div>
+          </div>
         </div>
       {/if}
 

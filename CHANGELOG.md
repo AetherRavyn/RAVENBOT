@@ -28,6 +28,9 @@ All notable changes to RAVENBOT are documented here.
 - **No hidden conversations** — the graph node is pinned to the user's thread,
   so the answer, tool trace and per-round verdict all appear where the user is
   watching. Starting a goal never creates a second thread.
+- **Cost ceiling** — a goal can carry an optional token budget (0 means
+  unlimited). The banner shows spend against the ceiling, and a paused goal
+  can raise its rounds or tokens before resuming; history and spend are kept.
 - **Safe scheduling** — goals are read with a thread-only due query, run one
   turn at a time, and yield to any live or user-paused run in the same thread.
   Repeated judge failures park the goal instead of burning tokens forever.

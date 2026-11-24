@@ -9110,6 +9110,7 @@ async fn start_thread_goal(
     outcome: Option<String>,
     gate: Option<String>,
     max_rounds: Option<u32>,
+    max_tokens: Option<u64>,
 ) -> Result<ravenbot_db::queries::GoalDetail, String> {
     let thread_id =
         Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
@@ -9158,6 +9159,7 @@ async fn start_thread_goal(
         return Err("The completion evidence must be at most 2000 characters.".to_string());
     }
     contract.max_turns = max_rounds;
+    contract.max_tokens = max_tokens.unwrap_or(0).min(100_000_000);
     match gate
         .as_deref()
         .map(str::trim)
@@ -9236,6 +9238,8 @@ async fn pause_thread_goal(
 async fn resume_thread_goal(
     state: State<'_, AppState>,
     thread_id: String,
+    max_rounds: Option<u32>,
+    max_tokens: Option<u64>,
 ) -> Result<ravenbot_db::queries::GoalDetail, String> {
     let thread_id =
         Uuid::parse_str(thread_id.trim()).map_err(|_| "The thread id is not valid.".to_string())?;
@@ -9250,6 +9254,24 @@ async fn resume_thread_goal(
         ));
     }
     let id = Uuid::parse_str(&goal.id).map_err(|_| "The goal id is not valid.".to_string())?;
+    if let Some(tokens) = max_tokens {
+        let spent = goal.tokens_used.max(0) as u64;
+        if tokens > 0 && tokens <= spent {
+            return Err(format!(
+                "The token budget must be above the {spent} tokens already spent, or 0 for unlimited."
+            ));
+        }
+    }
+    if max_rounds.is_some() || max_tokens.is_some() {
+        ravenbot_db::queries::GoalQueries::set_budget(
+            state.db.pool(),
+            id,
+            max_tokens.unwrap_or(goal.contract.max_tokens),
+            max_rounds,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
     ravenbot_db::queries::GoalQueries::set_status(
         state.db.pool(),
         id,
@@ -26252,6 +26274,51 @@ mod thread_goal_tests {
         let _ = std::fs::remove_file(format!("{}-wal", path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", path.display()));
         let _ = std::fs::remove_dir_all(&workspace);
+    }
+
+    #[tokio::test]
+    async fn raising_the_token_budget_lets_the_next_turn_start() {
+        let path =
+            std::env::temp_dir().join(format!("ravenbot-thread-goal-budget-{}.db", Uuid::new_v4()));
+        let db = ravenbot_db::Database::new(&path).await.expect("temp db");
+        let thread = Uuid::new_v4();
+        let goal = ravenbot_db::queries::GoalQueries::ensure_thread_goal(
+            db.pool(),
+            thread,
+            "Summarize the notes.",
+            4,
+        )
+        .await
+        .expect("goal");
+        let id = Uuid::parse_str(&goal.id).expect("id");
+        ravenbot_db::queries::GoalQueries::set_budget(db.pool(), id, 10, None)
+            .await
+            .expect("budget");
+        ravenbot_db::queries::GoalQueries::set_tokens_used(db.pool(), id, 20)
+            .await
+            .expect("tokens");
+        let over = ravenbot_db::queries::GoalQueries::get(db.pool(), id)
+            .await
+            .expect("get")
+            .expect("goal");
+        let (status, message) = goal_budget_stop(&over, chrono::Utc::now()).expect("over budget");
+        assert_eq!(status, ravenbot_core::GoalStatus::Paused);
+        assert!(message.contains("token budget"), "{message}");
+
+        let raised = ravenbot_db::queries::GoalQueries::set_budget(db.pool(), id, 50, None)
+            .await
+            .expect("raise")
+            .expect("goal");
+        assert_eq!(raised.contract.max_tokens, 50);
+        assert!(
+            goal_budget_stop(&raised, chrono::Utc::now()).is_none(),
+            "raising the ceiling must let the next round start"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
     #[tokio::test]

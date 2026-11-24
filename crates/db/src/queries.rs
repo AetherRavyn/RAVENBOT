@@ -3134,6 +3134,39 @@ impl GoalQueries {
         Self::get(pool, id).await
     }
 
+    /// Change a goal's token/round budget without discarding its history.
+    ///
+    /// Used when a paused goal is resumed: the user can raise the ceiling the
+    /// goal hit, or lower a budget before a long unattended stretch. A token
+    /// budget of 0 means unlimited.
+    pub async fn set_budget(
+        pool: &SqlitePool,
+        id: Uuid,
+        max_tokens: u64,
+        max_rounds: Option<u32>,
+    ) -> Result<Option<GoalRecord>, sqlx::Error> {
+        let Some(current) = Self::get(pool, id).await? else {
+            return Ok(None);
+        };
+        let mut contract = current.contract;
+        contract.max_tokens = max_tokens.min(100_000_000);
+        let rounds = max_rounds
+            .map(|rounds| rounds.clamp(1, 64))
+            .unwrap_or_else(|| current.max_rounds.clamp(1, 64) as u32);
+        contract.max_turns = rounds;
+        contract.normalize();
+        sqlx::query(
+            "UPDATE goals SET contract_json = ?, max_rounds = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(serde_json::to_string(&contract).unwrap_or_default())
+        .bind(i64::from(rounds))
+        .bind(Utc::now().to_rfc3339())
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+        Self::get(pool, id).await
+    }
+
     /// Arm an active goal for its next automatic continuation.
     pub async fn arm_now(pool: &SqlitePool, id: Uuid) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
@@ -9978,6 +10011,46 @@ mod goal_tests {
                 .is_empty(),
             "a finished run is not cancellable work"
         );
+    }
+
+    #[tokio::test]
+    async fn raising_a_goal_budget_keeps_its_history() {
+        let pool = db().await;
+        let thread = Uuid::new_v4();
+        let goal = GoalQueries::ensure_thread_goal(&pool, thread, "Summarize the notes.", 4)
+            .await
+            .expect("ensure");
+        let id = Uuid::parse_str(&goal.id).unwrap();
+        let recorded = GoalQueries::record_verdict(
+            &pool,
+            id,
+            ravenbot_core::GoalVerdict::Continue,
+            "one more pass",
+            900,
+            false,
+        )
+        .await
+        .expect("verdict")
+        .expect("goal");
+        assert_eq!(recorded.rounds_used, 1);
+        assert_eq!(recorded.tokens_used, 900);
+
+        let raised = GoalQueries::set_budget(&pool, id, 50_000, Some(12))
+            .await
+            .expect("budget")
+            .expect("goal");
+        assert_eq!(raised.contract.max_tokens, 50_000);
+        assert_eq!(raised.contract.max_turns, 12);
+        assert_eq!(raised.max_rounds, 12);
+        assert_eq!(raised.rounds_used, 1, "history is not reset");
+        assert_eq!(raised.tokens_used, 900, "spend is not reset");
+
+        let unlimited = GoalQueries::set_budget(&pool, id, 0, None)
+            .await
+            .expect("unlimited")
+            .expect("goal");
+        assert_eq!(unlimited.contract.max_tokens, 0);
+        assert_eq!(unlimited.max_rounds, 12, "rounds stay when unspecified");
     }
 
     #[tokio::test]
