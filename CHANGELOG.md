@@ -11,6 +11,11 @@ All notable changes to RAVENBOT are documented here.
   17/15/14px headings with hierarchical margins, 32px list indents, 8px
   list-item spacing, hover-only link underlines, and quiet 8%-fill inline
   code. The token renderer and its HTML/link safety checks are unchanged.
+- **Tool-part cards** — persisted traces now render first-class cards: shell
+  commands with exit status/stdout/stderr, edits with file counts and real
+  diffs, reads with line-number windows, and search/file-tree listings. Cards
+  preview while collapsed and show the full retained trace when expanded;
+  failures with no card data keep the generic JSON body.
 - **Public conversation shares** — owners can create expiring read-only links
   from a conversation. Links are served by Remote access, stored only as
   hashes, revocable, and limited to user/assistant text that existed when the
@@ -42,8 +47,7 @@ All notable changes to RAVENBOT are documented here.
   and approvals stay outside the virtual list.
 - **Harness audit** — `docs/OPENCODE-PARITY.md` maps OpenCode's desktop and
   markdown worker/cache system against RAVENBOT. The P0/P1 harness gaps are
-  shipped; the only remaining renderer item is the optional tool-part card
-  presentation.
+  shipped, including the tool-part cards. The parity matrix is complete.
 
 ### Persistent 1:1 goal loop
 

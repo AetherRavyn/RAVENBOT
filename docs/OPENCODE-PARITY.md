@@ -61,9 +61,9 @@ properties are unchanged. This is the correct half of OpenCode's renderer to
 copy: typography and block semantics, not Electron or the worker cache
 (RAVENBOT's stream is already bounded by the 24k tool-result cap).
 
-**Remaining renderer work:** the tool-part cards. Timeline virtualisation, the
-block streaming cache and off-thread markdown/highlighting are shipped; what is
-left is presentation, not visual fidelity.
+**Renderer work:** prose typography, timeline virtualisation, the block
+streaming cache, off-thread markdown/highlighting and the tool-part cards are
+all shipped.
 
 ## 4. 24/7 harness readiness matrix
 
@@ -93,6 +93,7 @@ but not the general one; **Missing** = no implementation.
 | Streaming block memoisation | completed block token objects survive each streaming re-lex; only the growing block and fade offsets invalidate | block cache in renderer | **Present** |
 | MCP event-triggered jobs | long-lived stdio notification listeners, persistent routine triggers with method/resource/filter matching, cooldowns, supervisor in desktop and daemon; HTTP connectors are honestly reported as unsupported | automation from MCP events | **Present (stdio)** |
 | Public session share | owner-created read-only links served by Remote access, hashed tokens, expiry/revocation, snapshot cutoff and sanitized text-only page | share UI | **Present (local listener)** |
+| Tool-part renderers | shell commands as terminal cards, edits as file/diff cards, reads with line-number windows, and search/file-tree result cards | tool part UI | **Present** |
 
 ## 5. The 24/7 harness
 
@@ -320,10 +321,28 @@ A conversation can now have a read-only public link:
   one-time link, copy, existing links, view counts, expiry and revoke.
 - Deleting a thread deletes its share rows.
 
+### Shipped — tool-part cards
+
+Tool traces now show the work, not just its name:
+
+- `src/lib/chat/toolCards.ts` normalises the persisted trace shapes (envelope,
+  bare output, clipped string) into command, diff, read and search models.
+- A `shell_exec` trace renders a terminal card with the command, working
+  directory, exit status, stdout and stderr. The command is copyable.
+- `file_edit`, `apply_patch`, `code_edit` and `file_write` render file counts,
+  additions/deletions and the retained unified diff through `DiffView`.
+- `file_read` renders a line-numbered window with offset/limit/next-offset
+  context and a truncation badge.
+- `code_search` and `file_tree` render result listings with the pattern/root,
+  count and truncation state.
+- Cards show a preview while the trace is collapsed and the full retained
+  output when it is expanded. A trace with no card data keeps the generic
+  JSON body, so a failed call never loses its error.
+
 ## 6. Renderer roadmap (after the typography change)
 
-1. **Tool-part renderers** — show command output, diffs and file reads as
-   first-class cards rather than one-line trace rows.
+All planned renderer work is shipped: typography, block caching, worker
+parsing/highlighting, timeline virtualisation and tool-part cards.
 
 ## 7. What not to copy
 
@@ -388,6 +407,11 @@ A conversation can now have a read-only public link:
   covers the single-flight trigger guard.
   A full `cargo test --workspace`, release build and daemon smoke run cover the
   supervisor wiring; the daemon migration is now v73.
+- Tool cards: `toolCards.test.ts` covers trace-shape normalisation, command
+  output/exit codes, diff file summaries and bare diffs, line-window reads and
+  search/file-tree results. `ToolTraceList.dom.test.ts` covers the terminal
+  card and its expansion, a diff card with `DiffView`, read line numbers,
+  search listings, and the generic-body fallback for a failed edit with no diff.
 - Streaming block memoisation: `stableStreamTokens` tests prove an unchanged
   block keeps its token identity, a growing block and new blocks get fresh
   tokens, and a definition change falls back to the fresh tree. The

@@ -112,12 +112,134 @@ describe("ToolTraceList exported documents", () => {
     expect(container.querySelector("img")).toBeNull();
   });
 
-  it("does not invent a card for an ordinary JSON result", () => {
+  it("renders a shell command as a terminal card", async () => {
+    const tools = [
+      {
+        name: "shell_exec",
+        arguments: { command: "cargo test -q" },
+        result: {
+          success: true,
+          output: { stdout: "test result: ok. 3 passed", stderr: "", exit_code: 0 },
+        },
+        duration_ms: 820,
+      },
+    ];
+    const { container, getByRole } = render(ToolTraceList, { props: { tools } });
+    const card = container.querySelector(".tool-card--command");
+    expect(card?.textContent).toContain("cargo test -q");
+    expect(card?.textContent).toContain("test result: ok");
+    expect(card?.querySelector('[data-ok="true"]')?.textContent).toContain("exit 0");
+    expect(card?.getAttribute("data-expanded")).toBe("false");
+
+    await (await import("@testing-library/svelte")).fireEvent.click(
+      getByRole("button", { expanded: false }),
+    );
+    expect(card?.getAttribute("data-expanded")).toBe("true");
+  });
+
+  it("renders an edit as a diff card with its file counts", () => {
+    const diff = "--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+new";
+    const tools = [
+      {
+        name: "file_edit",
+        arguments: { patch: diff },
+        result: {
+          success: true,
+          output: {
+            applied: true,
+            file_changes: [
+              { path: "src/a.ts", lines_added: 1, lines_deleted: 1, diff },
+            ],
+          },
+        },
+      },
+    ];
+    const { container } = render(ToolTraceList, { props: { tools } });
+    const card = container.querySelector(".tool-card--diff");
+    expect(card?.textContent).toContain("1 file changed");
+    expect(card?.textContent).toContain("src/a.ts");
+    expect(card?.querySelector(".tools__document")).toBeNull();
+    expect(card?.querySelector(".dif")).not.toBeNull();
+  });
+
+  it("renders a file read with a line-number window", () => {
     const tools = [
       {
         name: "file_read",
-        arguments: { path: "README.md" },
-        result: { success: true, output: { content: "# hello" } },
+        arguments: { path: "src/main.ts" },
+        result: {
+          success: true,
+          output: {
+            path: "/ws/src/main.ts",
+            content: "first\nsecond",
+            offset: 10,
+            returned_lines: 2,
+            total_lines: 40,
+            next_offset: null,
+          },
+        },
+      },
+    ];
+    const { container } = render(ToolTraceList, { props: { tools } });
+    const card = container.querySelector(".tool-card--read");
+    expect(card?.textContent).toContain("/ws/src/main.ts");
+    expect(card?.textContent).toContain("lines 10–11 of 40");
+    const lineNumbers = [...(card?.querySelectorAll(".tool-card__line-no") ?? [])].map(
+      (el) => el.textContent,
+    );
+    expect(lineNumbers).toEqual(["10", "11"]);
+    expect(card?.textContent).toContain("second");
+  });
+
+  it("renders search matches as a result card", () => {
+    const tools = [
+      {
+        name: "code_search",
+        arguments: { pattern: "TODO" },
+        result: {
+          success: true,
+          output: {
+            pattern: "TODO",
+            path: ".",
+            matches: ["src/a.ts:4:TODO fix"],
+            count: 1,
+            truncated: false,
+          },
+        },
+      },
+    ];
+    const { container } = render(ToolTraceList, { props: { tools } });
+    const card = container.querySelector(".tool-card--search");
+    expect(card?.textContent).toContain("TODO");
+    expect(card?.textContent).toContain("1 result");
+    expect(card?.textContent).toContain("src/a.ts:4:TODO fix");
+  });
+
+  it("keeps the generic body when a specialised card has no data", async () => {
+    const tools = [
+      {
+        name: "file_edit",
+        arguments: { patch: "bad" },
+        result: { success: false, error: "patch did not match" },
+        is_error: true,
+      },
+    ];
+    const { container, getByRole } = render(ToolTraceList, { props: { tools } });
+    expect(container.querySelector(".tool-card--diff")).toBeNull();
+    await (await import("@testing-library/svelte")).fireEvent.click(
+      getByRole("button", { expanded: false }),
+    );
+    expect(container.querySelector(".tools__body")?.textContent).toContain(
+      "patch did not match",
+    );
+  });
+
+  it("does not invent a card for an ordinary JSON result", () => {
+    const tools = [
+      {
+        name: "memory_search",
+        arguments: { query: "hello" },
+        result: { success: true, output: { results: [] } },
       },
     ];
     const { container } = render(ToolTraceList, { props: { tools } });

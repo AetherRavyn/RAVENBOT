@@ -20,6 +20,11 @@
   import { t } from "$lib/i18n";
   import type { ToolTrace } from "$lib/types";
   import { summarizeArgs, renderToolValue } from "$lib/chat/toolSummary";
+  import { hasToolCard, toolCardKind } from "$lib/chat/toolCards";
+  import ToolCommandCard from "$lib/components/tools/ToolCommandCard.svelte";
+  import ToolDiffCard from "$lib/components/tools/ToolDiffCard.svelte";
+  import ToolReadCard from "$lib/components/tools/ToolReadCard.svelte";
+  import ToolSearchCard from "$lib/components/tools/ToolSearchCard.svelte";
   import { convertFileSrc } from "@tauri-apps/api/core";
   import { ChevronRight, Check, X, Timer, FileText, ExternalLink, Presentation } from "@lucide/svelte";
   import ImageGeneration from "$lib/components/chat/ImageGeneration.svelte";
@@ -172,6 +177,8 @@
       {@const document = documentResult(tool)}
       {@const deck = slideDeck(tool)}
       {@const generated = generatedImage(tool)}
+      {@const cardKind = toolCardKind(tool.name)}
+      {@const card = hasToolCard(tool)}
       <div class="tools__item" data-failed={bad}>
         <button
           type="button"
@@ -196,6 +203,16 @@
             </span>
           {/if}
         </button>
+
+        {#if cardKind === "command" && card}
+          <ToolCommandCard {tool} expanded={open[i] ?? false} />
+        {:else if cardKind === "diff" && card}
+          <ToolDiffCard {tool} expanded={open[i] ?? false} />
+        {:else if cardKind === "read" && card}
+          <ToolReadCard {tool} expanded={open[i] ?? false} />
+        {:else if cardKind === "search" && card}
+          <ToolSearchCard {tool} expanded={open[i] ?? false} />
+        {/if}
 
         {#if document}
           <div class="tools__document">
@@ -251,7 +268,7 @@
           />
         {/if}
 
-        {#if open[i] ?? false}
+        {#if (open[i] ?? false) && !card}
           <div class="tools__body">
             {#if summarizeArgs(tool.arguments)}
               <div class="tools__block">
