@@ -1,4 +1,5 @@
 use crate::embedding::{cosine_similarity, EmbeddingProvider};
+use crate::text::{blend, fts_match_query, importance_boost, normalize_lexical, usage_boost};
 use ravenbot_core::OfficeMemory;
 use sqlx::{Connection, SqlitePool};
 use uuid::Uuid;
@@ -284,6 +285,12 @@ impl OfficeMemoryStore {
             .execute(&self.pool)
             .await
             .map_err(|e| e.to_string())?;
+        if result.rows_affected() > 0 {
+            let _ = sqlx::query("DELETE FROM office_memories_fts WHERE memory_id = ?")
+                .bind(memory_id.to_string())
+                .execute(&self.pool)
+                .await;
+        }
         Ok(result.rows_affected() > 0)
     }
 
@@ -376,64 +383,136 @@ impl OfficeMemoryStore {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<(OfficeMemory, f32)>, String> {
-        let qemb = self
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let query_embedding = self
             .embedding_provider
             .embed(query)
             .await
             .map_err(|e| e.to_string())?;
-        let rows: Vec<OfficeMemoryRow> = sqlx::query_as(
-            "SELECT id, chatroom_id, content, embedding, importance, category, created_by, access_count, last_accessed, created_at, source, source_thread_id, source_run_id, updated_at FROM office_memories WHERE chatroom_id = ?"
-        ).bind(chatroom_id.to_string()).fetch_all(&self.pool).await.map_err(|e| e.to_string())?;
+
+        let match_query = fts_match_query(query);
+        let lexical = match match_query.as_deref() {
+            Some(match_query) => {
+                let candidate_limit = (limit.saturating_mul(8)).clamp(50, 400);
+                self.lexical_candidates(chatroom_id, match_query, candidate_limit)
+                    .await?
+            }
+            None => Vec::new(),
+        };
+        let best_lexical = lexical
+            .iter()
+            .map(|(_, score)| *score)
+            .fold(0.0f32, f32::max);
+        let lexical_scores: std::collections::HashMap<String, f32> = lexical
+            .iter()
+            .map(|(id, score)| (id.clone(), normalize_lexical(*score, best_lexical)))
+            .collect();
+
+        let semantic = self.embedding_provider.is_semantic();
+        let rows = if semantic || lexical.is_empty() {
+            self.all_rows(chatroom_id).await?
+        } else {
+            let ids: Vec<String> = lexical.into_iter().map(|(id, _)| id).collect();
+            self.rows_for_ids(chatroom_id, &ids).await?
+        };
+
         let mut scored: Vec<(OfficeMemory, f32)> = rows
             .into_iter()
-            .filter_map(|r| {
-                let emb = r.3.as_ref().and_then(|b| deserialize(b))?;
-                let sim = cosine_similarity(&qemb, &emb);
-                if sim < threshold {
+            .filter_map(|row| {
+                let id = row.0.clone();
+                let embedding = row.3.as_ref().and_then(|bytes| deserialize(bytes));
+                let similarity = match &embedding {
+                    Some(embedding) if embedding.len() == query_embedding.len() => {
+                        cosine_similarity(&query_embedding, embedding)
+                    }
+                    _ => 0.0,
+                };
+                let lexical = lexical_scores
+                    .get(&id)
+                    .copied()
+                    .filter(|score| *score > 0.0);
+                if lexical.is_none() && similarity < threshold {
                     return None;
                 }
-                let mem = OfficeMemory {
-                    id: Uuid::parse_str(&r.0).ok()?,
-                    chatroom_id: Uuid::parse_str(&r.1).ok()?,
-                    content: r.2,
-                    embedding: Some(emb),
-                    importance: r.4,
-                    category: r.5,
-                    created_by: r.6.and_then(|s| Uuid::parse_str(&s).ok()),
-                    access_count: r.7 as u32,
-                    last_accessed: chrono::DateTime::parse_from_rfc3339(&r.8)
-                        .ok()
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(chrono::Utc::now),
-                    created_at: chrono::DateTime::parse_from_rfc3339(&r.9)
-                        .ok()
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(chrono::Utc::now),
-                    source: r.10,
-                    source_thread_id: r
-                        .11
-                        .as_deref()
-                        .and_then(|value| Uuid::parse_str(value).ok()),
-                    source_run_id: r
-                        .12
-                        .as_deref()
-                        .and_then(|value| Uuid::parse_str(value).ok()),
-                    updated_at: chrono::DateTime::parse_from_rfc3339(&r.13)
-                        .ok()
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(chrono::Utc::now),
-                };
-                let score = sim * (0.6 + 0.4 * mem.importance);
-                Some((mem, score))
+
+                let memory = memory_from_row(row)?;
+                let base = blend(lexical, similarity);
+                if base <= 0.0 {
+                    return None;
+                }
+                let final_score =
+                    base * importance_boost(memory.importance) * usage_boost(memory.access_count);
+                Some((memory, final_score))
             })
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let res: Vec<_> = scored.into_iter().take(limit).collect();
-        for (m, _) in &res {
+
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.0.created_at.cmp(&a.0.created_at))
+        });
+        let results: Vec<_> = scored.into_iter().take(limit).collect();
+        for (memory, _) in &results {
             let _ = sqlx::query("UPDATE office_memories SET access_count=access_count+1, last_accessed=? WHERE id=?")
-                .bind(chrono::Utc::now().to_rfc3339()).bind(m.id.to_string()).execute(&self.pool).await;
+                .bind(chrono::Utc::now().to_rfc3339()).bind(memory.id.to_string()).execute(&self.pool).await;
         }
-        Ok(res)
+        Ok(results)
+    }
+
+    async fn all_rows(&self, chatroom_id: Uuid) -> Result<Vec<OfficeMemoryRow>, String> {
+        sqlx::query_as(
+            "SELECT id, chatroom_id, content, embedding, importance, category, created_by, access_count, last_accessed, created_at, source, source_thread_id, source_run_id, updated_at FROM office_memories WHERE chatroom_id = ?",
+        )
+        .bind(chatroom_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    async fn lexical_candidates(
+        &self,
+        chatroom_id: Uuid,
+        match_query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, f32)>, String> {
+        let rows: Vec<(String, f64)> = sqlx::query_as(
+            "SELECT memory_id, bm25(office_memories_fts)
+             FROM office_memories_fts
+             WHERE office_memories_fts MATCH ? AND chatroom_id = ?
+             ORDER BY bm25(office_memories_fts)
+             LIMIT ?",
+        )
+        .bind(match_query)
+        .bind(chatroom_id.to_string())
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, score)| (id, (-score) as f32))
+            .collect())
+    }
+
+    async fn rows_for_ids(
+        &self,
+        chatroom_id: Uuid,
+        ids: &[String],
+    ) -> Result<Vec<OfficeMemoryRow>, String> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT id, chatroom_id, content, embedding, importance, category, created_by, access_count, last_accessed, created_at, source, source_thread_id, source_run_id, updated_at FROM office_memories WHERE chatroom_id = ? AND id IN ({placeholders})"
+        );
+        let mut query = sqlx::query_as::<_, OfficeMemoryRow>(&sql).bind(chatroom_id.to_string());
+        for id in ids {
+            query = query.bind(id);
+        }
+        query.fetch_all(&self.pool).await.map_err(|e| e.to_string())
     }
 
     pub async fn list(&self, chatroom_id: Uuid) -> Result<Vec<OfficeMemory>, String> {
@@ -719,6 +798,63 @@ mod tests {
         assert_eq!(memories.len(), 1);
         assert_eq!(memories[0].id, summary.id);
         assert!(store.get(other.id, foreign.id).await.unwrap().is_some());
+
+        drop(db);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn office_retrieval_uses_lexical_candidates_and_cleans_them_up() {
+        let (db, path) = test_db("hybrid").await;
+        let office = ravenbot_core::ChatRoom::new("Office", "test", "custom");
+        queries::ChatRoomQueries::create(db.pool(), &office)
+            .await
+            .unwrap();
+        let store =
+            OfficeMemoryStore::new(db.pool().clone(), Box::new(FixedEmbedding(vec![0.0; 8])));
+        let printer = store
+            .add(
+                office.id,
+                "The office printer is on the second floor.",
+                "fact",
+                None,
+                0.5,
+            )
+            .await
+            .unwrap();
+        let train = store
+            .add(
+                office.id,
+                "The release train departs every Thursday at 14:00 UTC.",
+                "process",
+                None,
+                0.5,
+            )
+            .await
+            .unwrap();
+
+        let results = store
+            .retrieve(office.id, "When does the release train leave?", 5, 0.3)
+            .await
+            .expect("retrieve");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, train.id);
+
+        let results = store
+            .retrieve(office.id, "Where is the printer?", 5, 0.3)
+            .await
+            .expect("retrieve");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, printer.id);
+
+        assert!(store.delete(office.id, train.id).await.expect("delete"));
+        let remaining: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM office_memories_fts WHERE memory_id = ?")
+                .bind(train.id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(remaining.0, 0);
 
         drop(db);
         cleanup(&path);

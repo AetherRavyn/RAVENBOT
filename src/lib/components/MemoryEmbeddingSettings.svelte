@@ -22,6 +22,7 @@
     query: string;
     expected: string;
     rank: number | null;
+    vector_rank: number | null;
     top: string[];
   }
 
@@ -30,6 +31,8 @@
     dimension: number;
     recall_at_k: number;
     mean_reciprocal_rank: number;
+    vector_recall_at_k: number;
+    vector_mean_reciprocal_rank: number;
     queries: RetrievalEvalQuery[];
   }
 
@@ -445,6 +448,12 @@
       <p class="font-mono text-[11px] text-[var(--text-muted)]">
         {t("memoryEmbedding.evalDimension", {
           dimension: evalReport.dimension,
+        })}
+      </p>
+      <p class="text-[11px] leading-4 text-[var(--text-tertiary)]">
+        {t("memoryEmbedding.evalVectorOnly", {
+          recall: Math.round(evalReport.vector_recall_at_k * 100),
+          mrr: evalReport.vector_mean_reciprocal_rank.toFixed(2),
         })}
       </p>
       <div class="max-h-56 space-y-1 overflow-y-auto no-scrollbar pr-1">

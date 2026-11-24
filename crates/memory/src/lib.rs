@@ -12,6 +12,7 @@ pub mod remote_embedding;
 pub mod retrieval;
 pub mod self_review;
 pub mod store;
+pub mod text;
 
 pub use dedupe::{
     find_duplicate_groups, normalize_duplicate_threshold, DuplicateGroup, DuplicateMember,

@@ -212,7 +212,7 @@ competitor materially ahead · **A** = RAVENBOT absent.
 | Delegation | Real `delegate`, depth guard, DAG planning, parallel nodes, shared status file | **L** | **P** | **L** |
 | Demonstration learning | Nothing; no capture/replay | **P** | **B** | **P** |
 | Goals / proactivity | Office goal + heartbeat; no personal goals tab, no proactive suggestions | **P** | **B** | **B** |
-| Memory | Per-bot/per-office memory, RAG, self-review, editable/deletable in the UI with `MemoryChanged` audit events; source/thread/run provenance; opt-in Ollama/OpenAI semantic embeddings with atomic reindexing and `MemoryEmbeddingsUpdated` audit events; fixed 50-fact Recall@5/MRR benchmark; near-duplicate detection with previewed removal; LLM summarization with an editable preview and atomic replacement; default remains local hash | **P** | **B** | **P** |
+| Memory | Per-bot/per-office memory, RAG, self-review, editable/deletable in the UI with `MemoryChanged` audit events; source/thread/run provenance; FTS5 BM25 candidate retrieval reranked by word/bigram/character-gram vectors (migration 75), so a query normally scores only the lexical candidates instead of every stored vector and a memory without an embedding is still findable; opt-in Ollama/OpenAI semantic embeddings with atomic reindexing and `MemoryEmbeddingsUpdated` audit events; fixed 50-fact hybrid Recall@5/MRR benchmark (local backend 1.00/1.00; old byte hash 0.10/0.10) with a vector-only baseline shown in the UI; near-duplicate detection with previewed removal; LLM summarization with an editable preview and atomic replacement; default remains lexical, not neural | **P** | **B** | **P** |
 | Artifacts | Charts, Mermaid, KaTeX, slides, visuals, DOCX/PDF/PPTX/HTML, designed image decks | **P** | **L** | **P** |
 | Chat apps | None native; MCP connector cards only | **B** | **P** | **B** |
 | Marketplace / plugins | 135 MCP connectors, 2,530-app OpenAPI directory, 1,497 skills, versioned local skills, own MCP server | **L** | **L** | **L** |
@@ -308,12 +308,21 @@ working tree; the second is the remaining P0/P1 backlog.
 > MCP, webhook, signing and app-setting secrets. The remaining boundary is
 > explicit: an attacker who can read the user's config directory can read the
 > fallback key, which is why the OS keychain remains preferred.
+>
+> **Update on the memory finding below:** migration 75 adds FTS5 indexes for
+> agent and office memory with BM25 ranking. Retrieval now takes a lexical
+> candidate set, reranks it with the configured embedding, and keeps a full
+> vector pass only for semantic backends. The local backend also moved from a
+> byte-position hash to word, bigram and character-gram features. On the fixed
+> 50-fact fixture the local path scores 1.00 Recall@5 and 1.00 MRR; the old byte
+> hash scored 0.10 and 0.10. The default is still lexical rather than neural —
+> Ollama or an OpenAI-compatible endpoint remains the semantic option.
 
 | Finding | Evidence | Impact | Fix |
 |---|---|---|---|
-| **Some secrets are still plaintext in SQLite** | `crates/db/src/migrations/009…`, `crates/mcp/src/registry.rs:345`, `031…` | Provider and MCP keys now use the OS keychain when available and store only a marker, but plugin credentials, custom-provider headers and the bundle signing seed remain in SQLite. A DB read still yields those, and provider/MCP values fall back to SQLite on hosts without a keychain. | Migrate plugin credentials and the signing seed; add SQLCipher/encrypted fallback and a vault-request UI. |
+| **Resolved: secrets at rest** | `crates/db/src/secrets.rs`, migration 039 and the startup migration | Provider, vault, plugin, custom-provider header, MCP, webhook, bundle-signing and app-setting secrets now use the OS keychain when available; a keychain-less host gets an encrypted 0600 local vault and the database holds only a marker. Startup migrates legacy plaintext rows. A copied database alone no longer reveals them. | Remaining boundary is explicit: a host that can read the user's config directory can read the fallback key, which is why the OS keychain remains preferred. |
 | **Approval/question waits ignore cancel/pause** | poll loops only check kill switch | A cancel can wait 10 minutes and then deny; a pause cannot stop a parked run. | Check cancellation/pause in both loops, emit waiting status, deny safely. |
-| **Default memory is not semantic** | 128-dim hash embedding unless Ollama/OpenAI is configured; full scan; no FTS | Long-lived agents on the default backend get noisier, not smarter. | Retrieval eval; consider a bundled local semantic model; FTS hybrid. |
+| **Resolved: default memory retrieval** | Byte-position hash, full scan, no FTS | Long-lived agents on the default backend got noisier, not smarter, and retrieval cost grew with the whole memory table. | FTS5 BM25 candidates + vector rerank (migration 75), word/bigram/character-gram local features, a vector-only baseline in the eval, and measured 1.00 hybrid Recall@5 vs 0.10 for the old byte hash. Remaining limit: true paraphrase semantics still need Ollama/OpenAI; no ANN index yet. |
 
 ### 4.3 Remaining P1 — frontend and product
 
@@ -489,7 +498,7 @@ Those are not the bottleneck.
 | Epic | Closes | Acceptance |
 |---|---|---|
 | **E6 Stable local API + read-only web client + paired device** — tokens, pairing, TLS/origin checks | G1 | Pair one device; three surfaces readable; zero write endpoints; revoke works; p95 <200 ms on LAN |
-| **E7 Memory v2** — shipped: editable/deletable memory, provenance, Ollama/OpenAI embeddings, the 50-fact Recall@5/MRR benchmark, duplicate detection, and summarized replacement | G4 | Recall@5 ≥0.8 on a 50-fact fixture vs hash baseline; zero whole-answer dumps; edits/deletes persist |
+| **E7 Memory v2** — shipped: editable/deletable memory, provenance, FTS5 hybrid retrieval, Ollama/OpenAI embeddings, the 50-fact Recall@5/MRR benchmark (hybrid and vector-only), duplicate detection, and summarized replacement | G4 | Recall@5 ≥0.8 on a 50-fact fixture vs hash baseline; local hybrid measured 1.00, old byte hash 0.10; zero whole-answer dumps; edits/deletes persist |
 | **E8 Job library + triggers** — 30 jobs with group/cadence/oversight; install creates paused bot+routine; email/content trigger; approval steps | G4 | 30 jobs with metadata; install creates paused routine; email-trigger fixture passes; 80% success on 20 tasks |
 | **E9 Cross-platform execution** — Windows shell/sandbox, macOS sandbox, input backends, browser DOM | G1, G3 | CI on Linux/macOS/Windows; `shell_exec` works on all three; sandbox report on all three; browser DOM on two |
 | **E10 Audit and fleet observability** — live roster (HTTPS webhook and SMTP email alerts shipped) | G3 | Zero unlogged high-risk actions; remote alert delivery verified |
@@ -565,7 +574,7 @@ Those are not the bottleneck.
 | Trust | secrets stored outside keychain | 0 |
 | Trust | high-risk actions without a policy decision (office/routine) | 0 |
 | Trust | audit events missing for tool calls | 0 |
-| Memory | Recall@5 on a fixed 50-fact fixture | ≥0.8 |
+| Memory | Recall@5 on a fixed 50-fact fixture | ≥0.8 (local hybrid 1.00) |
 | Offices | success on 20 benchmark tasks | ≥80% |
 | Offices | human interventions per task | <5% |
 | Cost | usage ledger vs provider invoice | within 2% |

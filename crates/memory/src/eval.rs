@@ -2,10 +2,12 @@
 //!
 //! The benchmark is a fixed set of 50 facts and 10 queries. It is deliberately
 //! separate from user memory: running it never reads, writes or sends stored
-//! memories. The report tells the user whether the selected backend actually
-//! ranks the expected fact in the top results.
+//! memories. The report scores the hybrid path the store uses (BM25 lexical
+//! candidates plus vector reranking) and the embedding-only baseline, so the
+//! contribution of each half is visible rather than hidden behind one number.
 
 use crate::embedding::{cosine_similarity, EmbeddingProvider};
+use crate::text::{blend, bm25_scores, normalize_lexical};
 use serde::Serialize;
 
 pub const EVAL_K: usize = 5;
@@ -157,7 +159,11 @@ pub const EVAL_QUERIES: &[(&str, &str)] = &[
 pub struct RetrievalEvalQuery {
     pub query: String,
     pub expected: String,
+    /// Rank under the hybrid retrieval path (FTS/BM25 + vector rerank).
     pub rank: Option<usize>,
+    /// Rank under the embedding alone, kept so the report shows what the hybrid
+    /// step contributes instead of hiding it.
+    pub vector_rank: Option<usize>,
     pub top: Vec<String>,
 }
 
@@ -165,13 +171,18 @@ pub struct RetrievalEvalQuery {
 pub struct RetrievalEvalReport {
     pub k: usize,
     pub dimension: usize,
+    /// Hybrid recall, which is what the store actually returns.
     pub recall_at_k: f32,
     pub mean_reciprocal_rank: f32,
+    /// Embedding-only baseline on the same fixture.
+    pub vector_recall_at_k: f32,
+    pub vector_mean_reciprocal_rank: f32,
     pub queries: Vec<RetrievalEvalQuery>,
 }
 
-/// Embed the fixed benchmark texts and score the ranking. User memory is never
-/// read or sent by this function.
+/// Embed the fixed benchmark texts and score both the hybrid ranking the store
+/// uses and the embedding-only baseline. User memory is never read or sent by
+/// this function.
 pub async fn evaluate_retrieval(
     provider: &dyn EmbeddingProvider,
 ) -> Result<RetrievalEvalReport, String> {
@@ -197,37 +208,53 @@ pub async fn evaluate_retrieval(
     let mut results = Vec::with_capacity(EVAL_QUERIES.len());
     let mut hits = 0usize;
     let mut reciprocal_rank_sum = 0.0f32;
+    let mut vector_hits = 0usize;
+    let mut vector_reciprocal_rank_sum = 0.0f32;
 
     for ((query, expected), query_vector) in EVAL_QUERIES.iter().zip(query_vectors.iter()) {
         let expected_index = EVAL_FACTS
             .iter()
             .position(|(id, _)| id == expected)
             .ok_or_else(|| format!("The benchmark is missing fact {expected}."))?;
-        let mut scored: Vec<(usize, f32)> = fact_vectors
+
+        let vector_scores: Vec<f32> = fact_vectors
             .iter()
-            .enumerate()
-            .map(|(index, vector)| (index, cosine_similarity(query_vector, vector)))
+            .map(|vector| cosine_similarity(query_vector, vector))
             .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let rank = scored
+        let lexical_scores = bm25_scores(&fact_texts, query);
+        let best_lexical = lexical_scores
             .iter()
-            .position(|(index, _)| *index == expected_index)
-            .map(|position| position + 1);
+            .copied()
+            .fold(0.0f32, |best, score| best.max(score));
+        let hybrid_scores: Vec<f32> = lexical_scores
+            .iter()
+            .zip(vector_scores.iter())
+            .map(|(lexical, vector)| {
+                let lexical = normalize_lexical(*lexical, best_lexical);
+                blend((lexical > 0.0).then_some(lexical), *vector)
+            })
+            .collect();
+
+        let vector_rank = rank_of(&vector_scores, expected_index);
+        let rank = rank_of(&hybrid_scores, expected_index);
         if let Some(rank) = rank {
             if rank <= EVAL_K {
                 hits += 1;
             }
             reciprocal_rank_sum += 1.0 / rank as f32;
         }
-        let top = scored
-            .iter()
-            .take(EVAL_K)
-            .map(|(index, _)| EVAL_FACTS[*index].0.to_string())
-            .collect();
+        if let Some(rank) = vector_rank {
+            if rank <= EVAL_K {
+                vector_hits += 1;
+            }
+            vector_reciprocal_rank_sum += 1.0 / rank as f32;
+        }
+        let top = top_ids(&hybrid_scores);
         results.push(RetrievalEvalQuery {
             query: (*query).to_string(),
             expected: (*expected).to_string(),
             rank,
+            vector_rank,
             top,
         });
     }
@@ -238,8 +265,40 @@ pub async fn evaluate_retrieval(
         dimension,
         recall_at_k: hits as f32 / total,
         mean_reciprocal_rank: reciprocal_rank_sum / total,
+        vector_recall_at_k: vector_hits as f32 / total,
+        vector_mean_reciprocal_rank: vector_reciprocal_rank_sum / total,
         queries: results,
     })
+}
+
+/// Rank of the expected fact (1-based) in a score list, or `None` if it is
+/// missing. Ties are broken by fixture order so the benchmark is deterministic.
+fn rank_of(scores: &[f32], expected_index: usize) -> Option<usize> {
+    let expected = scores.get(expected_index).copied()?;
+    let mut rank = 1;
+    for (index, score) in scores.iter().enumerate() {
+        if index == expected_index {
+            continue;
+        }
+        if *score > expected || (*score == expected && index < expected_index) {
+            rank += 1;
+        }
+    }
+    Some(rank)
+}
+
+fn top_ids(scores: &[f32]) -> Vec<String> {
+    let mut ranked: Vec<(usize, f32)> = scores.iter().copied().enumerate().collect();
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    ranked
+        .iter()
+        .take(EVAL_K)
+        .map(|(index, _)| EVAL_FACTS[*index].0.to_string())
+        .collect()
 }
 
 fn validate_vectors(vectors: &[Vec<f32>], expected: usize, label: &str) -> Result<usize, String> {
@@ -327,22 +386,54 @@ mod tests {
         assert_eq!(report.dimension, 50);
         assert_eq!(report.recall_at_k, 1.0);
         assert_eq!(report.mean_reciprocal_rank, 1.0);
+        assert_eq!(report.vector_recall_at_k, 1.0);
         assert!(report.queries.iter().all(|query| query.rank == Some(1)));
     }
 
     #[tokio::test]
-    async fn an_adversarial_provider_scores_zero_recall() {
+    async fn an_adversarial_vector_provider_still_scores_hybrid_recall() {
         let report = evaluate_retrieval(&FixtureProvider { adversarial: true })
             .await
             .expect("evaluate");
-        assert_eq!(report.recall_at_k, 0.0);
+        assert_eq!(report.vector_recall_at_k, 0.0);
         assert!(
-            (report.mean_reciprocal_rank - 1.0 / EVAL_FACTS.len() as f32).abs() < 1e-6,
+            (report.vector_mean_reciprocal_rank - 1.0 / EVAL_FACTS.len() as f32).abs() < 1e-6,
             "MRR counts the reciprocal of the true rank even outside the cutoff"
+        );
+        assert!(
+            report.recall_at_k >= 0.8,
+            "lexical candidates must keep retrieval useful even when the vectors are adversarial, got {}",
+            report.recall_at_k
+        );
+        assert!(
+            report.mean_reciprocal_rank > report.vector_mean_reciprocal_rank,
+            "hybrid ranking must beat the adversarial embedding baseline"
         );
         assert!(report
             .queries
             .iter()
-            .all(|query| query.rank == Some(EVAL_FACTS.len())));
+            .all(|query| query.vector_rank == Some(EVAL_FACTS.len())));
+    }
+
+    #[tokio::test]
+    async fn the_default_local_backend_meets_the_hybrid_recall_target() {
+        let report = evaluate_retrieval(&crate::embedding::LocalEmbedding::new(384))
+            .await
+            .expect("evaluate");
+        assert!(
+            report.recall_at_k >= 0.8,
+            "the local hybrid path should meet the 0.8 Recall@5 target, got {} (vector-only {})",
+            report.recall_at_k,
+            report.vector_recall_at_k
+        );
+        assert!(
+            report.recall_at_k >= report.vector_recall_at_k,
+            "hybrid recall must not be worse than vector-only recall"
+        );
+        assert!(
+            report.mean_reciprocal_rank >= 0.7,
+            "hybrid MRR regressed: {}",
+            report.mean_reciprocal_rank
+        );
     }
 }

@@ -4,6 +4,30 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Memory retrieval
+
+- **FTS5 hybrid retrieval** — migration 75 adds full-text indexes for agent and
+  office memory, kept in sync by triggers and backfilled once. Retrieval now
+  takes a BM25-ranked lexical candidate set and reranks it with the configured
+  embedding, instead of loading and cosine-scoring every stored vector for
+  every query. A semantic Ollama/OpenAI backend keeps a full vector pass so a
+  paraphrase with no shared words is still found; the local backend narrows to
+  the lexical candidates and falls back to a vector pass only when the query
+  shares no indexed term. A memory with no embedding is still retrievable from
+  the FTS row.
+- **Better local features** — the default backend moved from a UTF-8
+  byte-position hash to word, word-bigram and character-trigram features with
+  sublinear term frequency. It remains deliberately lexical and fully offline;
+  it is not a neural model.
+- **Measured retrieval quality** — the fixed 50-fact benchmark now reports
+  hybrid Recall@5/MRR and the embedding-only baseline side by side. The local
+  hybrid path scores **1.00 Recall@5 / 1.00 MRR**, up from **0.10 / 0.10** for
+  the old byte hash. The Settings benchmark shows both numbers, and tests pin
+  the 0.8 hybrid target.
+- Tests cover lexical reranking with uninformative vectors, retrieval of a
+  fact whose embedding is missing, FTS cleanup on deletion in both stores, the
+  lemma/punctuation tokenizer, and the local benchmark target.
+
 ### Secrets at rest
 
 - **Encrypted keychain fallback** — when the OS keychain is unavailable and the

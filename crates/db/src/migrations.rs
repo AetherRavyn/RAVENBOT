@@ -19,7 +19,7 @@ pub enum MigrationError {
 /// else, because that is the only thing it can honestly describe: a database
 /// whose `_migrations` table tops out at 23 is at 23, whatever an earlier
 /// constant still says.
-pub const CURRENT_VERSION: i32 = 74;
+pub const CURRENT_VERSION: i32 = 75;
 
 /// SQL for each migration version
 const MIGRATIONS: &[(i32, &str)] = &[
@@ -136,6 +136,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (72, include_str!("migrations/072_thread_worktrees.sql")),
     (73, include_str!("migrations/073_mcp_event_triggers.sql")),
     (74, include_str!("migrations/074_thread_shares.sql")),
+    (75, include_str!("migrations/075_memory_fts.sql")),
 ];
 
 /// Split a migration into executable statements without breaking trigger
@@ -265,5 +266,54 @@ CREATE INDEX i ON t(kind);
         let statements = split_sql_statements(sql);
         assert_eq!(statements.len(), 2, "{statements:#?}");
         assert!(statements[0].contains("END, ''"), "{statements:#?}");
+    }
+
+    #[tokio::test]
+    async fn memory_fts_migration_backfills_existing_facts() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        crate::migrations::run(&pool).await.expect("migrations");
+
+        sqlx::query("INSERT INTO bots (id, name) VALUES ('bot-1', 'Legacy Bot')")
+            .execute(&pool)
+            .await
+            .expect("legacy bot");
+        sqlx::query(
+            "INSERT INTO memory_facts (id, bot_id, content)
+             VALUES ('fact-1', 'bot-1', 'The release train departs every Thursday')",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy fact");
+
+        // Simulate a database that predates migration 75: the fact exists but
+        // the FTS table and triggers do not.
+        for statement in [
+            "DROP TRIGGER IF EXISTS memory_facts_fts_after_insert",
+            "DROP TRIGGER IF EXISTS memory_facts_fts_after_delete",
+            "DROP TRIGGER IF EXISTS memory_facts_fts_after_update",
+            "DROP TABLE IF EXISTS memory_facts_fts",
+        ] {
+            sqlx::query(statement).execute(&pool).await.unwrap();
+        }
+
+        for statement in split_sql_statements(include_str!("migrations/075_memory_fts.sql")) {
+            sqlx::query(&statement)
+                .execute(&pool)
+                .await
+                .unwrap_or_else(|error| panic!("{statement}: {error}"));
+        }
+
+        let hits: (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM memory_facts_fts
+             WHERE memory_facts_fts MATCH 'release' AND bot_id = 'bot-1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("backfilled search");
+        assert_eq!(hits.0, 1, "the migration must backfill existing facts");
     }
 }

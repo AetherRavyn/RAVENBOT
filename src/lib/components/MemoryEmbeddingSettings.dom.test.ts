@@ -52,17 +52,21 @@ beforeEach(() => {
         dimension: 384,
         recall_at_k: 0.8,
         mean_reciprocal_rank: 0.72,
+        vector_recall_at_k: 0.4,
+        vector_mean_reciprocal_rank: 0.31,
         queries: [
           {
             query: "When does the release train leave?",
             expected: "f01",
             rank: 1,
+            vector_rank: 2,
             top: ["f01"],
           },
           {
             query: "Which cryptographic key signs invoices?",
             expected: "f02",
             rank: null,
+            vector_rank: null,
             top: ["f09"],
           },
         ],
@@ -123,9 +127,12 @@ describe("MemoryEmbeddingSettings", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("evaluate_memory_retrieval"),
     );
-    await waitFor(() => expect(getByText("Recall@5")).toBeTruthy());
+    await waitFor(() => expect(getByText("Hybrid Recall@5")).toBeTruthy());
     expect(getByText("80%")).toBeTruthy();
     expect(getByText("0.72")).toBeTruthy();
+    expect(
+      getByText("Vector-only baseline: Recall 40%, MRR 0.31."),
+    ).toBeTruthy();
     expect(getByText("384-dimension vectors")).toBeTruthy();
     expect(getByText("rank 1")).toBeTruthy();
     expect(getByText("missed")).toBeTruthy();

@@ -1,6 +1,7 @@
 //! Memory storage and management
 
 use crate::embedding::{cosine_similarity, EmbeddingProvider};
+use crate::text::{blend, fts_match_query, importance_boost, normalize_lexical, usage_boost};
 use ravenbot_core::MemoryFact;
 use sqlx::{Connection, SqlitePool};
 use uuid::Uuid;
@@ -103,7 +104,13 @@ impl MemoryStore {
         tracing::info!(fact_id = %fact.id, bot_id = %bot_id, source = %fact.source, "Memory fact added");
         Ok(fact)
     }
-    /// Retrieve memories similar to a query
+    /// Retrieve memories similar to a query.
+    ///
+    /// FTS5 supplies a BM25-ranked lexical candidate set and the configured
+    /// embedding reranks it. The local hash embedding is lexical, so scoring
+    /// every remembered fact would only add noise once the candidate set is
+    /// known. A semantic backend (Ollama/OpenAI) keeps a full vector pass, so a
+    /// paraphrase with no shared words is still found.
     pub async fn retrieve(
         &self,
         bot_id: Uuid,
@@ -111,84 +118,78 @@ impl MemoryStore {
         limit: usize,
         threshold: f32,
     ) -> Result<Vec<(MemoryFact, f32)>, String> {
-        // Generate query embedding
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
         let query_embedding = self
             .embedding_provider
             .embed(query)
             .await
             .map_err(|e| e.to_string())?;
 
-        // Fetch all memories for this bot
-        let rows: Vec<FactRow> = sqlx::query_as(
-            "SELECT id, bot_id, content, embedding, importance, access_count, last_accessed, created_at,
-                    source, source_thread_id, source_run_id, updated_at
-             FROM memory_facts
-             WHERE bot_id = ?
-             ORDER BY created_at DESC"
-        )
-        .bind(bot_id.to_string())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| e.to_string())?;
-
-        // Calculate similarities
-        let mut scored: Vec<(MemoryFact, f32)> = rows
+        let match_query = fts_match_query(query);
+        let lexical = match match_query.as_deref() {
+            Some(match_query) => {
+                let candidate_limit = (limit.saturating_mul(8)).clamp(50, 400);
+                self.lexical_candidates(bot_id, match_query, candidate_limit)
+                    .await?
+            }
+            None => Vec::new(),
+        };
+        let best_lexical = lexical
             .iter()
-            .filter_map(|row| {
-                let embedding = row.3.as_ref().and_then(|e| deserialize_embedding(e))?;
-                let similarity = cosine_similarity(&query_embedding, &embedding);
+            .map(|(_, score)| *score)
+            .fold(0.0f32, f32::max);
+        let lexical_scores: std::collections::HashMap<String, f32> = lexical
+            .iter()
+            .map(|(id, score)| (id.clone(), normalize_lexical(*score, best_lexical)))
+            .collect();
 
-                if similarity < threshold {
+        let semantic = self.embedding_provider.is_semantic();
+        let rows = if semantic || lexical.is_empty() {
+            self.all_rows(bot_id).await?
+        } else {
+            let ids: Vec<String> = lexical.into_iter().map(|(id, _)| id).collect();
+            self.rows_for_ids(bot_id, &ids).await?
+        };
+
+        let mut scored: Vec<(MemoryFact, f32)> = rows
+            .into_iter()
+            .filter_map(|row| {
+                let id = row.0.clone();
+                let embedding = row.3.as_ref().and_then(|e| deserialize_embedding(e));
+                let similarity = match &embedding {
+                    Some(embedding) if embedding.len() == query_embedding.len() => {
+                        cosine_similarity(&query_embedding, embedding)
+                    }
+                    _ => 0.0,
+                };
+                let lexical = lexical_scores
+                    .get(&id)
+                    .copied()
+                    .filter(|score| *score > 0.0);
+                if lexical.is_none() && similarity < threshold {
                     return None;
                 }
 
-                let fact = MemoryFact {
-                    id: Uuid::parse_str(&row.0).ok()?,
-                    bot_id: Uuid::parse_str(&row.1).ok()?,
-                    content: row.2.clone(),
-                    embedding: Some(embedding),
-                    importance: row.4,
-                    access_count: row.5 as u32,
-                    last_accessed: chrono::DateTime::parse_from_rfc3339(&row.6)
-                        .ok()
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(chrono::Utc::now),
-                    created_at: chrono::DateTime::parse_from_rfc3339(&row.7)
-                        .ok()
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(chrono::Utc::now),
-                    source: row.8.clone(),
-                    source_thread_id: row
-                        .9
-                        .as_deref()
-                        .and_then(|value| Uuid::parse_str(value).ok()),
-                    source_run_id: row
-                        .10
-                        .as_deref()
-                        .and_then(|value| Uuid::parse_str(value).ok()),
-                    updated_at: chrono::DateTime::parse_from_rfc3339(&row.11)
-                        .ok()
-                        .map(|dt| dt.with_timezone(&chrono::Utc))
-                        .unwrap_or_else(chrono::Utc::now),
-                };
-
-                // Frequently useful memories should not be demoted: the old
-                // `1/(1+access_count*0.1)` made the best facts rank lower every
-                // time they were recalled. A small bounded boost instead.
-                let usage_boost = 1.0 + fact.access_count.min(20) as f32 * 0.01;
-                let final_score = similarity * (0.7 + 0.3 * fact.importance) * usage_boost;
-
+                let fact = fact_from_row(row)?;
+                let base = blend(lexical, similarity);
+                if base <= 0.0 {
+                    return None;
+                }
+                let final_score =
+                    base * importance_boost(fact.importance) * usage_boost(fact.access_count);
                 Some((fact, final_score))
             })
             .collect();
 
-        // Sort by score descending
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Take top results
+        scored.sort_by(|a, b| {
+            b.1.partial_cmp(&a.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| b.0.created_at.cmp(&a.0.created_at))
+        });
         let results: Vec<(MemoryFact, f32)> = scored.into_iter().take(limit).collect();
 
-        // Update access counts for retrieved memories
         for (fact, _) in &results {
             let _ = sqlx::query(
                 "UPDATE memory_facts SET access_count = access_count + 1, last_accessed = ? WHERE id = ?"
@@ -202,13 +203,79 @@ impl MemoryStore {
         Ok(results)
     }
 
+    async fn all_rows(&self, bot_id: Uuid) -> Result<Vec<FactRow>, String> {
+        sqlx::query_as(
+            "SELECT id, bot_id, content, embedding, importance, access_count, last_accessed, created_at,
+                    source, source_thread_id, source_run_id, updated_at
+             FROM memory_facts
+             WHERE bot_id = ?
+             ORDER BY created_at DESC",
+        )
+        .bind(bot_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())
+    }
+
+    /// BM25-ranked FTS candidates for a bot. The score is negated because
+    /// SQLite's `bm25()` is lower-is-better and the hybrid blend expects a
+    /// positive lexical score.
+    async fn lexical_candidates(
+        &self,
+        bot_id: Uuid,
+        match_query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, f32)>, String> {
+        let rows: Vec<(String, f64)> = sqlx::query_as(
+            "SELECT fact_id, bm25(memory_facts_fts)
+             FROM memory_facts_fts
+             WHERE memory_facts_fts MATCH ? AND bot_id = ?
+             ORDER BY bm25(memory_facts_fts)
+             LIMIT ?",
+        )
+        .bind(match_query)
+        .bind(bot_id.to_string())
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, score)| (id, (-score) as f32))
+            .collect())
+    }
+
+    async fn rows_for_ids(&self, bot_id: Uuid, ids: &[String]) -> Result<Vec<FactRow>, String> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = vec!["?"; ids.len()].join(",");
+        let sql = format!(
+            "SELECT id, bot_id, content, embedding, importance, access_count, last_accessed, created_at,
+                    source, source_thread_id, source_run_id, updated_at
+             FROM memory_facts
+             WHERE bot_id = ? AND id IN ({placeholders})"
+        );
+        let mut query = sqlx::query_as::<_, FactRow>(&sql).bind(bot_id.to_string());
+        for id in ids {
+            query = query.bind(id);
+        }
+        query.fetch_all(&self.pool).await.map_err(|e| e.to_string())
+    }
+
     /// Delete a memory fact
     pub async fn delete(&self, fact_id: Uuid) -> Result<(), String> {
-        sqlx::query("DELETE FROM memory_facts WHERE id = ?")
+        let result = sqlx::query("DELETE FROM memory_facts WHERE id = ?")
             .bind(fact_id.to_string())
             .execute(&self.pool)
             .await
             .map_err(|e| e.to_string())?;
+        if result.rows_affected() > 0 {
+            let _ = sqlx::query("DELETE FROM memory_facts_fts WHERE fact_id = ?")
+                .bind(fact_id.to_string())
+                .execute(&self.pool)
+                .await;
+        }
         Ok(())
     }
 
@@ -220,6 +287,12 @@ impl MemoryStore {
             .execute(&self.pool)
             .await
             .map_err(|e| e.to_string())?;
+        if result.rows_affected() > 0 {
+            let _ = sqlx::query("DELETE FROM memory_facts_fts WHERE fact_id = ?")
+                .bind(fact_id.to_string())
+                .execute(&self.pool)
+                .await;
+        }
         Ok(result.rows_affected() > 0)
     }
 
@@ -557,15 +630,33 @@ impl MemoryStore {
         Ok(row.0 as u64)
     }
 
-    /// Check if a similar memory already exists
+    /// Check if a similar memory already exists.
+    ///
+    /// This keeps the original meaning of `threshold`: a cosine threshold on
+    /// the stored embedding. `retrieve` now returns a hybrid lexical/vector
+    /// score, which is the right ranking signal but not the right duplicate
+    /// test. Running the check here also lets a semantic backend find a
+    /// paraphrase that shares no FTS terms with `content`.
     pub async fn has_similar_memory(
         &self,
         bot_id: Uuid,
         content: &str,
         threshold: f32,
     ) -> Result<bool, String> {
-        let results = self.retrieve(bot_id, content, 1, threshold).await?;
-        Ok(!results.is_empty())
+        let query_embedding = self
+            .embedding_provider
+            .embed(content)
+            .await
+            .map_err(|e| e.to_string())?;
+        let rows = self.all_rows(bot_id).await?;
+        Ok(rows.iter().any(|row| {
+            row.3
+                .as_ref()
+                .and_then(|bytes| deserialize_embedding(bytes))
+                .filter(|embedding| embedding.len() == query_embedding.len())
+                .map(|embedding| cosine_similarity(&query_embedding, &embedding) >= threshold)
+                .unwrap_or(false)
+        }))
     }
 }
 
@@ -698,6 +789,35 @@ mod tests {
         }
         fn dimension(&self) -> usize {
             self.0.len()
+        }
+    }
+
+    struct TopicEmbedding;
+
+    #[async_trait::async_trait]
+    impl EmbeddingProvider for TopicEmbedding {
+        async fn embed(&self, text: &str) -> Result<Vec<f32>, crate::embedding::EmbeddingError> {
+            let text = text.to_ascii_lowercase();
+            Ok(if text.contains("release") {
+                vec![1.0, 0.0]
+            } else if text.contains("printer") {
+                vec![0.0, 1.0]
+            } else {
+                vec![0.5, 0.5]
+            })
+        }
+        async fn embed_batch(
+            &self,
+            texts: &[&str],
+        ) -> Result<Vec<Vec<f32>>, crate::embedding::EmbeddingError> {
+            let mut vectors = Vec::with_capacity(texts.len());
+            for text in texts {
+                vectors.push(self.embed(text).await?);
+            }
+            Ok(vectors)
+        }
+        fn dimension(&self) -> usize {
+            2
         }
     }
 
@@ -863,6 +983,127 @@ mod tests {
             .await
             .expect("get fact")
             .is_none());
+
+        drop(db);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn has_similar_memory_keeps_cosine_threshold_semantics() {
+        let (db, path) = test_db("similar").await;
+        let bot = Bot::new("Similarity Bot", "test");
+        queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        let store = MemoryStore::new(db.pool().clone(), Box::new(TopicEmbedding));
+        store
+            .add(bot.id, "The release train departs every Thursday.", 0.5)
+            .await
+            .unwrap();
+        store
+            .add(bot.id, "The office printer is on the second floor.", 0.5)
+            .await
+            .unwrap();
+
+        assert!(store
+            .has_similar_memory(bot.id, "release train schedule", 0.9)
+            .await
+            .expect("similar"));
+        assert!(!store
+            .has_similar_memory(bot.id, "an unrelated topic", 0.9)
+            .await
+            .expect("not similar"));
+
+        drop(db);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn lexical_candidates_carry_retrieval_when_vectors_are_uninformative() {
+        let (db, path) = test_db("hybrid").await;
+        let bot = Bot::new("Hybrid Bot", "test");
+        queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        // A zero vector makes every cosine similarity 0, so anything returned
+        // here must have come from the FTS candidate path.
+        let store = MemoryStore::new(db.pool().clone(), Box::new(FixedEmbedding(vec![0.0; 8])));
+        let printer = store
+            .add(bot.id, "The office printer is on the second floor.", 0.5)
+            .await
+            .unwrap();
+        let train = store
+            .add(
+                bot.id,
+                "The release train departs every Thursday at 14:00 UTC.",
+                0.5,
+            )
+            .await
+            .unwrap();
+
+        let results = store
+            .retrieve(bot.id, "When does the release train leave?", 5, 0.3)
+            .await
+            .expect("retrieve");
+        assert_eq!(
+            results.len(),
+            1,
+            "only the lexically matching fact is relevant"
+        );
+        assert_eq!(results[0].0.id, train.id);
+        assert!(results[0].1 > 0.0);
+
+        let results = store
+            .retrieve(bot.id, "Where is the printer?", 5, 0.3)
+            .await
+            .expect("retrieve");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, printer.id);
+
+        assert!(store
+            .delete_for_bot(bot.id, train.id)
+            .await
+            .expect("delete"));
+        assert!(store
+            .retrieve(bot.id, "release train", 5, 0.3)
+            .await
+            .expect("retrieve")
+            .is_empty());
+        let remaining: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM memory_facts_fts WHERE fact_id = ?")
+                .bind(train.id.to_string())
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(remaining.0, 0, "deleting a fact must remove its FTS row");
+
+        drop(db);
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn a_fact_without_an_embedding_is_still_retrievable_lexically() {
+        let (db, path) = test_db("no-embedding").await;
+        let bot = Bot::new("Legacy Bot", "test");
+        queries::BotQueries::insert(db.pool(), &bot).await.unwrap();
+        let store = MemoryStore::new(db.pool().clone(), Box::new(FixedEmbedding(vec![0.0; 8])));
+        let fact = store
+            .add(
+                bot.id,
+                "Customer backups are retained for thirty days.",
+                0.5,
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE memory_facts SET embedding = NULL WHERE id = ?")
+            .bind(fact.id.to_string())
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        let results = store
+            .retrieve(bot.id, "How long do customer backups stay?", 5, 0.3)
+            .await
+            .expect("retrieve");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0.id, fact.id);
+        assert!(results[0].0.embedding.is_none());
 
         drop(db);
         cleanup(&path);

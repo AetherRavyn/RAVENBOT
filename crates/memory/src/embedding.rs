@@ -22,52 +22,128 @@ pub trait EmbeddingProvider: Send + Sync {
 
     /// Get the dimension of embeddings
     fn dimension(&self) -> usize;
+
+    /// Whether this backend can find related text that shares no words.
+    ///
+    /// The local lexical embedding cannot, so retrieval narrows its candidate
+    /// set with FTS5 before computing cosine similarity. A semantic backend
+    /// keeps a full vector pass so a paraphrase with no lexical overlap is still
+    /// found. Backends opt in explicitly rather than the store guessing from a
+    /// model name.
+    fn is_semantic(&self) -> bool {
+        false
+    }
 }
 
-/// Simple local embedding using hash-based approach
-/// In production, use a proper model like all-MiniLM-L6-v2 via candle
+/// Local, dependency-free embedding over word, bigram and character-gram
+/// features.
+///
+/// This is deliberately lexical, not a neural model: it runs fully offline,
+/// needs no download and cannot send memory text anywhere. FTS5 supplies the
+/// exact-term candidate set and this vector reranks it; a configured Ollama or
+/// OpenAI backend still replaces it for true semantic recall. The old byte
+/// positional hash was sensitive to UTF-8 byte order and could not relate
+/// "invoice" to "invoices" at all, which made it noise rather than a fallback.
 pub struct LocalEmbedding {
     dimension: usize,
 }
 
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
 impl LocalEmbedding {
     pub fn new(dimension: usize) -> Self {
-        Self { dimension }
+        Self {
+            dimension: dimension.max(1),
+        }
     }
 
-    /// Create a simple hash-based embedding (for demo purposes)
-    fn simple_hash_embedding(&self, text: &str) -> Vec<f32> {
-        let mut embedding = vec![0.0; self.dimension];
-        let bytes = text.as_bytes();
-
-        for (i, &byte) in bytes.iter().enumerate() {
-            let idx = (i * 7 + byte as usize) % self.dimension;
-            embedding[idx] += 1.0;
+    fn feature_embedding(&self, text: &str) -> Vec<f32> {
+        let mut vector = vec![0.0f32; self.dimension];
+        let tokens = crate::text::tokenize(text);
+        if tokens.is_empty() {
+            return vector;
         }
 
-        // Normalize
-        let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if norm > 0.0 {
-            for x in &mut embedding {
-                *x /= norm;
+        for (index, token) in tokens.iter().enumerate() {
+            add_feature(&mut vector, hash_bytes(token.as_bytes()), 1.0);
+            if index > 0 {
+                add_feature(&mut vector, hash_pair(&tokens[index - 1], token), 0.6);
+            }
+            let characters: Vec<char> = token.chars().collect();
+            if characters.len() >= 6 {
+                for window in characters.windows(3) {
+                    add_feature(&mut vector, hash_characters(window), 0.25);
+                }
             }
         }
 
-        embedding
+        // Sublinear term frequency: a word repeated five times should matter
+        // more than once, but not five times as much.
+        for value in &mut vector {
+            if *value > 1.0 {
+                *value = 1.0 + value.ln();
+            }
+        }
+
+        let norm: f32 = vector.iter().map(|x| x * x).sum::<f32>().sqrt();
+        if norm > 0.0 {
+            for x in &mut vector {
+                *x /= norm;
+            }
+        }
+        vector
     }
+}
+
+fn add_feature(vector: &mut [f32], hash: u64, weight: f32) {
+    let index = (hash % vector.len() as u64) as usize;
+    vector[index] += weight;
+}
+
+fn hash_bytes(bytes: &[u8]) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for &byte in bytes {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+fn hash_pair(first: &str, second: &str) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for &byte in first
+        .as_bytes()
+        .iter()
+        .chain(std::iter::once(&b'_'))
+        .chain(second.as_bytes())
+    {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+fn hash_characters(characters: &[char]) -> u64 {
+    let mut hash = FNV_OFFSET;
+    let mut buffer = [0u8; 4];
+    for character in characters {
+        for &byte in character.encode_utf8(&mut buffer).as_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    hash
 }
 
 #[async_trait]
 impl EmbeddingProvider for LocalEmbedding {
     async fn embed(&self, text: &str) -> Result<Vec<f32>, EmbeddingError> {
-        Ok(self.simple_hash_embedding(text))
+        Ok(self.feature_embedding(text))
     }
 
     async fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, EmbeddingError> {
-        Ok(texts
-            .iter()
-            .map(|t| self.simple_hash_embedding(t))
-            .collect())
+        Ok(texts.iter().map(|t| self.feature_embedding(t)).collect())
     }
 
     fn dimension(&self) -> usize {
@@ -123,6 +199,10 @@ impl EmbeddingProvider for EmbeddingHandle {
     fn dimension(&self) -> usize {
         self.current().dimension()
     }
+
+    fn is_semantic(&self) -> bool {
+        self.current().is_semantic()
+    }
 }
 
 /// Compute cosine similarity between two vectors
@@ -155,6 +235,48 @@ mod tests {
         // Check normalization
         let norm: f32 = embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    async fn local_embedding_ranks_related_text_above_unrelated_text() {
+        let provider = LocalEmbedding::new(384);
+        let query = provider
+            .embed("When does the release train leave?")
+            .await
+            .unwrap();
+        let related = provider
+            .embed("The release train departs every Thursday at 14:00 UTC.")
+            .await
+            .unwrap();
+        let unrelated = provider
+            .embed("The office printer is on the second floor.")
+            .await
+            .unwrap();
+        assert!(
+            cosine_similarity(&query, &related) > cosine_similarity(&query, &unrelated),
+            "the lexical embedding must rank the topical fact higher"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_embedding_is_stable_and_order_insensitive_for_bag_features() {
+        let provider = LocalEmbedding::new(128);
+        let first = provider.embed("backup restore drill").await.unwrap();
+        let second = provider.embed("backup restore drill").await.unwrap();
+        assert_eq!(first, second, "embeddings must be deterministic");
+
+        let reordered = provider.embed("restore backup drill").await.unwrap();
+        assert!(
+            cosine_similarity(&first, &reordered) > 0.6,
+            "word order should not destroy similarity"
+        );
+    }
+
+    #[tokio::test]
+    async fn local_embedding_handles_empty_and_stop_word_only_text() {
+        let provider = LocalEmbedding::new(64);
+        assert_eq!(provider.embed("").await.unwrap(), vec![0.0; 64]);
+        assert_eq!(provider.embed("the and of").await.unwrap(), vec![0.0; 64]);
     }
 
     #[tokio::test]

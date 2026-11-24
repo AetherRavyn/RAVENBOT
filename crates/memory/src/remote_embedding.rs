@@ -150,6 +150,10 @@ impl EmbeddingProvider for RemoteEmbedding {
     fn dimension(&self) -> usize {
         self.dimension.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    fn is_semantic(&self) -> bool {
+        true
+    }
 }
 
 #[derive(serde::Deserialize)]

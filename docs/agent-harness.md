@@ -307,6 +307,7 @@ other.
 | Office autonomy | Runs are spawned outside the IPC call, the board is persisted by the backend, and a heartbeat starts the next turn on idle. One turn per office is enforced atomically, so a user prompt cannot queue behind a heartbeat and mis-attribute its completion. The header toggle, kill switch, pending question, budget ceiling, or repeated no-progress cycles pauses it. |
 | Encrypted secret fallback | The OS keychain is used when available. Without it (and when the config directory is writable), secrets are sealed with XChaCha20-Poly1305 under `config/sealed-secrets` (directory 0700, key and entries 0600) and the database keeps only `__RAVENBOT_KEYCHAIN__`. Startup migrates legacy plaintext provider, vault, plugin, MCP, webhook, signing and app-setting secrets. A copied `ravenbot.db` alone cannot reveal them. |
 | Provider circuit breaker | Four consecutive final failures open a provider-wide circuit for 30s (or the provider's longer retry window). New requests skip that provider and fall back immediately; one success resets it, and a half-open probe after the window decides whether to close or reopen it. |
+| Memory retrieval | FTS5 (migration 75) supplies a BM25-ranked candidate set, which the configured embedding reranks. The local lexical backend narrows to those candidates and falls back to a full vector pass only when the query has no indexed term; a semantic Ollama/OpenAI backend keeps the full vector pass. A fact with no embedding is still findable, and deleting a fact removes its FTS row. |
 | Per-round budget | The bot's budget is checked before the first model call and before every later model/tool round, not only at run start. `HardStop` fails before the overspending call; `AskUser` asks once per run and a Continue override covers the remaining rounds. |
 | Empty node result | The executor marks a node failed and skips its dependents instead of showing a misleading `Done · No response`. |
 
@@ -336,6 +337,12 @@ The runtime is tested at the harness boundary, not just the happy path:
   `a_success_closes_the_circuit_and_clears_the_streak`, and
   `an_open_provider_circuit_is_skipped_before_any_call` — the breaker opens,
   resets, isolates providers, and skips the failing provider in `call_model`.
+- `lexical_candidates_carry_retrieval_when_vectors_are_uninformative` and
+  `a_fact_without_an_embedding_is_still_retrievable_lexically` — FTS5 supplies
+  the candidate set, an embedding can be absent, and deletion removes the FTS
+  row. The office store has the same regression test.
+- `the_default_local_backend_meets_the_hybrid_recall_target` — the local hybrid
+  path clears the 0.8 Recall@5 target on the fixed 50-fact fixture.
 - `workspace_fingerprint_changes_only_with_real_edits` — edits and new files
   change the progress fingerprint; virtualenv and build churn do not.
 - `an_office_rejects_a_second_turn_while_one_is_active` — the office claim is
