@@ -11,6 +11,10 @@ All notable changes to RAVENBOT are documented here.
   17/15/14px headings with hierarchical margins, 32px list indents, 8px
   list-item spacing, hover-only link underlines, and quiet 8%-fill inline
   code. The token renderer and its HTML/link safety checks are unchanged.
+- **Streaming block memoisation** — completed markdown block tokens are reused
+  across each streaming re-lex, so only the growing block (and any block whose
+  fade offset changed) re-renders. Link reference definitions still force a
+  fresh tree when they change, so a late definition cannot leave a stale href.
 - **Off-thread markdown and highlighting** — settled long markdown bodies and
   long code blocks are lexed/coloured in a module Web Worker using the same
   token and highlighter code as the UI thread. Streaming and short bodies stay
@@ -26,8 +30,8 @@ All notable changes to RAVENBOT are documented here.
   and approvals stay outside the virtual list.
 - **Harness audit** — `docs/OPENCODE-PARITY.md` maps OpenCode's desktop and
   markdown worker/cache system against RAVENBOT. The P0/P1 harness gaps are
-  shipped; remaining work is the block streaming cache, MCP-event jobs, and
-  public session sharing.
+  shipped; remaining work is MCP-event jobs, public session sharing, and the
+  tool-part renderer cards.
 
 ### Persistent 1:1 goal loop
 

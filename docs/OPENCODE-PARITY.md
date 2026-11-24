@@ -61,10 +61,9 @@ properties are unchanged. This is the correct half of OpenCode's renderer to
 copy: typography and block semantics, not Electron or the worker cache
 (RAVENBOT's stream is already bounded by the 24k tool-result cap).
 
-**Not copied yet:** the block-level streaming cache. Timeline virtualisation
-now has its own measured row window and long markdown/highlight work runs in a
-module worker; these remaining items are performance work, not visual fidelity,
-and are listed below.
+**Remaining renderer work:** the tool-part cards. Timeline virtualisation, the
+block streaming cache and off-thread markdown/highlighting are shipped; what is
+left is presentation, not visual fidelity.
 
 ## 4. 24/7 harness readiness matrix
 
@@ -91,6 +90,7 @@ but not the general one; **Missing** = no implementation.
 | Unified patch tool | `file_edit` (also `apply_patch`) parses standard unified diffs and Codex patches in-process, validates every hunk, writes atomically, and journals each file | `tool/patch*` | **Present** |
 | Timeline virtualisation | measured variable-height row window, top/bottom spacers, anchor-preserving prepends, rail offsets and mounted-target reveals; the 30/50 paging window remains the load budget | `session/timeline/virtualizer.tsx` | **Present** |
 | Worker markdown/highlight | module Web Worker lexes settled long bodies and colours long code blocks; streaming and short bodies stay synchronous, with a timed fallback and bounded caches on both sides | `markdown.worker.ts` | **Present** |
+| Streaming block memoisation | completed block token objects survive each streaming re-lex; only the growing block and fade offsets invalidate | block cache in renderer | **Present** |
 | **MCP event-triggered jobs** | MCP client only; scheduler triggers are cron/webhook | automation from MCP events | **Missing (P2)** |
 | **Public session share** | remote access/device pairing, no public share link | share UI | **Missing (P3)** |
 
@@ -250,11 +250,29 @@ The token renderer stayed the same; the work that produces tokens moved.
 - Caches are bounded on both sides; bodies over 200,000 characters and code
   over 120,000 characters are parsed but not retained.
 
+### Shipped — streaming block memoisation
+
+`marked` still re-lexes the body as it grows, but the component tree no longer
+re-renders it.
+
+- `src/lib/markdown/lex.ts` exposes `stableStreamTokens`: for each index, a
+  block whose type and raw source are unchanged reuses the previous token
+  object. Only the growing block and any newly appended blocks are new.
+- Link reference definitions are compared separately. A definition added at
+  the end can change the resolved href of a link above it, so if the definition
+  list changes at all, the fresh tree is used.
+- `MarkdownTokens.svelte` runs that stabiliser before building its keyed list.
+  Because Svelte compares object props by identity, completed `MarkdownBlock`s
+  receive the same token, the same `streaming=false`, and (away from the fade
+  tail) the same `undefined` offset. The active block and the one or two blocks
+  inside the fade window update; the rest of an 8k-token answer does not.
+- The same stabiliser applies to nested blockquotes and list items, because
+  those render through `MarkdownTokens` too. A stable container is reused whole;
+  a growing list stabilises its own completed items.
+
 ## 6. Renderer roadmap (after the typography change)
 
-1. **Block streaming cache** — memoise completed blocks so an 8k-token answer
-   re-renders only the last block. This is the biggest UI win for long runs.
-2. **Tool-part renderers** — show command output, diffs and file reads as
+1. **Tool-part renderers** — show command output, diffs and file reads as
    first-class cards rather than one-line trace rows.
 
 ## 7. What not to copy
@@ -307,6 +325,12 @@ The token renderer stayed the same; the work that produces tokens moved.
   `language_diagnostics_force_a_continue_verdict` proves a diagnostic failure
   overrides a done verdict. The ProjectsView DOM test covers the diagnostics
   command and error list.
+- Streaming block memoisation: `stableStreamTokens` tests prove an unchanged
+  block keeps its token identity, a growing block and new blocks get fresh
+  tokens, and a definition change falls back to the fresh tree. The
+  `MarkdownTokens` keyed renderer then receives stable props for completed
+  blocks; the active block remains the only one that changes on each reveal
+  tick.
 - Worker markdown/highlight: `offThread.test.ts` covers lexing, language-keyed
   highlighting, duplicate-request coalescing, prewarming, unavailable-worker
   fallback, timeout termination, crash and malformed-response fallback, and

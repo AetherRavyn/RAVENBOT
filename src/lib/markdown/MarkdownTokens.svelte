@@ -20,7 +20,7 @@
    */
   import type { Token } from "marked";
   import MarkdownBlock from "./MarkdownBlock.svelte";
-  import { streamingBlockIndex } from "$lib/markdown/lex";
+  import { stableStreamTokens, streamingBlockIndex } from "$lib/markdown/lex";
   import { tailOffsets } from "$lib/chat/reveal";
 
   interface Props {
@@ -76,9 +76,13 @@
    * the O(n²) behaviour the old post-render DOM walk had. Keying on type and
    * length means only the block that actually changed is replaced.
    */
+  let previousTokens: Token[] | undefined;
+
   const rendered = $derived.by((): { key: string; token: Token; streaming: boolean }[] => {
-    const activeIndex = streaming ? streamingBlockIndex(tokens) : -1;
-    return tokens.map((token: Token, i: number) => ({
+    const stable = stableStreamTokens(previousTokens, tokens);
+    previousTokens = stable;
+    const activeIndex = streaming ? streamingBlockIndex(stable) : -1;
+    return stable.map((token: Token, i: number) => ({
       key: `${i}:${token.type}:${token.raw?.length ?? 0}`,
       token,
       streaming: i === activeIndex,

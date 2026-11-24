@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { Lexer } from "marked";
-import { lexBlocks, lexInline, clearLexCaches, lexCacheSize, streamingBlockIndex } from "./lex";
+import {
+  lexBlocks,
+  lexInline,
+  clearLexCaches,
+  lexCacheSize,
+  stableStreamTokens,
+  streamingBlockIndex,
+} from "./lex";
 import { tailOffsets } from "$lib/chat/reveal";
 
 /**
@@ -160,6 +167,49 @@ describe("tail selection", () => {
     // Only the final two can be inside a 10-character window.
     const fading = offsets.filter((o) => o !== undefined).length;
     expect(fading).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("stableStreamTokens", () => {
+  it("reuses completed blocks and replaces only the growing one", () => {
+    const first = lexBlocks("one\n\ntwo", true);
+    const second = lexBlocks("one\n\ntwo three", true);
+    const stable = stableStreamTokens(first, second);
+
+    const firstParagraph = first.findIndex((token) => token.type === "paragraph");
+    const secondParagraph = second.findIndex(
+      (token, index) => token.type === "paragraph" && index !== firstParagraph,
+    );
+    expect(stable[firstParagraph]).toBe(first[firstParagraph]);
+    expect(stable[secondParagraph]).toBe(second[secondParagraph]);
+    expect(stable[secondParagraph]).not.toBe(first[secondParagraph]);
+    expect(stable).toHaveLength(second.length);
+  });
+
+  it("keeps the completed block when a new block is appended", () => {
+    const first = lexBlocks("one\n\ntwo", true);
+    const second = lexBlocks("one\n\ntwo\n\nthree", true);
+    const stable = stableStreamTokens(first, second);
+    const oldParagraphs = first.filter((token) => token.type === "paragraph");
+    const newParagraphs = stable.filter((token) => token.type === "paragraph");
+    expect(newParagraphs[0]).toBe(oldParagraphs[0]);
+    expect(newParagraphs[1]).toBe(oldParagraphs[1]);
+    expect(newParagraphs[2]).not.toBe(oldParagraphs[1]);
+  });
+
+  it("falls back to the fresh tree when link definitions change", () => {
+    const first = lexBlocks("[a]: /one\n\n[a]", true);
+    const second = lexBlocks("[a]: /one\n\n[a]\n\n[b]: /two", true);
+    const stable = stableStreamTokens(first, second);
+    for (let i = 0; i < second.length; i += 1) {
+      expect(stable[i]).toBe(second[i]);
+    }
+  });
+
+  it("returns the fresh tree when there is no previous render", () => {
+    const fresh = lexBlocks("one", true);
+    expect(stableStreamTokens(undefined, fresh)).toBe(fresh);
+    expect(stableStreamTokens([], fresh)).toBe(fresh);
   });
 });
 

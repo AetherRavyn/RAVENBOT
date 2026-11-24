@@ -159,6 +159,50 @@ export function lexCacheSize(): number {
 }
 
 /**
+ * Reuse the token objects of completed blocks across a streaming re-lex.
+ *
+ * `marked` re-parses the whole body on every reveal tick, so every block comes
+ * back as a fresh object even when its source did not change. Svelte compares
+ * objects by identity, which means every block's props look new and the whole
+ * answer invalidates on every word. Reusing the previous object for a block
+ * whose type and source are unchanged leaves only the growing block (and any
+ * block whose offsets changed) to update.
+ *
+ * Link reference definitions are the one case where an unchanged earlier block
+ * can still resolve differently: a definition appended at the end applies to
+ * links above it. If the definition list changed at all, fall back to the
+ * fresh tree instead of reusing stale hrefs.
+ */
+export function stableStreamTokens(
+  previous: Token[] | undefined,
+  next: Token[],
+): Token[] {
+  if (!previous || previous.length === 0 || next.length === 0) return next;
+  if (!sameDefinitions(previous, next)) return next;
+  const stable: Token[] = new Array(next.length);
+  for (let i = 0; i < next.length; i += 1) {
+    const before = previous[i];
+    const after = next[i];
+    stable[i] =
+      before && before.type === after.type && before.raw === after.raw
+        ? before
+        : after;
+  }
+  return stable;
+}
+
+function sameDefinitions(a: readonly Token[], b: readonly Token[]): boolean {
+  const left: string[] = [];
+  const right: string[] = [];
+  for (const token of a) if (token.type === "def") left.push(token.raw);
+  for (const token of b) if (token.type === "def") right.push(token.raw);
+  return (
+    left.length === right.length &&
+    left.every((raw, index) => raw === right[index])
+  );
+}
+
+/**
  * The source length of each block, and the offset each one ends at.
  *
  * The streaming tail is measured in characters of the *body*, so a block needs
