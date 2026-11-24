@@ -16,6 +16,8 @@
     Webhook,
     Copy,
     Check,
+    Zap,
+    X,
   } from "@lucide/svelte";
 
   interface Props {
@@ -61,6 +63,43 @@
 
   let schedulerStatus = $state<{ running: boolean } | null>(null);
 
+  interface McpEventTrigger {
+    id: string;
+    routine_id: string;
+    server_id: string;
+    event: string;
+    resource_uri: string;
+    match_text: string;
+    cooldown_secs: number;
+    enabled: boolean;
+    last_fired_at: string | null;
+    last_error: string;
+    created_at: string;
+    updated_at: string;
+  }
+
+  interface McpServer {
+    id: string;
+    name: string;
+    transport: string;
+    enabled: boolean;
+  }
+
+  let mcpServers = $state<McpServer[]>([]);
+  let mcpTriggers = $state<McpEventTrigger[]>([]);
+  let mcpStatus = $state<Record<string, { state: string; detail: string }>>({});
+  let eventRoutineId = $state<string | null>(null);
+  let eventServerId = $state("");
+  let eventMethod = $state("notifications/message");
+  let eventResourceUri = $state("");
+  let eventMatch = $state("");
+  let eventSaving = $state(false);
+  let eventError = $state<string | null>(null);
+
+  const stdioServers = $derived(
+    mcpServers.filter((server) => server.transport === "stdio" && server.enabled),
+  );
+
   // Webhook triggers: enabled state per routine + the URL shown once on enable.
   let webhookEnabled = $state<Record<string, boolean>>({});
   let webhookUrl = $state<{ routineId: string; url: string; header: string } | null>(null);
@@ -86,6 +125,9 @@
       webhookUrl = null;
       newName = "";
       newInstruction = "";
+      eventRoutineId = null;
+      mcpTriggers = [];
+      eventError = null;
       void load();
     }
   });
@@ -136,10 +178,117 @@
     try {
       routines = await invoke("list_routines", { botId: bot.id });
       await refreshWebhookStatus();
+      await loadMcpEvents();
     } catch (e: any) {
       error = e?.toString() || "Failed to load routines";
     } finally {
       loading = false;
+    }
+  }
+
+  // Keep the status/last-error chips current while the panel is open. This is
+  // a small read loop, not a websocket: the supervisor already owns the live
+  // listener state.
+  $effect(() => {
+    if (!eventRoutineId) return;
+    const timer = setInterval(() => {
+      void loadMcpEvents();
+    }, 10_000);
+    return () => clearInterval(timer);
+  });
+
+  async function loadMcpEvents() {
+    try {
+      const [servers, triggers, statuses] = await Promise.all([
+        invoke<McpServer[]>("list_mcp_servers", { category: null }),
+        invoke<McpEventTrigger[]>("list_mcp_event_triggers", { botId: bot.id }),
+        invoke<{ server_id: string; state: string; detail: string }[]>(
+          "get_mcp_event_status",
+        ),
+      ]);
+      mcpServers = Array.isArray(servers) ? servers : [];
+      mcpTriggers = Array.isArray(triggers) ? triggers : [];
+      const next: Record<string, { state: string; detail: string }> = {};
+      for (const status of statuses ?? []) {
+        next[status.server_id] = { state: status.state, detail: status.detail };
+      }
+      mcpStatus = next;
+      if (!stdioServers.some((server) => server.id === eventServerId)) {
+        eventServerId = stdioServers[0]?.id ?? "";
+      }
+    } catch (e) {
+      // MCP configuration is an optional surface; routines still work when it
+      // is unavailable. Keep the failure local to the event panel.
+      eventError = e?.toString() || "Failed to load MCP event triggers";
+    }
+  }
+
+  function triggersFor(routineId: string): McpEventTrigger[] {
+    return mcpTriggers.filter((trigger) => trigger.routine_id === routineId);
+  }
+
+  function serverName(id: string): string {
+    return mcpServers.find((server) => server.id === id)?.name ?? id;
+  }
+
+  function toggleEventPanel(routine: Routine) {
+    eventError = null;
+    eventRoutineId = eventRoutineId === routine.id ? null : routine.id;
+    eventMethod = "notifications/message";
+    eventResourceUri = "";
+    eventMatch = "";
+    if (eventRoutineId && !stdioServers.some((server) => server.id === eventServerId)) {
+      eventServerId = stdioServers[0]?.id ?? "";
+    }
+  }
+
+  async function addEventTrigger(routine: Routine) {
+    if (!eventServerId || !eventMethod.trim() || eventSaving) return;
+    eventSaving = true;
+    eventError = null;
+    try {
+      const created = await invoke<McpEventTrigger>("create_mcp_event_trigger", {
+        routineId: routine.id,
+        serverId: eventServerId,
+        event: eventMethod.trim(),
+        resourceUri: eventResourceUri.trim() || null,
+        matchText: eventMatch.trim() || null,
+        cooldownSecs: 60,
+      });
+      mcpTriggers = [...mcpTriggers, created];
+      eventMethod = "notifications/message";
+      eventResourceUri = "";
+      eventMatch = "";
+      await loadMcpEvents();
+    } catch (e: any) {
+      eventError = e?.toString() || "Failed to add the MCP event trigger";
+    } finally {
+      eventSaving = false;
+    }
+  }
+
+  async function toggleEventTrigger(trigger: McpEventTrigger) {
+    eventError = null;
+    try {
+      await invoke("set_mcp_event_trigger_enabled", {
+        triggerId: trigger.id,
+        enabled: !trigger.enabled,
+      });
+      mcpTriggers = mcpTriggers.map((item) =>
+        item.id === trigger.id ? { ...item, enabled: !item.enabled } : item,
+      );
+    } catch (e: any) {
+      eventError = e?.toString() || "Failed to update the MCP event trigger";
+    }
+  }
+
+  async function deleteEventTrigger(trigger: McpEventTrigger) {
+    eventError = null;
+    try {
+      await invoke("delete_mcp_event_trigger", { triggerId: trigger.id });
+      mcpTriggers = mcpTriggers.filter((item) => item.id !== trigger.id);
+    } catch (e: any) {
+      eventError = e?.toString() || "Failed to delete the MCP event trigger";
     }
   }
 
@@ -180,6 +329,7 @@
     try {
       await invoke("delete_routine", { routineId: routine.id });
       routines = routines.filter((r) => r.id !== routine.id);
+      mcpTriggers = mcpTriggers.filter((r) => r.routine_id !== routine.id);
     } catch (e: any) {
       error = e?.toString() || "Failed to delete routine";
     }
@@ -355,6 +505,16 @@
               </button>
               <button
                 type="button"
+                aria-label="MCP event triggers"
+                aria-pressed={eventRoutineId === routine.id}
+                class="size-5 rounded-md border flex items-center justify-center cursor-pointer transition-colors {triggersFor(routine.id).length > 0 ? 'bg-[var(--brand-soft)] border-[var(--brand)]/40 text-[var(--brand-text)]' : 'bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--brand-text)] hover:border-[var(--brand)]/40'}"
+                onclick={() => toggleEventPanel(routine)}
+                title={t("routines.mcpEvents")}
+              >
+                <Zap class="size-2.5" />
+              </button>
+              <button
+                type="button"
                 aria-label="Delete routine"
                 class="size-5 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-danger hover:border-danger/40 flex items-center justify-center cursor-pointer transition-colors"
                 onclick={() => deleteRoutine(routine)}
@@ -382,6 +542,132 @@
           >
             {routine.is_enabled ? t("routines.disable") : t("routines.enable")}
           </button>
+
+          {#if eventRoutineId === routine.id}
+            <div class="mt-1.5 rounded-lg border border-[var(--brand)]/30 bg-[var(--brand-soft)]/40 p-2 space-y-2">
+              <div class="flex items-start justify-between gap-2">
+                <div class="min-w-0">
+                  <div class="flex items-center gap-1.5 text-[11px] font-bold text-[var(--brand-text)]">
+                    <Zap class="size-3" />
+                    {t("routines.mcpEvents")}
+                  </div>
+                  <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed mt-0.5">
+                    {t("routines.mcpEventsHint")}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Close MCP event triggers"
+                  class="size-5 shrink-0 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer"
+                  onclick={() => (eventRoutineId = null)}
+                >
+                  <X class="size-3" />
+                </button>
+              </div>
+
+              {#if triggersFor(routine.id).length}
+                <div class="space-y-1">
+                  {#each triggersFor(routine.id) as trigger (trigger.id)}
+                    <div class="rounded-md border border-[var(--hairline)] bg-[var(--surface-1)] p-1.5 space-y-1">
+                      <div class="flex items-center gap-1.5 min-w-0">
+                        <button
+                          type="button"
+                          aria-label={t("routines.mcpToggle")}
+                          aria-pressed={trigger.enabled}
+                          class="shrink-0 cursor-pointer {trigger.enabled ? 'text-success' : 'text-[var(--text-muted)]'}"
+                          onclick={() => toggleEventTrigger(trigger)}
+                          title={t("routines.mcpToggle")}
+                        >
+                          {#if trigger.enabled}
+                            <CheckCircle2 class="size-3" />
+                          {:else}
+                            <Circle class="size-3" />
+                          {/if}
+                        </button>
+                        <span class="text-[11px] font-bold text-[var(--text-primary)] truncate">{serverName(trigger.server_id)}</span>
+                        <code class="text-[11px] font-mono text-[var(--text-tertiary)] truncate">{trigger.event}</code>
+                        <button
+                          type="button"
+                          aria-label={t("routines.mcpDelete")}
+                          class="ml-auto size-4 shrink-0 rounded text-[var(--text-muted)] hover:text-danger flex items-center justify-center cursor-pointer"
+                          onclick={() => deleteEventTrigger(trigger)}
+                          title={t("routines.mcpDelete")}
+                        >
+                          <Trash2 class="size-2.5" />
+                        </button>
+                      </div>
+                      {#if trigger.resource_uri || trigger.match_text}
+                        <div class="flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] font-mono text-[var(--text-muted)]">
+                          {#if trigger.resource_uri}<span class="truncate">{trigger.resource_uri}</span>{/if}
+                          {#if trigger.match_text}<span class="truncate">match: {trigger.match_text}</span>{/if}
+                        </div>
+                      {/if}
+                      <div class="flex flex-wrap gap-2 text-[11px] text-[var(--text-muted)]">
+                        <span>{t("routines.mcpLastFired", { when: formatLastRun(trigger.last_fired_at) })}</span>
+                        {#if mcpStatus[trigger.server_id]}
+                          <span class={mcpStatus[trigger.server_id].state === "running" ? "text-success" : mcpStatus[trigger.server_id].state === "unsupported" || mcpStatus[trigger.server_id].state === "error" ? "text-danger" : "text-[var(--text-muted)]"}>
+                            {mcpStatus[trigger.server_id].state}
+                          </span>
+                        {/if}
+                      </div>
+                      {#if trigger.last_error}
+                        <p class="text-[11px] text-danger whitespace-pre-wrap break-words">{trigger.last_error}</p>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <p class="text-[11px] text-[var(--text-muted)]">{t("routines.mcpNone")}</p>
+              {/if}
+
+              {#if stdioServers.length}
+                <div class="grid grid-cols-2 gap-1.5">
+                  <SimpleSelect
+                    value={eventServerId}
+                    options={stdioServers.map((server) => ({ value: server.id, label: server.name }))}
+                    onValueChange={(value) => (eventServerId = value)}
+                    class="h-7 rounded-md text-xs"
+                  />
+                  <input
+                    bind:value={eventMethod}
+                    aria-label={t("routines.mcpEvent")}
+                    placeholder="notifications/message"
+                    class="h-7 px-2 rounded-md bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60"
+                  />
+                  <input
+                    bind:value={eventResourceUri}
+                    aria-label={t("routines.mcpResource")}
+                    placeholder={t("routines.mcpResource")}
+                    class="h-7 px-2 rounded-md bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60"
+                  />
+                  <input
+                    bind:value={eventMatch}
+                    aria-label={t("routines.mcpFilter")}
+                    placeholder={t("routines.mcpFilter")}
+                    class="h-7 px-2 rounded-md bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60"
+                  />
+                </div>
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[11px] text-[var(--text-muted)]">{t("routines.mcpCooldown")}</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    class="h-7 px-2.5 text-[11px] gap-1 cursor-pointer"
+                    disabled={eventSaving || !eventServerId || !eventMethod.trim()}
+                    onclick={() => addEventTrigger(routine)}
+                  >
+                    {#if eventSaving}<Loader2 class="size-3 animate-spin" />{:else}<Plus class="size-3" />{/if}
+                    {t("routines.mcpAdd")}
+                  </Button>
+                </div>
+              {:else}
+                <p class="text-[11px] text-[var(--text-muted)]">{t("routines.mcpNoServers")}</p>
+              {/if}
+              {#if eventError}
+                <p class="text-[11px] text-danger whitespace-pre-wrap break-words">{eventError}</p>
+              {/if}
+            </div>
+          {/if}
 
           {#if webhookUrl?.routineId === routine.id}
             <div class="mt-1.5 rounded-lg border border-success/30 bg-success/20 p-2 space-y-1">

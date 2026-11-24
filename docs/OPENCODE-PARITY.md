@@ -91,7 +91,7 @@ but not the general one; **Missing** = no implementation.
 | Timeline virtualisation | measured variable-height row window, top/bottom spacers, anchor-preserving prepends, rail offsets and mounted-target reveals; the 30/50 paging window remains the load budget | `session/timeline/virtualizer.tsx` | **Present** |
 | Worker markdown/highlight | module Web Worker lexes settled long bodies and colours long code blocks; streaming and short bodies stay synchronous, with a timed fallback and bounded caches on both sides | `markdown.worker.ts` | **Present** |
 | Streaming block memoisation | completed block token objects survive each streaming re-lex; only the growing block and fade offsets invalidate | block cache in renderer | **Present** |
-| **MCP event-triggered jobs** | MCP client only; scheduler triggers are cron/webhook | automation from MCP events | **Missing (P2)** |
+| MCP event-triggered jobs | long-lived stdio notification listeners, persistent routine triggers with method/resource/filter matching, cooldowns, supervisor in desktop and daemon; HTTP connectors are honestly reported as unsupported | automation from MCP events | **Present (stdio)** |
 | **Public session share** | remote access/device pairing, no public share link | share UI | **Missing (P3)** |
 
 ## 5. The 24/7 harness
@@ -270,6 +270,35 @@ re-renders it.
   those render through `MarkdownTokens` too. A stable container is reused whole;
   a growing list stabilises its own completed items.
 
+### Shipped — MCP event triggers
+
+The MCP client could call tools but could not receive server pushes. That gap is
+closed for stdio connectors:
+
+- Migration 73 adds `mcp_event_triggers`: one row per routine/server/event,
+  with an optional resource URI for `resources/subscribe`, an optional
+  case-insensitive params filter, a cooldown and last-fired/last-error state.
+- `McpClient::listen_notifications` keeps a real stdio session alive after
+  initialize, subscribes to requested resource URIs, answers server requests
+  (`ping`, `roots/list`), and dispatches every notification. Notification lines
+  are capped at 1 MiB and params are bounded before they reach a routine.
+- `src-tauri/src/mcp_events.rs` groups enabled triggers by server, starts one
+  listener per server, restarts when the trigger set or config changes, retries
+  with backoff, and runs in both the desktop process and the headless daemon.
+- A matched trigger atomically claims a cooldown slot in SQL before it starts
+  the routine. Notifications that arrive during the cooldown are dropped, not
+  queued; a per-trigger single-flight guard stops a slow run from overlapping
+  itself, and a global semaphore bounds concurrent routine starts.
+- The routine's first user turn carries a bounded `[MCP event trigger]` context
+  with the server, method, resource URI and params. Routine execution remains
+  under the normal unattended Review policy.
+- Routines gain an MCP event panel: choose an enabled stdio connector, method
+  (default `notifications/message`), optional resource URI, optional filter, and
+  see trigger enable/delete, last-fired and listener state.
+- HTTP connectors are rejected when creating a trigger and reported as
+  `unsupported` by the supervisor. The existing HTTP transport is one-shot
+  request/response; claiming it could receive pushes would be false.
+
 ## 6. Renderer roadmap (after the typography change)
 
 1. **Tool-part renderers** — show command output, diffs and file reads as
@@ -325,6 +354,14 @@ re-renders it.
   `language_diagnostics_force_a_continue_verdict` proves a diagnostic failure
   overrides a done verdict. The ProjectsView DOM test covers the diagnostics
   command and error list.
+- MCP event triggers: DB tests cover create/list, cooldown claims, disabled
+  triggers/routines and duplicate rejection. `crates/mcp` tests cover
+  notification parsing/matching/context bounds, server-request answers, a fake
+  child process that pushes a notification, and built-in rejection. The routine
+  panel DOM test opens the event panel and creates a stdio trigger. A unit test
+  covers the single-flight trigger guard.
+  A full `cargo test --workspace`, release build and daemon smoke run cover the
+  supervisor wiring; the daemon migration is now v73.
 - Streaming block memoisation: `stableStreamTokens` tests prove an unchanged
   block keeps its token identity, a growing block and new blocks get fresh
   tokens, and a definition change falls back to the fresh tree. The

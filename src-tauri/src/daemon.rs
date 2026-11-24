@@ -147,6 +147,11 @@ pub async fn run() -> Result<(), String> {
         runtime.clone(),
         HostEvents::Headless,
     ));
+    let mcp_event_task = tokio::spawn(crate::mcp_events::run_loop(
+        db.clone(),
+        runtime.clone(),
+        HostEvents::Headless,
+    ));
     let audit_task = tokio::spawn(crate::audit_maintenance_loop(db.pool().clone()));
     let credentials_task = tokio::spawn(provider_credentials_loop(db.clone(), runtime.clone()));
     let attention_task = tokio::spawn(attention_loop(db.clone()));
@@ -197,6 +202,7 @@ pub async fn run() -> Result<(), String> {
     queue_task.abort();
     autonomy_task.abort();
     thread_goal_task.abort();
+    mcp_event_task.abort();
     audit_task.abort();
     credentials_task.abort();
     attention_task.abort();

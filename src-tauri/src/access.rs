@@ -136,6 +136,8 @@ mod tests {
     #[test]
     fn viewers_are_read_only_and_cannot_read_secrets() {
         assert!(role_allows("viewer", "list_messages"));
+        assert!(role_allows("viewer", "list_mcp_event_triggers"));
+        assert!(!role_allows("viewer", "create_mcp_event_trigger"));
         assert!(role_allows("viewer", "get_current_account"));
         assert!(role_allows("viewer", "read_workspace_file"));
         assert!(!role_allows("viewer", "send_message"));
@@ -153,6 +155,7 @@ mod tests {
         assert!(role_allows("operator", "list_messages"));
         assert!(!role_allows("operator", "set_provider_api_key"));
         assert!(!role_allows("operator", "create_bot"));
+        assert!(!role_allows("operator", "create_mcp_event_trigger"));
         assert!(!role_allows("operator", "set_bot_budget"));
         assert!(!role_allows("operator", "get_mcp_server_env"));
         assert!(!role_allows("operator", "unknown_future_command"));

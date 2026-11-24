@@ -7170,6 +7170,220 @@ impl ChannelQueries {
     }
 }
 
+/// An MCP notification that starts a routine.
+///
+/// `event` is a JSON-RPC notification method (`notifications/message`,
+/// `notifications/resources/updated`, or `*`). `resource_uri` is only needed
+/// for servers that gate updates behind `resources/subscribe`.
+#[derive(Debug, Clone, Serialize)]
+pub struct McpEventTrigger {
+    pub id: Uuid,
+    pub routine_id: Uuid,
+    pub server_id: String,
+    pub event: String,
+    pub resource_uri: String,
+    pub match_text: String,
+    pub cooldown_secs: i64,
+    pub enabled: bool,
+    pub last_fired_at: Option<String>,
+    pub last_error: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+type McpEventTriggerRow = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    Option<String>,
+    String,
+    String,
+    String,
+);
+
+fn mcp_event_trigger_from_row(row: McpEventTriggerRow) -> Option<McpEventTrigger> {
+    Some(McpEventTrigger {
+        id: Uuid::parse_str(&row.0).ok()?,
+        routine_id: Uuid::parse_str(&row.1).ok()?,
+        server_id: row.2,
+        event: row.3,
+        resource_uri: row.4,
+        match_text: row.5,
+        cooldown_secs: row.6,
+        enabled: row.7 != 0,
+        last_fired_at: row.8,
+        last_error: row.9,
+        created_at: row.10,
+        updated_at: row.11,
+    })
+}
+
+const MCP_EVENT_TRIGGER_COLUMNS: &str =
+    "id, routine_id, server_id, event, resource_uri, match_text, cooldown_secs,
+     enabled, last_fired_at, last_error, created_at, updated_at";
+
+const MCP_EVENT_TRIGGER_COLUMNS_T: &str =
+    "t.id, t.routine_id, t.server_id, t.event, t.resource_uri, t.match_text,
+     t.cooldown_secs, t.enabled, t.last_fired_at, t.last_error, t.created_at,
+     t.updated_at";
+
+pub struct McpEventTriggerQueries;
+
+impl McpEventTriggerQueries {
+    pub async fn create(
+        pool: &SqlitePool,
+        routine_id: Uuid,
+        server_id: &str,
+        event: &str,
+        resource_uri: &str,
+        match_text: &str,
+        cooldown_secs: i64,
+    ) -> Result<McpEventTrigger, sqlx::Error> {
+        let id = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO mcp_event_triggers
+                (id, routine_id, server_id, event, resource_uri, match_text,
+                 cooldown_secs, enabled, last_fired_at, last_error, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, 1, NULL, '', ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(routine_id.to_string())
+        .bind(server_id.trim())
+        .bind(event.trim())
+        .bind(resource_uri.trim())
+        .bind(match_text.trim())
+        .bind(cooldown_secs.clamp(0, 3_600))
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        Self::get(pool, id).await?.ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<McpEventTrigger>, sqlx::Error> {
+        let row: Option<McpEventTriggerRow> = sqlx::query_as(&format!(
+            "SELECT {MCP_EVENT_TRIGGER_COLUMNS} FROM mcp_event_triggers WHERE id = ?"
+        ))
+        .bind(id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.and_then(mcp_event_trigger_from_row))
+    }
+
+    /// Triggers belonging to one bot's routines, for the routine panel.
+    pub async fn list_for_bot(
+        pool: &SqlitePool,
+        bot_id: Uuid,
+    ) -> Result<Vec<McpEventTrigger>, sqlx::Error> {
+        let rows: Vec<McpEventTriggerRow> = sqlx::query_as(&format!(
+            "SELECT {MCP_EVENT_TRIGGER_COLUMNS_T}
+             FROM mcp_event_triggers t
+             JOIN routines r ON r.id = t.routine_id
+             WHERE r.bot_id = ?
+             ORDER BY t.created_at, t.event"
+        ))
+        .bind(bot_id.to_string())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(mcp_event_trigger_from_row)
+            .collect())
+    }
+
+    /// Enabled triggers on enabled routines, for the listener supervisor.
+    pub async fn list_enabled(pool: &SqlitePool) -> Result<Vec<McpEventTrigger>, sqlx::Error> {
+        let rows: Vec<McpEventTriggerRow> = sqlx::query_as(&format!(
+            "SELECT {MCP_EVENT_TRIGGER_COLUMNS_T}
+             FROM mcp_event_triggers t
+             JOIN routines r ON r.id = t.routine_id
+             WHERE t.enabled = 1 AND r.is_enabled = 1
+             ORDER BY t.server_id, t.created_at"
+        ))
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(mcp_event_trigger_from_row)
+            .collect())
+    }
+
+    pub async fn set_enabled(
+        pool: &SqlitePool,
+        id: Uuid,
+        enabled: bool,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE mcp_event_triggers SET enabled = ?, updated_at = ? WHERE id = ?")
+            .bind(i64::from(enabled))
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM mcp_event_triggers WHERE id = ?")
+            .bind(id.to_string())
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_for_routine(
+        pool: &SqlitePool,
+        routine_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM mcp_event_triggers WHERE routine_id = ?")
+            .bind(routine_id.to_string())
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Atomically claim one firing slot.
+    ///
+    /// `cutoff` is `now - cooldown_secs`. The update is the concurrency gate:
+    /// two notifications arriving together cannot both start the same routine,
+    /// and a log storm cannot run it dozens of times per minute.
+    pub async fn claim(
+        pool: &SqlitePool,
+        id: Uuid,
+        now: &str,
+        cutoff: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE mcp_event_triggers
+             SET last_fired_at = ?, last_error = '', updated_at = ?
+             WHERE id = ? AND enabled = 1
+               AND (last_fired_at IS NULL OR last_fired_at <= ?)",
+        )
+        .bind(now)
+        .bind(now)
+        .bind(id.to_string())
+        .bind(cutoff)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn record_error(pool: &SqlitePool, id: Uuid, error: &str) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE mcp_event_triggers SET last_error = ?, updated_at = ? WHERE id = ?")
+            .bind(error.chars().take(1_000).collect::<String>())
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+}
+
 /// Webhook trigger queries on routines.
 pub struct WebhookQueries;
 
@@ -12037,5 +12251,180 @@ mod office_graph_tests {
             .await
             .expect("latest after abandon")
             .is_none());
+    }
+}
+
+#[cfg(test)]
+mod mcp_event_trigger_tests {
+    use super::*;
+    use crate::migrations;
+    use chrono::Duration;
+
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    async fn seeded() -> (SqlitePool, Uuid, Uuid) {
+        let pool = db().await;
+        let bot = ravenbot_core::Bot::new("Listener", "MCP event test");
+        BotQueries::insert(&pool, &bot).await.expect("bot");
+        let routine_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO routines (id, bot_id, name, schedule, instruction, is_enabled)
+             VALUES (?, ?, 'Nightly', '0 9 * * *', 'do the thing', 1)",
+        )
+        .bind(routine_id.to_string())
+        .bind(bot.id.to_string())
+        .execute(&pool)
+        .await
+        .expect("routine");
+        (pool, bot.id, routine_id)
+    }
+
+    #[tokio::test]
+    async fn a_trigger_round_trips_and_is_scoped_to_its_bot() {
+        let (pool, bot_id, routine_id) = seeded().await;
+        let trigger = McpEventTriggerQueries::create(
+            &pool,
+            routine_id,
+            " github ",
+            "notifications/message",
+            "",
+            "deploy",
+            120,
+        )
+        .await
+        .expect("create");
+        assert_eq!(trigger.server_id, "github");
+        assert_eq!(trigger.cooldown_secs, 120);
+        assert!(trigger.enabled);
+
+        let for_bot = McpEventTriggerQueries::list_for_bot(&pool, bot_id)
+            .await
+            .expect("list");
+        assert_eq!(for_bot.len(), 1);
+        assert_eq!(for_bot[0].id, trigger.id);
+        assert!(McpEventTriggerQueries::list_for_bot(&pool, Uuid::new_v4())
+            .await
+            .expect("other bot")
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_firing_slot_is_claimed_once_per_cooldown() {
+        let (pool, _, routine_id) = seeded().await;
+        let trigger = McpEventTriggerQueries::create(&pool, routine_id, "github", "*", "", "", 60)
+            .await
+            .expect("create");
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let cutoff = (now - Duration::seconds(60)).to_rfc3339();
+        assert!(
+            McpEventTriggerQueries::claim(&pool, trigger.id, &now_text, &cutoff)
+                .await
+                .expect("first claim")
+        );
+        assert!(
+            !McpEventTriggerQueries::claim(&pool, trigger.id, &now_text, &cutoff)
+                .await
+                .expect("second claim")
+        );
+
+        let later = (now + Duration::seconds(61)).to_rfc3339();
+        let later_cutoff = (now + Duration::seconds(1)).to_rfc3339();
+        assert!(
+            McpEventTriggerQueries::claim(&pool, trigger.id, &later, &later_cutoff)
+                .await
+                .expect("after cooldown")
+        );
+    }
+
+    #[tokio::test]
+    async fn disabling_the_routine_or_trigger_stops_delivery() {
+        let (pool, _, routine_id) = seeded().await;
+        let trigger = McpEventTriggerQueries::create(&pool, routine_id, "github", "*", "", "", 0)
+            .await
+            .expect("create");
+        assert_eq!(
+            McpEventTriggerQueries::list_enabled(&pool)
+                .await
+                .expect("enabled")
+                .len(),
+            1
+        );
+
+        McpEventTriggerQueries::set_enabled(&pool, trigger.id, false)
+            .await
+            .expect("disable trigger");
+        assert!(McpEventTriggerQueries::list_enabled(&pool)
+            .await
+            .expect("disabled trigger")
+            .is_empty());
+
+        McpEventTriggerQueries::set_enabled(&pool, trigger.id, true)
+            .await
+            .expect("enable trigger");
+        sqlx::query("UPDATE routines SET is_enabled = 0 WHERE id = ?")
+            .bind(routine_id.to_string())
+            .execute(&pool)
+            .await
+            .expect("disable routine");
+        assert!(McpEventTriggerQueries::list_enabled(&pool)
+            .await
+            .expect("disabled routine")
+            .is_empty());
+
+        McpEventTriggerQueries::delete_for_routine(&pool, routine_id)
+            .await
+            .expect("cleanup");
+        assert!(McpEventTriggerQueries::get(&pool, trigger.id)
+            .await
+            .expect("get")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_trigger_is_rejected_and_errors_are_bounded() {
+        let (pool, _, routine_id) = seeded().await;
+        let trigger = McpEventTriggerQueries::create(
+            &pool,
+            routine_id,
+            "github",
+            "notifications/message",
+            "file:///repo",
+            "push",
+            60,
+        )
+        .await
+        .expect("create");
+        assert!(
+            McpEventTriggerQueries::create(
+                &pool,
+                routine_id,
+                "github",
+                "notifications/message",
+                "file:///repo",
+                "push",
+                60,
+            )
+            .await
+            .is_err(),
+            "the same server/event/resource/filter must not create a second row"
+        );
+
+        McpEventTriggerQueries::record_error(&pool, trigger.id, &"x".repeat(2_000))
+            .await
+            .expect("record error");
+        let stored = McpEventTriggerQueries::get(&pool, trigger.id)
+            .await
+            .expect("get")
+            .expect("trigger");
+        assert_eq!(stored.last_error.len(), 1_000);
     }
 }

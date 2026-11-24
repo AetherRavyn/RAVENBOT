@@ -3,7 +3,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,13 +32,16 @@ fn list_timeout() -> Duration {
 fn call_timeout() -> Duration {
     timeout_from_env("RAVENBOT_MCP_CALL_TIMEOUT_SECS", 180)
 }
+fn subscribe_timeout() -> Duration {
+    timeout_from_env("RAVENBOT_MCP_SUBSCRIBE_TIMEOUT_SECS", 8)
+}
 /// A live stdio MCP session. `kill_on_drop` guarantees the child is reaped on
 /// every early-return path, which is what previously leaked `npx`/node processes
 /// (and their RAM) whenever initialization timed out.
 struct StdioSession {
     child: Child,
     stdin: ChildStdin,
-    reader: Lines<BufReader<ChildStdout>>,
+    reader: BufReader<ChildStdout>,
     stderr_tail: Arc<Mutex<String>>,
 }
 
@@ -89,15 +92,10 @@ impl StdioSession {
                     self.stderr()
                 ));
             }
-            let line = match tokio::time::timeout(remaining, self.reader.next_line()).await {
-                Ok(Ok(Some(line))) => line,
-                Ok(Ok(None)) => {
-                    return Err(format!(
-                        "{}: server closed stdout before responding{}",
-                        method,
-                        self.stderr()
-                    ))
-                }
+            let mut line = String::new();
+            let read = match tokio::time::timeout(remaining, self.reader.read_line(&mut line)).await
+            {
+                Ok(Ok(read)) => read,
                 Ok(Err(e)) => {
                     return Err(format!("{}: read error: {}{}", method, e, self.stderr()))
                 }
@@ -110,6 +108,13 @@ impl StdioSession {
                     ))
                 }
             };
+            if read == 0 {
+                return Err(format!(
+                    "{}: server closed stdout before responding{}",
+                    method,
+                    self.stderr()
+                ));
+            }
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -132,6 +137,111 @@ impl StdioSession {
             return Ok(msg.get("result").cloned().unwrap_or(Value::Null));
         }
     }
+}
+
+/// Read notifications from any line-oriented reader/writer pair.
+///
+/// Kept transport-generic so the notification semantics (what counts as an
+/// event, how server requests are answered) can be tested without spawning a
+/// real connector.
+async fn run_notification_loop<R, W, F>(
+    server_id: &str,
+    reader: &mut R,
+    writer: &mut W,
+    mut on_notification: F,
+) -> Result<(), String>
+where
+    R: AsyncBufRead + Unpin,
+    W: AsyncWrite + Unpin,
+    F: FnMut(crate::events::McpNotification) -> bool,
+{
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if !read_capped_line(reader, &mut line, 1024 * 1024).await? {
+            return Err("The MCP server closed stdout while listening for events.".to_string());
+        }
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(message) = serde_json::from_str::<Value>(line) else {
+            // Diagnostics on stdout are not protocol messages; skip them.
+            continue;
+        };
+        let Some(method) = message.get("method").and_then(Value::as_str) else {
+            continue;
+        };
+        if message.get("id").is_some() {
+            answer_server_request(writer, &message, method).await?;
+            continue;
+        }
+        if let Some(notification) = crate::events::parse_notification(server_id, &message) {
+            if !on_notification(notification) {
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// Read one newline-terminated line without letting a broken server allocate
+/// an unbounded string. A notification is context for a routine, not a file.
+async fn read_capped_line<R: AsyncBufRead + Unpin>(
+    reader: &mut R,
+    out: &mut String,
+    max_bytes: usize,
+) -> Result<bool, String> {
+    loop {
+        let buffer = reader
+            .fill_buf()
+            .await
+            .map_err(|error| format!("MCP notification read failed: {error}"))?;
+        if buffer.is_empty() {
+            return Ok(!out.is_empty());
+        }
+        let (take, done) = match buffer.iter().position(|byte| *byte == b'\n') {
+            Some(index) => (index + 1, true),
+            None => (buffer.len(), false),
+        };
+        if out.len() + take > max_bytes {
+            return Err("The MCP server sent an oversized notification.".to_string());
+        }
+        out.push_str(&String::from_utf8_lossy(&buffer[..take]));
+        reader.consume(take);
+        if done {
+            return Ok(true);
+        }
+    }
+}
+
+async fn answer_server_request<W: AsyncWrite + Unpin>(
+    writer: &mut W,
+    message: &Value,
+    method: &str,
+) -> Result<(), String> {
+    let Some(id) = message.get("id").cloned() else {
+        return Ok(());
+    };
+    let response = match method {
+        "ping" => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
+        "roots/list" => json!({"jsonrpc": "2.0", "id": id, "result": {"roots": []}}),
+        _ => json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {
+                "code": -32601,
+                "message": "RAVENBOT does not implement this server request."
+            }
+        }),
+    };
+    writer
+        .write_all(format!("{}\n", response).as_bytes())
+        .await
+        .map_err(|error| format!("failed to answer MCP server request: {error}"))?;
+    writer
+        .flush()
+        .await
+        .map_err(|error| format!("failed to flush MCP server response: {error}"))
 }
 
 async fn drain_stderr(mut stderr: ChildStderr, sink: Arc<Mutex<String>>) {
@@ -275,13 +385,13 @@ impl McpClient {
         Ok(StdioSession {
             child,
             stdin,
-            reader: BufReader::new(stdout).lines(),
+            reader: BufReader::new(stdout),
             stderr_tail,
         })
     }
 
-    async fn initialize(&self, session: &mut StdioSession) -> Result<(), String> {
-        session
+    async fn initialize(&self, session: &mut StdioSession) -> Result<Value, String> {
+        let result = session
             .request(
                 "initialize",
                 json!({
@@ -306,7 +416,137 @@ impl McpClient {
             .flush()
             .await
             .map_err(|e| format!("failed to flush initialized notification: {}", e))?;
-        Ok(())
+        Ok(result)
+    }
+
+    /// Listen for server-initiated MCP notifications over stdio.
+    ///
+    /// The session is long-lived: initialize, subscribe to any requested
+    /// resources, then read every notification until the server exits or the
+    /// callback returns `false`. Event triggers currently require stdio; an
+    /// HTTP server is rejected explicitly rather than pretending a one-shot
+    /// POST can receive pushes.
+    pub async fn listen_notifications<F, E, R>(
+        &self,
+        subscribe_uris: &[String],
+        on_notification: F,
+        on_subscription_error: E,
+        on_ready: R,
+    ) -> Result<(), String>
+    where
+        F: FnMut(crate::events::McpNotification) -> bool + Send,
+        E: FnMut(&str, String) + Send,
+        R: FnOnce() + Send,
+    {
+        if self.is_builtin() {
+            return Err(format!(
+                "Built-in connector '{}' does not emit MCP notifications.",
+                self.server_id
+            ));
+        }
+        if Self::offline_mode() {
+            return Err("MCP offline mode enabled (RAVENBOT_MCP_OFFLINE)".to_string());
+        }
+        if self.uses_http() {
+            return Err(format!(
+                "MCP event triggers need a stdio server that can push notifications; '{}' is an HTTP connector.",
+                self.server_id
+            ));
+        }
+        self.listen_notifications_stdio(
+            subscribe_uris,
+            on_notification,
+            on_subscription_error,
+            on_ready,
+        )
+        .await
+    }
+
+    /// The stdio half, without the offline/HTTP policy checks. Tests use it to
+    /// exercise a real child process; production reaches it only through
+    /// `listen_notifications`.
+    async fn listen_notifications_stdio<F, E, R>(
+        &self,
+        subscribe_uris: &[String],
+        on_notification: F,
+        mut on_subscription_error: E,
+        on_ready: R,
+    ) -> Result<(), String>
+    where
+        F: FnMut(crate::events::McpNotification) -> bool + Send,
+        E: FnMut(&str, String) + Send,
+        R: FnOnce() + Send,
+    {
+        let mut session = self.spawn_stdio().await?;
+        let initialized = self.initialize(&mut session).await?;
+        let can_subscribe = initialized
+            .pointer("/capabilities/resources/subscribe")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        let mut id = 2u64;
+        let mut subscribed: Vec<&str> = Vec::new();
+        let subscription_deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        for uri in subscribe_uris
+            .iter()
+            .map(|uri| uri.trim())
+            .filter(|uri| !uri.is_empty())
+            .take(16)
+        {
+            if subscribed.contains(&uri) {
+                continue;
+            }
+            subscribed.push(uri);
+            if tokio::time::Instant::now() >= subscription_deadline {
+                on_subscription_error(
+                    uri,
+                    "Resource subscription setup exceeded its 30s budget.".to_string(),
+                );
+                continue;
+            }
+            if !can_subscribe {
+                on_subscription_error(
+                    uri,
+                    "The server did not advertise resource subscriptions (resources.subscribe)."
+                        .to_string(),
+                );
+                continue;
+            }
+            match session
+                .request(
+                    "resources/subscribe",
+                    json!({ "uri": uri }),
+                    id,
+                    subscribe_timeout(),
+                )
+                .await
+            {
+                Ok(_) => tracing::info!(
+                    server = %self.server_id,
+                    uri = %uri,
+                    "MCP resource subscription active"
+                ),
+                Err(error) => {
+                    tracing::warn!(
+                        server = %self.server_id,
+                        uri = %uri,
+                        error = %error,
+                        "MCP resource subscription failed"
+                    );
+                    on_subscription_error(uri, error);
+                }
+            }
+            id += 1;
+        }
+
+        on_ready();
+        run_notification_loop(
+            &self.server_id,
+            &mut session.reader,
+            &mut session.stdin,
+            on_notification,
+        )
+        .await
     }
 
     async fn list_tools_stdio(&self) -> Result<Vec<McpTool>, String> {
@@ -957,6 +1197,93 @@ mod tests {
         assert!(result.message.contains("Could not reach"));
         // Tools are still offered as synthesized descriptors for the model.
         assert!(!result.tools.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_notification_loop_answers_ping_and_dispatches_the_event() {
+        use tokio::io::AsyncBufReadExt;
+        let (client_reader, mut server_writer) = tokio::io::duplex(8 * 1024);
+        let (mut client_writer, server_reader) = tokio::io::duplex(8 * 1024);
+
+        let server = tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let mut server_reader = BufReader::new(server_reader);
+            server_writer
+                .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"ping\",\"params\":{}}\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            server_reader.read_line(&mut response).await.unwrap();
+            let value: serde_json::Value = serde_json::from_str(response.trim()).unwrap();
+            assert_eq!(value["result"], serde_json::json!({}));
+            server_writer
+                .write_all(
+                    b"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\",\"params\":{\"uri\":\"file:///repo/a.md\"}}\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        let mut reader = BufReader::new(client_reader);
+        run_notification_loop("github", &mut reader, &mut client_writer, move |event| {
+            sink.lock().unwrap().push(event);
+            false
+        })
+        .await
+        .expect("notification loop");
+        server.await.expect("fake server");
+
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].method, "notifications/resources/updated");
+        assert_eq!(events[0].resource_uri.as_deref(), Some("file:///repo/a.md"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_real_stdio_process_can_start_and_push_an_event() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let script = r#"printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{}}}' '{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"from the child"}}'; sleep 2"#;
+        let mut config = cfg("git");
+        config.id = "listener_test".to_string();
+        config.command = "sh".to_string();
+        config.args = vec!["-c".to_string(), script.to_string()];
+        let client = McpClient::with_env(config, HashMap::new());
+        let ready = Arc::new(AtomicBool::new(false));
+        let ready_flag = ready.clone();
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let sink = captured.clone();
+        client
+            .listen_notifications_stdio(
+                &[],
+                move |event| {
+                    sink.lock().unwrap().push(event);
+                    false
+                },
+                |_, _| {},
+                move || ready_flag.store(true, Ordering::SeqCst),
+            )
+            .await
+            .expect("listener");
+        assert!(ready.load(Ordering::SeqCst), "ready callback must run");
+        let events = captured.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].method, "notifications/message");
+        assert_eq!(events[0].params["data"], "from the child");
+    }
+
+    #[tokio::test]
+    async fn a_builtin_connector_is_not_a_notification_listener() {
+        let mut config = cfg("duckdb");
+        config.command = "ravenbot-builtin".to_string();
+        let client = McpClient::new(config);
+        let error = client
+            .listen_notifications(&[], |_| false, |_, _| {}, || {})
+            .await
+            .expect_err("builtin has no notifications");
+        assert!(error.contains("does not emit"), "{error}");
     }
 
     #[tokio::test]

@@ -11,6 +11,13 @@ All notable changes to RAVENBOT are documented here.
   17/15/14px headings with hierarchical margins, 32px list indents, 8px
   list-item spacing, hover-only link underlines, and quiet 8%-fill inline
   code. The token renderer and its HTML/link safety checks are unchanged.
+- **MCP event-triggered routines** — enabled stdio MCP servers can now push
+  JSON-RPC notifications that start a routine. Triggers live in the database,
+  match a method/resource/params filter, claim a per-trigger cooldown, and run
+  from both the desktop app and the headless daemon. The routine's first turn
+  carries the bounded event context. HTTP connectors remain request/response and
+  are reported as unsupported rather than faked. Configure them from the MCP
+  event panel in Routines.
 - **Streaming block memoisation** — completed markdown block tokens are reused
   across each streaming re-lex, so only the growing block (and any block whose
   fade offset changed) re-renders. Link reference definitions still force a
