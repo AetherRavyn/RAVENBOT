@@ -289,3 +289,45 @@ describe("ProjectsView revert", () => {
     expect(calls.at(-1)?.changeId).toBe("change-1");
   });
 });
+
+describe("ProjectsView diagnostics", () => {
+  it("runs the language server for the open file and shows its errors", async () => {
+    const diagnostics = {
+      server: "rust-analyzer",
+      root: ROOT,
+      checked: [`${ROOT}/README.md`],
+      diagnostics: [
+        {
+          path: `${ROOT}/README.md`,
+          line: 1,
+          column: 3,
+          end_line: 1,
+          end_column: 8,
+          severity: "error",
+          message: "mismatched types",
+          source: "rust-analyzer",
+        },
+      ],
+      errors: 1,
+      warnings: 0,
+      timed_out: false,
+      note: "",
+    };
+    serve({ project_diagnostics: diagnostics });
+    const { getByLabelText, getByRole, getByText, queryByText } = await openProjects();
+    await openFile(getByRole, "README.md");
+
+    await fireEvent.click(getByLabelText("Run language diagnostics on this file"));
+    await waitFor(() => expect(getByText("Language diagnostics")).toBeTruthy());
+    expect(getByText("mismatched types")).toBeTruthy();
+    expect(invoke).toHaveBeenCalledWith("project_diagnostics", {
+      root: ROOT,
+      paths: [`${ROOT}/README.md`],
+    });
+
+    await fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() =>
+      expect(queryByText("Language diagnostics")).toBeNull(),
+    );
+  });
+});

@@ -274,6 +274,11 @@
   let defaultAgent = $state<any | null>(null);
   let defaultAgentSaving = $state(false);
   let defaultAgentError = $state<string | null>(null);
+  // Language servers used by the agent tool and the Projects diagnostics button.
+  let lspConfigText = $state("");
+  let lspConfigSaving = $state(false);
+  let lspConfigError = $state<string | null>(null);
+  let lspConfigNotice = $state("");
   // Honest facts for the chosen default (discovery cache first, list second).
   let defaultFacts = $derived(
     modelSummary(modelMetaFor(defaultProvider, defaultModel)) ||
@@ -281,6 +286,7 @@
   );
 
   onMount(() => {
+    void loadLspConfig();
     return subscribeTheme((t) => {
       currentTheme = t;
     });
@@ -1485,6 +1491,43 @@
     } catch {
       defaultAgent = null;
     }
+  }
+
+  async function loadLspConfig() {
+    try {
+      const config = await invoke<Record<string, unknown>>("get_lsp_config");
+      lspConfigText = JSON.stringify(config, null, 2);
+      lspConfigError = null;
+    } catch (error) {
+      lspConfigError = String(error);
+    }
+  }
+
+  async function saveLspConfig() {
+    if (lspConfigSaving) return;
+    lspConfigSaving = true;
+    lspConfigError = null;
+    lspConfigNotice = "";
+    try {
+      const parsed = JSON.parse(lspConfigText || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("The language-server config must be a JSON object.");
+      }
+      const saved = await invoke<Record<string, unknown>>("set_lsp_config", {
+        config: parsed,
+      });
+      lspConfigText = JSON.stringify(saved, null, 2);
+      lspConfigNotice = "Language servers saved.";
+    } catch (error) {
+      lspConfigError = String(error);
+    } finally {
+      lspConfigSaving = false;
+    }
+  }
+
+  async function restoreLspDefaults() {
+    lspConfigText = "{}";
+    await saveLspConfig();
   }
 
   async function saveDefaultAgent(botId: string) {
@@ -3126,6 +3169,65 @@
                 <Activity class="size-5 text-[var(--text-tertiary)]" /> Diagnostics
               </h3>
               <p class="text-sm text-[var(--text-tertiary)] mt-1">Recent runs and the fleet-wide audit trail: model spend, tool calls, file and network access.</p>
+            </div>
+            <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <h4 class="text-sm font-bold text-[var(--text-primary)] flex items-center gap-1.5">
+                    <Activity class="size-4 text-[var(--brand-text)]" /> Language servers
+                  </h4>
+                  <p class="text-[11px] text-[var(--text-muted)] leading-relaxed mt-1">
+                    RAVENBOT runs installed LSP servers on changed files. Defaults:
+                    rust-analyzer, pyright-langserver, typescript-language-server,
+                    gopls, and clangd. Commands must be on PATH, and agents need
+                    the Shell capability. Edit the JSON map to override a command
+                    or extension; save <code class="font-mono">&#123;&#125;</code> to
+                    restore the defaults.
+                  </p>
+                </div>
+              </div>
+              <textarea
+                bind:value={lspConfigText}
+                rows={10}
+                spellcheck="false"
+                aria-label="Language server configuration JSON"
+                class="w-full resize-y rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 font-mono text-[11px] leading-relaxed text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/50"
+              ></textarea>
+              {#if lspConfigError}
+                <p class="text-[11px] text-danger leading-snug whitespace-pre-wrap">{lspConfigError}</p>
+              {/if}
+              {#if lspConfigNotice}
+                <p class="text-[11px] text-success leading-snug">{lspConfigNotice}</p>
+              {/if}
+              <div class="flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  class="h-8 gap-1.5 text-xs border-[var(--hairline-strong)]"
+                  onclick={() => void loadLspConfig()}
+                  disabled={lspConfigSaving}
+                >
+                  <RefreshCw class="size-3" /> Reload
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  class="h-8 gap-1.5 text-xs border-[var(--hairline-strong)]"
+                  onclick={() => void restoreLspDefaults()}
+                  disabled={lspConfigSaving}
+                >
+                  Restore defaults
+                </Button>
+                <Button
+                  size="sm"
+                  class="h-8 gap-1.5 text-xs"
+                  onclick={() => void saveLspConfig()}
+                  disabled={lspConfigSaving}
+                >
+                  {#if lspConfigSaving}<Loader2 class="size-3 animate-spin" />{:else}<Save class="size-3" />{/if}
+                  Save language servers
+                </Button>
+              </div>
             </div>
             <div class="p-5 rounded-2xl border bg-card/60" style="border-color: {currentTheme.borderHex};">
               <RunsPanel />

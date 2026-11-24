@@ -45,6 +45,24 @@ let currentAccountMock = {
 function mockSettings() {
   invokeMock.mockImplementation(async (command: string) => {
     switch (command) {
+      case "get_lsp_config":
+        return {
+          rust: {
+            command: "rust-analyzer",
+            args: [],
+            language_id: "rust",
+            extensions: ["rs"],
+          },
+        };
+      case "set_lsp_config":
+        return {
+          rust: {
+            command: "rust-analyzer",
+            args: [],
+            language_id: "rust",
+            extensions: ["rs"],
+          },
+        };
       case "get_model_catalog":
         return [provider];
       case "get_configured_providers":

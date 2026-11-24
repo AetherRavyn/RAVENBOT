@@ -86,14 +86,14 @@ but not the general one; **Missing** = no implementation.
 | Goal loop for a 1:1 agent | durable thread goal, one-node graph pinned to the user thread, office review/gates, pause/resume/stop, restart-safe scheduling, same heartbeat in the headless daemon | session goal/todo loop | **Present** |
 | File snapshot / revert | content-addressed before-images, run/file revert previews, conflict checks, Projects and Runs actions | `packages/core/src/snapshot.ts`, VCS | **Present** |
 | Isolated worktrees | opt-in conversation-scoped `git worktree`, fail-closed on dirty/non-Git projects, review + checked apply/discard, goal/snapshot aware | `packages/core/src/worktree.ts` | **Present** |
-| **LSP / project diagnostics** | no LSP client; code edits rely on compiler/test tools | project LSP settings in app | **Missing (P1)** |
+| LSP / project diagnostics | real stdio LSP client, five default servers, agent tool, automatic goal-round checks, Projects diagnostics and a Settings JSON map | project LSP settings in app | **Present** |
 | Unified patch tool | `file_edit` (also `apply_patch`) parses standard unified diffs and Codex patches in-process, validates every hunk, writes atomically, and journals each file | `tool/patch*` | **Present** |
-| **Timeline virtualisation** | message windows (30/50) bound the mounted rows; no row recycling | `session/timeline/virtualizer.tsx` | **Partial (P1)** |
+| **Timeline virtualisation** | message windows (30/50) bound the mounted rows; no row recycling | `session/timeline/virtualizer.tsx` | **Partial (P2)** |
 | **Worker markdown/highlight** | marked + custom tokens on the UI thread | `markdown.worker.ts` | **Missing (P2)** |
 | **MCP event-triggered jobs** | MCP client only; scheduler triggers are cron/webhook | automation from MCP events | **Missing (P2)** |
 | **Public session share** | remote access/device pairing, no public share link | share UI | **Missing (P3)** |
 
-## 5. The gaps that still block 24/7 “any task”
+## 5. The 24/7 harness
 
 ### Shipped — a goal loop for every agent thread
 
@@ -174,10 +174,25 @@ project the user is still editing.
 - Small Git-ignored local files (for example `.env`) are copied into the
   checkout for reading. Ignored changes are not part of Apply.
 
-### P1 — LSP diagnostics
+### Shipped — language diagnostics
 
-- **LSP:** start the language server for the project root, surface diagnostics
-  after writes and before “done”; this catches type errors that tests miss.
+- `crates/runtime/src/lsp.rs` implements Content-Length framing, initialize,
+  initialized, didOpen, publishDiagnostics, server-request replies, shutdown and
+  exit over any reader/writer pair. The production path spawns the server in the
+  workspace; tests use an in-memory duplex and a fake server.
+- Defaults cover rust-analyzer, pyright-langserver, typescript-language-server,
+  gopls, and clangd. A server is selected by the changed files' extensions and
+  must be installed on PATH; nothing is auto-installed.
+- The `diagnostics` tool is exposed only when a matching server is installed and
+  the agent has the Shell capability. It checks named files or the run's
+  changed files and returns typed, 1-based diagnostics.
+- Every 1:1 goal round checks the files it changed. Error diagnostics become
+  judge failures and count toward the round's retry backoff; warnings do not
+  block. A missing server or timeout falls back to the existing deterministic
+  gates, so an unavailable LSP cannot stall every goal.
+- Projects has a per-file Diagnostics button; Settings → Diagnostics → Language
+  servers edits the `lsp_servers` map and can restore defaults.
+  `RAVENBOT_LSP_TIMEOUT_SECS` controls the per-check deadline.
 
 ## 6. Renderer roadmap (after the typography change)
 
@@ -231,3 +246,12 @@ project the user is still editing.
   and `isolation_refuses_a_dirty_or_non_git_folder` cover the safety edges.
   `a_thread_has_one_active_checkout_and_a_finished_history` covers the DB
   lifecycle.
+- LSP: `lsp::tests` covers frame round-trips, workspace detection, diagnostic
+  parsing, error-first truncation, capped failure summaries, and a full
+  initialize → didOpen → publishDiagnostics session against an in-memory fake
+  server. The ignored `clangd_reports_a_real_error` test validates a real
+  installed server on demand. `thread_paths_are_scoped_to_the_turn` covers the
+  changed-file scope used by the goal gate, and
+  `language_diagnostics_force_a_continue_verdict` proves a diagnostic failure
+  overrides a done verdict. The ProjectsView DOM test covers the diagnostics
+  command and error list.

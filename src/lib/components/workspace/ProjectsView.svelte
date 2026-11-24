@@ -33,7 +33,7 @@
   import {
     Folder, FolderOpen, FileText, File, ChevronRight, ChevronLeft, Loader2, RefreshCw,
     Building2, Bot as BotIcon, ExternalLink, GitBranch, AlertTriangle,
-    Pencil, Save, Eye, Code2, RotateCcw, X, Check,
+    Pencil, Save, Eye, Code2, RotateCcw, X, Check, Activity,
   } from "@lucide/svelte";
 
   interface Project {
@@ -69,6 +69,29 @@
     deleted: string[];
     skipped: RevertConflict[];
     conflicts: RevertConflict[];
+  }
+
+  interface LspDiagnostic {
+    path: string;
+    line: number;
+    column: number;
+    end_line: number;
+    end_column: number;
+    severity: string;
+    message: string;
+    source?: string | null;
+    code?: string | null;
+  }
+
+  interface LspReport {
+    server: string;
+    root: string;
+    checked: string[];
+    diagnostics: LspDiagnostic[];
+    errors: number;
+    warnings: number;
+    timed_out: boolean;
+    note: string;
   }
 
   interface Totals {
@@ -190,6 +213,12 @@
   let revertDialog = $state<{ change: FileChange; report: RevertReport } | null>(null);
   let revertDialogEl = $state<HTMLElement | null>(null);
 
+  /** Language-server diagnostics for the open file. */
+  let diagnosticsReport = $state<LspReport | null>(null);
+  let diagnosticsLoading = $state(false);
+  let diagnosticsError = $state("");
+  let diagnosticsEl = $state<HTMLElement | null>(null);
+
   onMount(() => {
     void load();
   });
@@ -222,6 +251,34 @@
   $effect(() => {
     if (revertDialog) void tick().then(() => revertDialogEl?.focus());
   });
+
+  $effect(() => {
+    if (diagnosticsReport || diagnosticsError) {
+      void tick().then(() => diagnosticsEl?.focus());
+    }
+  });
+
+  async function runDiagnostics() {
+    if (!selected || diagnosticsLoading) return;
+    diagnosticsLoading = true;
+    diagnosticsError = "";
+    diagnosticsReport = null;
+    try {
+      diagnosticsReport = await invoke<LspReport>("project_diagnostics", {
+        root: selected.root,
+        paths: [fullPath(selected)],
+      });
+    } catch (error) {
+      diagnosticsError = String(error);
+    } finally {
+      diagnosticsLoading = false;
+    }
+  }
+
+  function closeDiagnostics() {
+    diagnosticsReport = null;
+    diagnosticsError = "";
+  }
 
   async function load() {
     loading = true;
@@ -737,6 +794,11 @@
     // The editor also handles Escape. It prevents the default action so this
     // handler does not immediately dismiss the dialog that key just opened.
     if (e.defaultPrevented) return;
+    if (e.key === "Escape" && (diagnosticsReport || diagnosticsError)) {
+      e.preventDefault();
+      closeDiagnostics();
+      return;
+    }
     if (!pendingIntent) return;
     if (e.key === "Escape") {
       e.preventDefault();
@@ -1149,6 +1211,20 @@
               <button
                 type="button"
                 class="proj__iconbtn"
+                title="Run language diagnostics on this file"
+                aria-label="Run language diagnostics on this file"
+                disabled={diagnosticsLoading || selected.entry.isBinary}
+                onclick={() => void runDiagnostics()}
+              >
+                {#if diagnosticsLoading}
+                  <Loader2 class="size-3.5 animate-spin" strokeWidth={2} />
+                {:else}
+                  <Activity class="size-3.5" strokeWidth={2} />
+                {/if}
+              </button>
+              <button
+                type="button"
+                class="proj__iconbtn"
                 title={t("projects.reload")}
                 aria-label={t("projects.reload")}
                 onclick={reload}
@@ -1383,6 +1459,98 @@
     </section>
   </div>
 </div>
+
+{#if diagnosticsReport || diagnosticsError}
+  {@const report = diagnosticsReport}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--scrim)] p-4"
+    onclick={closeDiagnostics}
+  >
+    <div
+      class="modal-panel flex max-h-[82vh] w-full max-w-2xl flex-col space-y-3 p-5"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="proj-diagnostics-title"
+      tabindex="-1"
+      bind:this={diagnosticsEl}
+      onclick={(event) => event.stopPropagation()}
+    >
+      <div class="flex items-start justify-between gap-3 border-b border-[var(--hairline)] pb-2">
+        <div class="min-w-0">
+          <h2 id="proj-diagnostics-title" class="flex items-center gap-1.5 text-sm font-semibold text-[var(--text-primary)]">
+            <Activity class="size-4 text-[var(--brand-text)]" strokeWidth={2} />
+            Language diagnostics
+          </h2>
+          <p class="mt-0.5 text-[11px] text-[var(--text-muted)]">
+            {#if report}
+              {report.server} · {report.errors} error{report.errors === 1 ? "" : "s"}, {report.warnings} warning{report.warnings === 1 ? "" : "s"}
+            {:else}
+              Diagnostics could not run
+            {/if}
+          </p>
+        </div>
+        <button
+          type="button"
+          class="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md font-mono text-xs text-[var(--text-tertiary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
+          onclick={closeDiagnostics}
+          aria-label="Close diagnostics"
+        >
+          ✕
+        </button>
+      </div>
+
+      {#if diagnosticsError}
+        <p class="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] px-3 py-2 text-[11px] text-[var(--danger)]" role="alert">
+          {diagnosticsError}
+        </p>
+      {:else if report}
+        {#if report.note}
+          <p class="text-[11px] text-[var(--text-muted)]">{report.note}</p>
+        {/if}
+        {#if report.checked.length}
+          <p class="text-[11px] text-[var(--text-muted)]">
+            Checked: {report.checked
+              .map((path) => path.split(/[\\/]/).pop())
+              .join(", ")}
+          </p>
+        {/if}
+        {#if report.diagnostics.length}
+          <ul class="min-h-0 flex-1 space-y-1.5 overflow-y-auto pr-1">
+            {#each report.diagnostics as diagnostic}
+              {@const tone = diagnostic.severity === "error"
+                ? "border-[var(--danger-border)] bg-[var(--danger-soft)] text-[var(--danger)]"
+                : diagnostic.severity === "warning"
+                  ? "border-warning/30 bg-warning/10 text-warning"
+                  : "border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-muted)]"}
+              <li class="rounded-lg border px-2.5 py-2 {tone.split(" ").slice(0, 2).join(" ")}">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="rounded border px-1.5 py-0.5 font-mono text-[11px] uppercase {tone}">{diagnostic.severity}</span>
+                  <code class="font-mono text-[11px] text-[var(--text-primary)]">
+                    {diagnostic.path.split(/[\\/]/).pop()}:{diagnostic.line}:{diagnostic.column}
+                  </code>
+                  {#if diagnostic.source}
+                    <span class="ml-auto font-mono text-[11px] text-[var(--text-faint)]">{diagnostic.source}</span>
+                  {/if}
+                </div>
+                <p class="mt-1 whitespace-pre-wrap break-words text-xs text-[var(--text-secondary)]">{diagnostic.message}</p>
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="py-6 text-center text-xs text-[var(--text-muted)]">
+            No diagnostics for this file.
+          </p>
+        {/if}
+      {/if}
+
+      <div class="flex justify-end border-t border-[var(--hairline)] pt-3">
+        <button type="button" class="proj__action" onclick={closeDiagnostics}>Close</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if pendingIntent}
   <div class="proj__overlay">

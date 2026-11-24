@@ -7537,6 +7537,141 @@ async fn file_change_diff(state: State<'_, AppState>, id: Uuid) -> Result<Option
         .map_err(|e| e.to_string())
 }
 
+/// Every configured project folder, for validating a UI diagnostics request.
+async fn configured_project_roots(
+    pool: &sqlx::SqlitePool,
+) -> Result<Vec<std::path::PathBuf>, String> {
+    let mut roots = Vec::new();
+    for room in ravenbot_db::queries::ChatRoomQueries::list(pool)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        for folder in room.project_folders {
+            let folder = folder.trim();
+            if !folder.is_empty() {
+                roots.push(ravenbot_core::expand_home(folder));
+            }
+        }
+    }
+    for bot in ravenbot_db::queries::BotQueries::list(pool)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let folder = bot
+            .config
+            .working_folder
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ravenbot_core::expand_home)
+            .unwrap_or_else(|| ravenbot_core::expand_home(&default_workspace_for_impl(&bot.name)));
+        roots.push(folder);
+    }
+    Ok(roots)
+}
+
+/// The effective language-server map (defaults plus any saved overrides).
+#[tauri::command]
+async fn get_lsp_config(
+    state: State<'_, AppState>,
+) -> Result<ravenbot_runtime::lsp::LspConfig, String> {
+    Ok(ravenbot_runtime::lsp::load_config(state.db.pool()).await)
+}
+
+/// Replace the language-server map. An empty object restores the defaults.
+#[tauri::command]
+async fn set_lsp_config(
+    state: State<'_, AppState>,
+    config: serde_json::Value,
+) -> Result<ravenbot_runtime::lsp::LspConfig, String> {
+    if state.role == "viewer" {
+        return Err("Read-only sessions cannot change language-server settings.".to_string());
+    }
+    let mut parsed: ravenbot_runtime::lsp::LspConfig = serde_json::from_value(config)
+        .map_err(|error| format!("The language-server config is invalid: {error}"))?;
+    if parsed.is_empty() {
+        ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), "lsp_servers", "")
+            .await
+            .map_err(|error| error.to_string())?;
+        return Ok(ravenbot_runtime::lsp::load_config(state.db.pool()).await);
+    }
+    for (name, server) in parsed.iter_mut() {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("Every language-server entry needs a name.".to_string());
+        }
+        server.command = server.command.trim().to_string();
+        server.language_id = server.language_id.trim().to_string();
+        if server.command.is_empty() {
+            return Err(format!("The '{name}' server needs a command."));
+        }
+        if server.language_id.is_empty() {
+            return Err(format!("The '{name}' server needs a language id."));
+        }
+        server.extensions = server
+            .extensions
+            .iter()
+            .map(|extension| {
+                extension
+                    .trim()
+                    .trim_start_matches('.')
+                    .to_ascii_lowercase()
+            })
+            .filter(|extension| !extension.is_empty())
+            .collect();
+        if server.extensions.is_empty() {
+            return Err(format!(
+                "The '{name}' server needs at least one file extension."
+            ));
+        }
+    }
+    let raw = serde_json::to_string(&parsed)
+        .map_err(|error| format!("Could not save the language-server config: {error}"))?;
+    ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), "lsp_servers", &raw)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(ravenbot_runtime::lsp::load_config(state.db.pool()).await)
+}
+
+/// Run configured language servers on the open file in a project.
+///
+/// This is the user-facing companion to the agent's `diagnostics` tool. The
+/// root is checked against the app's configured project folders, so a webview
+/// cannot ask a language server to execute in an arbitrary directory.
+#[tauri::command]
+async fn project_diagnostics(
+    state: State<'_, AppState>,
+    root: String,
+    paths: Option<Vec<String>>,
+) -> Result<ravenbot_runtime::lsp::DiagnosticsReport, String> {
+    if state.role == "viewer" {
+        return Err("Diagnostics are disabled for read-only sessions.".to_string());
+    }
+    let requested = tokio::fs::canonicalize(root.trim())
+        .await
+        .map_err(|_| "That project folder does not exist.".to_string())?;
+    let allowed = configured_project_roots(state.db.pool()).await?;
+    let allowed = allowed
+        .into_iter()
+        .filter_map(|root| std::fs::canonicalize(root).ok())
+        .any(|root| requested.starts_with(&root));
+    if !allowed {
+        return Err("That folder is not a configured project folder.".to_string());
+    }
+    let paths = paths.unwrap_or_default();
+    if paths.is_empty() {
+        return Err("Open a file before running diagnostics.".to_string());
+    }
+    let config = ravenbot_runtime::lsp::load_config(state.db.pool()).await;
+    ravenbot_runtime::lsp::diagnose(
+        &config,
+        std::slice::from_ref(&requested),
+        &paths,
+        ravenbot_runtime::lsp::timeout_from_env(),
+    )
+    .await
+}
+
 /// What a whole-run revert would restore or delete, without touching files.
 #[tauri::command]
 async fn preview_run_revert(
@@ -14903,6 +15038,20 @@ struct OfficeCycleReview {
     degraded: bool,
 }
 
+/// The model cannot overrule hard evidence. Failed or partial work, including
+/// language-server errors the caller added to `failures`, is not a complete
+/// product.
+fn apply_failure_evidence(review: &mut OfficeCycleReview, failures: &[String]) {
+    if failures.is_empty() {
+        return;
+    }
+    review.complete = false;
+    review.verdict = ravenbot_core::GoalVerdict::Continue;
+    if review.reason.trim().is_empty() {
+        review.reason = "One or more tasks did not complete.".to_string();
+    }
+}
+
 /// Every top-level `{...}` span in a model response, respecting strings and
 /// escapes. A review can be surrounded by prose, markdown fences, or a second
 /// object; taking the first `{` through the last `}` breaks on all three.
@@ -15613,16 +15762,7 @@ async fn office_cycle_review(
         }
     };
 
-    // The model cannot overrule hard evidence. Failed or partial work is not
-    // a complete product, and a goal that needs code cannot be complete in an
-    // empty workspace.
-    if !failures.is_empty() {
-        review.complete = false;
-        review.verdict = ravenbot_core::GoalVerdict::Continue;
-        if review.reason.trim().is_empty() {
-            review.reason = "One or more tasks did not complete.".to_string();
-        }
-    }
+    apply_failure_evidence(&mut review, failures);
     if allow_continue && requires_implementation && !has_implementation {
         review.complete = false;
         review.verdict = ravenbot_core::GoalVerdict::Continue;
@@ -19327,6 +19467,38 @@ async fn run_thread_goal_turn(
             }
             _ => root.clone(),
         };
+    // A round that leaves type errors is not done. Run the workspace's
+    // language server on the files this round changed and put its errors in
+    // front of the judge. A missing server or a timeout is not treated as a
+    // failure: the deterministic gates are still the hard evidence, and an
+    // unavailable LSP cannot make every goal pause.
+    let base_failed = result.status != "completed" || !failures.is_empty();
+    let changed_paths = ravenbot_db::queries::FileChangeQueries::paths_for_thread_since(
+        db.pool(),
+        thread_id,
+        &start,
+    )
+    .await
+    .unwrap_or_default();
+    let mut lsp_errors: Vec<String> = Vec::new();
+    if !changed_paths.is_empty() {
+        let config = ravenbot_runtime::lsp::load_config(db.pool()).await;
+        if let Ok(report) = ravenbot_runtime::lsp::diagnose(
+            &config,
+            std::slice::from_ref(&review_root),
+            &changed_paths,
+            ravenbot_runtime::lsp::timeout_from_env(),
+        )
+        .await
+        {
+            lsp_errors = report.error_lines(6);
+            failures.extend(
+                lsp_errors
+                    .iter()
+                    .map(|line| format!("Language diagnostic: {line}")),
+            );
+        }
+    }
     let has_implementation = root_has_implementation(&review_root);
     let workspace = thread_workspace_snapshot(&review_root);
     let history = if goal.last_reason.trim().is_empty() {
@@ -19352,7 +19524,14 @@ async fn run_thread_goal_turn(
     )
     .await;
 
-    let reason = if review.next_task.trim().is_empty() {
+    let reason = if !lsp_errors.is_empty() {
+        format!(
+            "Type diagnostics failed: {}. {} Next: {}",
+            lsp_errors.join("; "),
+            review.reason.trim(),
+            review.next_task.trim()
+        )
+    } else if review.next_task.trim().is_empty() {
         review.reason.clone()
     } else {
         format!("{} Next: {}", review.reason.trim(), review.next_task.trim())
@@ -19361,14 +19540,16 @@ async fn run_thread_goal_turn(
         ravenbot_db::queries::GoalQueries::tokens_for_thread_since(db.pool(), thread_id, &start)
             .await
             .unwrap_or(0);
-    let failed = result.status != "completed" || !failures.is_empty();
+    // A round with language errors is a failed round for backoff purposes,
+    // even when the runner itself reported success. An unavailable server or
+    // a timeout never reaches here as an error line.
     let recorded = ravenbot_db::queries::GoalQueries::record_verdict(
         db.pool(),
         goal_id,
         review.verdict,
         &reason,
         tokens,
-        failed,
+        base_failed || !lsp_errors.is_empty(),
     )
     .await
     .ok()
@@ -21618,6 +21799,9 @@ pub fn run() {
         list_file_changes,
         list_recent_file_changes,
         file_change_diff,
+        get_lsp_config,
+        set_lsp_config,
+        project_diagnostics,
         preview_run_revert,
         revert_run_files,
         revert_file_change,
@@ -25749,6 +25933,28 @@ mod office_cycle_tests {
                 "should not auto-continue a new request: {prompt:?}"
             );
         }
+    }
+
+    #[test]
+    fn language_diagnostics_force_a_continue_verdict() {
+        let mut review = OfficeCycleReview {
+            complete: true,
+            verdict: ravenbot_core::GoalVerdict::Done,
+            reason: "The judge thinks the product is done.".to_string(),
+            next_task: String::new(),
+            gates: Vec::new(),
+            degraded: false,
+        };
+        apply_failure_evidence(&mut review, &[]);
+        assert!(review.complete);
+        assert_eq!(review.verdict, ravenbot_core::GoalVerdict::Done);
+
+        apply_failure_evidence(
+            &mut review,
+            &["Language diagnostic: src/main.rs:1:5: mismatched types".to_string()],
+        );
+        assert!(!review.complete);
+        assert_eq!(review.verdict, ravenbot_core::GoalVerdict::Continue);
     }
 
     #[test]

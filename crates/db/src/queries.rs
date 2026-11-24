@@ -7495,6 +7495,30 @@ impl FileChangeQueries {
         .await
     }
 
+    /// Distinct files this thread's runs changed since a timestamp.
+    ///
+    /// Used by diagnostics: a goal round should check the files that round
+    /// touched, not every file that ever lived in the conversation. The
+    /// absolute snapshot path wins when one exists because that is the path
+    /// the language server will see.
+    pub async fn paths_for_thread_since(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+        since: &str,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT DISTINCT COALESCE(snapshot_path, path) AS target
+             FROM file_changes
+             WHERE thread_id = ? AND created_at >= ?
+               AND COALESCE(snapshot_path, path) IS NOT NULL
+             LIMIT 200",
+        )
+        .bind(thread_id.to_string())
+        .bind(since)
+        .fetch_all(pool)
+        .await
+    }
+
     /// The lines behind one ledger row.
     ///
     /// `None` means "there is nothing to expand into" — a write whose content
@@ -8169,6 +8193,35 @@ mod file_change_tests {
     ) -> ravenbot_core::FileChange {
         ravenbot_core::FileChange::new(bot, None, None, path, "file_write", added, deleted)
             .with_diff(diff.map(str::to_string))
+    }
+
+    #[tokio::test]
+    async fn thread_paths_are_scoped_to_the_turn() {
+        let pool = db().await;
+        let bot = Uuid::new_v4();
+        let thread = Uuid::new_v4();
+        let mut old = change(bot, "old.rs", 1, 0, None);
+        old.thread_id = Some(thread);
+        old.created_at = "2026-01-01T00:00:00Z".to_string();
+        let mut new = change(bot, "new.rs", 1, 0, None);
+        new.thread_id = Some(thread);
+        new.created_at = "2026-01-01T00:10:00Z".to_string();
+        FileChangeQueries::insert(&pool, &old).await.expect("old");
+        FileChangeQueries::insert(&pool, &new).await.expect("new");
+
+        let paths =
+            FileChangeQueries::paths_for_thread_since(&pool, thread, "2026-01-01T00:05:00Z")
+                .await
+                .expect("paths");
+        assert_eq!(paths, vec!["new.rs".to_string()]);
+        assert!(FileChangeQueries::paths_for_thread_since(
+            &pool,
+            Uuid::new_v4(),
+            "2026-01-01T00:00:00Z",
+        )
+        .await
+        .expect("other thread")
+        .is_empty());
     }
 
     #[tokio::test]

@@ -12,9 +12,9 @@ All notable changes to RAVENBOT are documented here.
   list-item spacing, hover-only link underlines, and quiet 8%-fill inline
   code. The token renderer and its HTML/link safety checks are unchanged.
 - **Harness audit** — `docs/OPENCODE-PARITY.md` maps OpenCode's desktop and
-  markdown worker/cache system against RAVENBOT. Its remaining 24/7 gaps are
-  LSP diagnostics and the optional renderer performance work; the P0/P1
-  harness gaps are shipped.
+  markdown worker/cache system against RAVENBOT. The P0/P1 harness gaps are
+  shipped; remaining work is renderer performance, MCP-event jobs, and public
+  session sharing.
 
 ### Persistent 1:1 goal loop
 
@@ -111,6 +111,23 @@ All notable changes to RAVENBOT are documented here.
   Run snapshots and per-run revert continue to work on the isolated paths.
 - Turning isolation off does not throw away an active checkout; the banner
   remains until it is applied or discarded.
+
+### Language diagnostics
+
+- **A real LSP client** — RAVENBOT detects installed `rust-analyzer`,
+  `pyright-langserver`, `typescript-language-server`, `gopls`, and `clangd`
+  servers, starts them over stdio, opens the files a run changed, and reads
+  `textDocument/publishDiagnostics`. It does not bundle or fake a server.
+- **Agent tool and goal gate** — the `diagnostics` tool (available with the
+  Shell capability) checks named files or the run's changed files. Every 1:1
+  goal round checks its changed files; error diagnostics are added to the
+  judge's failures so a goal with type errors cannot be marked done. Warnings
+  do not block, and a missing server/timeout falls back to the deterministic
+  gates.
+- **User surface and configuration** — Projects has a Diagnostics button on the
+  open file. Settings → Diagnostics → Language servers edits the `lsp_servers`
+  JSON map; save `{}` to restore the defaults. `RAVENBOT_LSP_TIMEOUT_SECS`
+  controls the deadline (default 12s). See `docs/LSP.md`.
 
 ### Platform, remote and product surfaces
 

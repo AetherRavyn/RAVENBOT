@@ -6,6 +6,7 @@
 pub mod executor;
 pub mod governor;
 pub mod graph;
+pub mod lsp;
 pub mod orchestrator;
 pub mod quality_gate;
 pub mod snapshot;
@@ -970,6 +971,35 @@ fn tool_span_description(
                 } else {
                     format!("Delegated to {target}")
                 },
+                detail,
+            )
+        }
+        "diagnostics" => {
+            let errors = output
+                .get("errors")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let warnings = output
+                .get("warnings")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0);
+            let timed_out = output
+                .get("timed_out")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let detail = if failed {
+                result
+                    .get("error")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            } else if timed_out {
+                Some("the server timed out; partial results".to_string())
+            } else {
+                None
+            };
+            (
+                "diagnostics",
+                format!("{errors} error(s), {warnings} warning(s)"),
                 detail,
             )
         }
@@ -2982,6 +3012,7 @@ impl Runtime {
             "delegate" => "Delegate to another bot".to_string(),
             "computer_control" => "Control your computer".to_string(),
             "memory_save" => "Save a memory".to_string(),
+            "diagnostics" => "Check diagnostics".to_string(),
             "image_gen" => "Generate an image".to_string(),
             _ => format!("Use {}", bare),
         }
@@ -3345,6 +3376,17 @@ impl Runtime {
             .resolve_tool_skill(tool_skills, name)
             .map(|s| s.required_permissions())
             .unwrap_or_default();
+        if name == "diagnostics"
+            && !bot.permissions.is_empty()
+            && !bot
+                .permissions
+                .iter()
+                .any(|permission| matches!(permission, ravenbot_core::Permission::Shell))
+        {
+            return serde_json::json!({
+                "error": "Diagnostics run a language server and need the Shell capability. Ask the operator to grant it, or rely on the workspace gates."
+            });
+        }
         if !needed.is_empty() {
             if let Err(denial) = ravenbot_core::tool_permitted(bot, name, &needed) {
                 self.audit_denied_tool(bot, run, name, &denial).await;
@@ -3367,8 +3409,10 @@ impl Runtime {
         }
 
         let result: Result<ravenbot_skills::SkillResult, ravenbot_skills::SkillError> = if name
-            == "ask_user"
+            == "diagnostics"
         {
+            Ok(self.exec_diagnostics(run, skill_context, args).await)
+        } else if name == "ask_user" {
             return self.ask_user(run, bot, args.clone()).await;
         } else if name == "delegate" {
             Ok(self.exec_delegation(run, args.clone()).await)
@@ -3688,6 +3732,64 @@ impl Runtime {
                 }))
             }
             Err(e) => ravenbot_skills::SkillResult::failure(e),
+        }
+    }
+
+    /// Run the workspace language server on the files this run touched.
+    ///
+    /// The command comes from app configuration, never from the model. The
+    /// result is a normal tool payload so the model can read the errors and fix
+    /// them; a missing server is an honest failure, not an empty success.
+    async fn exec_diagnostics(
+        &self,
+        run: &Run,
+        ctx: &SkillContext,
+        args: &serde_json::Value,
+    ) -> ravenbot_skills::SkillResult {
+        let mut requested: Vec<String> = args
+            .get("paths")
+            .and_then(|value| value.as_array())
+            .map(|paths| {
+                paths
+                    .iter()
+                    .filter_map(|path| path.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if requested.is_empty() {
+            let changes = ravenbot_db::queries::FileChangeQueries::for_run(self.db.pool(), run.id)
+                .await
+                .unwrap_or_default();
+            for change in changes {
+                requested.push(
+                    change
+                        .snapshot_path
+                        .as_deref()
+                        .unwrap_or(change.path.as_str())
+                        .to_string(),
+                );
+            }
+        }
+        requested.sort();
+        requested.dedup();
+        if requested.is_empty() {
+            return ravenbot_skills::SkillResult::failure(
+                "No files were named and this run has not changed a file yet. Pass the files you edited.",
+            );
+        }
+        let config = crate::lsp::load_config(self.db.pool()).await;
+        match crate::lsp::diagnose(
+            &config,
+            &ctx.working_dirs,
+            &requested,
+            crate::lsp::timeout_from_env(),
+        )
+        .await
+        {
+            Ok(report) => ravenbot_skills::SkillResult::success(
+                serde_json::to_value(report).unwrap_or_default(),
+            ),
+            Err(error) => ravenbot_skills::SkillResult::failure(error),
         }
     }
 
@@ -5193,7 +5295,7 @@ impl Runtime {
         let tool_skills =
             cap_preserving_protected(tool_skills, &protected, TOOL_CAP, |s| s.id().to_string());
 
-        let tool_definitions: Vec<ToolDefinition> = tool_skills
+        let mut tool_definitions: Vec<ToolDefinition> = tool_skills
             .iter()
             .map(|skill| ToolDefinition {
                 // Providers only accept `^[a-zA-Z0-9_-]+$` here. Skill ids may
@@ -5206,6 +5308,40 @@ impl Runtime {
                 parameters: skill.input_schema(),
             })
             .collect();
+
+        // Diagnostics are a host tool, not a skill: the server command comes
+        // from app configuration, never from the model. Expose it only when a
+        // server is installed for this workspace and the agent is allowed to
+        // run shell-grade tooling.
+        let can_run_diagnostics = bot.permissions.is_empty()
+            || bot
+                .permissions
+                .iter()
+                .any(|permission| matches!(permission, ravenbot_core::Permission::Shell));
+        if can_run_diagnostics
+            && !tool_definitions
+                .iter()
+                .any(|tool| tool.name == "diagnostics")
+        {
+            let lsp_config = crate::lsp::load_config(self.db.pool()).await;
+            if crate::lsp::workspace_server(&lsp_config, &working_dirs).is_some() {
+                tool_definitions.push(ToolDefinition {
+                    name: "diagnostics".to_string(),
+                    description: "Run the workspace language server and return errors and warnings for files you changed. Use it after edits and before claiming done. If no server is installed, it says so instead of guessing.".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {
+                            "paths": {
+                                "type": "array",
+                                "items": { "type": "string" },
+                                "description": "Workspace-relative or absolute files to check. Omit to check this run's changed files."
+                            }
+                        },
+                        "additionalProperties": false
+                    }),
+                });
+            }
+        }
 
         // Tool-less models (Local llama.cpp builds, custom providers that
         // declare no tool calling) cannot receive a native tools array. When

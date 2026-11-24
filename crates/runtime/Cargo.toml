@@ -24,6 +24,7 @@ jsonschema.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 sha2 = "0.10"
+url = "2"
 tracing.workspace = true
 thiserror.workspace = true
 sqlx.workspace = true
