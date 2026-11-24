@@ -1460,14 +1460,32 @@ impl Runtime {
                     })
                 };
 
-                let permit = self.provider_governor.acquire(&key).await;
+                let permit = match self.provider_governor.acquire(&key).await {
+                    Ok(permit) => permit,
+                    Err(wait) => {
+                        let seconds = wait.as_secs().max(1);
+                        tracing::warn!(
+                            provider = offset,
+                            wait_secs = seconds,
+                            "Provider circuit is open; trying the next provider"
+                        );
+                        last_err = Some(format!(
+                            "Provider {} is cooling down after repeated failures ({}s).",
+                            key, seconds
+                        ));
+                        break;
+                    }
+                };
                 let result = provider
                     .complete_stream(messages, tools, temperature, max_tokens, tracked, is_think)
                     .await;
                 drop(permit);
 
                 match result {
-                    Ok(resp) => return Ok((resp, offset)),
+                    Ok(resp) => {
+                        self.provider_governor.record_success(&key);
+                        return Ok((resp, offset));
+                    }
                     Err(ravenbot_models::ModelError::IncompleteStream { partial }) => {
                         // Never retry or fall back after a partial answer was
                         // streamed: that would duplicate text the user saw.
@@ -1494,6 +1512,14 @@ impl Runtime {
                                     error = %msg,
                                     "Stream failed after emitting output; not retrying to avoid duplicate text"
                                 );
+                            }
+                            if is_retryable_model_error(&msg) {
+                                let retry_after = if is_rate_limit_error(&msg) {
+                                    Some(retry_delay(&msg, attempt))
+                                } else {
+                                    None
+                                };
+                                self.provider_governor.record_failure(&key, retry_after);
                             }
                             last_err = Some(msg);
                             break;
@@ -3016,6 +3042,49 @@ impl Runtime {
             "image_gen" => "Generate an image".to_string(),
             _ => format!("Use {}", bare),
         }
+    }
+
+    /// Check the bot's budget before a model round.
+    ///
+    /// The first call refuses or asks exactly like the run-start check. A later
+    /// crossing does the same once; after a person says Continue, the rest of
+    /// this run is allowed to finish rather than asking before every round.
+    async fn ensure_model_budget(
+        &self,
+        run: &Run,
+        bot: &ravenbot_core::Bot,
+        budget_override: &mut bool,
+    ) -> Result<(), RuntimeError> {
+        if *budget_override {
+            return Ok(());
+        }
+        let check = self
+            .budget_manager
+            .check_budget(bot.id)
+            .await
+            .map_err(|error| RuntimeError::Model(error.to_string()))?;
+        if check.allowed {
+            return Ok(());
+        }
+        let behavior = self
+            .budget_manager
+            .get_budget(bot.id)
+            .await
+            .map_err(|error| RuntimeError::Model(error.to_string()))?
+            .map(|budget| budget.behavior)
+            .unwrap_or(ravenbot_core::BudgetBehavior::HardStop);
+        let approved = behavior == ravenbot_core::BudgetBehavior::AskUser
+            && !self.auto_allow_for(run.id)
+            && self.ask_budget_approval(run, bot, &check).await?;
+        if !approved {
+            return Err(RuntimeError::BudgetExceeded(format!(
+                "Bot '{}' has exhausted its budget ({}% used). Raise the limit in Settings → Budgets to continue.",
+                bot.name,
+                check.percentage_used.round()
+            )));
+        }
+        *budget_override = true;
+        Ok(())
     }
 
     /// Park an over-budget run on a confirmation card. The run continues only
@@ -4622,30 +4691,12 @@ impl Runtime {
             .ok_or_else(|| RuntimeError::TaskFailed("Bot not found".to_string()))?;
         let (input_price, output_price) = Self::model_pricing(&bot);
 
-        // Enforce the bot's budget BEFORE spending (safety-critical)
-        let budget_check = self
-            .budget_manager
-            .check_budget(bot.id)
-            .await
-            .map_err(|e| RuntimeError::Model(e.to_string()))?;
-        if !budget_check.allowed {
-            let behavior = self
-                .budget_manager
-                .get_budget(bot.id)
-                .await
-                .map_err(|e| RuntimeError::Model(e.to_string()))?
-                .map(|budget| budget.behavior)
-                .unwrap_or(ravenbot_core::BudgetBehavior::HardStop);
-            let approved = behavior == ravenbot_core::BudgetBehavior::AskUser
-                && !self.auto_allow_for(run.id)
-                && self.ask_budget_approval(run, &bot, &budget_check).await?;
-            if !approved {
-                return Err(RuntimeError::BudgetExceeded(format!(
-                    "Bot '{}' has exhausted its budget ({}% used). Raise the limit in Settings → Budgets to continue.",
-                    bot.name, budget_check.percentage_used.round()
-                )));
-            }
-        }
+        // Enforce the bot's budget BEFORE spending (safety-critical), and
+        // again before every later model round: one long tool loop must not be
+        // able to spend far past a hard limit before the run ends.
+        let mut budget_override = false;
+        self.ensure_model_budget(run, &bot, &mut budget_override)
+            .await?;
 
         // Resolve the project folders this run works in (all file/shell work
         // is confined to them; a default folder is auto-created when unset).
@@ -6518,6 +6569,8 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
                     )),
                 );
             }
+            self.ensure_model_budget(run, &bot, &mut budget_override)
+                .await?;
             let round_started = turn_started.elapsed().as_millis() as u64;
             let (next_response, idx) = {
                 let _model_progress = self.progress_lease(run.id, "model", None);
@@ -6601,6 +6654,8 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
                 "The tool phase is over. Do not call any more tools. Write the final answer now from the evidence above: what you completed, the exact files or artifacts produced, how you verified it, and what remains or is blocked. If the task is incomplete, say so plainly. Be concise.",
             ));
             model_ids.push(None);
+            self.ensure_model_budget(run, &bot, &mut budget_override)
+                .await?;
             let final_started = turn_started.elapsed().as_millis() as u64;
             let final_call = {
                 let _model_progress = self.progress_lease(run.id, "model", None);
@@ -11917,6 +11972,152 @@ mod parity_tests {
             .expect("fallback should answer");
         assert_eq!(idx, 1, "must report the fallback provider index");
         assert_eq!(resp.content.as_deref(), Some("fallback answer"));
+    }
+
+    #[tokio::test]
+    async fn a_mid_run_budget_crossing_stops_before_the_next_model_call() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let bot = Bot::new("Budget guard", "mid-run budget test");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let budgets = ravenbot_governance::BudgetManager::new(db.pool().clone());
+        let mut budget = ravenbot_core::Budget::new(
+            bot.id,
+            ravenbot_core::BudgetLimit::Cost { max: 0.01 },
+            ravenbot_core::BudgetPeriod::Daily,
+        );
+        budget.behavior = ravenbot_core::BudgetBehavior::HardStop;
+        budgets.set_budget(&budget).await.expect("budget");
+        budgets.record_usage(bot.id, 0, 0.02).await.expect("usage");
+        let run = Run::new(bot.id, Uuid::new_v4());
+        let mut budget_override = false;
+        let error = runtime
+            .ensure_model_budget(&run, &bot, &mut budget_override)
+            .await
+            .expect_err("the crossed hard limit must stop the next round");
+        assert!(
+            matches!(error, RuntimeError::BudgetExceeded(_)),
+            "{error:?}"
+        );
+        assert!(!budget_override);
+    }
+
+    #[tokio::test]
+    async fn an_open_provider_circuit_is_skipped_before_any_call() {
+        struct NeverCalledProvider {
+            calls: Arc<AtomicUsize>,
+        }
+        #[async_trait::async_trait]
+        impl ModelProviderTrait for NeverCalledProvider {
+            fn provider_type(&self) -> ravenbot_core::ModelProvider {
+                ravenbot_core::ModelProvider::OpenAI
+            }
+            fn with_model(self: Box<Self>, _m: String) -> Box<dyn ModelProviderTrait> {
+                self
+            }
+            async fn complete(
+                &self,
+                _m: &[ModelMessage],
+                _t: &[ToolDefinition],
+                _temp: f32,
+                _max: u32,
+            ) -> Result<ModelResponse, ravenbot_models::ModelError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(ravenbot_models::ModelError::Auth("must be skipped".into()))
+            }
+            async fn complete_stream(
+                &self,
+                _m: &[ModelMessage],
+                _t: &[ToolDefinition],
+                _temp: f32,
+                _max: u32,
+                _cb: DeltaCallback,
+                _r: bool,
+            ) -> Result<ModelResponse, ravenbot_models::ModelError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(ravenbot_models::ModelError::Auth("must be skipped".into()))
+            }
+            async fn health_check(&self) -> Result<bool, ravenbot_models::ModelError> {
+                Ok(false)
+            }
+        }
+
+        struct FallbackProvider;
+        #[async_trait::async_trait]
+        impl ModelProviderTrait for FallbackProvider {
+            fn provider_type(&self) -> ravenbot_core::ModelProvider {
+                ravenbot_core::ModelProvider::Anthropic
+            }
+            fn with_model(self: Box<Self>, _m: String) -> Box<dyn ModelProviderTrait> {
+                self
+            }
+            async fn complete(
+                &self,
+                _m: &[ModelMessage],
+                _t: &[ToolDefinition],
+                _temp: f32,
+                _max: u32,
+            ) -> Result<ModelResponse, ravenbot_models::ModelError> {
+                Ok(ModelResponse {
+                    content: Some("fallback answer".into()),
+                    tool_calls: vec![],
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                    reasoning: None,
+                })
+            }
+            async fn complete_stream(
+                &self,
+                _m: &[ModelMessage],
+                _t: &[ToolDefinition],
+                _temp: f32,
+                _max: u32,
+                _cb: DeltaCallback,
+                _r: bool,
+            ) -> Result<ModelResponse, ravenbot_models::ModelError> {
+                Ok(ModelResponse {
+                    content: Some("fallback answer".into()),
+                    tool_calls: vec![],
+                    usage: Usage {
+                        input_tokens: 1,
+                        output_tokens: 1,
+                    },
+                    reasoning: None,
+                })
+            }
+            async fn health_check(&self) -> Result<bool, ravenbot_models::ModelError> {
+                Ok(true)
+            }
+        }
+
+        let db = temp_db().await;
+        let runtime = Runtime::new(db);
+        for _ in 0..4 {
+            runtime.provider_governor.record_failure("OpenAI", None);
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let chain: Vec<Arc<dyn ModelProviderTrait>> = vec![
+            Arc::new(NeverCalledProvider {
+                calls: calls.clone(),
+            }),
+            Arc::new(FallbackProvider),
+        ];
+        let cb: DeltaCallback = Arc::new(|_| {});
+        let (response, index) = runtime
+            .call_model(&chain, 0, &[], &[], 0.0, 64, cb, false)
+            .await
+            .expect("the fallback should answer");
+        assert_eq!(index, 1);
+        assert_eq!(response.content.as_deref(), Some("fallback answer"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "the open circuit must skip the failing provider entirely"
+        );
     }
 
     /// Context compaction keeps the system prompt + newest messages, drops the

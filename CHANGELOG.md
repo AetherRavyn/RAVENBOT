@@ -4,6 +4,19 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Provider resilience
+
+- **Circuit breaker** — the shared provider governor now counts final failures
+  per provider. Four in a row open a 30s circuit (or the provider's longer retry
+  window); new requests skip that provider and fall back immediately, while a
+  half-open probe decides whether to reset it. Other providers are unaffected.
+- **Per-round budget checks** — the bot budget is checked before every later
+  model round as well as at run start. A hard limit stops before the
+  overspending call; an AskUser approval covers the rest of that run instead of
+  prompting before every round.
+- Tests: circuit open/reset/isolation, `call_model` skipping an open provider,
+  and a mid-run hard-budget stop.
+
 ### Rendering and harness parity
 
 - **OpenCode-style prose rendering** — message Markdown now uses the

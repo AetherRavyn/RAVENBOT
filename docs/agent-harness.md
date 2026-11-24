@@ -305,6 +305,8 @@ other.
 | Whole-machine scan guard | Inside a workspace, refuses `find /`, `grep -r /`, `ls -R /`, and home/ancestor scans with an actionable error. |
 | Native repeat guard | The same tool + arguments is not executed indefinitely; the second identical call is skipped and a repeated loop is forced to a final answer. |
 | Office autonomy | Runs are spawned outside the IPC call, the board is persisted by the backend, and a heartbeat starts the next turn on idle. One turn per office is enforced atomically, so a user prompt cannot queue behind a heartbeat and mis-attribute its completion. The header toggle, kill switch, pending question, budget ceiling, or repeated no-progress cycles pauses it. |
+| Provider circuit breaker | Four consecutive final failures open a provider-wide circuit for 30s (or the provider's longer retry window). New requests skip that provider and fall back immediately; one success resets it, and a half-open probe after the window decides whether to close or reopen it. |
+| Per-round budget | The bot's budget is checked before the first model call and before every later model/tool round, not only at run start. `HardStop` fails before the overspending call; `AskUser` asks once per run and a Continue override covers the remaining rounds. |
 | Empty node result | The executor marks a node failed and skips its dependents instead of showing a misleading `Done · No response`. |
 
 ## Verification
@@ -321,6 +323,12 @@ The runtime is tested at the harness boundary, not just the happy path:
   events even when no view is open.
 - `office_budget_counts_only_this_offices_spend` — a shared bot's earlier spend
   is a baseline, and the monthly ceiling is enforced on the delta.
+- `a_mid_run_budget_crossing_stops_before_the_next_model_call` — crossing a hard
+  limit after the run started fails before the next model request.
+- `a_provider_circuit_opens_and_does_not_affect_other_providers`,
+  `a_success_closes_the_circuit_and_clears_the_streak`, and
+  `an_open_provider_circuit_is_skipped_before_any_call` — the breaker opens,
+  resets, isolates providers, and skips the failing provider in `call_model`.
 - `workspace_fingerprint_changes_only_with_real_edits` — edits and new files
   change the progress fingerprint; virtualenv and build churn do not.
 - `an_office_rejects_a_second_turn_while_one_is_active` — the office claim is
