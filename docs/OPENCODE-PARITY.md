@@ -61,10 +61,10 @@ properties are unchanged. This is the correct half of OpenCode's renderer to
 copy: typography and block semantics, not Electron or the worker cache
 (RAVENBOT's stream is already bounded by the 24k tool-result cap).
 
-**Not copied yet:** worker-based parsing/highlighting and the block-level
-streaming cache. Timeline virtualisation now has its own measured row window;
-these remaining items are performance work, not visual fidelity, and are
-listed below.
+**Not copied yet:** the block-level streaming cache. Timeline virtualisation
+now has its own measured row window and long markdown/highlight work runs in a
+module worker; these remaining items are performance work, not visual fidelity,
+and are listed below.
 
 ## 4. 24/7 harness readiness matrix
 
@@ -90,7 +90,7 @@ but not the general one; **Missing** = no implementation.
 | LSP / project diagnostics | real stdio LSP client, five default servers, agent tool, automatic goal-round checks, Projects diagnostics and a Settings JSON map | project LSP settings in app | **Present** |
 | Unified patch tool | `file_edit` (also `apply_patch`) parses standard unified diffs and Codex patches in-process, validates every hunk, writes atomically, and journals each file | `tool/patch*` | **Present** |
 | Timeline virtualisation | measured variable-height row window, top/bottom spacers, anchor-preserving prepends, rail offsets and mounted-target reveals; the 30/50 paging window remains the load budget | `session/timeline/virtualizer.tsx` | **Present** |
-| **Worker markdown/highlight** | marked + custom tokens on the UI thread | `markdown.worker.ts` | **Missing (P2)** |
+| Worker markdown/highlight | module Web Worker lexes settled long bodies and colours long code blocks; streaming and short bodies stay synchronous, with a timed fallback and bounded caches on both sides | `markdown.worker.ts` | **Present** |
 | **MCP event-triggered jobs** | MCP client only; scheduler triggers are cron/webhook | automation from MCP events | **Missing (P2)** |
 | **Public session share** | remote access/device pairing, no public share link | share UI | **Missing (P3)** |
 
@@ -222,13 +222,39 @@ virtualizer now bounds how much of it is mounted.
 - The row shell keeps `content-visibility: auto`; the virtualizer's mounted
   rows override it to `visible` so their measured height is exact.
 
+### Shipped — off-thread markdown and highlighting
+
+The token renderer stayed the same; the work that produces tokens moved.
+
+- `src/lib/markdown/worker.ts` is a real module Web Worker built by Vite. It
+  imports the same `lexBlocks`, `hl` and `hlLanguage` functions as the UI
+  thread, so there is no second parser or highlighter to drift.
+- `src/lib/markdown/offThread.ts` owns the request ids, a 15s timeout, worker
+  crash policy, request coalescing, prewarming and a bounded main-thread result
+  cache. A crashed or timed-out worker is terminated, cools down for 30s, and
+  can start fresh; every caller falls back synchronously meanwhile.
+- Settled bodies under 4,000 characters and all streaming bodies stay on the UI
+  thread. A streaming answer produces a new prefix on every reveal tick, so a
+  worker round-trip there would be lag, not relief.
+- Settled bodies over the threshold render through the worker. A body already
+  in the cache paints on the first frame; a cold one shows its escaped raw
+  source with `aria-busy` until the real token tree arrives. The fallback is
+  the original synchronous lexer, so an unavailable worker cannot blank a
+  message.
+- Code blocks under 1,200 characters highlight synchronously. Longer settled
+  blocks keep their plain text for the one frame the worker needs and then
+  swap in the same colour tokens `hl()` would have produced.
+- The thread and office views prewarm the long bodies in the loaded window, and
+  prewarm results fill the main cache too, so scrolling back into a long answer
+  is a cache hit rather than a placeholder.
+- Caches are bounded on both sides; bodies over 200,000 characters and code
+  over 120,000 characters are parsed but not retained.
+
 ## 6. Renderer roadmap (after the typography change)
 
 1. **Block streaming cache** — memoise completed blocks so an 8k-token answer
    re-renders only the last block. This is the biggest UI win for long runs.
-2. **Worker parse/highlight** — move `marked` lexing and code tokenisation off
-   the UI thread; keep the current security checks on the returned tokens.
-3. **Tool-part renderers** — show command output, diffs and file reads as
+2. **Tool-part renderers** — show command output, diffs and file reads as
    first-class cards rather than one-line trace rows.
 
 ## 7. What not to copy
@@ -281,6 +307,19 @@ virtualizer now bounds how much of it is mounted.
   `language_diagnostics_force_a_continue_verdict` proves a diagnostic failure
   overrides a done verdict. The ProjectsView DOM test covers the diagnostics
   command and error list.
+- Worker markdown/highlight: `offThread.test.ts` covers lexing, language-keyed
+  highlighting, duplicate-request coalescing, prewarming, unavailable-worker
+  fallback, timeout termination, crash and malformed-response fallback, and
+  reset. `MarkdownMessage.dom.test.ts` proves a 4k+ settled body shows the
+  escaped pending source and then the worker's real tokens;
+  `MarkdownCode.dom.test.ts` does the same for a 1.2k+ code block. A real
+  Chromium page reported `available: true`, produced an 8,811-character body's
+  token list identical to the synchronous lexer, coloured a long TypeScript
+  block, and logged zero fallback warnings. The production Vite build emitted
+  a self-contained 53 kB `workers/worker-*.js`; loading that asset directly
+  from a static preview also returned the heading token and keyword colours,
+  so the worker path is not a dev-server artifact. The temporary routes and
+  preview page were removed.
 - Timeline virtualisation: `virtualRows.test.ts` covers prefix arithmetic,
   viewport/overscan slicing, tail rows, spacer clamping and height estimates.
   `VirtualTranscript.dom.test.ts` proves a 240-row transcript mounts a bounded

@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/svelte";
 import { tick } from "svelte";
 import MarkdownCode from "./MarkdownCode.svelte";
 import { setLocale } from "$lib/i18n";
+import { markdownWorker } from "$lib/markdown/offThread";
+import { FakeMarkdownWorker } from "$lib/test/markdownWorker";
 
 describe("MarkdownCode", () => {
   beforeEach(() => {
@@ -79,6 +81,36 @@ describe("MarkdownCode", () => {
       expect(container.querySelector(".tok-comment")).not.toBeNull();
     } finally {
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("colours a long block through the worker", async () => {
+    const worker = new FakeMarkdownWorker();
+    markdownWorker.reset();
+    worker.install();
+    try {
+      const code = "const value = 1;\n" + "// filler line\n".repeat(120);
+      const { container } = render(MarkdownCode, {
+        props: { code, language: "ts" },
+      });
+      await waitFor(() => expect(worker.requests("highlight")).toHaveLength(1));
+      const request = worker.requests("highlight")[0];
+      expect(request.code.length).toBeGreaterThan(1_200);
+      worker.respond({
+        id: request.id,
+        ok: true,
+        tokens: [
+          { type: "keyword", text: "const" },
+          { type: "text", text: code.slice(5) },
+        ],
+      });
+      await waitFor(() =>
+        expect(container.querySelector(".tok-keyword")?.textContent).toBe("const"),
+      );
+      expect(container.textContent).toContain("const value = 1;");
+    } finally {
+      markdownWorker.reset();
+      worker.uninstall();
     }
   });
 

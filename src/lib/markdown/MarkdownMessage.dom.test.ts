@@ -15,9 +15,14 @@
  * regression would actually show up.
  */
 import { describe, it, expect, beforeEach } from "vitest";
-import { render, cleanup } from "@testing-library/svelte";
+import { render, cleanup, waitFor } from "@testing-library/svelte";
 import MarkdownMessage from "./MarkdownMessage.svelte";
 import { setLocale } from "$lib/i18n";
+import { markdownWorker } from "$lib/markdown/offThread";
+import {
+  FakeMarkdownWorker,
+  textToken,
+} from "$lib/test/markdownWorker";
 
 beforeEach(() => {
   cleanup();
@@ -180,6 +185,62 @@ describe("MarkdownMessage", () => {
   });
 
   // ── robustness of the renderer itself ─────────────────────────────────
+
+  it("renders settled long bodies through the worker without raw-HTML regression", async () => {
+    const worker = new FakeMarkdownWorker();
+    markdownWorker.reset();
+    worker.install();
+    try {
+      const content = "# Heading\n\n" + "word ".repeat(900);
+      const { container } = renderMd(content);
+      await waitFor(() => expect(worker.requests("lex")).toHaveLength(1));
+      const request = worker.requests("lex")[0];
+      expect(request.body.length).toBeGreaterThan(4_000);
+      expect(container.querySelector("[data-pending]")).not.toBeNull();
+      expect(container.textContent).toContain("word word");
+
+      worker.respond({
+        id: request.id,
+        ok: true,
+        tokens: [
+          {
+            type: "heading",
+            depth: 2,
+            raw: "## Settled",
+            text: "Settled",
+            tokens: [textToken("Settled")],
+          },
+        ],
+      });
+      await waitFor(() =>
+        expect(container.querySelector("h2")?.textContent).toContain("Settled"),
+      );
+      expect(container.querySelector("[data-pending]")).toBeNull();
+    } finally {
+      markdownWorker.reset();
+      worker.uninstall();
+    }
+  });
+
+  it("renders a long body synchronously when no worker exists", async () => {
+    markdownWorker.reset();
+    const saved = globalThis.Worker;
+    try {
+      // jsdom has no Worker; make that explicit even if a previous test
+      // installed a fake one.
+      delete (globalThis as { Worker?: unknown }).Worker;
+      const { container } = renderMd(
+        "# Fallback\n\n" + "text ".repeat(1_000),
+      );
+      await waitFor(() =>
+        expect(container.querySelector("h1")?.textContent).toContain("Fallback"),
+      );
+      expect(container.querySelector("[data-pending]")).toBeNull();
+    } finally {
+      if (saved) globalThis.Worker = saved;
+      markdownWorker.reset();
+    }
+  });
 
   it("renders nothing for empty input without throwing", () => {
     expect(() => renderMd("")).not.toThrow();

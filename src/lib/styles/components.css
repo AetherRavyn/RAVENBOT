@@ -46,6 +46,11 @@
   line-height: 20px;
   white-space: normal;
 }
+.markdown-content[data-pending] .markdown-pending__body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
 .markdown-content > * {
   margin: 0;
 }

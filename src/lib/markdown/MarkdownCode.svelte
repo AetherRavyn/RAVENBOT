@@ -9,9 +9,14 @@
    * the text instead of doing a `closest(".md-code-wrapper code")` lookup that
    * breaks the moment the markup changes.
    */
+  import { untrack } from "svelte";
   import { Check, Copy, Expand } from "@lucide/svelte";  import { t } from "$lib/i18n";
   import { qualifiesAsArtifact } from "$lib/artifact";
   import { hl, hlLanguage, type Token } from "$lib/highlight";
+  import {
+    markdownWorker,
+    OFF_THREAD_HIGHLIGHT_MIN_CHARS,
+  } from "$lib/markdown/offThread";
 
   interface Props {
     code: string;
@@ -42,11 +47,42 @@
   const shouldHighlight = $derived(
     !streaming && (!canObserve || nearViewport),
   );
-  const tokens = $derived(
-    shouldHighlight
-      ? hl(code, hlLanguage(language))
-      : [{ type: "text" as const, text: code }],
-  );
+  const initial = untrack(() => {
+    const cached = markdownWorker.cachedHighlight(code, language);
+    return cached ?? [{ type: "text" as const, text: code }];
+  });
+  let tokens = $state<Token[]>(initial);
+
+  $effect(() => {
+    const body = code;
+    const lang = language;
+    if (!shouldHighlight) {
+      tokens = [{ type: "text" as const, text: body }];
+      return;
+    }
+    const cached = markdownWorker.cachedHighlight(body, lang);
+    if (cached) {
+      tokens = cached;
+      return;
+    }
+    // Short blocks are cheaper to colour here than to send through a worker;
+    // long blocks show their plain text for the one frame the worker needs.
+    if (
+      body.length < OFF_THREAD_HIGHLIGHT_MIN_CHARS ||
+      !markdownWorker.available()
+    ) {
+      tokens = hl(body, hlLanguage(lang));
+      return;
+    }
+    let active = true;
+    void markdownWorker.highlight(body, lang).then((result) => {
+      if (!active) return;
+      tokens = result ?? hl(body, hlLanguage(lang));
+    });
+    return () => {
+      active = false;
+    };
+  });
 
   $effect(() => {
     if (nearViewport || !host || typeof IntersectionObserver === "undefined") return;

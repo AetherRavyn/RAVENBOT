@@ -54,6 +54,7 @@
   import { isEditableTarget, navigateMessage } from "$lib/chat/navigation";
   import { anchoredScrollTop, transcriptWindow } from "$lib/chat/messageWindow";
   import { estimateMessageHeight } from "$lib/chat/virtualRows";
+  import { prewarmMarkdownMessages } from "$lib/markdown/offThread";
   import { drafts, officeDraftKey } from "$lib/chat/drafts";
   import {
     applyMention,
@@ -1097,6 +1098,13 @@
   }
 
   const hiddenBefore = $derived(visibleStart);
+
+  // Prepare long bodies in the loaded window while the cheap rows paint. The
+  // worker dedupes and caps its own batch; this is a warming hint, not work the
+  // renderer waits for.
+  $effect(() => {
+    prewarmMarkdownMessages(visibleMessages);
+  });
 
   async function fetchMessageTail(targetThread: string): Promise<any[]> {
     const page: any = await invoke("list_messages_page", {
