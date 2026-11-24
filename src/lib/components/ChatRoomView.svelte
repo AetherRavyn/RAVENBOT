@@ -29,6 +29,7 @@
   import OfficeMemoryPanel from "$lib/components/OfficeMemoryPanel.svelte";
   import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
   import TranscriptRail from "$lib/components/chat/TranscriptRail.svelte";
+  import VirtualTranscript from "$lib/components/chat/VirtualTranscript.svelte";
   import { workflowRunOutcome } from "$lib/workflowRuns";
   import {
     WORKFLOW_TEMPLATES,
@@ -52,6 +53,7 @@
   import { messageDayKey, messageDayLabel } from "$lib/chat/dayMarkers";
   import { isEditableTarget, navigateMessage } from "$lib/chat/navigation";
   import { anchoredScrollTop, transcriptWindow } from "$lib/chat/messageWindow";
+  import { estimateMessageHeight } from "$lib/chat/virtualRows";
   import { drafts, officeDraftKey } from "$lib/chat/drafts";
   import {
     applyMention,
@@ -175,12 +177,9 @@
       stickToLatest = false;
     }
     await tick();
-    document
-      .getElementById(`message-${key}`)
-      ?.scrollIntoView({
-        block: "center",
-        behavior: prefersReducedMotion() ? "auto" : "smooth",
-      });
+    // The virtualizer mounts the row and performs the scroll; the row may not
+    // exist in the DOM when this reveal starts.
+    virtualTarget = key;
   }
 
   async function scrollToRoomMatch(index: number) {
@@ -1055,6 +1054,21 @@
   const visibleEnd = $derived(windowBounds.end);
   const visibleMessages = $derived(messages.slice(visibleStart, visibleEnd));
 
+  // Viewport mounting for the office feed. The loaded-window paging above is
+  // unchanged; this only decides which loaded rows have a DOM node.
+  let virtualTarget = $state("");
+  let virtualPin = $state(0);
+  let railPositions = $state<Record<string, number>>({});
+  function handleVirtualLayout(layout: { tops: Record<string, number> }) {
+    // Rail entries are keyed by DOM id (`message-<key>`); the virtualizer
+    // reports message keys, because that is what its row identity uses.
+    const positioned: Record<string, number> = {};
+    for (const [key, top] of Object.entries(layout.tops)) {
+      positioned[`message-${key}`] = top;
+    }
+    railPositions = positioned;
+  }
+
   let railEntries = $derived(
     visibleMessages
       .filter((msg) => {
@@ -1079,9 +1093,7 @@
   );
 
   function jumpToRail(id: string) {
-    document
-      .getElementById(id)
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    void revealMessage(id.replace(/^message-/, ""));
   }
 
   const hiddenBefore = $derived(visibleStart);
@@ -1155,10 +1167,26 @@
     unseenMessages = 0;
     windowEnd = 0;
     messageWindow = MESSAGE_WINDOW;
-    chatContainer?.scrollTo({
-      top: chatContainer.scrollHeight,
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-    });
+    // The virtualizer mounts the tail and performs the scroll after the
+    // paging window has actually changed.
+    virtualPin += 1;
+  }
+
+  /**
+   * Alt+Arrow reached the edge of the mounted window. Mount the adjacent
+   * message and reveal it instead of stopping at the last DOM row.
+   */
+  function revealAdjacentFromBoundary(
+    direction: 1 | -1,
+    row: HTMLElement | null,
+  ) {
+    const id = row?.id ?? "";
+    if (!id.startsWith("message-")) return;
+    const key = id.slice("message-".length);
+    const index = messages.findIndex((message) => messageKey(message) === key);
+    const next = index + direction;
+    if (index < 0 || next < 0 || next >= messages.length) return;
+    void revealMessage(messageKey(messages[next]));
   }
 
   function handleMessageNavKey(event: KeyboardEvent) {
@@ -1170,6 +1198,7 @@
       chatContainer,
       event.key === "ArrowUp" ? -1 : 1,
       !prefersReducedMotion(),
+      revealAdjacentFromBoundary,
     );
   }
 
@@ -1200,10 +1229,12 @@
   async function scrollToBottom(force = false) {
     if (!force && !stickToLatest) return;
     stickToLatest = true;
+    const jump = windowEnd !== 0 || messageWindow !== MESSAGE_WINDOW;
     windowEnd = 0;
     // Returning to the live end also releases any earlier batches the reader
     // loaded while paging through history.
     messageWindow = MESSAGE_WINDOW;
+    if (force || jump) virtualPin += 1;
     await tick();
     if (chatContainer) {
       chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -1217,6 +1248,8 @@
     seenMessageCount = 0;
     messageWindow = MESSAGE_WINDOW;
     windowEnd = 0;
+    virtualTarget = "";
+    railPositions = {};
     hasEarlier = false;
     replyTargets = [];
     staticEntries = true;
@@ -2811,7 +2844,7 @@
   <!-- Main Chat & Task Feed -->
   <div class="flex-1 flex flex-col overflow-hidden bg-[var(--surface-0)]">
     <div class="relative flex-1 min-h-0">
-    <div bind:this={chatContainer} onscroll={handleFeedScroll} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" class="h-full overflow-y-auto p-4 sm:p-6 space-y-6 {staticEntries ? 'entries-static' : ''}">
+    <div bind:this={chatContainer} onscroll={handleFeedScroll} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" class="virtual-scroll h-full overflow-y-auto p-4 sm:p-6 space-y-6 {staticEntries ? 'entries-static' : ''}">
       <div class="max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto min-h-full flex flex-col justify-end gap-6">
         {#if hiddenBefore > 0 || hasEarlier}
           <div class="load-earlier-row">
@@ -2826,8 +2859,89 @@
             </button>
           </div>
         {/if}
-        {#each visibleMessages as msg, vi (msg.id || msg.created_at)}
-          {@const mi = visibleStart + vi}
+        {#if messages.length === 0}
+          <!-- Empty State: Modern Office Mission Control -->
+          <div class="p-8 text-center border border-dashed border-[var(--hairline)] rounded-xl bg-[var(--surface-0)]/80 max-w-xl mx-auto my-6 shadow-xl space-y-4">
+            <div class="size-16 rounded-2xl bg-[var(--surface-2)] border border-[var(--hairline-strong)] mx-auto flex items-center justify-center text-[var(--brand-text)] shadow-2xl">
+              <Building2 class="size-8" />
+            </div>
+
+            <div>
+              <h3 class="font-bold text-base text-[var(--text-primary)] tracking-tight">
+                {t("room.workspaceTitle", { name: room.name })}
+              </h3>
+              <p class="text-xs text-[var(--text-tertiary)] mt-1 max-w-md mx-auto leading-relaxed">
+                {room.description || t("room.defaultDesc")}
+              </p>
+            </div>
+
+            <!-- Pre-configured Team Lane Overview -->
+            {#if members.length > 0}
+              <div class="flex items-center justify-center gap-3 pt-2">
+                {#each members as m}
+                  <div class="flex flex-col items-center gap-1">
+                    <div class="size-9 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] shadow-md">
+                      <RavenAvatar name={m.rank} imageUrl={m.bot?.avatar_url}
+                 style={m.bot?.avatar_style} />
+                    </div>
+                    <span class="text-[11px] font-bold text-[var(--text-secondary)] font-mono">{m.rank}</span>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <!-- No team yet: let the CEO staff the office -->
+              <div class="p-4 mt-2 rounded-2xl border border-success/50 bg-success/15 text-left space-y-2">
+                <div class="text-xs font-bold text-success flex items-center gap-1.5">
+                  <Users class="size-3.5" /> {t("room.noTeam")}
+                </div>
+                <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed">
+                  {t("room.ceoStaffDesc")}
+                </p>
+                <button
+                  type="button"
+                  onclick={() => openHireModal()}
+                  class="h-8 px-3 rounded-xl bg-success/15 border border-success/40 text-success hover:bg-success/25 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Sparkles class="size-3.5" /> {t("room.staffOffice")}
+                </button>
+              </div>
+            {/if}
+
+            <!-- Quick Starter Tasks -->
+            <div class="space-y-2 pt-4 text-left">
+              <span class="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider font-mono flex items-center gap-1.5">
+                <Sparkles class="size-3 text-[var(--brand-text)]" />
+                Collaborative Directives:
+              </span>
+              <div class="grid grid-cols-1 gap-2">
+                {#each roomTasks as task}
+                  <button
+                    type="button"
+                    class="text-left text-xs p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--hairline-strong)] hover:bg-[var(--surface-2)] transition-all text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-between group cursor-pointer"
+                    onclick={() => send(task)}
+                  >
+                    <span class="truncate">{task}</span>
+                    <ArrowRight class="size-3.5 text-[var(--brand-text)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-2" />
+                  </button>
+                {/each}
+              </div>
+            </div>
+          </div>
+        {:else}
+          <VirtualTranscript
+            items={visibleMessages}
+            container={chatContainer}
+            itemKey={messageKey}
+            estimate={estimateMessageHeight}
+            resetKey={room.id}
+            gap={24}
+            itemClass="flex flex-col gap-6"
+            bind:target={virtualTarget}
+            pin={virtualPin}
+            onLayout={handleVirtualLayout}
+          >
+            {#snippet row(msg, index)}
+          {@const mi = visibleStart + index}
           {@const dayKey = messageDayKey(msg.created_at)}
           {@const previousDayKey = mi > 0 ? messageDayKey(messages[mi - 1]?.created_at) : ""}
           {@const isUser = isUserMessage(msg)}
@@ -2964,75 +3078,9 @@
             {/snippet}
           </ChatMessageRow>
           {/if}
-        {:else}
-          <!-- Empty State: Modern Office Mission Control -->
-          <div class="p-8 text-center border border-dashed border-[var(--hairline)] rounded-xl bg-[var(--surface-0)]/80 max-w-xl mx-auto my-6 shadow-xl space-y-4">
-            <div class="size-16 rounded-2xl bg-[var(--surface-2)] border border-[var(--hairline-strong)] mx-auto flex items-center justify-center text-[var(--brand-text)] shadow-2xl">
-              <Building2 class="size-8" />
-            </div>
-
-            <div>
-              <h3 class="font-bold text-base text-[var(--text-primary)] tracking-tight">
-                {t("room.workspaceTitle", { name: room.name })}
-              </h3>
-              <p class="text-xs text-[var(--text-tertiary)] mt-1 max-w-md mx-auto leading-relaxed">
-                {room.description || t("room.defaultDesc")}
-              </p>
-            </div>
-
-            <!-- Pre-configured Team Lane Overview -->
-            {#if members.length > 0}
-              <div class="flex items-center justify-center gap-3 pt-2">
-                {#each members as m}
-                  <div class="flex flex-col items-center gap-1">
-                    <div class="size-9 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline-strong)] shadow-md">
-                      <RavenAvatar name={m.rank} imageUrl={m.bot?.avatar_url}
-                 style={m.bot?.avatar_style} />
-                    </div>
-                    <span class="text-[11px] font-bold text-[var(--text-secondary)] font-mono">{m.rank}</span>
-                  </div>
-                {/each}
-              </div>
-            {:else}
-              <!-- No team yet: let the CEO staff the office -->
-              <div class="p-4 mt-2 rounded-2xl border border-success/50 bg-success/15 text-left space-y-2">
-                <div class="text-xs font-bold text-success flex items-center gap-1.5">
-                  <Users class="size-3.5" /> {t("room.noTeam")}
-                </div>
-                <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed">
-                  {t("room.ceoStaffDesc")}
-                </p>
-                <button
-                  type="button"
-                  onclick={() => openHireModal()}
-                  class="h-8 px-3 rounded-xl bg-success/15 border border-success/40 text-success hover:bg-success/25 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Sparkles class="size-3.5" /> {t("room.staffOffice")}
-                </button>
-              </div>
-            {/if}
-
-            <!-- Quick Starter Tasks -->
-            <div class="space-y-2 pt-4 text-left">
-              <span class="text-[11px] font-bold text-[var(--text-muted)] uppercase tracking-wider font-mono flex items-center gap-1.5">
-                <Sparkles class="size-3 text-[var(--brand-text)]" />
-                Collaborative Directives:
-              </span>
-              <div class="grid grid-cols-1 gap-2">
-                {#each roomTasks as task}
-                  <button
-                    type="button"
-                    class="text-left text-xs p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--hairline-strong)] hover:bg-[var(--surface-2)] transition-all text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-between group cursor-pointer"
-                    onclick={() => send(task)}
-                  >
-                    <span class="truncate">{task}</span>
-                    <ArrowRight class="size-3.5 text-[var(--brand-text)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0 ml-2" />
-                  </button>
-                {/each}
-              </div>
-            </div>
-          </div>
-        {/each}
+            {/snippet}
+          </VirtualTranscript>
+        {/if}
 
         <!-- Human-in-the-loop cards from office nodes -->
         {#each pendingApprovals as ap (ap.id)}
@@ -3269,6 +3317,7 @@
       <TranscriptRail
         container={chatContainer}
         entries={railEntries}
+        positions={railPositions}
         onJump={jumpToRail}
       />
     </div>

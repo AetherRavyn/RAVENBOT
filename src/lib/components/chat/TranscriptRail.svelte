@@ -10,10 +10,16 @@
   interface Props {
     container: HTMLElement | null;
     entries?: RailEntry[];
+    /**
+     * Virtual-transcript offsets, as percentages of the scroll container.
+     * When a row is unmounted there is no DOM element to measure, so the
+     * virtualizer supplies the same position it uses for its spacer.
+     */
+    positions?: Record<string, number>;
     onJump: (id: string) => void;
   }
 
-  let { container, entries = [], onJump }: Props = $props();
+  let { container, entries = [], positions = {}, onJump }: Props = $props();
 
   interface RailTick extends RailEntry {
     top: number;
@@ -39,6 +45,11 @@
     const containerRect = container.getBoundingClientRect();
     const next: RailTick[] = [];
     for (const entry of entries) {
+      const known = positions[entry.id];
+      if (typeof known === "number" && Number.isFinite(known)) {
+        next.push({ ...entry, top: Math.min(100, Math.max(0, known)) });
+        continue;
+      }
       const element = document.getElementById(entry.id);
       if (!element) continue;
       const rect = element.getBoundingClientRect();
@@ -64,6 +75,7 @@
   $effect(() => {
     container;
     entries;
+    positions;
     schedule();
     if (!container) return;
     container.addEventListener("scroll", schedule, { passive: true });

@@ -9,6 +9,7 @@
   import AgentIntelligence from "$lib/components/AgentIntelligence.svelte";
   import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
   import TranscriptRail from "$lib/components/chat/TranscriptRail.svelte";
+  import VirtualTranscript from "$lib/components/chat/VirtualTranscript.svelte";
   import MessageSelectionToolbar from "$lib/components/chat/MessageSelectionToolbar.svelte";
   import { quoteAsMarkdown, type SelectionQuote } from "$lib/chat/selection";
   import ChatEmptyState from "$lib/components/chat/ChatEmptyState.svelte";
@@ -28,6 +29,7 @@
   import { messageDayKey, messageDayLabel } from "$lib/chat/dayMarkers";
   import { isEditableTarget, navigateMessage } from "$lib/chat/navigation";
   import { anchoredScrollTop, transcriptWindow } from "$lib/chat/messageWindow";
+  import { estimateMessageHeight } from "$lib/chat/virtualRows";
   import {
     mergeOlderMessages,
     oldestMessageId,
@@ -213,6 +215,22 @@
   const visibleMessages = $derived(messages.slice(visibleStart, visibleEnd));
   const hiddenBefore = $derived(visibleStart);
 
+  // The row virtualizer mounts only the viewport plus overscan. `virtualTarget`
+  // is a one-shot request to mount a message before a search hit or a reply
+  // jump scrolls to it; the component clears it after handling.
+  let virtualTarget = $state("");
+  let virtualPin = $state(0);
+  let railPositions = $state<Record<string, number>>({});
+  function handleVirtualLayout(layout: { tops: Record<string, number> }) {
+    // Rail entries are keyed by DOM id (`message-<key>`); the virtualizer
+    // reports message keys, because that is what its row identity uses.
+    const positioned: Record<string, number> = {};
+    for (const [key, top] of Object.entries(layout.tops)) {
+      positioned[`message-${key}`] = top;
+    }
+    railPositions = positioned;
+  }
+
   async function loadEarlier() {
     if (loadingEarlier || (hiddenBefore <= 0 && !hasEarlier)) return;
     const el = messagesContainer;
@@ -258,12 +276,9 @@
       stickToLatest = false;
     }
     await tick();
-    document
-      .getElementById(`message-${key}`)
-      ?.scrollIntoView({
-        block: "center",
-        behavior: prefersReducedMotion() ? "auto" : "smooth",
-      });
+    // The row may not be mounted: the virtualizer re-windows around this key
+    // and scrolls once the row exists.
+    virtualTarget = key;
   }
 
   async function scrollToSearchMatch(index: number) {
@@ -692,9 +707,7 @@
   );
 
   function jumpToRail(id: string) {
-    document
-      .getElementById(id)
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    void revealMessage(id.replace(/^message-/, ""));
   }
   // OpenBot scroll behavior: auto-follow only while the reader is already at
   // the bottom (within 80px); scrolling up during a run unsticks and reveals
@@ -1140,10 +1153,26 @@
     unseenMessages = 0;
     windowEnd = 0;
     messageWindow = MESSAGE_WINDOW;
-    messagesContainer?.scrollTo({
-      top: messagesContainer.scrollHeight,
-      behavior: prefersReducedMotion() ? "auto" : "smooth",
-    });
+    // The virtualizer mounts the tail and performs the scroll after the
+    // paging window has actually changed.
+    virtualPin += 1;
+  }
+
+  /**
+   * Alt+Arrow reached the edge of the mounted window. Mount the adjacent
+   * message and reveal it instead of stopping at the last DOM row.
+   */
+  function revealAdjacentFromBoundary(
+    direction: 1 | -1,
+    row: HTMLElement | null,
+  ) {
+    const id = row?.id ?? "";
+    if (!id.startsWith("message-")) return;
+    const key = id.slice("message-".length);
+    const index = messages.findIndex((message) => messageKey(message) === key);
+    const next = index + direction;
+    if (index < 0 || next < 0 || next >= messages.length) return;
+    void revealMessage(messageKey(messages[next]));
   }
 
   function handleMessageNavKey(event: KeyboardEvent) {
@@ -1155,6 +1184,7 @@
       messagesContainer,
       event.key === "ArrowUp" ? -1 : 1,
       !prefersReducedMotion(),
+      revealAdjacentFromBoundary,
     );
   }
 
@@ -1184,10 +1214,12 @@
   async function scrollToBottom(force = false) {
     if (!force && !stickToLatest) return;
     stickToLatest = true;
+    const jump = windowEnd !== 0 || messageWindow !== MESSAGE_WINDOW;
     windowEnd = 0;
     // Returning to the live end also releases any earlier batches the reader
     // loaded while paging through history.
     messageWindow = MESSAGE_WINDOW;
+    if (force || jump) virtualPin += 1;
     await tick();
     if (messagesContainer) {
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -1209,6 +1241,8 @@
     seenMessageCount = 0;
     messageWindow = MESSAGE_WINDOW;
     windowEnd = 0;
+    virtualTarget = "";
+    railPositions = {};
     selectedThreadId = threadId;
     void loadThreadGoal(threadId);
     void loadThreadWorktree(threadId);
@@ -2908,7 +2942,7 @@
     <div class="flex flex-1 overflow-hidden bg-[var(--surface-0)]">
       <div class="flex flex-1 flex-col overflow-hidden">
       <div class="relative flex-1 min-h-0">
-      <div bind:this={messagesContainer} onscroll={handleFeedScroll} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" class="h-full overflow-y-auto px-3 pt-2 pb-6 {staticEntries ? 'entries-static' : ''}">
+      <div bind:this={messagesContainer} onscroll={handleFeedScroll} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" class="virtual-scroll h-full overflow-y-auto px-3 pt-2 pb-6 {staticEntries ? 'entries-static' : ''}">
         <div class="max-w-[720px] mx-auto">
           {#if hiddenBefore > 0 || hasEarlier}
             <div class="load-earlier-row">
@@ -2933,8 +2967,18 @@
               onPick={(prompt) => void sendMessage(prompt)}
             />
           {/if}
-          {#each visibleMessages as message, vi (message.id || message.created_at)}
-            {@const mi = visibleStart + vi}
+          <VirtualTranscript
+            items={visibleMessages}
+            container={messagesContainer}
+            itemKey={messageKey}
+            estimate={estimateMessageHeight}
+            resetKey={selectedThreadId ?? ""}
+            bind:target={virtualTarget}
+            pin={virtualPin}
+            onLayout={handleVirtualLayout}
+          >
+            {#snippet row(message, index)}
+            {@const mi = visibleStart + index}
             {@const dayKey = messageDayKey(message.created_at)}
             {@const previousDayKey = mi > 0 ? messageDayKey(messages[mi - 1]?.created_at) : ""}
             {@const isUser = isUserMessage(message)}
@@ -3162,7 +3206,8 @@
                 {/if}
               {/snippet}
             </ChatMessageRow>
-          {/each}
+            {/snippet}
+          </VirtualTranscript>
 
           {#snippet liveMarkers()}
             {#if actionMarkers.length}
@@ -3300,6 +3345,7 @@
         <TranscriptRail
           container={messagesContainer}
           entries={railEntries}
+          positions={railPositions}
           onJump={jumpToRail}
         />
       </div>

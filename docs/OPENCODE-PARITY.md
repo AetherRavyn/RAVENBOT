@@ -61,9 +61,10 @@ properties are unchanged. This is the correct half of OpenCode's renderer to
 copy: typography and block semantics, not Electron or the worker cache
 (RAVENBOT's stream is already bounded by the 24k tool-result cap).
 
-**Not copied yet:** worker-based parsing/highlighting, block-level streaming
-cache, and timeline virtualisation. Those are performance work, not visual
-fidelity, and are listed below.
+**Not copied yet:** worker-based parsing/highlighting and the block-level
+streaming cache. Timeline virtualisation now has its own measured row window;
+these remaining items are performance work, not visual fidelity, and are
+listed below.
 
 ## 4. 24/7 harness readiness matrix
 
@@ -88,7 +89,7 @@ but not the general one; **Missing** = no implementation.
 | Isolated worktrees | opt-in conversation-scoped `git worktree`, fail-closed on dirty/non-Git projects, review + checked apply/discard, goal/snapshot aware | `packages/core/src/worktree.ts` | **Present** |
 | LSP / project diagnostics | real stdio LSP client, five default servers, agent tool, automatic goal-round checks, Projects diagnostics and a Settings JSON map | project LSP settings in app | **Present** |
 | Unified patch tool | `file_edit` (also `apply_patch`) parses standard unified diffs and Codex patches in-process, validates every hunk, writes atomically, and journals each file | `tool/patch*` | **Present** |
-| **Timeline virtualisation** | message windows (30/50) bound the mounted rows; no row recycling | `session/timeline/virtualizer.tsx` | **Partial (P2)** |
+| Timeline virtualisation | measured variable-height row window, top/bottom spacers, anchor-preserving prepends, rail offsets and mounted-target reveals; the 30/50 paging window remains the load budget | `session/timeline/virtualizer.tsx` | **Present** |
 | **Worker markdown/highlight** | marked + custom tokens on the UI thread | `markdown.worker.ts` | **Missing (P2)** |
 | **MCP event-triggered jobs** | MCP client only; scheduler triggers are cron/webhook | automation from MCP events | **Missing (P2)** |
 | **Public session share** | remote access/device pairing, no public share link | share UI | **Missing (P3)** |
@@ -194,15 +195,40 @@ project the user is still editing.
   servers edits the `lsp_servers` map and can restore defaults.
   `RAVENBOT_LSP_TIMEOUT_SECS` controls the per-check deadline.
 
+### Shipped — virtualized timeline
+
+The message window still bounds how much history is loaded; a measured
+virtualizer now bounds how much of it is mounted.
+
+- `src/lib/components/chat/VirtualTranscript.svelte` mounts the viewport plus
+  overscan, replaces the rest with top/bottom spacers, and measures mounted
+  rows with a `ResizeObserver` plus an `offsetHeight` fallback.
+- Heights are variable. A row's real height wins once measured; unmounted rows
+  use a line/code/attachment-aware estimate from
+  `src/lib/chat/virtualRows.ts`.
+- Paging changes follow the row at the top of the mounted range by key and
+  shift the range to its new index, so "load earlier" prepends history without
+  remounting a different set of messages under the reader.
+- A full-window jump (search, reply, rail, global focus) mounts the target and
+  scrolls it to the center. Long jumps are instant because animating across a
+  changing spacer would fight the window; short moves still animate.
+- The rail reads virtual offsets for every loaded user message, not only the
+  mounted ones. `Alt+↑/↓` hands off to the view at the mounted edge so it can
+  mount and reveal the adjacent message.
+- The live streaming row and approvals stay outside the virtual list, so their
+  entrance and height animation are unchanged. Rows inside the virtual list
+  are mounted with `.entries-static`, so recycling cannot replay the history
+  entrance animation.
+- The row shell keeps `content-visibility: auto`; the virtualizer's mounted
+  rows override it to `visible` so their measured height is exact.
+
 ## 6. Renderer roadmap (after the typography change)
 
 1. **Block streaming cache** — memoise completed blocks so an 8k-token answer
    re-renders only the last block. This is the biggest UI win for long runs.
 2. **Worker parse/highlight** — move `marked` lexing and code tokenisation off
    the UI thread; keep the current security checks on the returned tokens.
-3. **Timeline virtualisation** — recycle message rows above/below the viewport;
-   the page API already provides stable message ids.
-4. **Tool-part renderers** — show command output, diffs and file reads as
+3. **Tool-part renderers** — show command output, diffs and file reads as
    first-class cards rather than one-line trace rows.
 
 ## 7. What not to copy
@@ -255,3 +281,16 @@ project the user is still editing.
   `language_diagnostics_force_a_continue_verdict` proves a diagnostic failure
   overrides a done verdict. The ProjectsView DOM test covers the diagnostics
   command and error list.
+- Timeline virtualisation: `virtualRows.test.ts` covers prefix arithmetic,
+  viewport/overscan slicing, tail rows, spacer clamping and height estimates.
+  `VirtualTranscript.dom.test.ts` proves a 240-row transcript mounts a bounded
+  tail, scrolls to a middle window, keeps the mounted keys through a 50-row
+  prepend, reveals an off-screen target, and reports every rail offset.
+  `TranscriptRail.dom.test.ts` covers virtual positions without DOM rows, and
+  `navigation.dom.test.ts` covers the mounted-edge handoff for Alt+Arrow. The
+  virtualizer was also exercised in real Chromium pages: once with 300–600
+  plain variable-height rows and once with 120 real `ChatMessageRow` rows.
+  A 100-row prepend kept the same eight mounted keys and added exactly the
+  spacer delta to `scrollTop`, and a rail-style jump centered a 124px target at
+  237px in a 598px viewport. The temporary check routes and browser profiles
+  were removed.

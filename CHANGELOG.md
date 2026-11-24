@@ -11,10 +11,17 @@ All notable changes to RAVENBOT are documented here.
   17/15/14px headings with hierarchical margins, 32px list indents, 8px
   list-item spacing, hover-only link underlines, and quiet 8%-fill inline
   code. The token renderer and its HTML/link safety checks are unchanged.
+- **Measured timeline virtualisation** — both the 1:1 transcript and the office
+  feed now mount only the viewport plus overscan. Variable row heights are
+  measured, unmounted rows use a content-aware estimate, and top/bottom spacers
+  keep the scrollbar honest. Loading earlier follows the top mounted message by
+  key, search/reply/rail jumps mount their target, and the rail reads virtual
+  offsets instead of relying on a DOM row being present. The live streaming row
+  and approvals stay outside the virtual list.
 - **Harness audit** — `docs/OPENCODE-PARITY.md` maps OpenCode's desktop and
   markdown worker/cache system against RAVENBOT. The P0/P1 harness gaps are
-  shipped; remaining work is renderer performance, MCP-event jobs, and public
-  session sharing.
+  shipped; remaining work is the worker markdown path, MCP-event jobs, and
+  public session sharing.
 
 ### Persistent 1:1 goal loop
 

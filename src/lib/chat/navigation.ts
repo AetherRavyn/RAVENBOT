@@ -29,6 +29,7 @@ export function navigateMessage(
   container: HTMLElement | null,
   direction: 1 | -1,
   smooth: boolean,
+  onBoundary?: (direction: 1 | -1, row: HTMLElement | null) => void,
 ): HTMLElement | null {
   if (!container) return null;
   const rows = Array.from(
@@ -42,7 +43,15 @@ export function navigateMessage(
   );
   if (current < 0) current = rows.length - 1;
 
-  const row = rows[adjacentMessageIndex(current, rows.length, direction)];
+  const target = adjacentMessageIndex(current, rows.length, direction);
+  if (target === current) {
+    // A virtual transcript only mounts a window of rows. At the window edge
+    // there is no next DOM row to scroll to, so hand the direction back to the
+    // view, which can mount the adjacent message and reveal it.
+    onBoundary?.(direction, rows[current] ?? null);
+    return null;
+  }
+  const row = rows[target];
   row?.scrollIntoView({
     block: "center",
     behavior: smooth ? "smooth" : "auto",

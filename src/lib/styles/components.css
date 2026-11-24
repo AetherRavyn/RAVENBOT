@@ -464,6 +464,24 @@ html.sidebar-resizing .app-frame {
   padding-top: 4px;
 }
 
+/* Virtual transcript: the component already recycles rows, so CSS-level
+ * content skipping would only hide their real height from the measurer. Keep
+ * every mounted row laid out; the window itself is the budget. */
+.virtual-transcript .message-entry {
+  content-visibility: visible;
+  contain-intrinsic-size: none;
+}
+
+.virtual-transcript__spacer {
+  pointer-events: none;
+}
+
+/* The virtualizer performs its own anchor correction when spacers change.
+ * Leaving browser scroll anchoring on would correct the same change twice. */
+.virtual-scroll {
+  overflow-anchor: none;
+}
+
 /* Bubbles: uniform 22px radius (OpenBot never varies corners per group),
  * 8px/12px padding, -0.15px tracking. User = raised surface, right-aligned,
  * capped at 420px. Assistant = surface panel, capped at 720px. */

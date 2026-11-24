@@ -71,6 +71,40 @@ describe("TranscriptRail", () => {
     expect(onJump).toHaveBeenCalledWith("message-1");
   });
 
+  it("uses virtual positions when a row is not mounted", async () => {
+    const container = document.createElement("div");
+    Object.defineProperty(container, "scrollHeight", {
+      value: 1000,
+      configurable: true,
+    });
+    Object.defineProperty(container, "clientHeight", {
+      value: 500,
+      configurable: true,
+    });
+    container.scrollTop = 50;
+    container.getBoundingClientRect = () =>
+      ({ top: 0, left: 0, width: 600, height: 500, bottom: 500, right: 600, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+    document.body.appendChild(container);
+
+    const { getByLabelText, container: view } = render(TranscriptRail, {
+      props: {
+        container,
+        entries: [
+          { id: "message-1", kind: "user", label: "First message" },
+          { id: "message-2", kind: "user", label: "Second message" },
+        ],
+        positions: { "message-1": 12, "message-2": 88 },
+        onJump: vi.fn(),
+      },
+    });
+
+    const first = await waitFor(() => getByLabelText("First message"));
+    const second = getByLabelText("Second message");
+    expect(first.style.top).toBe("12%");
+    expect(second.style.top).toBe("88%");
+    expect(view.querySelectorAll(".transcript-rail-tick")).toHaveLength(2);
+  });
+
   it("stays hidden when the transcript has no measured height", async () => {
     const container = document.createElement("div");
     document.body.appendChild(container);
