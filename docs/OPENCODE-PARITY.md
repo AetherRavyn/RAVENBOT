@@ -92,7 +92,7 @@ but not the general one; **Missing** = no implementation.
 | Worker markdown/highlight | module Web Worker lexes settled long bodies and colours long code blocks; streaming and short bodies stay synchronous, with a timed fallback and bounded caches on both sides | `markdown.worker.ts` | **Present** |
 | Streaming block memoisation | completed block token objects survive each streaming re-lex; only the growing block and fade offsets invalidate | block cache in renderer | **Present** |
 | MCP event-triggered jobs | long-lived stdio notification listeners, persistent routine triggers with method/resource/filter matching, cooldowns, supervisor in desktop and daemon; HTTP connectors are honestly reported as unsupported | automation from MCP events | **Present (stdio)** |
-| **Public session share** | remote access/device pairing, no public share link | share UI | **Missing (P3)** |
+| Public session share | owner-created read-only links served by Remote access, hashed tokens, expiry/revocation, snapshot cutoff and sanitized text-only page | share UI | **Present (local listener)** |
 
 ## 5. The 24/7 harness
 
@@ -299,6 +299,27 @@ closed for stdio connectors:
   `unsupported` by the supervisor. The existing HTTP transport is one-shot
   request/response; claiming it could receive pushes would be false.
 
+### Shipped — public conversation shares
+
+A conversation can now have a read-only public link:
+
+- Migration 74 stores `thread_shares` (thread, token hash, expiry, revocation,
+  view count). The token is returned once and never stored in plaintext.
+- Creation is an owner-only local command and requires the Remote access
+  listener to be running. The link is `<remote-url>/share/<token>`; if Remote
+  access is loopback-only, the link is reachable there or through a tunnel.
+- The public page is server-rendered, has no JavaScript, is `noindex`, and
+  shows only user/assistant text. Tool calls, reasoning, attachments, approvals
+  and questions are omitted; checklist labels are included without results.
+- All content is HTML-escaped. A 404 is used for unknown, expired, revoked and
+  malformed tokens alike.
+- `created_at` is a snapshot boundary: messages added after the link was made
+  are never exposed. Edits/deletions in the shared range still apply. A share
+  renders at most the most recent 300 messages and says so when it truncates.
+- The Thread header opens a Share dialog for owners: lifetime (24h/7d/30d),
+  one-time link, copy, existing links, view counts, expiry and revoke.
+- Deleting a thread deletes its share rows.
+
 ## 6. Renderer roadmap (after the typography change)
 
 1. **Tool-part renderers** — show command output, diffs and file reads as
@@ -354,6 +375,11 @@ closed for stdio connectors:
   `language_diagnostics_force_a_continue_verdict` proves a diagnostic failure
   overrides a done verdict. The ProjectsView DOM test covers the diagnostics
   command and error list.
+- Public shares: DB tests cover active/expired/revoked tokens, view counts,
+  scoping and cleanup. Remote server tests prove the public page is 200 for an
+  active token, 404 for unknown/expired/revoked tokens, escapes HTML, omits
+  tool content and future messages, and sets `noindex`/`no-store` headers.
+  The share dialog is owner-only and uses the same remote URL as the listener.
 - MCP event triggers: DB tests cover create/list, cooldown claims, disabled
   triggers/routines and duplicate rejection. `crates/mcp` tests cover
   notification parsing/matching/context bounds, server-request answers, a fake

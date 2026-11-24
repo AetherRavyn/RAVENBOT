@@ -11,6 +11,11 @@ All notable changes to RAVENBOT are documented here.
   17/15/14px headings with hierarchical margins, 32px list indents, 8px
   list-item spacing, hover-only link underlines, and quiet 8%-fill inline
   code. The token renderer and its HTML/link safety checks are unchanged.
+- **Public conversation shares** — owners can create expiring read-only links
+  from a conversation. Links are served by Remote access, stored only as
+  hashes, revocable, and limited to user/assistant text that existed when the
+  link was created; tool traces, reasoning, attachments and interactive cards
+  are omitted. The public page is server-rendered, escaped and `noindex`.
 - **MCP event-triggered routines** — enabled stdio MCP servers can now push
   JSON-RPC notifications that start a routine. Triggers live in the database,
   match a method/resource/params filter, claim a per-trigger cooldown, and run
@@ -37,8 +42,8 @@ All notable changes to RAVENBOT are documented here.
   and approvals stay outside the virtual list.
 - **Harness audit** — `docs/OPENCODE-PARITY.md` maps OpenCode's desktop and
   markdown worker/cache system against RAVENBOT. The P0/P1 harness gaps are
-  shipped; remaining work is MCP-event jobs, public session sharing, and the
-  tool-part renderer cards.
+  shipped; the only remaining renderer item is the optional tool-part card
+  presentation.
 
 ### Persistent 1:1 goal loop
 

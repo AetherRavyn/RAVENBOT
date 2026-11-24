@@ -38,7 +38,7 @@ use uuid::Uuid;
 
 use ravenbot_db::queries::{
     ApprovalQueries, MessageQueries, QuestionQueries, RemoteAccessQueries, RunQueries,
-    ThreadQueries,
+    ThreadQueries, ThreadShareQueries,
 };
 use ravenbot_runtime::Runtime;
 
@@ -47,6 +47,7 @@ const MAX_PAIRING_ATTEMPTS_PER_MINUTE: usize = 5;
 const MAX_GLOBAL_PAIRING_ATTEMPTS_PER_MINUTE: usize = 30;
 const MAX_MESSAGE_CHARS: usize = 20_000;
 const MAX_ANSWER_BYTES: usize = 64 * 1024;
+const MAX_SHARE_MESSAGES: usize = 300;
 
 const CSP: &str = "default-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'";
 
@@ -543,7 +544,8 @@ pub fn router(state: Arc<RemoteState>) -> Router {
         .route("/app.css", get(app_css))
         .route("/app.js", get(app_js))
         .route("/api/health", get(health))
-        .route("/api/pair", post(pair));
+        .route("/api/pair", post(pair))
+        .route("/share/{token}", get(share_page));
 
     let protected = Router::new()
         .route("/api/status", get(status))
@@ -742,6 +744,241 @@ async fn app_js() -> Response {
         include_str!("assets/app.js"),
     )
         .into_response()
+}
+
+/// A read-only public conversation page. The token is an unguessable bearer
+/// capability and the page exposes only user/assistant text; tool calls,
+/// reasoning, attachments, approvals and questions are never included.
+async fn share_page(State(state): State<Arc<RemoteState>>, Path(token): Path<String>) -> Response {
+    let token = token.trim();
+    if token.len() < 32 || token.len() > 128 {
+        return share_not_found();
+    }
+    let share = match ThreadShareQueries::for_token(&state.pool, &hash_secret(token)).await {
+        Ok(Some(share)) => share,
+        Ok(None) => return share_not_found(),
+        Err(error) => {
+            tracing::warn!(%error, "share lookup failed");
+            return share_not_found();
+        }
+    };
+    let thread = match ThreadQueries::get(&state.pool, share.thread_id).await {
+        Ok(Some(thread)) => thread,
+        Ok(None) => return share_not_found(),
+        Err(error) => {
+            tracing::warn!(%error, "share thread lookup failed");
+            return share_not_found();
+        }
+    };
+    let cutoff = match DateTime::parse_from_rfc3339(&share.created_at) {
+        Ok(value) => value.with_timezone(&Utc),
+        Err(_) => return share_not_found(),
+    };
+    let messages = match MessageQueries::list_by_thread(&state.pool, share.thread_id).await {
+        Ok(messages) => messages,
+        Err(error) => {
+            tracing::warn!(%error, "share message lookup failed");
+            return share_not_found();
+        }
+    };
+    let visible: Vec<&ravenbot_core::Message> = messages
+        .iter()
+        .filter(|message| message.created_at <= cutoff)
+        .filter(|message| {
+            matches!(
+                message.role,
+                ravenbot_core::MessageRole::User | ravenbot_core::MessageRole::Assistant
+            )
+        })
+        .filter(|message| share_message_text(message).is_some())
+        .collect();
+    let truncated = visible.len() > MAX_SHARE_MESSAGES;
+    let visible = &visible[visible.len().saturating_sub(MAX_SHARE_MESSAGES)..];
+    let html = render_share_page(
+        &thread.title,
+        visible,
+        &share.expires_at,
+        &share.created_at,
+        truncated,
+    );
+    let _ = ThreadShareQueries::record_view(&state.pool, share.id).await;
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CONTENT_SECURITY_POLICY, CSP),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::REFERRER_POLICY, "no-referrer"),
+            (
+                header::HeaderName::from_static("x-robots-tag"),
+                "noindex, nofollow",
+            ),
+        ],
+        Html(html),
+    )
+        .into_response()
+}
+
+fn share_not_found() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CONTENT_SECURITY_POLICY, CSP),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::REFERRER_POLICY, "no-referrer"),
+            (
+                header::HeaderName::from_static("x-robots-tag"),
+                "noindex, nofollow",
+            ),
+        ],
+        Html(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+             <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+             <meta name=\"robots\" content=\"noindex,nofollow\">\
+             <title>Not found — RAVENBOT</title><link rel=\"stylesheet\" href=\"/app.css\">\
+             </head><body><main class=\"share-page\"><h1>404</h1>\
+             <p>This shared conversation is unavailable.</p></main></body></html>",
+        ),
+    )
+        .into_response()
+}
+
+/// Public text for one message. Reasoning, tool traces, tool results and
+/// attachment bytes are deliberately absent.
+fn share_message_text(message: &ravenbot_core::Message) -> Option<String> {
+    let mut text = match &message.content {
+        ravenbot_core::MessageContent::Text { text, .. } => text.clone(),
+        ravenbot_core::MessageContent::Checklist { text, items } => {
+            let mut out = text.clone().unwrap_or_default();
+            for item in items {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str("- ");
+                out.push_str(&item.label);
+            }
+            out
+        }
+        _ => return None,
+    };
+    if text.trim().is_empty() {
+        return None;
+    }
+    if !message.attachments.is_empty() {
+        text.push_str("\n\n[attachment omitted from this share]");
+    }
+    Some(text)
+}
+
+fn escape_html(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(ch),
+        }
+    }
+    out
+}
+
+fn render_share_page(
+    title: &str,
+    messages: &[&ravenbot_core::Message],
+    expires_at: &str,
+    cutoff: &str,
+    truncated: bool,
+) -> String {
+    let mut articles = String::new();
+    for message in messages {
+        let Some(text) = share_message_text(message) else {
+            continue;
+        };
+        let is_user = matches!(message.role, ravenbot_core::MessageRole::User);
+        let role = if is_user {
+            "User".to_string()
+        } else {
+            message
+                .sender_name
+                .clone()
+                .filter(|name| !name.trim().is_empty())
+                .unwrap_or_else(|| "Assistant".to_string())
+        };
+        articles.push_str(&format!(
+            "<article class=\"share-message{}\" role=\"article\">\
+             <div class=\"share-role\">{}</div>\
+             <div class=\"share-text\">{}</div>\
+             <div class=\"share-time\">{}</div>\
+             </article>",
+            if is_user { " share-message--user" } else { "" },
+            escape_html(&role),
+            escape_html(&text),
+            escape_html(
+                &message
+                    .created_at
+                    .format("%b %d, %Y · %H:%M UTC")
+                    .to_string()
+            ),
+        ));
+    }
+    let empty = if messages.is_empty() {
+        "<p class=\"share-empty\">No messages were shared.</p>".to_string()
+    } else {
+        String::new()
+    };
+    let truncation = if truncated {
+        format!(
+            "<p class=\"share-note\">Only the most recent {} messages are shown.</p>",
+            MAX_SHARE_MESSAGES
+        )
+    } else {
+        String::new()
+    };
+    let expires = DateTime::parse_from_rfc3339(expires_at)
+        .map(|value| {
+            value
+                .with_timezone(&Utc)
+                .format("%b %d, %Y · %H:%M UTC")
+                .to_string()
+        })
+        .unwrap_or_else(|_| expires_at.to_string());
+    let cutoff = DateTime::parse_from_rfc3339(cutoff)
+        .map(|value| {
+            value
+                .with_timezone(&Utc)
+                .format("%b %d, %Y · %H:%M UTC")
+                .to_string()
+        })
+        .unwrap_or_else(|_| cutoff.to_string());
+    format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <meta name=\"robots\" content=\"noindex,nofollow\">\
+         <title>{} — RAVENBOT</title><link rel=\"stylesheet\" href=\"/app.css\">\
+         </head><body><main class=\"share-page\">\
+         <header class=\"share-header\"><div class=\"mark\">R</div>\
+         <div><div class=\"share-kicker\">Shared conversation</div>\
+         <h1>{}</h1></div></header>\
+         <p class=\"share-note\">Read-only. Messages after {} are not included. \
+         Tool calls, reasoning, attachments, approvals and questions are omitted.</p>{}\
+         <section class=\"share-messages\">{}{}</section>\
+         <footer class=\"share-footer\">Link expires {}. Shared by RAVENBOT.</footer>\
+         </main></body></html>",
+        escape_html(title),
+        escape_html(title),
+        escape_html(&cutoff),
+        truncation,
+        articles,
+        empty,
+        escape_html(&expires),
+    )
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -1239,6 +1476,189 @@ mod tests {
             .expect("body")
             .to_bytes();
         serde_json::from_slice(&bytes).expect("json")
+    }
+
+    async fn seeded_thread(state: &RemoteState) -> (Uuid, Uuid) {
+        let bot = ravenbot_core::Bot::new("Share bot", "public share test");
+        ravenbot_db::queries::BotQueries::insert(&state.pool, &bot)
+            .await
+            .expect("bot");
+        let thread = ravenbot_core::Thread::new(bot.id, "Quarterly plan <draft>");
+        ThreadQueries::create(&state.pool, &thread)
+            .await
+            .expect("thread");
+        let first = ravenbot_core::Message::user(thread.id, "Hello <script>alert(1)</script>");
+        MessageQueries::insert(&state.pool, &first)
+            .await
+            .expect("user message");
+        let mut answer = ravenbot_core::Message::assistant(thread.id, "The plan is ready.");
+        answer.sender_name = Some("Raven".to_string());
+        MessageQueries::insert(&state.pool, &answer)
+            .await
+            .expect("assistant message");
+        (bot.id, thread.id)
+    }
+
+    async fn share_app() -> (Arc<RemoteState>, String, Uuid, Uuid) {
+        let state = state().await;
+        let (_, thread_id) = seeded_thread(&state).await;
+        let mut tool = ravenbot_core::Message::assistant(thread_id, "internal trace");
+        tool.content = ravenbot_core::MessageContent::ToolCall {
+            tool_name: "secret-tool".to_string(),
+            arguments: json!({"token": "tool-secret"}),
+        };
+        MessageQueries::insert(&state.pool, &tool)
+            .await
+            .expect("tool message");
+        let token = generate_token();
+        let expires = (Utc::now() + chrono::Duration::hours(2)).to_rfc3339();
+        let share =
+            ThreadShareQueries::create(&state.pool, thread_id, &hash_secret(&token), &expires)
+                .await
+                .expect("share");
+        (state, token, share.id, thread_id)
+    }
+
+    #[tokio::test]
+    async fn a_public_share_renders_only_the_snapshot_and_escapes_content() {
+        let (state, token, share_id, _) = share_app().await;
+        let app = router(state.clone());
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri(format!("/share/{token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("share response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response
+            .headers()
+            .get(header::HeaderName::from_static("x-robots-tag"))
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("noindex")));
+        let body = body_text(response).await;
+        assert!(body.contains("Quarterly plan &lt;draft&gt;"), "{body}");
+        assert!(body.contains("Hello &lt;script&gt;"), "{body}");
+        assert!(body.contains("The plan is ready."), "{body}");
+        assert!(!body.contains("<script>alert"), "{body}");
+        assert!(!body.contains("tool-secret"), "{body}");
+        assert!(body.contains("Read-only"), "{body}");
+
+        let stored: (i64, String) =
+            sqlx::query_as("SELECT view_count, token_hash FROM thread_shares WHERE id = ?")
+                .bind(share_id.to_string())
+                .fetch_one(&state.pool)
+                .await
+                .expect("view count");
+        assert_eq!(stored.0, 1);
+        assert_ne!(stored.1, token, "the usable token is never persisted");
+        assert_eq!(stored.1, hash_secret(&token));
+    }
+
+    #[tokio::test]
+    async fn future_messages_and_tool_content_never_enter_a_share() {
+        let (state, token, _, thread_id) = share_app().await;
+        let app = router(state.clone());
+        // The thread was seeded before the share; append after the snapshot
+        // boundary and confirm it is absent.
+        let mut future = ravenbot_core::Message::assistant(thread_id, "SECRET-FUTURE");
+        future.created_at = Utc::now() + chrono::Duration::hours(1);
+        MessageQueries::insert(&state.pool, &future)
+            .await
+            .expect("future message");
+        let body = body_text(
+            app.oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri(format!("/share/{token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("share"),
+        )
+        .await;
+        assert!(!body.contains("SECRET-FUTURE"), "{body}");
+        assert!(!body.contains("tool-secret"), "{body}");
+        assert!(!body.contains("secret-tool"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn expired_revoked_and_unknown_share_tokens_are_404() {
+        let state = state().await;
+        let app = router(state.clone());
+        let missing = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri("/share/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("unknown");
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let (_, thread_id) = seeded_thread(&state).await;
+        let expired_token = generate_token();
+        ThreadShareQueries::create(
+            &state.pool,
+            thread_id,
+            &hash_secret(&expired_token),
+            &(Utc::now() - chrono::Duration::minutes(1)).to_rfc3339(),
+        )
+        .await
+        .expect("expired share");
+        let expired = app
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri(format!("/share/{expired_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("expired");
+        assert_eq!(expired.status(), StatusCode::NOT_FOUND);
+
+        let active_token = generate_token();
+        let active = ThreadShareQueries::create(
+            &state.pool,
+            thread_id,
+            &hash_secret(&active_token),
+            &(Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+        )
+        .await
+        .expect("active share");
+        ThreadShareQueries::revoke(&state.pool, active.id)
+            .await
+            .expect("revoke");
+        let revoked = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("GET")
+                    .uri(format!("/share/{active_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("revoked");
+        assert_eq!(revoked.status(), StatusCode::NOT_FOUND);
+    }
+
+    async fn body_text(response: Response) -> String {
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        String::from_utf8(bytes.to_vec()).expect("utf8")
     }
 
     #[test]

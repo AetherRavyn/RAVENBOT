@@ -7384,6 +7384,150 @@ impl McpEventTriggerQueries {
     }
 }
 
+/// A read-only public link to one conversation.
+///
+/// The token itself is never stored; `for_token` hashes the supplied value and
+/// looks that up. `created_at` is also the snapshot boundary: messages after it
+/// are not part of the share.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreadShare {
+    pub id: Uuid,
+    pub thread_id: Uuid,
+    pub created_at: String,
+    pub expires_at: String,
+    pub revoked_at: Option<String>,
+    pub view_count: i64,
+    pub last_viewed_at: Option<String>,
+}
+
+type ThreadShareRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    i64,
+    Option<String>,
+);
+
+fn thread_share_from_row(row: ThreadShareRow) -> Option<ThreadShare> {
+    Some(ThreadShare {
+        id: Uuid::parse_str(&row.0).ok()?,
+        thread_id: Uuid::parse_str(&row.1).ok()?,
+        created_at: row.2,
+        expires_at: row.3,
+        revoked_at: row.4,
+        view_count: row.5,
+        last_viewed_at: row.6,
+    })
+}
+
+pub struct ThreadShareQueries;
+
+impl ThreadShareQueries {
+    pub async fn create(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+        token_hash: &str,
+        expires_at: &str,
+    ) -> Result<ThreadShare, sqlx::Error> {
+        let id = Uuid::new_v4();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO thread_shares
+                (id, thread_id, token_hash, created_at, expires_at, revoked_at,
+                 view_count, last_viewed_at)
+             VALUES (?, ?, ?, ?, ?, NULL, 0, NULL)",
+        )
+        .bind(id.to_string())
+        .bind(thread_id.to_string())
+        .bind(token_hash)
+        .bind(&now)
+        .bind(expires_at)
+        .execute(pool)
+        .await?;
+        Self::get(pool, id).await?.ok_or(sqlx::Error::RowNotFound)
+    }
+
+    pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<ThreadShare>, sqlx::Error> {
+        let row: Option<ThreadShareRow> = sqlx::query_as(
+            "SELECT id, thread_id, created_at, expires_at, revoked_at, view_count, last_viewed_at
+             FROM thread_shares WHERE id = ?",
+        )
+        .bind(id.to_string())
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.and_then(thread_share_from_row))
+    }
+
+    /// All shares for a thread, including revoked/expired ones for the owner's
+    /// management list. No token or token hash is returned.
+    pub async fn list_for_thread(
+        pool: &SqlitePool,
+        thread_id: Uuid,
+    ) -> Result<Vec<ThreadShare>, sqlx::Error> {
+        let rows: Vec<ThreadShareRow> = sqlx::query_as(
+            "SELECT id, thread_id, created_at, expires_at, revoked_at, view_count, last_viewed_at
+             FROM thread_shares
+             WHERE thread_id = ?
+             ORDER BY created_at DESC",
+        )
+        .bind(thread_id.to_string())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().filter_map(thread_share_from_row).collect())
+    }
+
+    /// Resolve a usable public link. Expired and revoked rows are not returned;
+    /// the caller responds with the same 404 as an unknown token.
+    pub async fn for_token(
+        pool: &SqlitePool,
+        token_hash: &str,
+    ) -> Result<Option<ThreadShare>, sqlx::Error> {
+        let row: Option<ThreadShareRow> = sqlx::query_as(
+            "SELECT id, thread_id, created_at, expires_at, revoked_at, view_count, last_viewed_at
+             FROM thread_shares
+             WHERE token_hash = ? AND revoked_at IS NULL
+               AND datetime(expires_at) > datetime('now')
+             LIMIT 1",
+        )
+        .bind(token_hash)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.and_then(thread_share_from_row))
+    }
+
+    pub async fn revoke(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query("UPDATE thread_shares SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL")
+            .bind(Utc::now().to_rfc3339())
+            .bind(id.to_string())
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_for_thread(pool: &SqlitePool, thread_id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM thread_shares WHERE thread_id = ?")
+            .bind(thread_id.to_string())
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn record_view(pool: &SqlitePool, id: Uuid) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE thread_shares
+             SET view_count = view_count + 1, last_viewed_at = ?
+             WHERE id = ?",
+        )
+        .bind(Utc::now().to_rfc3339())
+        .bind(id.to_string())
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+}
+
 /// Webhook trigger queries on routines.
 pub struct WebhookQueries;
 
@@ -12426,5 +12570,116 @@ mod mcp_event_trigger_tests {
             .expect("get")
             .expect("trigger");
         assert_eq!(stored.last_error.len(), 1_000);
+    }
+}
+
+#[cfg(test)]
+mod thread_share_tests {
+    use super::*;
+    use crate::migrations;
+    use chrono::Duration;
+
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    #[tokio::test]
+    async fn a_share_resolves_only_while_active_and_records_views() {
+        let pool = db().await;
+        let thread_id = Uuid::new_v4();
+        let expiry = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        let share = ThreadShareQueries::create(&pool, thread_id, "hash-one", &expiry)
+            .await
+            .expect("create");
+        assert_eq!(
+            ThreadShareQueries::for_token(&pool, "hash-one")
+                .await
+                .expect("resolve")
+                .expect("active")
+                .id,
+            share.id
+        );
+        assert!(ThreadShareQueries::for_token(&pool, "unknown")
+            .await
+            .expect("unknown")
+            .is_none());
+
+        ThreadShareQueries::record_view(&pool, share.id)
+            .await
+            .expect("view");
+        let listed = ThreadShareQueries::list_for_thread(&pool, thread_id)
+            .await
+            .expect("list");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].view_count, 1);
+        assert!(listed[0].last_viewed_at.is_some());
+
+        ThreadShareQueries::revoke(&pool, share.id)
+            .await
+            .expect("revoke");
+        assert!(ThreadShareQueries::for_token(&pool, "hash-one")
+            .await
+            .expect("revoked")
+            .is_none());
+        let listed = ThreadShareQueries::list_for_thread(&pool, thread_id)
+            .await
+            .expect("list after revoke");
+        assert!(listed[0].revoked_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_expired_share_is_indistinguishable_from_an_unknown_token() {
+        let pool = db().await;
+        let thread_id = Uuid::new_v4();
+        let expiry = (Utc::now() - Duration::minutes(1)).to_rfc3339();
+        ThreadShareQueries::create(&pool, thread_id, "expired", &expiry)
+            .await
+            .expect("create");
+        assert!(ThreadShareQueries::for_token(&pool, "expired")
+            .await
+            .expect("expired")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn one_token_hash_creates_one_share_and_threads_are_scoped() {
+        let pool = db().await;
+        let first_thread = Uuid::new_v4();
+        let second_thread = Uuid::new_v4();
+        let expiry = (Utc::now() + Duration::hours(1)).to_rfc3339();
+        ThreadShareQueries::create(&pool, first_thread, "same-token", &expiry)
+            .await
+            .expect("first");
+        assert!(
+            ThreadShareQueries::create(&pool, second_thread, "same-token", &expiry)
+                .await
+                .is_err(),
+            "a token must resolve to exactly one share"
+        );
+        assert_eq!(
+            ThreadShareQueries::list_for_thread(&pool, first_thread)
+                .await
+                .expect("first list")
+                .len(),
+            1
+        );
+        assert!(ThreadShareQueries::list_for_thread(&pool, second_thread)
+            .await
+            .expect("second list")
+            .is_empty());
+
+        ThreadShareQueries::delete_for_thread(&pool, first_thread)
+            .await
+            .expect("delete");
+        assert!(ThreadShareQueries::list_for_thread(&pool, first_thread)
+            .await
+            .expect("after delete")
+            .is_empty());
     }
 }

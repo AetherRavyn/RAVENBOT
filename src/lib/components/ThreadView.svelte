@@ -139,6 +139,7 @@
     Users,
     Target,
     GitBranch,
+    Share2,
   } from "@lucide/svelte";
 
   interface Props {
@@ -162,6 +163,27 @@
   let goalBusy = $state(false);
   let goalError = $state("");
   let goalObjectiveRef = $state<HTMLTextAreaElement | null>(null);
+
+  interface ThreadShareRecord {
+    id: string;
+    thread_id: string;
+    created_at: string;
+    expires_at: string;
+    revoked_at: string | null;
+    view_count: number;
+    last_viewed_at: string | null;
+  }
+
+  /** Read-only public links for the selected conversation. */
+  let shareOpen = $state(false);
+  let shareBusy = $state(false);
+  let shareError = $state("");
+  let shareTtl = $state(24);
+  let shareLink = $state<{ id: string; url: string; token: string; expires_at: string } | null>(null);
+  let shareList = $state<ThreadShareRecord[]>([]);
+  let shareStatus = $state<{ running: boolean; url: string; allow_lan: boolean; tls: boolean } | null>(null);
+  let shareCopied = $state(false);
+  let shareDialogEl = $state<HTMLElement | null>(null);
 
   /** Conversation-scoped Git worktree isolation and its review. */
   let worktree = $state<any | null>(null);
@@ -1234,6 +1256,82 @@
     }
   }
 
+  async function openShareDialog() {
+    shareOpen = true;
+    shareError = "";
+    shareLink = null;
+    shareCopied = false;
+    await loadShareData();
+  }
+
+  async function loadShareData() {
+    if (!selectedThreadId) return;
+    try {
+      const [shares, status] = await Promise.all([
+        invoke<ThreadShareRecord[]>("list_thread_shares", {
+          threadId: selectedThreadId,
+        }),
+        invoke<{ running: boolean; url: string; allow_lan: boolean; tls: boolean }>(
+          "get_remote_status",
+        ),
+      ]);
+      shareList = Array.isArray(shares) ? shares : [];
+      shareStatus = status;
+    } catch (error: any) {
+      shareError = error?.toString() || "Could not load share links";
+    }
+  }
+
+  async function createShareLink() {
+    if (!selectedThreadId || shareBusy || !shareStatus?.running) return;
+    shareBusy = true;
+    shareError = "";
+    shareCopied = false;
+    try {
+      shareLink = await invoke("create_thread_share", {
+        threadId: selectedThreadId,
+        ttlHours: shareTtl,
+      });
+      await loadShareData();
+    } catch (error: any) {
+      shareError = error?.toString() || "Could not create the share link";
+    } finally {
+      shareBusy = false;
+    }
+  }
+
+  async function revokeShare(share: ThreadShareRecord) {
+    shareError = "";
+    try {
+      await invoke("revoke_thread_share", { shareId: share.id });
+      if (shareLink?.id === share.id) shareLink = null;
+      await loadShareData();
+    } catch (error: any) {
+      shareError = error?.toString() || "Could not revoke the share link";
+    }
+  }
+
+  async function copyShareLink() {
+    if (!shareLink) return;
+    try {
+      await navigator.clipboard.writeText(shareLink.url);
+      shareCopied = true;
+      setTimeout(() => (shareCopied = false), 1500);
+    } catch (error) {
+      shareError = "The clipboard is unavailable. Select the link and copy it manually.";
+    }
+  }
+
+  function shareIsActive(share: ThreadShareRecord): boolean {
+    return !share.revoked_at && new Date(share.expires_at).getTime() > Date.now();
+  }
+
+  function formatShareTime(value: string | null): string {
+    if (!value) return "never";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  }
+
   async function loadMessages(threadId: string) {
     const changed = threadId !== selectedThreadId;
     if (changed) {
@@ -1301,6 +1399,11 @@
   $effect(() => {
     if (!goalOpen || !goalObjectiveRef) return;
     void tick().then(() => goalObjectiveRef?.focus());
+  });
+
+  $effect(() => {
+    if (!shareOpen) return;
+    void tick().then(() => shareDialogEl?.focus());
   });
 
   $effect(() => {
@@ -2792,6 +2895,20 @@
         <Users class="size-3.5" />
       </button>
 
+      {#if selectedThreadId && sessionRole.role === "owner"}
+        <!-- Read-only public conversation link -->
+        <button
+          type="button"
+          class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {shareOpen ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
+          onclick={() => void openShareDialog()}
+          aria-pressed={shareOpen}
+          aria-label="Share conversation"
+          title="Share conversation"
+        >
+          <Share2 class="size-3.5" />
+        </button>
+      {/if}
+
       <!-- Routines / Scheduler Button -->
       <button
         type="button"
@@ -3765,6 +3882,150 @@
 {/if}
 
 <!-- Persistent 1:1 Goal Modal -->
+{#if shareOpen}
+  <!-- svelte-ignore a11y_click_events_have_key_events -->
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
+  <div
+    class="fixed inset-0 z-50 bg-[var(--scrim)] flex items-center justify-center p-4 animate-in fade-in"
+    onclick={() => (shareOpen = false)}
+  >
+    <div
+      class="modal-panel w-full max-w-xl p-5 space-y-3 max-h-[86vh] flex flex-col"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="thread-share-title"
+      tabindex="-1"
+      bind:this={shareDialogEl}
+      onclick={(event) => event.stopPropagation()}
+      onkeydown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          shareOpen = false;
+        }
+      }}
+    >
+      <div class="flex items-start justify-between gap-3 border-b border-[var(--hairline)] pb-2 shrink-0">
+        <div class="min-w-0">
+          <h2 id="thread-share-title" class="text-sm font-semibold text-[var(--text-primary)] flex items-center gap-1.5">
+            <Share2 class="size-4 text-[var(--brand-text)]" />
+            Share conversation
+          </h2>
+          <p class="mt-0.5 text-[11px] text-[var(--text-muted)]">
+            Read-only snapshot link. Anyone with the link can read those messages until it expires or is revoked.
+            Tool calls, reasoning, attachments, approvals and questions are never included.
+          </p>
+        </div>
+        <button
+          type="button"
+          class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono shrink-0"
+          onclick={() => (shareOpen = false)}
+          aria-label="Close share dialog"
+        >
+          ✕
+        </button>
+      </div>
+
+      <div class="min-h-0 flex-1 overflow-y-auto space-y-3 pr-1">
+        <p class="text-[11px] text-[var(--text-tertiary)] leading-relaxed">
+          The link is served by the local Remote access listener at
+          <code class="font-mono text-[var(--text-secondary)]">{shareStatus?.url ?? "…"}</code>.
+          Messages added after the link is created are not included. If Remote access is bound to
+          loopback, the link only works on this machine or through a tunnel.
+        </p>
+
+        {#if !shareStatus}
+          <p class="text-[11px] text-[var(--text-muted)]">Checking Remote access…</p>
+        {:else if !shareStatus.running}
+          <div class="rounded-lg border border-[var(--warning-border)] bg-[var(--warning-soft)] px-3 py-2 text-[11px] text-[var(--warning-text)]" role="alert">
+            Remote access is not running. Enable it in Settings → Remote access, then reopen this dialog.
+          </div>
+        {:else}
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-[11px] text-[var(--text-muted)]">Link lifetime</span>
+            {#each [{ hours: 24, label: "24 hours" }, { hours: 24 * 7, label: "7 days" }, { hours: 24 * 30, label: "30 days" }] as option}
+              <button
+                type="button"
+                aria-pressed={shareTtl === option.hours}
+                class="h-6 px-2 rounded-md border text-[11px] font-mono cursor-pointer transition-colors {shareTtl === option.hours ? 'bg-[var(--brand-soft)] border-[var(--brand)]/40 text-[var(--brand-text)]' : 'bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
+                onclick={() => (shareTtl = option.hours)}
+              >
+                {option.label}
+              </button>
+            {/each}
+            <Button
+              size="sm"
+              class="ml-auto h-7 px-3 text-[11px] gap-1"
+              disabled={shareBusy}
+              onclick={() => void createShareLink()}
+            >
+              {#if shareBusy}<Loader2 class="size-3 animate-spin" />{/if}
+              Create link
+            </Button>
+          </div>
+
+          {#if shareLink}
+            <div class="rounded-lg border border-success/30 bg-success/10 p-2.5 space-y-1.5">
+              <p class="text-[11px] text-success">Copy this link now — it is not shown again.</p>
+              <div class="flex items-center gap-2">
+                <code class="min-w-0 flex-1 break-all font-mono text-[11px] text-[var(--text-primary)]">{shareLink.url}</code>
+                <button
+                  type="button"
+                  class="size-6 shrink-0 rounded-md border border-success/40 bg-success/15 text-success flex items-center justify-center cursor-pointer"
+                  onclick={() => void copyShareLink()}
+                  aria-label="Copy share link"
+                  title="Copy share link"
+                >
+                  {#if shareCopied}<Check class="size-3" />{:else}<Copy class="size-3" />{/if}
+                </button>
+              </div>
+              <p class="text-[11px] text-[var(--text-muted)]">Expires {formatShareTime(shareLink.expires_at)}.</p>
+            </div>
+          {/if}
+        {/if}
+
+        {#if shareError}
+          <p class="rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] px-3 py-2 text-[11px] text-[var(--danger)] whitespace-pre-wrap" role="alert">
+            {shareError}
+          </p>
+        {/if}
+
+        <div class="space-y-1.5">
+          <h3 class="text-[11px] font-bold text-[var(--text-secondary)]">Existing links</h3>
+          {#if shareList.length === 0}
+            <p class="text-[11px] text-[var(--text-muted)]">No links have been created for this conversation.</p>
+          {:else}
+            {#each shareList as share (share.id)}
+              {@const active = shareIsActive(share)}
+              <div class="rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] p-2 space-y-1">
+                <div class="flex items-center gap-2">
+                  <span class="text-[11px] font-mono {active ? 'text-success' : 'text-[var(--text-muted)]'}">
+                    {share.revoked_at ? "revoked" : active ? "active" : "expired"}
+                  </span>
+                  <span class="text-[11px] text-[var(--text-muted)]">created {formatShareTime(share.created_at)}</span>
+                  <span class="ml-auto text-[11px] text-[var(--text-muted)]">{share.view_count} view{share.view_count === 1 ? "" : "s"}</span>
+                  {#if active}
+                    <button
+                      type="button"
+                      class="text-[11px] text-[var(--danger)] hover:underline cursor-pointer"
+                      onclick={() => void revokeShare(share)}
+                    >
+                      Revoke
+                    </button>
+                  {/if}
+                </div>
+                <div class="flex flex-wrap gap-x-3 text-[11px] text-[var(--text-muted)]">
+                  <span>expires {formatShareTime(share.expires_at)}</span>
+                  {#if share.last_viewed_at}<span>last viewed {formatShareTime(share.last_viewed_at)}</span>{/if}
+                </div>
+              </div>
+            {/each}
+          {/if}
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if goalOpen}
   <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->

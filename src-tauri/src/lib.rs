@@ -4235,7 +4235,72 @@ async fn rename_thread(
 async fn delete_thread(state: State<'_, AppState>, thread_id: Uuid) -> Result<(), String> {
     ravenbot_db::queries::ThreadQueries::delete(state.db.pool(), thread_id)
         .await
+        .map_err(|e| e.to_string())?;
+    ravenbot_db::queries::ThreadShareQueries::delete_for_thread(state.db.pool(), thread_id)
+        .await
         .map_err(|e| e.to_string())
+}
+
+/// Create a read-only public link for this conversation. The URL is returned
+/// once; later listings expose metadata only, never the token.
+#[tauri::command]
+async fn create_thread_share(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+    ttl_hours: Option<i64>,
+) -> Result<serde_json::Value, String> {
+    if ravenbot_db::queries::ThreadQueries::get(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        return Err("That conversation no longer exists.".to_string());
+    }
+    let base_url = {
+        let guard = state.remote.lock().await;
+        guard.as_ref().map(|server| server.url())
+    };
+    let Some(base_url) = base_url else {
+        return Err(
+            "Enable Remote access in Settings before creating a share link. The link is served by the local Remote access listener."
+                .to_string(),
+        );
+    };
+
+    let ttl_hours = ttl_hours.unwrap_or(24).clamp(1, 24 * 30);
+    let token = ravenbot_remote::generate_token();
+    let expires_at = (chrono::Utc::now() + chrono::Duration::hours(ttl_hours)).to_rfc3339();
+    let share = ravenbot_db::queries::ThreadShareQueries::create(
+        state.db.pool(),
+        thread_id,
+        &ravenbot_remote::hash_secret(&token),
+        &expires_at,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "id": share.id.to_string(),
+        "url": format!("{}/share/{}", base_url.trim_end_matches('/'), token),
+        "token": token,
+        "expires_at": share.expires_at,
+    }))
+}
+
+#[tauri::command]
+async fn list_thread_shares(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+) -> Result<Vec<ravenbot_db::queries::ThreadShare>, String> {
+    ravenbot_db::queries::ThreadShareQueries::list_for_thread(state.db.pool(), thread_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn revoke_thread_share(state: State<'_, AppState>, share_id: Uuid) -> Result<(), String> {
+    ravenbot_db::queries::ThreadShareQueries::revoke(state.db.pool(), share_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -22058,6 +22123,9 @@ pub fn run() {
         toggle_message_reaction,
         rename_thread,
         delete_thread,
+        create_thread_share,
+        list_thread_shares,
+        revoke_thread_share,
         search_messages,
         send_message,
         steer_thread,

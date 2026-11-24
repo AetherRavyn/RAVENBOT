@@ -400,3 +400,90 @@ button:disabled {
     transition: none !important;
   }
 }
+
+/* ── Public read-only conversation share ─────────────────────────────── */
+.share-page {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.share-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.share-kicker {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.share-header h1 {
+  margin: 0;
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.share-note {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 14px 0 18px;
+}
+
+.share-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.share-message {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.share-message--user {
+  background: var(--brand-soft);
+  border-color: #3a3363;
+}
+
+.share-role {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.share-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.55;
+}
+
+.share-time {
+  color: var(--muted);
+  font-size: 11px;
+  margin-top: 8px;
+}
+
+.share-empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 32px 0;
+}
+
+.share-footer {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 24px;
+  padding: 14px 0 24px;
+}

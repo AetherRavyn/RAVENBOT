@@ -137,7 +137,9 @@ mod tests {
     fn viewers_are_read_only_and_cannot_read_secrets() {
         assert!(role_allows("viewer", "list_messages"));
         assert!(role_allows("viewer", "list_mcp_event_triggers"));
+        assert!(role_allows("viewer", "list_thread_shares"));
         assert!(!role_allows("viewer", "create_mcp_event_trigger"));
+        assert!(!role_allows("viewer", "create_thread_share"));
         assert!(role_allows("viewer", "get_current_account"));
         assert!(role_allows("viewer", "read_workspace_file"));
         assert!(!role_allows("viewer", "send_message"));
