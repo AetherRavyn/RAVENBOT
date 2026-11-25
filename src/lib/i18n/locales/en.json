@@ -969,6 +969,7 @@
     "settings": "Settings",
     "settingsDesc": "Providers, keys & preferences",
     "search": "Search commands…",
+    "results": "Search results",
     "clear": "Clear",
     "noMatches": "No matching commands",
     "noMatchesHint": "Try another keyword",

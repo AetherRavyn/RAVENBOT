@@ -897,6 +897,7 @@
     "settings": "设置",
     "settingsDesc": "服务商、密钥与偏好",
     "search": "搜索命令…",
+    "results": "搜索结果",
     "clear": "清除",
     "noMatches": "没有匹配的命令",
     "noMatchesHint": "试试其他关键词",

@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/svelte";
 import { invoke } from "@tauri-apps/api/core";
 import RoutinesPanel from "./RoutinesPanel.svelte";
 import { setLocale } from "$lib/i18n";
+import { a11yViolations } from "$lib/test/a11y";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -96,6 +97,12 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("RoutinesPanel MCP events", () => {
+  it("has no serious accessibility violations", async () => {
+    const { container, getByText } = render(RoutinesPanel, { props: { bot } });
+    await waitFor(() => expect(getByText("Nightly deploy")).toBeTruthy());
+    expect(await a11yViolations(container)).toEqual([]);
+  });
+
   it("opens the trigger panel and creates a stdio notification trigger", async () => {
     const { getByLabelText, getByText, getAllByText } = render(RoutinesPanel, {
       props: { bot },

@@ -681,7 +681,12 @@
         </div>
       {/if}
 
-      <div id="palette-results" role="listbox" class="min-h-0 flex-1 overflow-y-auto p-2">
+      <div
+        id="palette-results"
+        role="listbox"
+        aria-label={t("palette.results")}
+        class="min-h-0 flex-1 overflow-y-auto p-2"
+      >
         {#if rows.length === 0}
           <div class="flex flex-col items-center justify-center gap-1 px-4 py-16 text-center">
             <span class="flex size-10 items-center justify-center rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] text-[var(--text-tertiary)]">

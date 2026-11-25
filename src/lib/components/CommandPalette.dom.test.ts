@@ -4,6 +4,7 @@ import { render, cleanup, fireEvent, waitFor } from "@testing-library/svelte";
 import { invoke } from "@tauri-apps/api/core";
 import CommandPalette from "$lib/components/CommandPalette.svelte";
 import { setLocale } from "$lib/i18n";
+import { a11yViolations } from "$lib/test/a11y";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -72,6 +73,12 @@ describe("CommandPalette global search", () => {
 
   afterEach(() => {
     cleanup();
+  });
+
+  it("has no serious accessibility violations", async () => {
+    render(CommandPalette, { props: props() });
+    await waitFor(() => expect(document.activeElement).toBe(searchInput()));
+    expect(await a11yViolations(document.body)).toEqual([]);
   });
 
   it("focuses the search field when it opens", async () => {

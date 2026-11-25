@@ -897,6 +897,7 @@
     "settings": "設定",
     "settingsDesc": "プロバイダー・キー・環境設定",
     "search": "コマンドを検索…",
+    "results": "検索結果",
     "clear": "クリア",
     "noMatches": "一致するコマンドなし",
     "noMatchesHint": "別のキーワードをお試しください",

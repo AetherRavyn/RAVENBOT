@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/svelte";
 import { invoke } from "@tauri-apps/api/core";
 import JobLibrary from "./JobLibrary.svelte";
 import { setLocale } from "$lib/i18n";
+import { a11yViolations } from "$lib/test/a11y";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -163,6 +164,12 @@ describe("JobLibrary", () => {
     });
     await waitFor(() => expect(getByText("Morning brief")).toBeTruthy());
     expect(getAllByText("Installed").length).toBeGreaterThan(0);
+  });
+
+  it("has no serious accessibility violations", async () => {
+    const { container, getByText } = render(JobLibrary, { props: { bots: [] } });
+    await waitFor(() => expect(getByText("Morning brief")).toBeTruthy());
+    expect(await a11yViolations(container)).toEqual([]);
   });
 
   it("shows a retryable error when the catalog cannot load", async () => {

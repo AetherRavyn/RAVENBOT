@@ -371,7 +371,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
 - **1,014 Rust tests** across the workspace, including 229 Tauri/command tests,
   252 runtime tests, 171 skill tests, 103 database tests, 74 core tests, 35
   memory tests, 33 MCP tests, and 15 remote-access tests.
-- **820 frontend tests** across 126 files.
+- **824 frontend tests** across 126 files.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
   `npm run check`, and `npm test` are the local gates.
 - CI runs the Rust workspace, the Docker sandbox live test, frontend checks, the

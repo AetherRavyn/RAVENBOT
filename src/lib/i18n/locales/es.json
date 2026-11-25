@@ -897,6 +897,7 @@
     "settings": "Ajustes",
     "settingsDesc": "Proveedores, claves y preferencias",
     "search": "Buscar comandos…",
+    "results": "Resultados de búsqueda",
     "clear": "Borrar",
     "noMatches": "Sin comandos coincidentes",
     "noMatchesHint": "Prueba otra palabra",
