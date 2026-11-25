@@ -97,7 +97,9 @@ installed and configured on this machine. You can talk to the lead, mention a
 specialist directly, or open any agent's thread and work with it one to one.
 Conversations take their name from the first message, can be renamed or deleted
 from the history drawer, and the last thread you opened for an agent is restored
-after a reload.
+after a reload. Narrow windows keep the conversation usable: secondary header
+actions move into a **More** menu and the browser dock becomes an overlay rather
+than squeezing the thread below its minimum width.
 
 ### Offices with real coordination
 
@@ -342,7 +344,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
 - **981 Rust tests** across the workspace, including 210 Tauri/command tests,
   240 runtime tests, 170 skill tests, 102 database tests, 35 memory tests, 33 MCP
   tests, and 15 remote-access tests.
-- **785 frontend tests** across 121 files.
+- **788 frontend tests** across 122 files.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
   `npm run check`, and `npm test` are the local gates.
 - CI runs the Rust workspace, the Docker sandbox live test, frontend checks, the

@@ -192,6 +192,8 @@
     "delete": "削除",
     "confirmDelete": "もう一度クリックして削除",
     "untitled": "無題のスレッド",
+    "more": "その他",
+    "shareConversation": "会話を共有",
     "decisionFailed": "その判断を保存できませんでした: {{error}}。カードは開いたままです。もう一度お試しください。",
     "answerFailed": "回答を送信できませんでした: {{error}}。カードは開いたままです。もう一度お試しください。",
     "searchInThread": "このスレッドを検索",

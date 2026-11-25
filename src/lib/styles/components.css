@@ -398,6 +398,32 @@
   }
 }
 
+/* The conversation column is its own container. The header has to respond to
+   the space it actually has: opening the dock or dragging the sidebar can
+   halve the column at the same window width. Below 820px the secondary header
+   actions move into the More menu instead of pushing the thread title and
+   composer out of the window. */
+.thread-main {
+  container-type: inline-size;
+}
+.thread-header-more {
+  display: none;
+}
+@container (max-width: 820px) {
+  .thread-header-secondary {
+    display: none !important;
+  }
+  .thread-header-more {
+    display: inline-flex;
+  }
+}
+@container (max-width: 620px) {
+  .thread-header-model,
+  .thread-header-engine {
+    display: none !important;
+  }
+}
+
 /* Sidebar drag resizer (OpenBot left-panel resize). Keyboard: arrows ±8px
    (±32 with Shift), Home = 280px. Frame animation is disabled mid-drag so the
    width tracks the pointer 1:1.

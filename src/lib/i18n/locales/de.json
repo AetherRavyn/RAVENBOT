@@ -192,6 +192,8 @@
     "delete": "Löschen",
     "confirmDelete": "Erneut klicken zum Löschen",
     "untitled": "Unbenannter Thread",
+    "more": "Mehr",
+    "shareConversation": "Gespräch teilen",
     "decisionFailed": "Die Entscheidung konnte nicht gespeichert werden: {{error}}. Die Karte bleibt offen; versuche es erneut.",
     "answerFailed": "Die Antwort konnte nicht gesendet werden: {{error}}. Die Karte bleibt offen; versuche es erneut.",
     "searchInThread": "Diese Unterhaltung durchsuchen",

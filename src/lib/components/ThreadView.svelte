@@ -128,6 +128,7 @@
     ArrowDown,
     ChevronDown,
     ChevronUp,
+    MoreHorizontal,
     X,
     Reply,
     Copy,
@@ -604,6 +605,7 @@
   let showIntelligence = $state(false);
   let showThreadDrawer = $state(false);
   let showThreadDropdown = $state(false);
+  let showMoreMenu = $state(false);
   let showRoutines = $state(false);
   let showSync = $state(false);
   let showComputer = $state(false);
@@ -2555,7 +2557,7 @@
 </script>
 
 <svelte:window
-  onclick={() => (showThreadDropdown = false, showModelSwitcher = false)}
+  onclick={() => (showThreadDropdown = false, showModelSwitcher = false, showMoreMenu = false)}
   onkeydown={handleMessageNavKey}
 />
 
@@ -2599,7 +2601,7 @@
 
         {#if bot?.config?.engine && bot.config.engine !== "native"}
           <span
-            class="text-[11px] font-mono py-0.5 px-2 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] hidden sm:inline-flex items-center gap-1"
+            class="thread-header-engine text-[11px] font-mono py-0.5 px-2 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] hidden sm:inline-flex items-center gap-1"
             title={t("thread.cliBot")}
           >
             <Cpu class="size-2.5" /> {bot.config.engine}
@@ -2607,7 +2609,7 @@
         {/if}
 
         <!-- Model Quick Switcher (clickable pill, Grok-style) -->
-        <div class="relative">
+        <div class="relative thread-header-model">
           <button
             type="button"
             class="text-[11px] font-mono py-0.5 px-2 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] truncate cursor-pointer transition-colors hidden sm:inline-flex items-center gap-1 max-w-[220px] {bot?.config?.engine && bot.config.engine !== 'native' ? 'opacity-40' : ''}"
@@ -2910,6 +2912,9 @@
         {/if}
       </div>
 
+      <!-- Secondary actions collapse into the More menu in a narrow
+           conversation column. -->
+      <div class="thread-header-secondary flex items-center gap-2">
       <!-- Session Telemetry Pill -->
       <button
         type="button"
@@ -3005,8 +3010,8 @@
           class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {shareOpen ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
           onclick={() => void openShareDialog()}
           aria-pressed={shareOpen}
-          aria-label="Share conversation"
-          title="Share conversation"
+          aria-label={t("thread.shareConversation")}
+          title={t("thread.shareConversation")}
         >
           <Share2 class="size-3.5" />
         </button>
@@ -3046,6 +3051,184 @@
       >
         <Settings class="size-3.5" />
       </button>
+      </div>
+
+      <!-- Narrow-column overflow: the same actions, one menu. -->
+      <div class="relative thread-header-more">
+        <button
+          type="button"
+          class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
+          onclick={(event) => {
+            event.stopPropagation();
+            showMoreMenu = !showMoreMenu;
+          }}
+          aria-haspopup="menu"
+          aria-expanded={showMoreMenu}
+          aria-label={t("thread.more")}
+          title={t("thread.more")}
+        >
+          <MoreHorizontal class="size-4" />
+        </button>
+
+        {#if showMoreMenu}
+          <!-- svelte-ignore a11y_click_events_have_key_events -->
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="absolute right-0 top-9 z-50 w-64 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-1.5 shadow-2xl animate-in fade-in zoom-in-95"
+            role="menu"
+            tabindex="-1"
+            onclick={(event) => event.stopPropagation()}
+            onkeydown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                showMoreMenu = false;
+              }
+            }}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                showMoreMenu = false;
+                showThreadDrawer = !showThreadDrawer;
+              }}
+            >
+              <History class="size-3.5 text-[var(--brand-text)]" />
+              {t("thread.historyToggle")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                showMoreMenu = false;
+                showComputer = true;
+              }}
+            >
+              <Monitor class="size-3.5 text-[var(--brand-text)]" />
+              {t("thread.computer")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                showMoreMenu = false;
+                showChannels = true;
+              }}
+            >
+              <Hash class="size-3.5 text-[var(--brand-text)]" />
+              {t("thread.channels")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                showMoreMenu = false;
+                showTeamImport = true;
+              }}
+            >
+              <Users class="size-3.5 text-[var(--brand-text)]" />
+              {t("thread.importTeam")}
+            </button>
+            {#if selectedThreadId && sessionRole.role === "owner"}
+              <button
+                type="button"
+                role="menuitem"
+                class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+                onclick={() => {
+                  showMoreMenu = false;
+                  void openShareDialog();
+                }}
+              >
+                <Share2 class="size-3.5 text-[var(--brand-text)]" />
+                {t("thread.shareConversation")}
+              </button>
+            {/if}
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                showMoreMenu = false;
+                showRoutines = true;
+              }}
+            >
+              <Clock class="size-3.5 text-[var(--brand-text)]" />
+              {t("routines.title")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                showMoreMenu = false;
+                showSync = true;
+              }}
+            >
+              <Boxes class="size-3.5 text-[var(--brand-text)]" />
+              {t("thread.fleetSync")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                showMoreMenu = false;
+                showIntelligence = true;
+              }}
+            >
+              <Brain class="size-3.5 text-[var(--brand-text)]" />
+              {t("thread.intelligence")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                showMoreMenu = false;
+                showCostInfo = !showCostInfo;
+              }}
+            >
+              <DollarSign class="size-3.5 text-[var(--brand-text)]" />
+              {t("thread.telemetry")}
+            </button>
+            <div class="my-1 border-t border-[var(--hairline)]"></div>
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                showMoreMenu = false;
+                triggerOpenSettings();
+              }}
+            >
+              <Settings class="size-3.5 text-[var(--brand-text)]" />
+              {t("thread.settingsKeys")}
+            </button>
+
+            {#if channelOptions.length > 0}
+              <div class="mt-1 border-t border-[var(--hairline)] px-2 pt-2 pb-1">
+                <span class="mb-1 block font-mono text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
+                  {t("thread.channels")}
+                </span>
+                <SimpleSelect
+                  value={activeChannelId ?? ""}
+                  options={[
+                    { value: "", label: t("thread.noChannel") },
+                    ...channelOptions.map((c) => ({ value: c.id, label: c.name })),
+                  ]}
+                  onValueChange={(value) => (activeChannelId = value || null)}
+                  placeholder={t("thread.noChannel")}
+                  class="h-7 w-full rounded-lg text-[11px] font-mono"
+                />
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
 
       {#if activeRunId}
         <button

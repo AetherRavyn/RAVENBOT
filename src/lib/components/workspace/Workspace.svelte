@@ -32,6 +32,7 @@
   import { Loader2, Bot as BotIcon } from "@lucide/svelte";
   import { getDiceBearUrl } from "$lib/utils";
   import { workspace, RAIL_WIDTH, SIDEBAR_MIN, SIDEBAR_MAX } from "$lib/workspace.svelte";
+  import { shouldOverlayBrowser } from "$lib/workspace/layout";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { startWorkflowScheduler, stopWorkflowScheduler } from "$lib/workflowScheduler";
   import { attention } from "$lib/attention.svelte";
@@ -160,12 +161,15 @@
       workspace.dest !== "routines" &&
       workspace.dest !== "channels",
   );
-  // A side-by-side browser column needs room for the conversation. Below this
-  // width the dock becomes an overlay drawer instead of squeezing the app to a
-  // sliver, which is also what keeps the native page's bounds inside the window.
-  const BROWSER_COLUMN_MIN_WINDOW = 1120;
+  // A side-by-side browser column needs room for the conversation. The dock is
+  // `clamp(460px, 46vw, 820px)`, so the decision has to include the rail and
+  // the sidebar; a viewport-only check still crushed the conversation at 1280px.
   let browserOverlay = $derived(
-    sidePanel.open && workspace.windowWidth < BROWSER_COLUMN_MIN_WINDOW,
+    sidePanel.open &&
+      shouldOverlayBrowser(
+        workspace.windowWidth,
+        showSidebar ? workspace.sidebarWidth : 0,
+      ),
   );
   let routinesBot = $derived(
     workspace.bots.find((b: any) => b.id === routinesBotId) || workspace.bots[0],
@@ -335,7 +339,7 @@
       ></div>
     {/if}
 
-    <main class="min-w-0 flex flex-col overflow-hidden relative bg-[var(--surface-0)]" aria-label={t("a11y.thread")}>
+    <main class="thread-main min-w-0 flex flex-col overflow-hidden relative bg-[var(--surface-0)]" aria-label={t("a11y.thread")}>
       {#if workspace.killSwitchActive}
         <div class="p-2 px-4 bg-[var(--danger-soft)] border-b border-[var(--danger-border)] flex items-center justify-center" style="z-index: var(--layer-dropdown)" role="alert">
           <KillSwitch />

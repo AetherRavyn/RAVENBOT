@@ -4,6 +4,20 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Narrow windows
+
+- **The conversation keeps its space** — the thread header is now driven by a
+  container query, not the window. Below 820px the secondary actions (history,
+  computer, channels, import, share, routines, sync, intelligence, telemetry,
+  settings) collapse into one **More** menu; below 620px the model and engine
+  pills hide. The search box, stop/pause controls, and thread switcher stay put.
+- **The dock stops stealing the last 424px** — the overlay decision now mirrors
+  the CSS `clamp(460px, 46vw, 820px)` width and subtracts the rail and sidebar.
+  At 1280px with a 280px sidebar the dock overlays instead of leaving a 347px
+  conversation column; at 1440px it still fits beside the thread.
+- Tests cover the dock arithmetic at 1920, 1440, 1280, 1119 and 900px, and prove
+  that the sidebar width is part of the decision.
+
 ### Fleet attention
 
 - **One live source for “waiting on me”** — the sidebar filter now reads the
