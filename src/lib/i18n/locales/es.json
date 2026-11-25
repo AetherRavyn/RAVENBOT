@@ -192,6 +192,8 @@
     "delete": "Eliminar",
     "confirmDelete": "Haz clic de nuevo para eliminar",
     "untitled": "Conversación sin título",
+    "decisionFailed": "No se pudo guardar esa decisión: {{error}}. La tarjeta sigue abierta; inténtalo de nuevo.",
+    "answerFailed": "No se pudo enviar esa respuesta: {{error}}. La tarjeta sigue abierta; inténtalo de nuevo.",
     "searchInThread": "Buscar en esta conversación",
     "searchShort": "Buscar",
     "searchMessages": "Buscar mensajes…",

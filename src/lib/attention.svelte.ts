@@ -191,3 +191,27 @@ export function relativeAttentionTime(iso: string, locale: string, now = Date.no
   const days = Math.round(hours / 24);
   return formatter.format(days, "day");
 }
+
+/**
+ * Bots with a gate a person has to answer.
+ *
+ * Office queue rows and budget alerts belong in the inbox, but they do not make
+ * an agent's card "waiting on me": a queued message is work the office has not
+ * started, and a budget alert is a policy warning. Approvals and questions are
+ * the two kinds that actually park a run on a human.
+ */
+export function awaitingBots(items: AttentionItem[]): Set<string> {
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (item.bot_id && (item.kind === "approval" || item.kind === "question")) {
+      ids.add(item.bot_id);
+    }
+  }
+  return ids;
+}
+
+export function awaitingCount(items: AttentionItem[]): number {
+  return items.filter(
+    (item) => item.kind === "approval" || item.kind === "question",
+  ).length;
+}

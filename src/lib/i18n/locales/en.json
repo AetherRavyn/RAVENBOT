@@ -192,6 +192,8 @@
     "delete": "Delete",
     "confirmDelete": "Click again to delete",
     "untitled": "Untitled thread",
+    "decisionFailed": "Could not save that decision: {{error}}. The card is still open; try again.",
+    "answerFailed": "Could not send that answer: {{error}}. The card is still open; try again.",
     "searchInThread": "Search this thread",
     "searchShort": "Search",
     "searchMessages": "Search messages…",

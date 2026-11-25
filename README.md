@@ -154,6 +154,9 @@ The default posture is useful autonomy, not blind autonomy:
 - Reads, writes, builds, tests, and safe shell work proceed.
 - A workspace-aware denylist blocks destructive disk, database, git-history, and
   out-of-workspace commands before an approval card is ever shown.
+- A global inbox collects pending approvals and questions across every agent;
+  the sidebar's **Waiting on me** filter reads the same live source, so a parked
+  run is still discoverable after a reload.
 - Destructive operations require an explicit decision in `Ask` mode; `Auto`
   gates high-risk calls; `Full` is the deliberate opt-in.
 - The approval, question, and budget-confirmation waits all honor cancel and
@@ -339,7 +342,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
 - **981 Rust tests** across the workspace, including 210 Tauri/command tests,
   240 runtime tests, 170 skill tests, 102 database tests, 35 memory tests, 33 MCP
   tests, and 15 remote-access tests.
-- **783 frontend tests** across 121 files.
+- **785 frontend tests** across 121 files.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
   `npm run check`, and `npm test` are the local gates.
 - CI runs the Rust workspace, the Docker sandbox live test, frontend checks, the

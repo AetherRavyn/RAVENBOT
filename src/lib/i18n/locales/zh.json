@@ -192,6 +192,8 @@
     "delete": "删除",
     "confirmDelete": "再次点击删除",
     "untitled": "未命名对话",
+    "decisionFailed": "无法保存该决定：{{error}}。卡片仍然打开，请重试。",
+    "answerFailed": "无法发送该回答：{{error}}。卡片仍然打开，请重试。",
     "searchInThread": "搜索此对话",
     "searchShort": "搜索",
     "searchMessages": "搜索消息…",

@@ -4,6 +4,7 @@
   import { getDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/utils";
   import { notify } from "$lib/toast";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
+  import { attention, awaitingBots, awaitingCount } from "$lib/attention.svelte";
   import { t } from "$lib/i18n";
   import { cn } from "$lib/utils.js";
   import { Button } from "$lib/components/ui/button";
@@ -200,13 +201,25 @@
     dragOverId = null;
   }
 
+  let awaitingIds = $derived(awaitingBots(attention.items));
+  let awaitingTotal = $derived(awaitingCount(attention.items));
+
+  // When the last parked gate is answered, the toggle disappears. Leaving the
+  // filter armed would show an empty fleet with no visible way to turn it off.
+  $effect(() => {
+    if (awaitingTotal === 0 && showOnlyWaiting) showOnlyWaiting = false;
+  });
+
   let filteredBots = $derived(
     bots
       .filter((bot) => {
         const matchesSearch =
           bot.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
           (bot.description && bot.description.toLowerCase().includes(searchQuery.toLowerCase()));
-        const matchesFilter = !showOnlyWaiting || bot.status === "waiting_on_user";
+        // The filter must use the live attention store, not the persisted
+        // bot.status column: after a reload a parked run can be `idle` in the
+        // database while its approval card is still open.
+        const matchesFilter = !showOnlyWaiting || awaitingIds.has(bot.id);
         const matchesHidden = showHidden || !contacts[bot.id]?.hidden;
         return matchesSearch && matchesFilter && matchesHidden;
       })
@@ -356,7 +369,7 @@
     </div>
 
     <!-- Waiting on me filter toggle -->
-    {#if bots.some((b) => b.status === "waiting_on_user")}
+    {#if awaitingTotal > 0}
       <button
         type="button"
         class="flex items-center gap-2 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] px-1 py-1 transition-colors cursor-pointer"
@@ -371,6 +384,9 @@
         <span class="text-[11px] font-medium {showOnlyWaiting ? 'text-danger' : 'text-[var(--text-muted)]'}">
           {t("sidebar.filterWaiting")}
         </span>
+        <span class="rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] px-1.5 py-px font-mono text-[11px] text-[var(--text-tertiary)]">
+          {awaitingTotal}
+        </span>
       </button>
     {/if}
   </div>
@@ -380,7 +396,8 @@
     {#each filteredBots as bot (bot.id)}
       {@const isSelected = selectedBotId === bot.id}
       {@const statusTheme = getStatusTheme(bot.status)}
-      {@const activity = fleetActivity.get(bot.id)}
+      {@const awaiting = awaitingIds.has(bot.id)}
+      {@const activity = awaiting ? "attention" : fleetActivity.get(bot.id)}
       <!-- Drag is a pointer-only affordance; the row's button child keeps keyboard access. -->
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div

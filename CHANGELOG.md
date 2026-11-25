@@ -4,6 +4,18 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Fleet attention
+
+- **One live source for “waiting on me”** — the sidebar filter now reads the
+  global attention store instead of the persisted `bot.status` column. After a
+  reload, a parked approval or question still marks the agent as waiting, the
+  filter appears with the live count, and the offices rail badge uses the same
+  source. A decision or answer that fails shows a toast and reloads the card,
+  which stays answerable for a retry.
+- Tests cover the approval/question projection (ignoring queue rows, budget
+  alerts, and rows without a bot id) alongside the existing inbox and rail
+  tests.
+
 ### Conversation history
 
 - **Threads have names you can manage** — the history drawer and the thread

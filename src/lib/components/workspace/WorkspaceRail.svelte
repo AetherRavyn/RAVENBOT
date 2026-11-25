@@ -4,7 +4,7 @@
   import { browserDock } from "$lib/browserDock.svelte";
   import { sidePanel } from "$lib/workspace/sidePanel.svelte";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
-  import { attention } from "$lib/attention.svelte";
+  import { attention, awaitingBots } from "$lib/attention.svelte";
   import { t, type TranslationKey } from "$lib/i18n";
 
   let {
@@ -33,9 +33,9 @@
   ] as const;
 
   // Fleet activity rollup: attention (approvals/questions) outranks working.
-  const attentionCount = $derived(
-    Object.values(fleetActivity.states).filter((a) => a === "attention").length,
-  );
+  // The offices rail reads the same attention store as the inbox, so a reload
+  // cannot leave a parked agent looking idle just because the stream was missed.
+  const officeAttentionCount = $derived(awaitingBots(attention.items).size);
   const workingCount = $derived(
     Object.values(fleetActivity.states).filter((a) => a === "working").length,
   );
@@ -74,8 +74,8 @@
       title={t(item.label as TranslationKey)}
       aria-label={item.dest === "inbox" && inboxCount
         ? `${t(item.label as TranslationKey)} · ${inboxCount}`
-        : item.dest === "offices" && attentionCount
-          ? `${t(item.label as TranslationKey)} · ${attentionCount} ${t("fleet.attention")}`
+        : item.dest === "offices" && officeAttentionCount
+          ? `${t(item.label as TranslationKey)} · ${officeAttentionCount} ${t("fleet.attention")}`
           : t(item.label as TranslationKey)}
     >
       {#if workspace.dest === item.dest}
@@ -87,11 +87,11 @@
           class="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[var(--warning-text)] text-[var(--text-on-light)] text-[11px] font-bold flex items-center justify-center"
           aria-hidden="true"
         >{inboxCount > 9 ? "9+" : inboxCount}</span>
-      {:else if item.dest === "offices" && attentionCount}
+      {:else if item.dest === "offices" && officeAttentionCount}
         <span
           class="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[var(--warning-text)] text-[var(--text-on-light)] text-[11px] font-bold flex items-center justify-center"
           aria-hidden="true"
-        >{attentionCount > 9 ? "9+" : attentionCount}</span>
+        >{officeAttentionCount > 9 ? "9+" : officeAttentionCount}</span>
       {:else if item.dest === "offices" && workingCount}
         <span
           class="absolute top-1 right-1 size-2 rounded-full bg-[var(--brand)] animate-pulse"

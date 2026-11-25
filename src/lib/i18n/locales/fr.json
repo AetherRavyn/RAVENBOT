@@ -192,6 +192,8 @@
     "delete": "Supprimer",
     "confirmDelete": "Cliquez à nouveau pour supprimer",
     "untitled": "Conversation sans titre",
+    "decisionFailed": "Impossible d'enregistrer cette décision : {{error}}. La carte reste ouverte ; réessayez.",
+    "answerFailed": "Impossible d'envoyer cette réponse : {{error}}. La carte reste ouverte ; réessayez.",
     "searchInThread": "Rechercher dans cette conversation",
     "searchShort": "Rechercher",
     "searchMessages": "Rechercher des messages…",

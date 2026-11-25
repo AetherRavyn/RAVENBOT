@@ -686,6 +686,14 @@
       announceAttentionChanged();
     } catch (e) {
       console.error("Failed to decide approval:", e);
+      notify(t("thread.decisionFailed", { error: String(e) }), "error");
+      // The backend may have accepted the decision just before the reply was
+      // lost. Reload so the card reflects the stored status; if it is still
+      // pending, leaving it on screen makes the retry obvious.
+      if (bot?.id) {
+        await refreshApprovals(bot.id);
+        announceAttentionChanged();
+      }
     } finally {
       decidingApproval = null;
     }
@@ -722,6 +730,11 @@
       announceAttentionChanged();
     } catch (e) {
       console.error("Failed to answer question:", e);
+      notify(t("thread.answerFailed", { error: String(e) }), "error");
+      if (bot?.id) {
+        await refreshQuestions(bot.id);
+        announceAttentionChanged();
+      }
     } finally {
       answeringQuestion = null;
     }
