@@ -1107,6 +1107,13 @@ mod platform_contract_tests {
             std::env::temp_dir().join(format!("ravenbot-seatbelt-live-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&work).expect("work dir");
         std::fs::write(work.join("marker.txt"), b"seatbelt-marker").expect("marker");
+        // A real file outside the workspace, so the test proves the profile
+        // denies *reading* it rather than merely finding a path absent.
+        let secret = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!(".ravenbot-seatbelt-{}", uuid::Uuid::new_v4()));
+        std::fs::write(&secret, b"outside-secret").expect("outside secret");
         let runner = SandboxRunner::new(SandboxConfig {
             tier: SandboxTier::OsLevel,
             resource_limits: ResourceLimits::default(),
@@ -1120,22 +1127,26 @@ mod platform_contract_tests {
                  skipping the live seatbelt test"
             );
             let _ = std::fs::remove_dir_all(&work);
+            let _ = std::fs::remove_file(&secret);
             return;
         }
         assert!(runner.is_isolated());
         assert!(runner.network_isolated());
 
+        let script = format!(
+            "cat marker.txt; \
+             if cat '{}' >/dev/null 2>&1; then echo OUTSIDE-LEAK; else echo no-outside-read; fi; \
+             if curl -m 2 -sS https://example.com >/dev/null 2>&1; then echo NET-LEAK; else echo net-blocked; fi; \
+             echo seatbelt-ok",
+            secret.display()
+        );
         let mut cmd = runner
-            .command(
-                "sh",
-                &[
-                    "-c".to_string(),
-                    "cat marker.txt; test ! -e \"$HOME/.ssh\" && echo no-ssh; if curl -m 2 -sS https://example.com >/dev/null 2>&1; then echo NET-LEAK; else echo net-blocked; fi; echo seatbelt-ok".to_string(),
-                ],
-                Some(&work),
-            )
+            .command("sh", &["-c".to_string(), script], Some(&work))
             .expect("build seatbelt command");
-        let out = cmd.output().await.expect("run seatbelt command");
+        let out = tokio::time::timeout(std::time::Duration::from_secs(20), cmd.output())
+            .await
+            .expect("seatbelt command timed out; the profile may be blocking the shell")
+            .expect("run seatbelt command");
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         use std::os::unix::process::ExitStatusExt;
@@ -1196,10 +1207,15 @@ mod platform_contract_tests {
             out.status.signal(),
         );
         assert!(stdout.contains("seatbelt-marker"), "{stdout} {stderr}");
-        assert!(stdout.contains("no-ssh"), "{stdout} {stderr}");
+        assert!(
+            stdout.contains("no-outside-read"),
+            "a file outside the workspace was readable: {stdout} {stderr}"
+        );
+        assert!(!stdout.contains("OUTSIDE-LEAK"), "{stdout} {stderr}");
         assert!(stdout.contains("net-blocked"), "{stdout} {stderr}");
         assert!(!stdout.contains("NET-LEAK"), "{stdout} {stderr}");
         assert!(stdout.contains("seatbelt-ok"), "{stdout} {stderr}");
         let _ = std::fs::remove_dir_all(work);
+        let _ = std::fs::remove_file(secret);
     }
 }
