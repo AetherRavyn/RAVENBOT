@@ -274,7 +274,7 @@ impl SandboxRunner {
             // file-read* alone lets it stat the files but not map them, which
             // aborts the child with SIGABRT and no stderr.
             "(allow file-map-executable)".to_string(),
-            "(allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/Library\") (subpath \"/opt\") (subpath \"/etc\") (subpath \"/private/etc\") (subpath \"/dev\"))".to_string(),
+            "(allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/Library\") (subpath \"/opt\") (subpath \"/etc\") (subpath \"/private/etc\") (subpath \"/dev\") (subpath \"/var/db/dyld\") (subpath \"/private/var/db/dyld\"))".to_string(),
             "(allow file-write* (subpath \"/tmp\") (subpath \"/private/tmp\") (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))".to_string(),
         ];
         for path in writable {
@@ -1153,6 +1153,15 @@ mod platform_contract_tests {
             _ => unreachable!("the runner was checked above"),
         };
         let profile = runner.seatbelt_profile(Some(&work));
+        // If this broad-read profile runs and ours does not, the remaining
+        // problem is a missing path, not a missing operation.
+        let broad = "(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read*)(allow file-write* (subpath \"/tmp\"))";
+        eprintln!(
+            "broad-read probe: {:?}",
+            std::process::Command::new(sandbox_exec)
+                .args(["-p", broad, "/bin/echo", "broad-ok"])
+                .output()
+        );
         let rules: Vec<&str> = profile.lines().collect();
         for end in 1..=rules.len() {
             let prefix = rules[..end].join("\n");
