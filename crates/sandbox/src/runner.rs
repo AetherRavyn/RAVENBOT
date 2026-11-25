@@ -284,15 +284,17 @@ impl SandboxRunner {
     ///
     /// dash has no `-u` either, so the process cap lands only where the shell
     /// implements it (bash); the CPU, memory and file caps apply everywhere.
-    fn ulimit_shim(&self) -> String {
-        self.ulimit_shim_with_process_limit(true)
-    }
-
     /// Docker already enforces its own PID limit. Applying `ulimit -u` inside
     /// the container counts the image's init and shell against the same small
     /// budget and makes ordinary commands fail to fork, so that one limit is
     /// left to `--pids-limit`.
-    fn ulimit_shim_with_process_limit(&self, include_process_limit: bool) -> String {
+    ///
+    /// macOS needs both limits left alone. `ulimit -v` counts the dyld shared
+    /// cache, which every process maps, so a 512 MB address-space cap prevents
+    /// `/bin/sh` from starting at all (and does so with no output). `ulimit -u`
+    /// is per-user on macOS, not per sandbox, so a small value breaks fork on a
+    /// busy desktop. Seatbelt's profile is the isolation boundary there.
+    fn ulimit_shim_limits(&self, include_process_limit: bool, include_vmem: bool) -> String {
         let limits = &self.config.resource_limits;
         // -t CPU seconds, -v virtual KB, -f file size (512B blocks), -u procs.
         let process_limit = if include_process_limit {
@@ -300,13 +302,19 @@ impl SandboxRunner {
         } else {
             String::new()
         };
+        let vmem_limit = if include_vmem {
+            format!(
+                "ulimit -v {} 2>/dev/null; ",
+                limits.max_memory_mb.saturating_mul(1024).max(1024)
+            )
+        } else {
+            String::new()
+        };
         format!(
             "ulimit -t {cpu} 2>/dev/null; \
-             ulimit -v {vmem} 2>/dev/null; \
-             ulimit -f {fsize} 2>/dev/null; \
+             {vmem_limit}ulimit -f {fsize} 2>/dev/null; \
              {process_limit}exec \"$0\" \"$@\"",
             cpu = limits.max_task_duration_secs.max(1),
-            vmem = limits.max_memory_mb.saturating_mul(1024).max(1024),
             fsize = limits.max_disk_write_mb.saturating_mul(2048).max(2048),
         )
     }
@@ -367,14 +375,14 @@ impl SandboxRunner {
         // `ulimit -u` would count the user's entire process tree and make an
         // ordinary `fork` fail on a busy desktop. Bubblewrap does unshare PID,
         // so its per-namespace process limit is meaningful.
-        let shim = if matches!(
-            &self.backend,
-            SandboxBackend::Docker(_) | SandboxBackend::None
-        ) {
-            self.ulimit_shim_with_process_limit(false)
-        } else {
-            self.ulimit_shim()
+        let (process_limit, address_space) = match &self.backend {
+            SandboxBackend::Docker(_) => (false, true),
+            SandboxBackend::Seatbelt(_) => (false, false),
+            SandboxBackend::Bubblewrap(_) => (true, true),
+            SandboxBackend::None if cfg!(target_os = "macos") => (false, false),
+            SandboxBackend::None => (false, true),
         };
+        let shim = self.ulimit_shim_limits(process_limit, address_space);
 
         let mut cmd = match &self.backend {
             SandboxBackend::Bubblewrap(bwrap) => {
@@ -1125,7 +1133,63 @@ mod platform_contract_tests {
         let out = cmd.output().await.expect("run seatbelt command");
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
-        assert!(out.status.success(), "seatbelt failed: {stderr}");
+        use std::os::unix::process::ExitStatusExt;
+        if !out.status.success() {
+            let sandbox_exec = match runner.backend() {
+                SandboxBackend::Seatbelt(path) => path,
+                _ => unreachable!("the runner was checked above"),
+            };
+            let profile = runner.seatbelt_profile(Some(&work));
+            eprintln!(
+                "seatbelt status={:?} code={:?} signal={:?} stdout={stdout:?} stderr={stderr:?}",
+                out.status,
+                out.status.code(),
+                out.status.signal(),
+            );
+            eprintln!(
+                "seatbelt args: {:?}",
+                cmd.as_std().get_args().collect::<Vec<_>>()
+            );
+            let probe = |label: &str, args: &[&str], clean_env: bool| {
+                let mut probe = std::process::Command::new(sandbox_exec);
+                probe.args(args);
+                if clean_env {
+                    probe.env_clear();
+                    for (key, value) in std::env::vars() {
+                        if allowed_child_env(&key) {
+                            probe.env(key, value);
+                        }
+                    }
+                }
+                eprintln!("{label}: {:?}", probe.output());
+            };
+            probe(
+                "permissive probe, full env",
+                &["-p", "(version 1)(allow default)", "/bin/echo", "probe-ok"],
+                false,
+            );
+            probe(
+                "permissive probe, cleaned env",
+                &["-p", "(version 1)(allow default)", "/bin/echo", "probe-ok"],
+                true,
+            );
+            probe(
+                "actual profile, echo only",
+                &["-p", profile.as_str(), "/bin/echo", "profile-ok"],
+                false,
+            );
+            std::process::Command::new(sandbox_exec)
+                .args(["-p", profile.as_str(), "/bin/sh", "-c", "echo sh-ok"])
+                .status()
+                .ok();
+        }
+        assert!(
+            out.status.success(),
+            "seatbelt failed: status={:?} code={:?} signal={:?} stdout={stdout:?} stderr={stderr:?}",
+            out.status,
+            out.status.code(),
+            out.status.signal(),
+        );
         assert!(stdout.contains("seatbelt-marker"), "{stdout} {stderr}");
         assert!(stdout.contains("no-ssh"), "{stdout} {stderr}");
         assert!(stdout.contains("net-blocked"), "{stdout} {stderr}");
