@@ -1149,60 +1149,6 @@ mod platform_contract_tests {
         assert!(runner.is_isolated());
         assert!(runner.network_isolated());
 
-        // A SIGABRT from sandbox-exec has no stderr. Run every profile prefix
-        // up front so a failure or a hang still leaves the offending rule in
-        // the log.
-        let sandbox_exec = match runner.backend() {
-            SandboxBackend::Seatbelt(path) => path,
-            _ => unreachable!("the runner was checked above"),
-        };
-        let profile = runner.seatbelt_profile(Some(&work));
-        // If this broad-read profile runs and ours does not, the remaining
-        // problem is a missing path, not a missing operation.
-        let broad = "(version 1)(deny default)(allow process-exec)(allow process-fork)(allow file-read*)(allow file-write* (subpath \"/tmp\"))";
-        eprintln!(
-            "broad-read probe: {:?}",
-            std::process::Command::new(sandbox_exec)
-                .args(["-p", broad, "/bin/echo", "broad-ok"])
-                .output()
-        );
-        let rules: Vec<&str> = profile.lines().collect();
-        for end in 1..=rules.len() {
-            let prefix = rules[..end].join("\n");
-            let result = std::process::Command::new(sandbox_exec)
-                .args(["-p", prefix.as_str(), "/bin/echo", "prefix-ok"])
-                .output();
-            eprintln!("profile prefix {end}: {result:?}");
-        }
-        // The broad probe passes, so the profile is missing a path. Try one
-        // extra root at a time; the first candidate that runs names the family.
-        for (label, extra) in [
-            ("all-reads", "(allow file-read*)"),
-            (
-                "system-volumes",
-                "(allow file-read* (subpath \"/System/Volumes\"))",
-            ),
-            (
-                "private-var",
-                "(allow file-read* (subpath \"/private/var\"))",
-            ),
-            ("users", "(allow file-read* (subpath \"/Users\"))"),
-            ("private", "(allow file-read* (subpath \"/private\"))"),
-            ("root", "(allow file-read* (literal \"/\"))"),
-            ("tmp", "(allow file-read* (subpath \"/tmp\"))"),
-            ("var", "(allow file-read* (literal \"/var\") (literal \"/private/var\"))"),
-            (
-                "root-tmp-var",
-                "(allow file-read* (literal \"/\") (subpath \"/tmp\") (literal \"/var\") (literal \"/private/var\"))",
-            ),
-        ] {
-            let candidate = format!("{profile}\n{extra}");
-            let result = std::process::Command::new(sandbox_exec)
-                .args(["-p", candidate.as_str(), "/bin/echo", "candidate-ok"])
-                .output();
-            eprintln!("candidate {label}: {result:?}");
-        }
-
         let script = format!(
             "cat marker.txt; \
              if cat '{}' >/dev/null 2>&1; then echo OUTSIDE-LEAK; else echo no-outside-read; fi; \
@@ -1220,50 +1166,6 @@ mod platform_contract_tests {
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         use std::os::unix::process::ExitStatusExt;
-        if !out.status.success() {
-            eprintln!(
-                "seatbelt status={:?} code={:?} signal={:?} stdout={stdout:?} stderr={stderr:?}",
-                out.status,
-                out.status.code(),
-                out.status.signal(),
-            );
-            eprintln!(
-                "seatbelt args: {:?}",
-                cmd.as_std().get_args().collect::<Vec<_>>()
-            );
-            let probe = |label: &str, args: &[&str], clean_env: bool| {
-                let mut probe = std::process::Command::new(sandbox_exec);
-                probe.args(args);
-                if clean_env {
-                    probe.env_clear();
-                    for (key, value) in std::env::vars() {
-                        if allowed_child_env(&key) {
-                            probe.env(key, value);
-                        }
-                    }
-                }
-                eprintln!("{label}: {:?}", probe.output());
-            };
-            probe(
-                "permissive probe, full env",
-                &["-p", "(version 1)(allow default)", "/bin/echo", "probe-ok"],
-                false,
-            );
-            probe(
-                "permissive probe, cleaned env",
-                &["-p", "(version 1)(allow default)", "/bin/echo", "probe-ok"],
-                true,
-            );
-            probe(
-                "actual profile, echo only",
-                &["-p", profile.as_str(), "/bin/echo", "profile-ok"],
-                false,
-            );
-            std::process::Command::new(sandbox_exec)
-                .args(["-p", profile.as_str(), "/bin/sh", "-c", "echo sh-ok"])
-                .status()
-                .ok();
-        }
         assert!(
             out.status.success(),
             "seatbelt failed: status={:?} code={:?} signal={:?} stdout={stdout:?} stderr={stderr:?}",
