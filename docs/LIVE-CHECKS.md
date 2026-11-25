@@ -97,10 +97,25 @@ Teams file delivery needs a real user click and an app manifest with
 Linux CI runs `systemd-analyze verify` against the generated hardened unit and
 executes the live Docker sandbox test with `alpine:3.20`. It does not perform a
 full systemd install/start/stop lifecycle in a hosted runner; that remains a
-manual check. The `platform-contracts` job runs on macOS and Windows and
-executes the service rendering/account contract tests there. It does not install
-a LaunchAgent or a Task Scheduler task in a hosted runner; those remain manual
-checks:
+manual check. The `platform-contracts` job runs on `macos-15-intel` and
+`windows-latest`:
+
+- **macOS** executes the service/account/environment contracts and the live
+  Seatbelt test. The test reads a marker inside the workspace, asserts a real
+  file outside it cannot be read, asserts https egress is blocked, and bounds
+  the command so a bad profile fails instead of hanging. macOS 26 needs three
+  things the older profile missed: the root directory must be readable, dyld
+  needs `file-map-executable`, and the per-user process/address-space `ulimit`s
+  must be left alone (the dyld shared cache counts against `RLIMIT_AS`, and
+  `RLIMIT_NPROC` is per user, not per sandbox).
+- **Windows** compiles the Tauri contracts and **runs** the Tauri-free
+  `ravenbot-sandbox` contract, which pins the fail-closed refusal. It cannot
+  execute the Tauri lib test harness: a Windows test binary has no application
+  manifest, so `comctl32` v6 never loads and the process exits with
+  `STATUS_ENTRYPOINT_NOT_FOUND` before a test starts (tauri-apps/tauri#14580).
+
+The job does not install a LaunchAgent or a Task Scheduler task in a hosted
+runner; those remain manual checks:
 
 - macOS: `ravenbot service install`, `start`, `status`, `stop`, `uninstall`
   with a throwaway `RAVENBOT_HOME`, then confirm the LaunchAgent appears in
