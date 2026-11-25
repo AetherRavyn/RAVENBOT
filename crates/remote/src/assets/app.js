@@ -9,6 +9,8 @@
   const state = {
     token: localStorage.getItem(TOKEN_KEY) || "",
     me: null,
+    account: null,
+    mode: "pair",
     bots: [],
     bot: null,
     threads: [],
@@ -37,25 +39,73 @@
     toast.timer = setTimeout(() => box.classList.remove("show"), 1800);
   }
 
+  function showView(mode) {
+    state.mode = mode;
+    $("pair-view").classList.toggle("hidden", mode !== "pair");
+    $("login-view").classList.toggle("hidden", mode !== "login");
+    $("chat-view").classList.toggle("hidden", mode !== "chat");
+    $("logout").classList.toggle("hidden", mode === "pair");
+    if (mode !== "chat" && state.timer) {
+      clearInterval(state.timer);
+      state.timer = null;
+    }
+  }
+
   function showPair(message) {
-    $("pair-view").classList.remove("hidden");
-    $("chat-view").classList.add("hidden");
-    $("logout").classList.add("hidden");
+    resetChat();
+    showView("pair");
     $("pair-error").textContent = message || "";
     $("pair-code").focus();
   }
 
+  function showLogin(message) {
+    const wasHidden = $("login-view").classList.contains("hidden");
+    if (wasHidden) resetChat();
+    showView("login");
+    $("login-error").textContent = message || "";
+    if (wasHidden) $("login-username").focus();
+  }
+
   function showChat() {
-    $("pair-view").classList.add("hidden");
-    $("chat-view").classList.remove("hidden");
-    $("logout").classList.remove("hidden");
+    showView("chat");
+  }
+
+  /// A device can change accounts without forgetting the token. Clear the
+  /// previous account's conversations before another person signs in.
+  function resetChat() {
+    state.bot = null;
+    state.threads = [];
+    state.thread = null;
+    state.messages = [];
+    state.lastMessageKey = "";
+    $("bots").replaceChildren();
+    $("threads").replaceChildren();
+    $("messages").replaceChildren();
+    $("attention").replaceChildren();
+    $("attention").classList.add("hidden");
+    $("thread-view").classList.add("hidden");
+    $("threads").classList.add("hidden");
+    $("bots").classList.remove("hidden");
+    $("back").classList.add("hidden");
+    $("view-title").textContent = "Agents";
+    $("composer").value = "";
+    $("send-form").dataset.replyTo = "";
+  }
+
+  function applyStatus(status) {
+    state.me = status.device || null;
+    state.account = status.account || null;
+    renderHeader();
+    return Boolean(status.login_required);
   }
 
   function forget(message) {
     localStorage.removeItem(TOKEN_KEY);
     state.token = "";
     state.me = null;
+    state.account = null;
     state.bots = [];
+    state.bot = null;
     state.threads = [];
     state.thread = null;
     state.messages = [];
@@ -65,13 +115,30 @@
     showPair(message || "");
   }
 
-  async function api(path, options = {}) {
+  async function api(path, options = {}, { keepSessionOn401 = false } = {}) {
     const headers = { ...(options.headers || {}) };
     if (state.token) headers.Authorization = `Bearer ${state.token}`;
     if (options.body) headers["Content-Type"] = "application/json";
     const response = await fetch(path, { ...options, headers });
     const data = await response.json().catch(() => ({}));
     if (response.status === 401) {
+      if (!state.token) {
+        // e.g. a wrong pairing code: there is no device session to forget.
+        throw new Error(data.error || "That code is wrong or expired.");
+      }
+      if (data.code === "login_required") {
+        showLogin("Sign in with your RAVENBOT account to continue.");
+        throw new Error(data.error || "Account sign-in required.");
+      }
+      if (data.code === "account_revoked") {
+        state.account = null;
+        showLogin("Your account no longer has access to this workspace. Sign in again.");
+        throw new Error(data.error || "Account access ended.");
+      }
+      if (keepSessionOn401) {
+        throw new Error(data.error || "Sign-in failed.");
+      }
+      // The device token itself is unknown, expired or revoked.
       forget("Pairing expired. Generate a new code on the host.");
       throw new Error("Pairing expired.");
     }
@@ -91,8 +158,13 @@
   function renderHeader() {
     const line = $("device-line");
     if (state.me) {
-      line.textContent = `${state.me.name} · ${state.me.role}`;
-      $("role-badge").textContent = state.me.role;
+      const role = state.me.role || "";
+      if (state.account?.username) {
+        line.textContent = `${state.me.name} · @${state.account.username} · ${role}`;
+      } else {
+        line.textContent = `${state.me.name} · ${role}`;
+      }
+      $("role-badge").textContent = role;
     } else {
       line.textContent = "Remote access";
       $("role-badge").textContent = "";
@@ -346,7 +418,7 @@
         renderMessages();
       }
     } catch (error) {
-      if (state.token) toast(error.message);
+      if (state.mode === "chat") toast(error.message);
     }
   }
 
@@ -355,7 +427,7 @@
       const data = await api("/api/attention");
       renderAttention(data);
     } catch (error) {
-      if (state.token) toast(error.message);
+      if (state.mode === "chat") toast(error.message);
     }
   }
 
@@ -363,8 +435,10 @@
     if (!state.token) return;
     try {
       const status = await api("/api/status");
-      state.me = status.device;
-      renderHeader();
+      if (applyStatus(status)) {
+        showLogin("Sign in with your RAVENBOT account to continue.");
+        return;
+      }
       if (state.thread) {
         await loadMessages();
         await loadAttention();
@@ -372,7 +446,7 @@
         await loadAttention();
       }
     } catch (error) {
-      if (state.token) toast(error.message);
+      if (state.mode === "chat") toast(error.message);
     }
   }
 
@@ -445,16 +519,62 @@
       localStorage.setItem(TOKEN_KEY, data.token);
       localStorage.setItem(NAME_KEY, data.name || name);
       state.me = { name: data.name, role: data.role };
-      showChat();
+      state.account = null;
       renderHeader();
-      startPolling();
-      await loadBots();
-      await loadAttention();
+      if (data.account_login) {
+        // The device token is not enough; ask for the local account now.
+        showLogin("");
+      } else {
+        await enterChat();
+      }
     } catch (error) {
       $("pair-error").textContent = error.message;
     } finally {
       button.disabled = false;
     }
+  }
+
+  async function signIn(event) {
+    event.preventDefault();
+    const username = $("login-username").value.trim();
+    const password = $("login-password").value;
+    $("login-error").textContent = "";
+    if (!username || !password) {
+      $("login-error").textContent = "Enter your username and password.";
+      return;
+    }
+    const button = event.submitter || $("login-form").querySelector("button");
+    button.disabled = true;
+    try {
+      await api(
+        "/api/login",
+        {
+          method: "POST",
+          body: JSON.stringify({ username, password }),
+        },
+        { keepSessionOn401: true },
+      );
+      $("login-password").value = "";
+      await enterChat();
+    } catch (error) {
+      $("login-error").textContent = error.message;
+      if (state.mode === "login") $("login-password").select();
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function enterChat() {
+    const status = await api("/api/status");
+    if (applyStatus(status)) {
+      showLogin("Sign in with your RAVENBOT account to continue.");
+      return;
+    }
+    showChat();
+    renderHeader();
+    startPolling();
+    await loadBots();
+    await loadAttention();
   }
 
   async function send(event) {
@@ -495,6 +615,7 @@
   }
 
   $("pair-form").addEventListener("submit", pair);
+  $("login-form").addEventListener("submit", signIn);
   $("send-form").addEventListener("submit", send);
   $("back").addEventListener("click", back);
   $("logout").addEventListener("click", async () => {
@@ -509,18 +630,27 @@
     forget("Device forgotten. Revoke it on the host if this browser was shared.");
   });
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && state.token) refresh();
+    if (!document.hidden && state.token && state.mode === "chat") refresh();
   });
 
-  if (state.token) {
+  async function start() {
+    if (!state.token) {
+      showPair("");
+      return;
+    }
+    // Keep the device token while the server tells us whether sign-in is
+    // required; only an invalid device token is forgotten by `api`.
     showChat();
-    loadBots()
-      .then(refresh)
-      .catch((error) => {
-        if (state.token) toast(error.message);
-      });
-  } else {
-    showPair("");
+    try {
+      await enterChat();
+    } catch (error) {
+      if (state.token && state.mode !== "login") {
+        showChat();
+        startPolling();
+        toast(error.message);
+      }
+    }
   }
-  startPolling();
+
+  start();
 })();

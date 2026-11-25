@@ -112,6 +112,53 @@ Every claim and release appends a `claimed` or `released` event with the account
 (and the previous owner where relevant) to the task timeline. Releasing a claim
 does not release a running graph: the execution lease remains the executor's.
 
+## Remote sign-in
+
+A phone or browser that uses remote access still pairs with a one-time code,
+which fixes the device's maximum remote role. When the host runs an account
+workspace it also requires a local RAVENBOT account sign-in before the page
+shows conversations:
+
+1. Pair the device (Settings → Remote access → generate code).
+2. The page calls `POST /api/login` with the device bearer token and the
+   account's username and password.
+
+The device token is required, but the device does not need to be bound yet.
+Before sign-in, only `GET /api/status`, `POST /api/login` and
+`POST /api/device/revoke` are reachable; every other protected request returns
+`401` with `code: "login_required"`. A successful sign-in stores the account on
+the device row and attributes every later audit row to `@username`.
+
+The effective remote role is the **lower** of the paired device role and the
+account's workspace grant:
+
+| workspace grant | paired device role | effective remote role |
+| --- | --- | --- |
+| owner | admin | admin |
+| owner | operator | operator |
+| owner | viewer | viewer |
+| operator | admin | operator |
+| operator | operator | operator |
+| operator | viewer | viewer |
+| viewer | any | viewer |
+
+`owner` maps to the remote `admin` role; `operator` and `viewer` keep their
+names. A viewer account therefore cannot write even if the device was paired
+as admin.
+
+The host revalidates a bound account at most once per 60 seconds. Disabling or
+deleting the account, revoking its grant, or disabling the workspace makes the
+next request fail closed with `401` and `code: "account_revoked"`; the device
+binding is cleared and the page asks for credentials again. The device token
+itself stays valid, so the same device can sign in with another account.
+Sign-in attempts use their own per-IP and global rate limits, separate from
+pairing, and wrong credentials return one generic message. Remote access never
+stores a password or a desktop session token, and neither appears in logs.
+
+A legacy single-user host has no account registry to consult, so its remote
+page keeps the device-role-only flow (`account_login: false` in the pairing
+response).
+
 ## Security model
 
 - Passwords are hashed with **Argon2id** (default parameters) and a random salt.
@@ -123,6 +170,8 @@ does not release a running graph: the execution lease remains the executor's.
   legacy unprefixed key names so existing keys continue to work.
 - The account process validates the session again every 30 seconds and exits if
   the session is revoked or expires.
+- Remote device account bindings are revalidated at most once a minute; a
+  disabled, deleted or no-longer-granted account fails closed within 60 seconds.
 - Account windows can run concurrently. Each workspace is assigned a port
   block: the owner keeps `8800/8801/8790`, and additional workspaces start at
   `8810/8811/8812` and move in steps of ten. A workspace is still protected by

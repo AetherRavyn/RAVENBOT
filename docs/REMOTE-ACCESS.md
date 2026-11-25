@@ -21,12 +21,18 @@ The API is intentionally narrow:
 - A new pairing code invalidates the previous unused one.
 - Revocation is immediate: the next request fails because the device row is
   checked on every call.
+- When the host runs an account workspace, a paired device must also sign in
+  with a local RAVENBOT account. The account's workspace grant caps the device's
+  paired role; it never raises it.
+- A bound account is revalidated at most once per minute. Disabling or deleting
+  the account or revoking its grant fails the next check closed with
+  `401 account_revoked` and clears the binding.
 - Reads are available to `viewer`; every mutating method requires `operator` or
-  `admin`.
-- `/api/remote/audit` requires `admin`.
+  `admin` in the **effective** role.
+- `/api/remote/audit` requires `admin` in the effective role.
 - Mutating requests and failures are written to `remote_audit` with the device
-  name and role. Reads are not persisted, so polling does not create a write
-  every three seconds.
+  name, effective role and, for a signed-in device, the account name. Reads are
+  not persisted, so polling does not create a write every three seconds.
 
 ### Transport
 
@@ -61,8 +67,12 @@ directly to the public internet.
 | `operator` | yes | yes | yes | yes | no |
 | `admin` | yes | yes | yes | yes | yes |
 
-A role is chosen when the pairing code is generated. Local desktop UI remains
-the owner and can revoke any device.
+A role is chosen when the pairing code is generated. That is the device's
+ceiling, not the final role: when account sign-in is enabled, the effective role
+is the lower of the paired role and the account's workspace grant. `owner` maps
+to `admin`; `operator` and `viewer` keep their names, and an unknown role is
+treated as `viewer`. Local desktop UI remains the owner and can revoke any
+device.
 
 ## Setup
 
@@ -72,8 +82,10 @@ the owner and can revoke any device.
 3. For a phone, choose a role and generate a one-time code.
 4. On the phone, open the URL shown in Settings, accept the certificate warning
    if HTTPS is on, then enter the code and a device name.
-5. The phone keeps the token and polls every three seconds while a conversation
-   is open.
+5. If the host runs an account workspace, sign in with the local RAVENBOT
+   username and password. A legacy single-user host skips this step.
+6. The phone keeps the device token, signs in, and polls every three seconds
+   while a conversation is open.
 
 With no desktop UI, pair from a terminal:
 
@@ -102,7 +114,8 @@ All authenticated routes require `Authorization: Bearer <token>`.
 |---|---|---|---|
 | `GET` | `/api/health` | public | liveness |
 | `POST` | `/api/pair` | public | exchange a one-time code for a token |
-| `GET` | `/api/status` | viewer | device, counts, pending attention |
+| `POST` | `/api/login` | paired device | bind the device to a local account |
+| `GET` | `/api/status` | paired device | device, account, login state and counts |
 | `GET` | `/api/bots` | viewer | agents |
 | `GET` | `/api/threads?bot_id=` | viewer | conversations |
 | `GET` | `/api/threads/:id/messages?limit=` | viewer | latest messages |
@@ -122,23 +135,36 @@ the run executes in the background, so the HTTP request does not stay open for
 minutes. If the conversation already has a non-terminal run, the request is
 rejected with `409`.
 
+When account sign-in is enabled, a paired but unbound device can reach only
+`GET /api/status`, `POST /api/login` and `POST /api/device/revoke`; every other
+protected route returns `401` with `code: "login_required"`. `GET /api/status`
+reports `{device, account, login_required}`; `POST /api/login` takes
+`{username, password}` and returns the effective `role`. A revoked account
+returns `401` with `code: "account_revoked"` and the page asks for credentials
+again. Sign-in attempts have their own per-IP and global rate limits, separate
+from pairing.
+
 Approvals and questions still obey the agent's own approval mode. A remote
 operator can answer them; a viewer can see them and is told to use the host.
 
 ## Storage
 
-Migration 51 adds three tables:
+Migration 51 adds the three remote tables; migration 77 adds the account
+binding:
 
-- `remote_devices` — name, role, token hash, created/last-seen/revoked
+- `remote_devices` — name, role, token hash, account id/name/workspace role,
+  created/last-seen/revoked
 - `remote_pairings` — one-time code hash, role, expiry, used timestamp
-- `remote_audit` — device attribution, method, path, status, timestamp
+- `remote_audit` — device attribution, effective role, account name, method,
+  path, status, timestamp
 
-No plaintext token or pairing code is stored.
+No plaintext token, pairing code or password is stored.
 
 ## Limits
 
-- This is single-user remote access, not multi-tenant accounts. RBAC scopes the
-  remote API; it does not create separate desktop profiles.
+- Remote access is tied to one account workspace. Pairing picks the device
+  ceiling; signing in picks the person. It does not create separate desktop
+  profiles or a shared-host relay.
 - No WebSocket/SSE streaming yet; the mobile page polls.
 - No attachment upload, voice capture, or settings management over the API.
 - The self-signed certificate is generated locally; there is no ACME/Let's

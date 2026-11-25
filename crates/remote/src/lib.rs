@@ -5,6 +5,11 @@
 //! * loopback by default; LAN binding is an explicit opt-in with a warning;
 //! * pairing codes are one-time, short-lived and rate-limited;
 //! * tokens are random, shown once, and stored only as SHA-256 hashes;
+//! * a paired device must additionally sign in with a local RAVENBOT account
+//!   when the host enables account sign-in; the account's workspace grant caps
+//!   the paired role (`owner` → admin, `operator`, `viewer`);
+//! * the account binding is revalidated at most once a minute and fails closed
+//!   when the account is disabled, deleted or loses its workspace grant;
 //! * roles are `viewer` (read), `operator` (send/approve/cancel) and `admin`
 //!   (operator plus the audit view);
 //! * device management (mint/revoke) is a local desktop action, never an HTTP
@@ -45,6 +50,13 @@ use ravenbot_runtime::Runtime;
 pub const DEFAULT_PORT: u16 = 8790;
 const MAX_PAIRING_ATTEMPTS_PER_MINUTE: usize = 5;
 const MAX_GLOBAL_PAIRING_ATTEMPTS_PER_MINUTE: usize = 30;
+/// Sign-in has its own counters: a pairing flood must not lock out an existing
+/// device, and failed credentials must not consume pairing attempts.
+const MAX_LOGIN_ATTEMPTS_PER_MINUTE: usize = 5;
+const MAX_GLOBAL_LOGIN_ATTEMPTS_PER_MINUTE: usize = 30;
+/// Bounds how long a revoked account can keep using a device. Revalidation is
+/// cheap but goes to the account registry, so it is not done per poll.
+const ACCOUNT_REVALIDATE_INTERVAL: Duration = Duration::from_secs(60);
 const MAX_MESSAGE_CHARS: usize = 20_000;
 const MAX_ANSWER_BYTES: usize = 64 * 1024;
 const MAX_SHARE_MESSAGES: usize = 300;
@@ -69,6 +81,36 @@ impl RemoteRole {
             "operator" => Self::Operator,
             "admin" => Self::Admin,
             _ => Self::Viewer,
+        }
+    }
+
+    /// The workspace role is `owner`/`operator`/`viewer`; the remote scale is
+    /// `admin`/`operator`/`viewer`. An unknown role is treated as a viewer so a
+    /// future role name cannot widen access by accident.
+    fn from_workspace(role: &str) -> Self {
+        match role.trim().to_ascii_lowercase().as_str() {
+            "owner" => Self::Admin,
+            "operator" => Self::Operator,
+            "viewer" => Self::Viewer,
+            _ => Self::Viewer,
+        }
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            Self::Viewer => 0,
+            Self::Operator => 1,
+            Self::Admin => 2,
+        }
+    }
+
+    /// The account grant caps the paired role; it never raises it.
+    fn capped_by(self, account_role: &str) -> Self {
+        let account = Self::from_workspace(account_role);
+        if account.rank() < self.rank() {
+            account
+        } else {
+            self
         }
     }
 
@@ -141,12 +183,41 @@ pub struct PairingCode {
     pub expires_at: DateTime<Utc>,
 }
 
+/// A local RAVENBOT account, as the remote surface sees it.
+#[derive(Debug, Clone, Serialize)]
+pub struct RemoteAccount {
+    pub id: String,
+    pub username: String,
+    /// The workspace role: `owner`, `operator` or `viewer`.
+    pub role: String,
+}
+
+/// Backs remote sign-in with the local account registry.
+///
+/// `Ok(None)` means bad credentials or an account that is no longer allowed on
+/// this workspace; `Err` is an internal backend failure. The HTTP boundary
+/// deliberately uses generic copy for both so it never becomes an account
+/// enumeration oracle.
+#[async_trait::async_trait]
+pub trait AccountAuthenticator: Send + Sync {
+    async fn authenticate(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<RemoteAccount>, String>;
+
+    async fn revalidate(&self, account_id: &str) -> Result<Option<RemoteAccount>, String>;
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PairedDevice {
     pub token: String,
     pub device_id: Uuid,
     pub name: String,
     pub role: RemoteRole,
+    /// True when the host accepts account sign-in, so the page asks for the
+    /// account credentials before showing conversations.
+    pub account_login: bool,
 }
 
 /// Generate a one-time code and store only its hash. Generating a new code
@@ -405,13 +476,28 @@ pub async fn start(
     runtime: Arc<Runtime>,
     config: RemoteConfig,
 ) -> Result<RemoteServer, String> {
+    start_with_authenticator(pool, runtime, config, None).await
+}
+
+/// Start the listener with optional account sign-in. `None` keeps the original
+/// device-role-only behavior (and is what tests and embedded uses pass).
+pub async fn start_with_authenticator(
+    pool: SqlitePool,
+    runtime: Arc<Runtime>,
+    config: RemoteConfig,
+    authenticator: Option<Arc<dyn AccountAuthenticator>>,
+) -> Result<RemoteServer, String> {
     // Bound the pairing and audit tables before the listener accepts traffic.
     if let Err(error) = RemoteAccessQueries::prune(&pool).await {
         tracing::warn!(%error, "Could not prune remote access tables");
     }
     let port = config.normalized_port();
     let bind = format!("{}:{}", config.bind_addr(), port);
-    let state = Arc::new(RemoteState::new(pool, runtime));
+    let state = Arc::new(RemoteState::new_with_authenticator(
+        pool,
+        runtime,
+        authenticator,
+    ));
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let allow_lan = config.allow_lan;
@@ -477,51 +563,103 @@ pub async fn start(
     })
 }
 
+#[derive(Debug, Clone)]
+struct CachedGrant {
+    account: RemoteAccount,
+    checked_at: Instant,
+}
+
 pub struct RemoteState {
     pool: SqlitePool,
     runtime: Arc<Runtime>,
+    authenticator: Option<Arc<dyn AccountAuthenticator>>,
     pairing_attempts: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
     global_pairing_attempts: Mutex<VecDeque<Instant>>,
+    login_attempts: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    global_login_attempts: Mutex<VecDeque<Instant>>,
+    grants: Mutex<HashMap<String, CachedGrant>>,
     last_touch: Mutex<HashMap<String, Instant>>,
 }
 
 impl RemoteState {
+    #[cfg(test)]
     fn new(pool: SqlitePool, runtime: Arc<Runtime>) -> Self {
+        Self::new_with_authenticator(pool, runtime, None)
+    }
+
+    fn new_with_authenticator(
+        pool: SqlitePool,
+        runtime: Arc<Runtime>,
+        authenticator: Option<Arc<dyn AccountAuthenticator>>,
+    ) -> Self {
         Self {
             pool,
             runtime,
+            authenticator,
             pairing_attempts: Mutex::new(HashMap::new()),
             global_pairing_attempts: Mutex::new(VecDeque::new()),
+            login_attempts: Mutex::new(HashMap::new()),
+            global_login_attempts: Mutex::new(VecDeque::new()),
+            grants: Mutex::new(HashMap::new()),
             last_touch: Mutex::new(HashMap::new()),
         }
     }
 
     fn pairing_allowed(&self, ip: IpAddr) -> bool {
+        rate_limit_allowed(
+            &self.pairing_attempts,
+            &self.global_pairing_attempts,
+            ip,
+            MAX_PAIRING_ATTEMPTS_PER_MINUTE,
+            MAX_GLOBAL_PAIRING_ATTEMPTS_PER_MINUTE,
+        )
+    }
+
+    fn login_allowed(&self, ip: IpAddr) -> bool {
+        rate_limit_allowed(
+            &self.login_attempts,
+            &self.global_login_attempts,
+            ip,
+            MAX_LOGIN_ATTEMPTS_PER_MINUTE,
+            MAX_GLOBAL_LOGIN_ATTEMPTS_PER_MINUTE,
+        )
+    }
+
+    /// A grant is trusted for a minute; after that the next request asks the
+    /// account registry again. The caller recomputes the effective role on
+    /// every request even when the grant itself is cached.
+    fn cached_account(&self, device_id: &str) -> Option<RemoteAccount> {
         let now = Instant::now();
-        let mut global = self.global_pairing_attempts.lock().expect("pairing lock");
-        while global
-            .front()
-            .is_some_and(|at| now.duration_since(*at) > Duration::from_secs(60))
-        {
-            global.pop_front();
+        let mut grants = self.grants.lock().expect("grant lock");
+        match grants.get(device_id) {
+            Some(grant) if now.duration_since(grant.checked_at) < ACCOUNT_REVALIDATE_INTERVAL => {
+                Some(grant.account.clone())
+            }
+            Some(_) => {
+                grants.remove(device_id);
+                None
+            }
+            None => None,
         }
-        if global.len() >= MAX_GLOBAL_PAIRING_ATTEMPTS_PER_MINUTE {
-            return false;
-        }
-        let mut by_ip = self.pairing_attempts.lock().expect("pairing lock");
-        let attempts = by_ip.entry(ip).or_default();
-        while attempts
-            .front()
-            .is_some_and(|at| now.duration_since(*at) > Duration::from_secs(60))
-        {
-            attempts.pop_front();
-        }
-        if attempts.len() >= MAX_PAIRING_ATTEMPTS_PER_MINUTE {
-            return false;
-        }
-        attempts.push_back(now);
-        global.push_back(now);
-        true
+    }
+
+    fn cache_account(&self, device_id: &str, account: &RemoteAccount) {
+        self.grants.lock().expect("grant lock").insert(
+            device_id.to_string(),
+            CachedGrant {
+                account: account.clone(),
+                checked_at: Instant::now(),
+            },
+        );
+    }
+
+    fn clear_cached_account(&self, device_id: &str) {
+        self.grants.lock().expect("grant lock").remove(device_id);
+    }
+
+    #[cfg(test)]
+    fn clear_all_cached_accounts(&self) {
+        self.grants.lock().expect("grant lock").clear();
     }
 
     fn should_touch(&self, device_id: &str) -> bool {
@@ -537,6 +675,40 @@ impl RemoteState {
     }
 }
 
+fn rate_limit_allowed(
+    by_ip: &Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    global: &Mutex<VecDeque<Instant>>,
+    ip: IpAddr,
+    per_ip_max: usize,
+    global_max: usize,
+) -> bool {
+    let now = Instant::now();
+    let mut global = global.lock().expect("rate limit lock");
+    while global
+        .front()
+        .is_some_and(|at| now.duration_since(*at) > Duration::from_secs(60))
+    {
+        global.pop_front();
+    }
+    if global.len() >= global_max {
+        return false;
+    }
+    let mut by_ip = by_ip.lock().expect("rate limit lock");
+    let attempts = by_ip.entry(ip).or_default();
+    while attempts
+        .front()
+        .is_some_and(|at| now.duration_since(*at) > Duration::from_secs(60))
+    {
+        attempts.pop_front();
+    }
+    if attempts.len() >= per_ip_max {
+        return false;
+    }
+    attempts.push_back(now);
+    global.push_back(now);
+    true
+}
+
 pub fn router(state: Arc<RemoteState>) -> Router {
     let public = Router::new()
         .route("/", get(index))
@@ -548,6 +720,7 @@ pub fn router(state: Arc<RemoteState>) -> Router {
 
     let protected = Router::new()
         .route("/api/status", get(status))
+        .route("/api/login", post(login))
         .route("/api/bots", get(bots))
         .route("/api/threads", get(threads))
         .route(
@@ -579,6 +752,7 @@ pub fn router(state: Arc<RemoteState>) -> Router {
 struct ApiError {
     status: StatusCode,
     message: String,
+    code: Option<&'static str>,
 }
 
 impl ApiError {
@@ -586,6 +760,15 @@ impl ApiError {
         Self {
             status,
             message: message.into(),
+            code: None,
+        }
+    }
+
+    fn coded(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            status,
+            message: message.into(),
+            code: Some(code),
         }
     }
 
@@ -597,6 +780,30 @@ impl ApiError {
         Self::new(
             StatusCode::UNAUTHORIZED,
             "Pairing is required. Generate a code in RAVENBOT Settings → Remote access.",
+        )
+    }
+
+    fn login_required() -> Self {
+        Self::coded(
+            StatusCode::UNAUTHORIZED,
+            "login_required",
+            "Sign in with your RAVENBOT account to use remote access.",
+        )
+    }
+
+    fn account_revoked() -> Self {
+        Self::coded(
+            StatusCode::UNAUTHORIZED,
+            "account_revoked",
+            "Your account no longer has access to this workspace. Sign in again.",
+        )
+    }
+
+    fn invalid_credentials() -> Self {
+        Self::coded(
+            StatusCode::UNAUTHORIZED,
+            "invalid_credentials",
+            "Invalid username or password.",
         )
     }
 
@@ -626,7 +833,11 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.message }))).into_response()
+        let mut body = json!({ "error": self.message });
+        if let Some(code) = self.code {
+            body["code"] = json!(code);
+        }
+        (self.status, Json(body)).into_response()
     }
 }
 
@@ -636,7 +847,20 @@ type ApiResult<T> = Result<T, ApiError>;
 struct AuthDevice {
     id: String,
     name: String,
+    /// The paired role, before the account grant caps it.
+    device_role: RemoteRole,
+    /// Effective role: the lower of the pair and the account grant.
     role: RemoteRole,
+    account: Option<RemoteAccount>,
+    login_required: bool,
+}
+
+impl AuthDevice {
+    fn account_name(&self) -> Option<&str> {
+        self.account
+            .as_ref()
+            .map(|account| account.username.as_str())
+    }
 }
 
 fn bearer_token(request: &Request) -> Option<String> {
@@ -666,31 +890,100 @@ async fn authenticate(
             Ok(None) => return ApiError::unauthorized().into_response(),
             Err(error) => return ApiError::internal("remote token lookup", error).into_response(),
         };
-    let role = RemoteRole::parse(&device.role);
     let method = request.method().clone();
-    // A device may revoke itself even as a viewer. Every other mutation needs
-    // the operator role.
-    let self_revoke = request.uri().path() == "/api/device/revoke";
-    if method != Method::GET && method != Method::HEAD && !self_revoke && !role.can_write() {
+    let path = request.uri().path().to_string();
+    // These stay reachable before the device is bound: sign in, leave, and
+    // discover that sign-in is required.
+    let is_login = path == "/api/login";
+    let self_revoke = path == "/api/device/revoke";
+    let device_role = RemoteRole::parse(&device.role);
+    let mut account = None;
+    let mut login_required = false;
+
+    if let Some(authenticator) = state.authenticator.clone() {
+        match device.account_id.as_deref() {
+            Some(account_id) => {
+                let outcome = match state.cached_account(&device.id) {
+                    Some(cached) => Ok(Some(cached)),
+                    None => authenticator.revalidate(account_id).await,
+                };
+                let granted = match outcome {
+                    Ok(Some(granted)) => Some(granted),
+                    Ok(None) => None,
+                    Err(error) => {
+                        tracing::warn!(%error, "remote account revalidation failed");
+                        None
+                    }
+                };
+                match granted {
+                    Some(granted) => {
+                        state.cache_account(&device.id, &granted);
+                        account = Some(granted);
+                    }
+                    None => {
+                        // Fail closed and drop the binding so the page asks for
+                        // credentials instead of retrying a dead grant forever.
+                        state.clear_cached_account(&device.id);
+                        let _ = RemoteAccessQueries::clear_account_binding(&state.pool, &device.id)
+                            .await;
+                        let _ = RemoteAccessQueries::audit(
+                            &state.pool,
+                            Some(&device.id),
+                            Some(&device.name),
+                            None,
+                            None,
+                            method.as_str(),
+                            &path,
+                            401,
+                        )
+                        .await;
+                        return ApiError::account_revoked().into_response();
+                    }
+                }
+            }
+            None => {
+                login_required = true;
+                if !(is_login || self_revoke || path == "/api/status") {
+                    return ApiError::login_required().into_response();
+                }
+            }
+        }
+    }
+
+    let role = account
+        .as_ref()
+        .map_or(device_role, |account| device_role.capped_by(&account.role));
+    // A device may revoke itself even as a viewer; sign-in must be reachable
+    // with a viewer pairing. Every other mutation needs the effective role.
+    if method != Method::GET
+        && method != Method::HEAD
+        && !self_revoke
+        && !is_login
+        && !role.can_write()
+    {
         return ApiError::forbidden().into_response();
     }
     let auth = AuthDevice {
         id: device.id.clone(),
         name: device.name.clone(),
+        device_role,
         role,
+        account,
+        login_required,
     };
     request.extensions_mut().insert(auth.clone());
-    let path = request.uri().path().to_string();
     let response = next.run(request).await;
     let status = response.status().as_u16() as i64;
     // Reads are polled; only mutations and failures are persisted, so polling
-    // does not turn into a write every three seconds.
-    if method != Method::GET || status >= 400 {
+    // does not turn into a write every three seconds. Sign-in writes its own
+    // row so it can carry the newly bound account.
+    if !is_login && (method != Method::GET || status >= 400) {
         let _ = RemoteAccessQueries::audit(
             &state.pool,
             Some(&auth.id),
             Some(&auth.name),
             Some(auth.role.as_str()),
+            auth.account_name(),
             method.as_str(),
             &path,
             status,
@@ -1035,6 +1328,7 @@ async fn pair(
         Some(&device_id.to_string()),
         Some(name),
         Some(role.as_str()),
+        None,
         "PAIR",
         "/api/pair",
         200,
@@ -1045,12 +1339,118 @@ async fn pair(
         device_id,
         name: name.to_string(),
         role,
+        account_login: state.authenticator.is_some(),
     }))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Authenticated endpoints
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct LoginBody {
+    username: String,
+    password: String,
+}
+
+/// Bind this paired device to a local account. The device token is required,
+/// but the device does not need to be bound yet; that is the point of this
+/// endpoint. Rate limits are independent of pairing.
+async fn login(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<PeerAddr>,
+    Extension(auth): Extension<AuthDevice>,
+    Json(body): Json<LoginBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !state.login_allowed(peer.0.ip()) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many sign-in attempts. Wait a minute and try again.",
+        ));
+    }
+    let Some(authenticator) = state.authenticator.clone() else {
+        return Err(ApiError::conflict(
+            "Account sign-in is not enabled on this host.",
+        ));
+    };
+    let username = body.username.trim();
+    if username.is_empty() || body.password.is_empty() {
+        let _ = RemoteAccessQueries::audit(
+            &state.pool,
+            Some(&auth.id),
+            Some(&auth.name),
+            None,
+            None,
+            "POST",
+            "/api/login",
+            401,
+        )
+        .await;
+        return Err(ApiError::invalid_credentials());
+    }
+    match authenticator.authenticate(username, &body.password).await {
+        Ok(Some(account)) => {
+            let role = auth.device_role.capped_by(&account.role);
+            let bound = RemoteAccessQueries::bind_account(
+                &state.pool,
+                &auth.id,
+                &account.id,
+                &account.username,
+                &account.role,
+            )
+            .await
+            .map_err(|error| ApiError::internal("bind remote account", error))?;
+            if !bound {
+                // The device was revoked between lookup and binding.
+                return Err(ApiError::unauthorized());
+            }
+            state.cache_account(&auth.id, &account);
+            let _ = RemoteAccessQueries::audit(
+                &state.pool,
+                Some(&auth.id),
+                Some(&auth.name),
+                Some(role.as_str()),
+                Some(&account.username),
+                "POST",
+                "/api/login",
+                200,
+            )
+            .await;
+            Ok(Json(json!({
+                "account": { "id": account.id, "username": account.username },
+                "role": role.as_str(),
+            })))
+        }
+        Ok(None) => {
+            let _ = RemoteAccessQueries::audit(
+                &state.pool,
+                Some(&auth.id),
+                Some(&auth.name),
+                None,
+                None,
+                "POST",
+                "/api/login",
+                401,
+            )
+            .await;
+            Err(ApiError::invalid_credentials())
+        }
+        Err(error) => {
+            let _ = RemoteAccessQueries::audit(
+                &state.pool,
+                Some(&auth.id),
+                Some(&auth.name),
+                None,
+                None,
+                "POST",
+                "/api/login",
+                500,
+            )
+            .await;
+            Err(ApiError::internal("remote account authentication", error))
+        }
+    }
+}
 
 async fn status(
     State(state): State<Arc<RemoteState>>,
@@ -1076,8 +1476,14 @@ async fn status(
             .fetch_one(&state.pool)
             .await
             .map_err(|error| ApiError::internal("count questions", error))?;
+    let account = auth
+        .account
+        .as_ref()
+        .map(|account| json!({ "id": account.id, "username": account.username }));
     Ok(Json(json!({
         "device": { "id": auth.id, "name": auth.name, "role": auth.role },
+        "account": account,
+        "login_required": auth.login_required,
         "bots": bots,
         "active_runs": active_runs,
         "pending_approvals": pending_approvals,
@@ -1439,6 +1845,7 @@ async fn revoke_self(
     RemoteAccessQueries::revoke_device(&state.pool, id)
         .await
         .map_err(|error| ApiError::internal("revoke device", error))?;
+    state.clear_cached_account(&auth.id);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1474,6 +1881,120 @@ mod tests {
             .expect("migrations");
         let db = ravenbot_db::Database::from_pool(pool.clone());
         Arc::new(RemoteState::new(pool, Arc::new(Runtime::new(db))))
+    }
+
+    /// A deterministic stand-in for the account registry. `None` simulates a
+    /// disabled, deleted or grant-revoked account.
+    struct StubAuthenticator {
+        password: String,
+        account: Mutex<Option<RemoteAccount>>,
+        fail_revalidation: Mutex<bool>,
+        revalidations: std::sync::atomic::AtomicUsize,
+    }
+
+    impl StubAuthenticator {
+        fn new(account: RemoteAccount, password: &str) -> Self {
+            Self {
+                password: password.to_string(),
+                account: Mutex::new(Some(account)),
+                fail_revalidation: Mutex::new(false),
+                revalidations: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn set_account(&self, account: Option<RemoteAccount>) {
+            *self.account.lock().expect("account lock") = account;
+        }
+
+        fn fail_revalidation(&self) {
+            *self.fail_revalidation.lock().expect("revalidation lock") = true;
+        }
+
+        fn revalidations(&self) -> usize {
+            self.revalidations.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AccountAuthenticator for StubAuthenticator {
+        async fn authenticate(
+            &self,
+            username: &str,
+            password: &str,
+        ) -> Result<Option<RemoteAccount>, String> {
+            let account = self.account.lock().expect("account lock").clone();
+            Ok(account.filter(|account| {
+                account.username.eq_ignore_ascii_case(username.trim()) && password == self.password
+            }))
+        }
+
+        async fn revalidate(&self, account_id: &str) -> Result<Option<RemoteAccount>, String> {
+            self.revalidations
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if *self.fail_revalidation.lock().expect("revalidation lock") {
+                return Err("registry unavailable".to_string());
+            }
+            Ok(self
+                .account
+                .lock()
+                .expect("account lock")
+                .clone()
+                .filter(|account| account.id == account_id))
+        }
+    }
+
+    async fn state_with_authenticator(
+        authenticator: Arc<dyn AccountAuthenticator>,
+    ) -> Arc<RemoteState> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        ravenbot_db::migrations::run(&pool)
+            .await
+            .expect("migrations");
+        let db = ravenbot_db::Database::from_pool(pool.clone());
+        Arc::new(RemoteState::new_with_authenticator(
+            pool,
+            Arc::new(Runtime::new(db)),
+            Some(authenticator),
+        ))
+    }
+
+    async fn test_device(state: &RemoteState, name: &str, role: &str) -> String {
+        let token = generate_token();
+        RemoteAccessQueries::create_device(&state.pool, name, role, &hash_secret(&token))
+            .await
+            .expect("device");
+        token
+    }
+
+    fn get_with_token(uri: &str, token: &str) -> HttpRequest<Body> {
+        HttpRequest::builder()
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    fn login_request(token: &str, username: &str, password: &str) -> HttpRequest<Body> {
+        let mut request = HttpRequest::builder()
+            .method("POST")
+            .uri("/api/login")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {token}"))
+            .body(Body::from(
+                json!({ "username": username, "password": password }).to_string(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(PeerAddr(SocketAddr::from((
+                [127, 0, 0, 1],
+                51000,
+            )))));
+        request
     }
 
     async fn body_json(response: Response) -> serde_json::Value {
@@ -1678,6 +2199,45 @@ mod tests {
         assert!(RemoteRole::Admin.can_admin());
         assert_eq!(RemoteRole::parse("ADMIN"), RemoteRole::Admin);
         assert_eq!(RemoteRole::parse("nonsense"), RemoteRole::Viewer);
+        assert_eq!(RemoteRole::from_workspace("owner"), RemoteRole::Admin);
+        assert_eq!(RemoteRole::from_workspace("operator"), RemoteRole::Operator);
+        assert_eq!(RemoteRole::from_workspace("viewer"), RemoteRole::Viewer);
+        assert_eq!(RemoteRole::from_workspace("root"), RemoteRole::Viewer);
+        assert_eq!(RemoteRole::Admin.capped_by("viewer"), RemoteRole::Viewer);
+        assert_eq!(
+            RemoteRole::Admin.capped_by("operator"),
+            RemoteRole::Operator
+        );
+        assert_eq!(RemoteRole::Viewer.capped_by("owner"), RemoteRole::Viewer);
+        assert_eq!(
+            RemoteRole::Operator.capped_by("owner"),
+            RemoteRole::Operator
+        );
+        assert_eq!(RemoteRole::Operator.capped_by("viewer"), RemoteRole::Viewer);
+    }
+
+    #[tokio::test]
+    async fn pairing_and_sign_in_rate_limits_use_separate_counters() {
+        let state = state().await;
+        let login_ip = IpAddr::from([127, 0, 0, 2]);
+        for _ in 0..MAX_LOGIN_ATTEMPTS_PER_MINUTE {
+            assert!(state.login_allowed(login_ip));
+        }
+        assert!(!state.login_allowed(login_ip));
+        assert!(
+            state.pairing_allowed(login_ip),
+            "a sign-in flood must not consume pairing attempts"
+        );
+
+        let pairing_ip = IpAddr::from([127, 0, 0, 3]);
+        for _ in 0..MAX_PAIRING_ATTEMPTS_PER_MINUTE {
+            assert!(state.pairing_allowed(pairing_ip));
+        }
+        assert!(!state.pairing_allowed(pairing_ip));
+        assert!(
+            state.login_allowed(pairing_ip),
+            "a pairing flood must not lock out sign-in"
+        );
     }
 
     #[test]
@@ -1717,6 +2277,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         assert_eq!(body["role"], "operator");
+        assert_eq!(body["account_login"], false);
         let token = body["token"].as_str().expect("token");
         assert_eq!(token.len(), 64);
         assert!(body["device_id"].as_str().is_some());
@@ -2127,5 +2688,288 @@ mod tests {
             .unwrap();
         let response = app.oneshot(request).await.expect("response");
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_paired_device_must_sign_in_before_using_the_api() {
+        let stub = Arc::new(StubAuthenticator::new(
+            RemoteAccount {
+                id: "account-alice".to_string(),
+                username: "alice".to_string(),
+                role: "owner".to_string(),
+            },
+            "correct horse battery",
+        ));
+        let state = state_with_authenticator(stub).await;
+        let app = router(state.clone());
+
+        let pairing = create_pairing(&state.pool, RemoteRole::Admin, Duration::from_secs(120))
+            .await
+            .expect("pairing");
+        let mut request = HttpRequest::builder()
+            .method("POST")
+            .uri("/api/pair")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({ "code": pairing.code, "device_name": "Alice phone" }).to_string(),
+            ))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(PeerAddr(SocketAddr::from((
+                [127, 0, 0, 1],
+                51001,
+            )))));
+        let response = app.clone().oneshot(request).await.expect("pair response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let paired = body_json(response).await;
+        assert_eq!(paired["account_login"], true);
+        let token = paired["token"].as_str().expect("token").to_string();
+
+        // The device token alone is not enough while sign-in is enabled.
+        let response = app
+            .clone()
+            .oneshot(get_with_token("/api/bots", &token))
+            .await
+            .expect("unbound bots");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body_json(response).await["code"], "login_required");
+
+        // Status stays reachable so the page can discover the sign-in step.
+        let response = app
+            .clone()
+            .oneshot(get_with_token("/api/status", &token))
+            .await
+            .expect("unbound status");
+        assert_eq!(response.status(), StatusCode::OK);
+        let status = body_json(response).await;
+        assert_eq!(status["login_required"], true);
+        assert!(status["account"].is_null());
+        assert_eq!(status["device"]["role"], "admin");
+
+        let response = app
+            .clone()
+            .oneshot(login_request(&token, "alice", "wrong password"))
+            .await
+            .expect("wrong password");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = body_json(response).await;
+        assert_eq!(body["error"], "Invalid username or password.");
+        assert_eq!(body["code"], "invalid_credentials");
+
+        let response = app
+            .clone()
+            .oneshot(login_request(&token, "alice", "correct horse battery"))
+            .await
+            .expect("login");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["account"]["username"], "alice");
+        assert_eq!(body["role"], "admin");
+
+        let response = app
+            .clone()
+            .oneshot(get_with_token("/api/bots", &token))
+            .await
+            .expect("bound bots");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .clone()
+            .oneshot(get_with_token("/api/status", &token))
+            .await
+            .expect("bound status");
+        let status = body_json(response).await;
+        assert_eq!(status["login_required"], false);
+        assert_eq!(status["account"]["username"], "alice");
+        assert_eq!(status["device"]["role"], "admin");
+
+        let audit = RemoteAccessQueries::recent_audit(&state.pool, 20)
+            .await
+            .expect("audit");
+        let sign_in = audit
+            .iter()
+            .find(|entry| entry.path == "/api/login" && entry.status == 200)
+            .expect("sign-in audit row");
+        assert_eq!(sign_in.account_name.as_deref(), Some("alice"));
+        assert_eq!(sign_in.role.as_deref(), Some("admin"));
+    }
+
+    #[tokio::test]
+    async fn the_account_grant_caps_the_device_role() {
+        let stub = Arc::new(StubAuthenticator::new(
+            RemoteAccount {
+                id: "account-alice".to_string(),
+                username: "alice".to_string(),
+                role: "owner".to_string(),
+            },
+            "correct horse battery",
+        ));
+        let state = state_with_authenticator(stub.clone()).await;
+        let app = router(state.clone());
+
+        // Device viewer + account owner: the account cannot raise the pair.
+        let viewer = test_device(&state, "Viewer phone", "viewer").await;
+        let response = app
+            .clone()
+            .oneshot(login_request(&viewer, "alice", "correct horse battery"))
+            .await
+            .expect("viewer login");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["role"], "viewer");
+        let status = body_json(
+            app.clone()
+                .oneshot(get_with_token("/api/status", &viewer))
+                .await
+                .expect("viewer status"),
+        )
+        .await;
+        assert_eq!(status["device"]["role"], "viewer");
+        let write = HttpRequest::builder()
+            .method("POST")
+            .uri(format!("/api/threads/{}/messages", Uuid::new_v4()))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {viewer}"))
+            .body(Body::from(
+                json!({ "content": "hello", "reply_to_id": null }).to_string(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(write).await.expect("viewer write");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // Device admin + account operator: the admin-only audit is denied.
+        stub.set_account(Some(RemoteAccount {
+            id: "account-alice".to_string(),
+            username: "alice".to_string(),
+            role: "operator".to_string(),
+        }));
+        let admin = test_device(&state, "Admin phone", "admin").await;
+        let response = app
+            .clone()
+            .oneshot(login_request(&admin, "alice", "correct horse battery"))
+            .await
+            .expect("admin login");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["role"], "operator");
+        let response = app
+            .clone()
+            .oneshot(get_with_token("/api/remote/audit", &admin))
+            .await
+            .expect("admin audit");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        // Device operator + account owner: the device still holds the ceiling.
+        stub.set_account(Some(RemoteAccount {
+            id: "account-alice".to_string(),
+            username: "alice".to_string(),
+            role: "owner".to_string(),
+        }));
+        let operator = test_device(&state, "Operator phone", "operator").await;
+        let response = app
+            .clone()
+            .oneshot(login_request(&operator, "alice", "correct horse battery"))
+            .await
+            .expect("operator login");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["role"], "operator");
+        let write = HttpRequest::builder()
+            .method("POST")
+            .uri(format!("/api/threads/{}/messages", Uuid::new_v4()))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::AUTHORIZATION, format!("Bearer {operator}"))
+            .body(Body::from(
+                json!({ "content": "hello", "reply_to_id": null }).to_string(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(write).await.expect("operator write");
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_FOUND,
+            "an operator clears the role gate and reaches the handler"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_revoked_account_grant_fails_closed_and_clears_the_binding() {
+        let stub = Arc::new(StubAuthenticator::new(
+            RemoteAccount {
+                id: "account-alice".to_string(),
+                username: "alice".to_string(),
+                role: "operator".to_string(),
+            },
+            "correct horse battery",
+        ));
+        let state = state_with_authenticator(stub.clone()).await;
+        let app = router(state.clone());
+        let token = test_device(&state, "Phone", "operator").await;
+        let response = app
+            .clone()
+            .oneshot(login_request(&token, "alice", "correct horse battery"))
+            .await
+            .expect("login");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(stub.revalidations(), 0, "a fresh login seeds the cache");
+
+        stub.set_account(None);
+        state.clear_all_cached_accounts();
+        let response = app
+            .clone()
+            .oneshot(get_with_token("/api/status", &token))
+            .await
+            .expect("revoked status");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body_json(response).await["code"], "account_revoked");
+        assert!(stub.revalidations() > 0);
+
+        let device = RemoteAccessQueries::device_for_token(&state.pool, &hash_secret(&token))
+            .await
+            .expect("device lookup")
+            .expect("device");
+        assert!(
+            device.account_id.is_none(),
+            "the dead binding must be cleared"
+        );
+        let response = app
+            .clone()
+            .oneshot(get_with_token("/api/status", &token))
+            .await
+            .expect("unbound status");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["login_required"], true);
+
+        // A backend failure during revalidation is also fail-closed.
+        stub.set_account(Some(RemoteAccount {
+            id: "account-alice".to_string(),
+            username: "alice".to_string(),
+            role: "operator".to_string(),
+        }));
+        let response = app
+            .clone()
+            .oneshot(login_request(&token, "alice", "correct horse battery"))
+            .await
+            .expect("second login");
+        assert_eq!(response.status(), StatusCode::OK);
+        stub.fail_revalidation();
+        state.clear_all_cached_accounts();
+        let response = app
+            .oneshot(get_with_token("/api/status", &token))
+            .await
+            .expect("failed revalidation");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(body_json(response).await["code"], "account_revoked");
+    }
+
+    #[tokio::test]
+    async fn account_sign_in_is_unavailable_without_an_authenticator() {
+        let state = state().await;
+        let token = test_device(&state, "Phone", "operator").await;
+        let response = router(state)
+            .oneshot(login_request(&token, "alice", "correct horse battery"))
+            .await
+            .expect("login");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(body_json(response).await["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("not enabled")));
     }
 }

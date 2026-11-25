@@ -21033,8 +21033,18 @@ async fn start_remote_listener(state: &AppState) -> Result<RemoteStatus, String>
         drop(guard);
         return remote_status(state).await;
     }
-    let server =
-        ravenbot_remote::start(state.db.pool().clone(), state.runtime.clone(), config).await?;
+    let authenticator = Arc::new(accounts::RemoteAccountAuthenticator::new(
+        state.account_base.clone(),
+        state.workspace.id.clone(),
+        state.workspace.username.clone(),
+    ));
+    let server = ravenbot_remote::start_with_authenticator(
+        state.db.pool().clone(),
+        state.runtime.clone(),
+        config,
+        Some(authenticator),
+    )
+    .await?;
     *guard = Some(server);
     drop(guard);
     remote_status(state).await

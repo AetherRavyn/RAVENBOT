@@ -4456,6 +4456,12 @@ pub struct RemoteDevice {
     pub id: String,
     pub name: String,
     pub role: String,
+    /// The local account this device last signed in as. All three account
+    /// fields are `None` until a sign-in succeeds and become `None` again when
+    /// the grant is revoked.
+    pub account_id: Option<String>,
+    pub account_name: Option<String>,
+    pub account_role: Option<String>,
     pub created_at: String,
     pub last_seen_at: Option<String>,
     pub revoked_at: Option<String>,
@@ -4466,6 +4472,7 @@ pub struct RemoteAuditEntry {
     pub id: String,
     pub device_name: Option<String>,
     pub role: Option<String>,
+    pub account_name: Option<String>,
     pub method: String,
     pub path: String,
     pub status: i64,
@@ -4556,11 +4563,15 @@ impl RemoteAccessQueries {
             String,
             String,
             String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
             String,
             Option<String>,
             Option<String>,
         )> = sqlx::query_as(
-            "SELECT id, name, role, created_at, last_seen_at, revoked_at
+            "SELECT id, name, role, account_id, account_name, account_role,
+                    created_at, last_seen_at, revoked_at
                  FROM remote_devices
                  WHERE token_hash = ? AND revoked_at IS NULL",
         )
@@ -4571,10 +4582,55 @@ impl RemoteAccessQueries {
             id: row.0,
             name: row.1,
             role: row.2,
-            created_at: row.3,
-            last_seen_at: row.4,
-            revoked_at: row.5,
+            account_id: row.3,
+            account_name: row.4,
+            account_role: row.5,
+            created_at: row.6,
+            last_seen_at: row.7,
+            revoked_at: row.8,
         }))
+    }
+
+    /// Persist a successful account sign-in. The device keeps its paired role;
+    /// the account role is stored so the host can show the binding and the
+    /// effective role is always recomputed from both.
+    pub async fn bind_account(
+        pool: &SqlitePool,
+        device_id: &str,
+        account_id: &str,
+        account_name: &str,
+        account_role: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let result = sqlx::query(
+            "UPDATE remote_devices
+                SET account_id = ?, account_name = ?, account_role = ?
+              WHERE id = ? AND revoked_at IS NULL",
+        )
+        .bind(account_id)
+        .bind(account_name)
+        .bind(account_role)
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Drop a binding that is no longer authorized. The device token stays
+    /// valid for signing in again (or a different account), matching the
+    /// `login_required` response.
+    pub async fn clear_account_binding(
+        pool: &SqlitePool,
+        device_id: &str,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            "UPDATE remote_devices
+                SET account_id = NULL, account_name = NULL, account_role = NULL
+              WHERE id = ?",
+        )
+        .bind(device_id)
+        .execute(pool)
+        .await?;
+        Ok(())
     }
 
     pub async fn touch_device(pool: &SqlitePool, id: &str) -> Result<(), sqlx::Error> {
@@ -4590,11 +4646,15 @@ impl RemoteAccessQueries {
             String,
             String,
             String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
             String,
             Option<String>,
             Option<String>,
         )> = sqlx::query_as(
-            "SELECT id, name, role, created_at, last_seen_at, revoked_at
+            "SELECT id, name, role, account_id, account_name, account_role,
+                    created_at, last_seen_at, revoked_at
                  FROM remote_devices ORDER BY created_at DESC",
         )
         .fetch_all(pool)
@@ -4605,9 +4665,12 @@ impl RemoteAccessQueries {
                 id: row.0,
                 name: row.1,
                 role: row.2,
-                created_at: row.3,
-                last_seen_at: row.4,
-                revoked_at: row.5,
+                account_id: row.3,
+                account_name: row.4,
+                account_role: row.5,
+                created_at: row.6,
+                last_seen_at: row.7,
+                revoked_at: row.8,
             })
             .collect())
     }
@@ -4629,18 +4692,21 @@ impl RemoteAccessQueries {
         device_id: Option<&str>,
         device_name: Option<&str>,
         role: Option<&str>,
+        account_name: Option<&str>,
         method: &str,
         path: &str,
         status: i64,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO remote_audit (id, device_id, device_name, role, method, path, status)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO remote_audit
+               (id, device_id, device_name, role, account_name, method, path, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(device_id)
         .bind(device_name)
         .bind(role)
+        .bind(account_name)
         .bind(method)
         .bind(path)
         .bind(status)
@@ -4675,12 +4741,13 @@ impl RemoteAccessQueries {
             String,
             Option<String>,
             Option<String>,
+            Option<String>,
             String,
             String,
             i64,
             String,
         )> = sqlx::query_as(
-            "SELECT id, device_name, role, method, path, status, created_at
+            "SELECT id, device_name, role, account_name, method, path, status, created_at
                  FROM remote_audit ORDER BY created_at DESC LIMIT ?",
         )
         .bind(limit.clamp(1, 200))
@@ -4692,10 +4759,11 @@ impl RemoteAccessQueries {
                 id: row.0,
                 device_name: row.1,
                 role: row.2,
-                method: row.3,
-                path: row.4,
-                status: row.5,
-                created_at: row.6,
+                account_name: row.3,
+                method: row.4,
+                path: row.5,
+                status: row.6,
+                created_at: row.7,
             })
             .collect())
     }
@@ -11708,6 +11776,7 @@ mod remote_access_tests {
             .expect("device");
         assert_eq!(device.name, "Phone");
         assert_eq!(device.role, "viewer");
+        assert!(device.account_id.is_none());
 
         assert!(RemoteAccessQueries::revoke_device(&pool, id)
             .await
@@ -11719,6 +11788,45 @@ mod remote_access_tests {
     }
 
     #[tokio::test]
+    async fn an_account_binding_is_persisted_and_can_be_cleared() {
+        let pool = db().await;
+        let id = RemoteAccessQueries::create_device(&pool, "Phone", "operator", "token-hash")
+            .await
+            .expect("device");
+        assert!(RemoteAccessQueries::bind_account(
+            &pool,
+            &id.to_string(),
+            "account-1",
+            "alice",
+            "viewer"
+        )
+        .await
+        .expect("bind"));
+        let device = RemoteAccessQueries::device_for_token(&pool, "token-hash")
+            .await
+            .expect("lookup")
+            .expect("device");
+        assert_eq!(device.account_id.as_deref(), Some("account-1"));
+        assert_eq!(device.account_name.as_deref(), Some("alice"));
+        assert_eq!(device.account_role.as_deref(), Some("viewer"));
+        let listed = RemoteAccessQueries::list_devices(&pool)
+            .await
+            .expect("list");
+        assert_eq!(listed[0].account_name.as_deref(), Some("alice"));
+
+        RemoteAccessQueries::clear_account_binding(&pool, &id.to_string())
+            .await
+            .expect("clear");
+        let device = RemoteAccessQueries::device_for_token(&pool, "token-hash")
+            .await
+            .expect("lookup")
+            .expect("device");
+        assert!(device.account_id.is_none());
+        assert!(device.account_name.is_none());
+        assert!(device.account_role.is_none());
+    }
+
+    #[tokio::test]
     async fn remote_requests_leave_an_attributable_audit_row() {
         let pool = db().await;
         RemoteAccessQueries::audit(
@@ -11726,6 +11834,7 @@ mod remote_access_tests {
             Some("device-1"),
             Some("Phone"),
             Some("operator"),
+            Some("alice"),
             "POST",
             "/api/threads/abc/messages",
             200,
@@ -11737,6 +11846,7 @@ mod remote_access_tests {
             .expect("recent");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].device_name.as_deref(), Some("Phone"));
+        assert_eq!(rows[0].account_name.as_deref(), Some("alice"));
         assert_eq!(rows[0].method, "POST");
         assert_eq!(rows[0].status, 200);
     }

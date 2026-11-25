@@ -3095,7 +3095,7 @@
                       <div class="min-w-0">
                         <p class="text-xs font-semibold text-[var(--text-primary)]">{device.name}</p>
                         <p class="text-[11px] text-[var(--text-muted)]">
-                          {device.role} · {t("settings.remoteLastSeen", { time: remoteTime(device.last_seen_at) })}
+                          {device.role}{#if device.account_name} · @{device.account_name}{/if} · {t("settings.remoteLastSeen", { time: remoteTime(device.last_seen_at) })}
                         </p>
                       </div>
                       <Button size="sm" variant="outline" class="h-7 gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={() => revokeRemoteDevice(device.id)} disabled={remoteBusy}>
@@ -3114,6 +3114,7 @@
                   {#each remoteStatus.audit.slice(0, 20) as entry (entry.id)}
                     <li class="flex flex-wrap items-center gap-2">
                       <span class="text-[var(--text-secondary)]">{entry.device_name || "local"}</span>
+                      {#if entry.account_name}<span class="text-[var(--text-secondary)]">@{entry.account_name}</span>{/if}
                       <span>{entry.method}</span>
                       <span class="truncate">{entry.path}</span>
                       <span class={entry.status >= 400 ? "text-danger" : "text-success"}>{entry.status}</span>

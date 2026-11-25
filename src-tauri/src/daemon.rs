@@ -71,10 +71,43 @@ pub async fn run() -> Result<(), String> {
 
     let runtime = bootstrap_runtime(&db).await;
 
-    // Remote access is the only UI when the daemon owns the fleet.
+    // Remote access is the only UI when the daemon owns the fleet. When the
+    // daemon runs for an account workspace, remote devices must sign in with a
+    // local account too; a legacy single-user daemon keeps device-role-only
+    // behavior because it has no workspace identity.
+    let authenticator: Option<Arc<dyn ravenbot_remote::AccountAuthenticator>> =
+        match std::env::var("RAVENBOT_WORKSPACE_ID")
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+        {
+            Some(workspace_id) => {
+                let base = crate::accounts::base_root();
+                let workspace_username = crate::accounts::account_by_id(&base, &workspace_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|account| account.username)
+                    .unwrap_or_default();
+                Some(Arc::new(crate::accounts::RemoteAccountAuthenticator::new(
+                    base,
+                    workspace_id,
+                    workspace_username,
+                )))
+            }
+            None => None,
+        };
+
     let remote = if remote_enabled_setting(db.pool()).await {
         let config = remote_config_from_settings(db.pool()).await;
-        match ravenbot_remote::start(db.pool().clone(), runtime.clone(), config).await {
+        match ravenbot_remote::start_with_authenticator(
+            db.pool().clone(),
+            runtime.clone(),
+            config,
+            authenticator,
+        )
+        .await
+        {
             Ok(server) => {
                 tracing::info!(url = %server.url(), "Headless remote access started");
                 Some(server)

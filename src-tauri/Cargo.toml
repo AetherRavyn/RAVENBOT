@@ -92,6 +92,9 @@ base64 = "0.22"
 # Content hashes for workspace editor conflict detection
 sha2 = "0.10"
 
+# Async trait for the remote account authenticator
+async-trait = "0.1"
+
 # Linux: enable microphone/media-stream so the UI can record voice input.
 # WebKitGTK disables it by default and Wry does not expose the setting.
 [target.'cfg(target_os = "linux")'.dependencies]

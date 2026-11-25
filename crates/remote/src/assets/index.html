@@ -44,6 +44,36 @@
         <p id="pair-error" class="error" role="alert"></p>
       </section>
 
+      <section id="login-view" class="card hidden" aria-labelledby="login-title">
+        <h2 id="login-title">Sign in</h2>
+        <p class="muted">
+          This device is paired. Sign in with your RAVENBOT account to continue.
+          Your workspace role also caps what this device may do.
+        </p>
+        <form id="login-form">
+          <label for="login-username">Username</label>
+          <input
+            id="login-username"
+            autocomplete="username"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
+            maxlength="64"
+            required
+          />
+          <label for="login-password">Password</label>
+          <input
+            id="login-password"
+            type="password"
+            autocomplete="current-password"
+            maxlength="1024"
+            required
+          />
+          <button type="submit" class="primary">Sign in</button>
+        </form>
+        <p id="login-error" class="error" role="alert"></p>
+      </section>
+
       <section id="chat-view" class="hidden" aria-labelledby="view-title">
         <div class="row">
           <button id="back" class="ghost hidden" type="button">← Back</button>

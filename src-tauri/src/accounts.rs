@@ -941,6 +941,91 @@ pub async fn workspace_for_actor(
     Ok(role.and_then(|(role,)| valid_role(&role).then_some((workspace, role))))
 }
 
+/// Backs remote sign-in with the local account registry.
+///
+/// The remote surface never receives a desktop session token: a successful
+/// password check is immediately exchanged for the workspace grant and the
+/// unused session is revoked.
+pub struct RemoteAccountAuthenticator {
+    base: PathBuf,
+    workspace_id: String,
+    workspace_username: String,
+}
+
+impl RemoteAccountAuthenticator {
+    pub fn new(base: PathBuf, workspace_id: String, workspace_username: String) -> Self {
+        Self {
+            base,
+            workspace_id,
+            workspace_username,
+        }
+    }
+
+    async fn workspace_account(
+        &self,
+        account: Account,
+    ) -> Result<Option<ravenbot_remote::RemoteAccount>, String> {
+        tracing::debug!(
+            workspace = %self.workspace_username,
+            account = %account.username,
+            "Resolving a remote account workspace grant"
+        );
+        if account.disabled {
+            return Ok(None);
+        }
+        let Some((_workspace, role)) =
+            workspace_for_actor(&self.base, &account.id, &self.workspace_id).await?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(ravenbot_remote::RemoteAccount {
+            id: account.id,
+            username: account.username,
+            role,
+        }))
+    }
+}
+
+/// Credential failures, a disabled account and the registry's own sign-in
+/// throttle all mean "not authorized" to the remote surface. A database or I/O
+/// error stays an error so the remote layer can fail closed with a 500 rather
+/// than pretending the password was wrong.
+fn remote_sign_in_rejected(error: &str) -> bool {
+    matches!(
+        error,
+        "Invalid username or password." | "This account is disabled."
+    ) || error.starts_with("Too many sign-in attempts")
+}
+
+#[async_trait::async_trait]
+impl ravenbot_remote::AccountAuthenticator for RemoteAccountAuthenticator {
+    async fn authenticate(
+        &self,
+        username: &str,
+        password: &str,
+    ) -> Result<Option<ravenbot_remote::RemoteAccount>, String> {
+        let session = match authenticate(&self.base, username, password).await {
+            Ok(session) => session,
+            Err(error) if remote_sign_in_rejected(&error) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = revoke_session(&self.base, &session.token).await {
+            tracing::warn!(%error, "Could not revoke the unused desktop session for remote sign-in");
+        }
+        self.workspace_account(session.account).await
+    }
+
+    async fn revalidate(
+        &self,
+        account_id: &str,
+    ) -> Result<Option<ravenbot_remote::RemoteAccount>, String> {
+        let Some(account) = account_by_id(&self.base, account_id).await? else {
+            return Ok(None);
+        };
+        self.workspace_account(account).await
+    }
+}
+
 /// A member of one workspace, as the Team panel shows them.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceMember {
@@ -1750,6 +1835,85 @@ mod tests {
         assert!(workspace_for_actor(&base, &grantee.id, &owner.id)
             .await
             .expect("resolve")
+            .is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn remote_sign_in_requires_the_workspace_grant_and_revalidates() {
+        use ravenbot_remote::AccountAuthenticator as _;
+
+        let base = temp_base();
+        let owner = create_account(&base, "owner", "correct horse battery")
+            .await
+            .expect("owner");
+        let member = create_account(&base, "member", "another good password")
+            .await
+            .expect("member");
+        let authenticator =
+            RemoteAccountAuthenticator::new(base.clone(), owner.id.clone(), owner.username.clone());
+
+        // A valid account without a grant on this workspace is not authorized.
+        assert!(authenticator
+            .authenticate("member", "another good password")
+            .await
+            .expect("authenticate")
+            .is_none());
+
+        grant_workspace(&base, "owner", "member", "operator")
+            .await
+            .expect("grant");
+        let signed_in = authenticator
+            .authenticate("member", "another good password")
+            .await
+            .expect("authenticate")
+            .expect("granted account");
+        assert_eq!(signed_in.username, "member");
+        assert_eq!(signed_in.role, "operator");
+
+        // Wrong credentials are indistinguishable from no grant at this layer.
+        assert!(authenticator
+            .authenticate("member", "wrong password")
+            .await
+            .expect("authenticate")
+            .is_none());
+
+        assert_eq!(
+            authenticator
+                .revalidate(&member.id)
+                .await
+                .expect("revalidate")
+                .expect("granted account")
+                .role,
+            "operator"
+        );
+
+        revoke_workspace(&base, "owner", "member")
+            .await
+            .expect("revoke");
+        assert!(authenticator
+            .revalidate(&member.id)
+            .await
+            .expect("revalidate")
+            .is_none());
+
+        grant_workspace(&base, "owner", "member", "viewer")
+            .await
+            .expect("grant again");
+        set_disabled(&base, "member", true).await.expect("disable");
+        assert!(authenticator
+            .revalidate(&member.id)
+            .await
+            .expect("revalidate")
+            .is_none());
+        set_disabled(&base, "member", false).await.expect("enable");
+        delete_account(&base, "member", false)
+            .await
+            .expect("delete");
+        assert!(authenticator
+            .revalidate(&member.id)
+            .await
+            .expect("revalidate")
             .is_none());
         let _ = std::fs::remove_dir_all(&base);
     }
