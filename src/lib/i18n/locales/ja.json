@@ -813,7 +813,8 @@
     "thread": "会話スレッド",
     "compose": "メッセージ入力エリア",
     "settings": "アプリケーション設定",
-    "killSwitch": "緊急停止ボタン"
+    "killSwitch": "緊急停止ボタン",
+    "skipToContent": "コンテンツへスキップ"
   },
   "rail": {
     "home": "ホーム",

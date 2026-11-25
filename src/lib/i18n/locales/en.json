@@ -885,7 +885,8 @@
     "thread": "Conversation thread",
     "compose": "Message compose area",
     "settings": "Application settings",
-    "killSwitch": "Emergency stop button"
+    "killSwitch": "Emergency stop button",
+    "skipToContent": "Skip to content"
   },
   "rail": {
     "home": "Home",

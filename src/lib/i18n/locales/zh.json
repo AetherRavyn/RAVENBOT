@@ -813,7 +813,8 @@
     "thread": "对话线程",
     "compose": "消息输入区",
     "settings": "应用设置",
-    "killSwitch": "紧急停止按钮"
+    "killSwitch": "紧急停止按钮",
+    "skipToContent": "跳到内容"
   },
   "rail": {
     "home": "首页",

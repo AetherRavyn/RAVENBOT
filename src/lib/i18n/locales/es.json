@@ -813,7 +813,8 @@
     "thread": "Hilo de conversación",
     "compose": "Área de redacción de mensajes",
     "settings": "Ajustes de la aplicación",
-    "killSwitch": "Botón de parada de emergencia"
+    "killSwitch": "Botón de parada de emergencia",
+    "skipToContent": "Saltar al contenido"
   },
   "rail": {
     "home": "Inicio",

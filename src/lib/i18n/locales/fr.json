@@ -813,7 +813,8 @@
     "thread": "Fil de conversation",
     "compose": "Zone de rédaction des messages",
     "settings": "Paramètres de l'application",
-    "killSwitch": "Bouton d'arrêt d'urgence"
+    "killSwitch": "Bouton d'arrêt d'urgence",
+    "skipToContent": "Aller au contenu"
   },
   "rail": {
     "home": "Accueil",

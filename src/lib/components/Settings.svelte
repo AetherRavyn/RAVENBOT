@@ -16,6 +16,7 @@
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
   import { matchesQuery } from "$lib/search/highlight";
   import { getDiceBearUrl, cn } from "$lib/utils";
+  import { rememberFocus } from "$lib/a11y";
   import { getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition, THEMES } from "$lib/theme";
   import { setLocale, getAvailableLocales, localeState, type Locale } from "$lib/i18n";
   import { t } from "$lib/i18n";
@@ -241,6 +242,16 @@
   let teamsSaved = $state(false);
   let teamsPairing = $state<any>(null);
   let currentAccount = $state<any>(null);
+  let restoreFocus: (() => void) | null = null;
+
+  $effect(() => {
+    if (open) {
+      if (!restoreFocus) restoreFocus = rememberFocus();
+    } else if (restoreFocus) {
+      restoreFocus();
+      restoreFocus = null;
+    }
+  });
   let accountBusy = $state(false);
   let accountError = $state<string | null>(null);
   const PAID_TOOL_KEYS = [

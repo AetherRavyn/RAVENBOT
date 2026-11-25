@@ -813,7 +813,8 @@
     "thread": "Unterhaltungsverlauf",
     "compose": "Nachrichten-Eingabebereich",
     "settings": "Anwendungseinstellungen",
-    "killSwitch": "Not-Aus-Schaltfläche"
+    "killSwitch": "Not-Aus-Schaltfläche",
+    "skipToContent": "Zum Inhalt springen"
   },
   "rail": {
     "home": "Start",

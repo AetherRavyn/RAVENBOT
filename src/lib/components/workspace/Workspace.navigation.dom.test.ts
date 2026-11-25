@@ -169,6 +169,15 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("workspace navigation", () => {
+  it("offers a keyboard skip link to the conversation", async () => {
+    const { getByText, container } = render(Workspace);
+    const link = getByText("Skip to content");
+    expect(link.getAttribute("href")).toBe("#workspace-main");
+    const main = container.querySelector("#workspace-main");
+    expect(main).toBeTruthy();
+    expect(main?.getAttribute("tabindex")).toBe("-1");
+  });
+
   it("opens every rail destination without an effect update loop", async () => {
     const { getByLabelText } = render(Workspace);
     await waitFor(() => expect(getByLabelText("Offices")).toBeTruthy());

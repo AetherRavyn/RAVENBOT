@@ -1,6 +1,7 @@
 <script lang="ts">
   import { tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
+  import { rememberFocus } from "$lib/a11y";
   import { t, type TranslationKey } from "$lib/i18n";
   import { highlightParts, matchesQuery } from "$lib/search/highlight";
   import { cn } from "$lib/utils.js";
@@ -109,6 +110,7 @@
   let tab = $state<Tab>("all");
   let selectedIndex = $state(0);
   let inputRef = $state<HTMLInputElement | null>(null);
+  let restoreFocus: (() => void) | null = null;
   let messageHits = $state<MessageHit[]>([]);
   let messageLoading = $state(false);
   let messageError = $state<string | null>(null);
@@ -453,6 +455,7 @@
 
   $effect(() => {
     if (open) {
+      if (!restoreFocus) restoreFocus = rememberFocus();
       query = "";
       tab = "all";
       selectedIndex = 0;
@@ -467,6 +470,8 @@
         setTimeout(() => inputRef?.focus(), 80);
       });
     } else {
+      restoreFocus?.();
+      restoreFocus = null;
       messageHits = [];
       messageError = null;
       messageLoading = false;

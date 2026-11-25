@@ -41,6 +41,20 @@ export function trapFocus(container: HTMLElement): () => void {
 }
 
 /**
+ * Capture the element that opened a dialog and return a restore callback.
+ *
+ * A keyboard user who opens Settings or the command palette should land back
+ * on the control they used, not at the top of the document. The callback is
+ * safe to call after the opener was removed (it checks `isConnected`).
+ */
+export function rememberFocus(): () => void {
+  const previous = document.activeElement as HTMLElement | null;
+  return () => {
+    if (previous?.isConnected) previous.focus();
+  };
+}
+
+/**
  * Handle escape key press
  */
 export function onEscape(callback: () => void): () => void {

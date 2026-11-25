@@ -284,6 +284,18 @@
   class:reduce-motion={prefersReducedMotion()}
   aria-label={currentTheme.brand.brandTitle}
 >
+  <a
+    href="#workspace-main"
+    class="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[100] focus:rounded-lg focus:border focus:border-[var(--brand)]/40 focus:bg-[var(--surface-1)] focus:px-3 focus:py-2 focus:text-xs focus:font-semibold focus:text-[var(--text-primary)]"
+    onclick={(event) => {
+      event.preventDefault();
+      const main = document.getElementById("workspace-main");
+      main?.focus();
+      main?.scrollIntoView({ block: "start" });
+    }}
+  >
+    {t("a11y.skipToContent")}
+  </a>
   <TitleBar
     sidebarCollapsed={workspace.sidebarCollapsed}
     onToggleSidebar={() => (workspace.sidebarCollapsed = !workspace.sidebarCollapsed)}
@@ -341,7 +353,12 @@
       ></div>
     {/if}
 
-    <main class="thread-main min-w-0 flex flex-col overflow-hidden relative bg-[var(--surface-0)]" aria-label={t("a11y.thread")}>
+    <main
+      id="workspace-main"
+      tabindex="-1"
+      class="thread-main min-w-0 flex flex-col overflow-hidden relative bg-[var(--surface-0)]"
+      aria-label={t("a11y.thread")}
+    >
       {#if workspace.killSwitchActive}
         <div class="p-2 px-4 bg-[var(--danger-soft)] border-b border-[var(--danger-border)] flex items-center justify-center" style="z-index: var(--layer-dropdown)" role="alert">
           <KillSwitch />

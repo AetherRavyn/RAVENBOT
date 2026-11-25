@@ -129,6 +129,29 @@ describe("CommandPalette global search", () => {
     expect(view.onClose).toHaveBeenCalled();
   });
 
+  it("moves the selection with arrow keys", async () => {
+    const view = props();
+    render(CommandPalette, { props: view });
+    await waitFor(() => expect(document.body.textContent).toContain("Billing Agent"));
+    const input = searchInput();
+    await fireEvent.keyDown(input, { key: "ArrowDown" });
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(view.onSelectBot).toHaveBeenCalledWith("bot-2");
+  });
+
+  it("returns focus to the opener when it closes", async () => {
+    const opener = document.createElement("button");
+    opener.textContent = "Open palette";
+    document.body.appendChild(opener);
+    opener.focus();
+    const view = props();
+    const { rerender } = render(CommandPalette, { props: view });
+    await waitFor(() => expect(document.activeElement).toBe(searchInput()));
+    await rerender({ ...view, open: false });
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    opener.remove();
+  });
+
   it("selects the first result with Enter and dismisses on Escape", async () => {
     const view = props();
     render(CommandPalette, { props: view });
