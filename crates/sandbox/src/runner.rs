@@ -1170,6 +1170,27 @@ mod platform_contract_tests {
                 .output();
             eprintln!("profile prefix {end}: {result:?}");
         }
+        // The broad probe passes, so the profile is missing a path. Try one
+        // extra root at a time; the first candidate that runs names the family.
+        for (label, extra) in [
+            ("all-reads", "(allow file-read*)"),
+            (
+                "system-volumes",
+                "(allow file-read* (subpath \"/System/Volumes\"))",
+            ),
+            (
+                "private-var",
+                "(allow file-read* (subpath \"/private/var\"))",
+            ),
+            ("users", "(allow file-read* (subpath \"/Users\"))"),
+            ("private", "(allow file-read* (subpath \"/private\"))"),
+        ] {
+            let candidate = format!("{profile}\n{extra}");
+            let result = std::process::Command::new(sandbox_exec)
+                .args(["-p", candidate.as_str(), "/bin/echo", "candidate-ok"])
+                .output();
+            eprintln!("candidate {label}: {result:?}");
+        }
 
         let script = format!(
             "cat marker.txt; \
