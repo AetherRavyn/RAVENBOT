@@ -2426,6 +2426,8 @@
     },
     "approved": "承認",
     "denied": "拒否",
+    "byActor": "{{name}} による",
+    "byActorRole": "{{name}}（{{role}}）による",
     "teamAdded": "追加",
     "teamRoleChanged": "役割変更",
     "teamRemoved": "削除",

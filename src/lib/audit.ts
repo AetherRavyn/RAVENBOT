@@ -20,6 +20,8 @@ export interface AuditLogEntry {
   size: number | null;
   permission: string | null;
   reason: string | null;
+  actor_name?: string | null;
+  actor_role?: string | null;
   memory_scope: string | null;
   memory_action: string | null;
   memory_id: string | null;

@@ -95,6 +95,8 @@ const toolEntry = {
   tokens_in: null,
   tokens_out: null,
   cost: null,
+  actor_name: "alice",
+  actor_role: "operator",
 };
 
 const approvalEntry = {
@@ -105,6 +107,8 @@ const approvalEntry = {
   tool_name: "shell_exec",
   permission: "denied",
   reason: "desktop: too risky",
+  actor_name: null,
+  actor_role: null,
 };
 
 const membershipEntry = {
@@ -120,6 +124,8 @@ const membershipEntry = {
   tool_name: null,
   permission: "added",
   reason: "alice → bob (operator) in acme",
+  actor_name: null,
+  actor_role: null,
 };
 
 function page(entries: unknown[], total = entries.length) {
@@ -178,6 +184,7 @@ describe("AuditLogPanel", () => {
     expect(text).toContain("120 in");
     expect(text).toContain("$0.0040");
     expect(getByText("read_file")).toBeTruthy();
+    expect(getByText("by alice (operator)")).toBeTruthy();
     expect(getByText("shell_exec")).toBeTruthy();
     expect(getByText("denied")).toBeTruthy();
     expect(getByText("desktop: too risky")).toBeTruthy();

@@ -49,6 +49,11 @@ pub struct AuditLogRow {
     pub size: Option<u64>,
     pub permission: Option<String>,
     pub reason: Option<String>,
+    /// Account that started the run, when the entry belongs to one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_role: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub memory_scope: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,6 +240,8 @@ const SEARCH_FIELDS: &[&str] = &[
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceMembershipChanged.member') END, '')",
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceMembershipChanged.role') END, '')",
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceMembershipChanged.action') END, '')",
+    "COALESCE(ra.actor_name, '')",
+    "COALESCE(ra.role, '')",
 ];
 
 fn push_clause(qb: &mut QueryBuilder<Sqlite>, first: &mut bool, clause: &str) {
@@ -462,7 +469,8 @@ impl AuditLogger {
         let mut count_qb = QueryBuilder::<Sqlite>::new(
             "SELECT COUNT(*) FROM audit_log a \
              LEFT JOIN bots b ON b.id = a.bot_id \
-             LEFT JOIN threads t ON t.id = a.thread_id",
+             LEFT JOIN threads t ON t.id = a.thread_id \
+             LEFT JOIN run_actors ra ON ra.run_id = a.run_id",
         );
         apply_audit_filters(&mut count_qb, &filter);
         let total: i64 = count_qb
@@ -527,10 +535,11 @@ impl AuditLogger {
     ) -> Result<Vec<AuditLogRow>, String> {
         let mut qb = QueryBuilder::<Sqlite>::new(
             "SELECT a.id, a.bot_id, b.name, a.run_id, a.thread_id, t.title, \
-                    a.event_kind, a.event, a.timestamp \
+                    a.event_kind, a.event, a.timestamp, ra.actor_name, ra.role \
              FROM audit_log a \
              LEFT JOIN bots b ON b.id = a.bot_id \
-             LEFT JOIN threads t ON t.id = a.thread_id",
+             LEFT JOIN threads t ON t.id = a.thread_id \
+             LEFT JOIN run_actors ra ON ra.run_id = a.run_id",
         );
         apply_audit_filters(&mut qb, filter);
         qb.push(" ORDER BY a.timestamp DESC, a.rowid DESC LIMIT ");
@@ -548,6 +557,8 @@ impl AuditLogger {
             String,
             String,
             String,
+            Option<String>,
+            Option<String>,
         )> = qb
             .build_query_as()
             .fetch_all(&self.pool)
@@ -567,6 +578,8 @@ impl AuditLogger {
                     stored_kind,
                     event_json,
                     timestamp,
+                    actor_name,
+                    actor_role,
                 )| {
                     let event: Option<AuditEventType> = serde_json::from_str(&event_json).ok();
                     let kind = event
@@ -595,6 +608,8 @@ impl AuditLogger {
                         size: None,
                         permission: None,
                         reason: None,
+                        actor_name,
+                        actor_role,
                         memory_scope: None,
                         memory_action: None,
                         memory_id: None,
@@ -772,7 +787,7 @@ mod query_tests {
     use super::*;
     use chrono::Duration;
     use ravenbot_core::{Bot, Thread};
-    use ravenbot_db::queries::{BotQueries, ThreadQueries};
+    use ravenbot_db::queries::{BotQueries, RunQueries, ThreadQueries};
     use ravenbot_db::Database;
     use std::path::PathBuf;
 
@@ -1138,6 +1153,51 @@ mod query_tests {
             .await
             .unwrap_err()
             .contains("after the end"));
+    }
+
+    #[tokio::test]
+    async fn audit_rows_carry_the_acting_account_and_search_by_it() {
+        let test = TestDb::new().await;
+        let bot = Bot::new("Auditor", "actor audit test");
+        BotQueries::insert(test.pool(), &bot).await.unwrap();
+        let thread = Thread::new(bot.id, "Actor audit");
+        ThreadQueries::create(test.pool(), &thread).await.unwrap();
+        let run_id = Uuid::new_v4();
+        RunQueries::set_actor(
+            test.pool(),
+            run_id,
+            "actor-1",
+            "alice",
+            "operator",
+            "workspace-1",
+        )
+        .await
+        .expect("actor");
+
+        let logger = AuditLogger::new(test.pool().clone());
+        let mut audit = entry(
+            bot.id,
+            Some(thread.id),
+            AuditEventType::ToolCall {
+                tool_name: "read_file".into(),
+                arguments: serde_json::json!({}),
+            },
+            Duration::minutes(1),
+        );
+        audit.run_id = Some(run_id);
+        logger.log(&audit).await.unwrap();
+
+        let page = logger
+            .query(&AuditQuery {
+                search: Some("alice".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("actor name is searchable");
+        assert_eq!(page.total, 1);
+        let row = &page.entries[0];
+        assert_eq!(row.actor_name.as_deref(), Some("alice"));
+        assert_eq!(row.actor_role.as_deref(), Some("operator"));
     }
 
     #[tokio::test]

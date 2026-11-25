@@ -2426,6 +2426,8 @@
     },
     "approved": "approuvé",
     "denied": "refusé",
+    "byActor": "par {{name}}",
+    "byActorRole": "par {{name}} ({{role}})",
     "teamAdded": "ajouté",
     "teamRoleChanged": "rôle modifié",
     "teamRemoved": "retiré",

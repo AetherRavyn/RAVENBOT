@@ -452,6 +452,7 @@ describe("Settings accessibility", () => {
     );
     expect(document.body.textContent).not.toContain("Model Manager");
     expect(document.body.textContent).not.toContain("Providers");
+    expect(document.body.textContent).not.toContain("Manage team");
     const violations = await a11yViolations(document.body);
     expect(violations, JSON.stringify(violations)).toEqual([]);
   });

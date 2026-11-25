@@ -25199,6 +25199,8 @@ mod audit_export_tests {
                 size: None,
                 permission: None,
                 reason: None,
+                actor_name: None,
+                actor_role: None,
                 memory_scope: None,
                 memory_action: None,
                 memory_id: None,

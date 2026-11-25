@@ -2426,6 +2426,8 @@
     },
     "approved": "已批准",
     "denied": "已拒绝",
+    "byActor": "由 {{name}}",
+    "byActorRole": "由 {{name}}（{{role}}）",
     "teamAdded": "已添加",
     "teamRoleChanged": "角色已更改",
     "teamRemoved": "已移除",

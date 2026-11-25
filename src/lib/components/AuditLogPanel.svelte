@@ -791,6 +791,13 @@
           </div>
 
           <div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-[var(--text-tertiary)]">
+            {#if entry.actor_name}
+              <span class="font-medium text-[var(--text-secondary)]">
+                {entry.actor_role
+                  ? t("audit.byActorRole", { name: entry.actor_name, role: entry.actor_role })
+                  : t("audit.byActor", { name: entry.actor_name })}
+              </span>
+            {/if}
             {#if entry.kind === "ModelCall"}
               <span class="font-mono text-[var(--text-secondary)]">{entry.provider}/{entry.model}</span>
               {#if entry.tokens_in !== null}

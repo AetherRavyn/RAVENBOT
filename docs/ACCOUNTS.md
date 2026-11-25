@@ -84,7 +84,9 @@ password is not stored in the clear, never enters the audit event, and is not
 shown again. Membership changes write a `WorkspaceMembershipChanged` audit row
 with the actor, workspace, member, role and action. Each run also records the
 acting account in `run_actors`, so the Runs panel can show **by alice
-(operator)** and every tool call remains attributable through its run.
+(operator)**. The audit log joins the same table, shows the acting account on
+every run-backed row, and its search box matches the account name; a tool call
+is attributable to the person who started the run, not just to the agent.
 
 Grants are checked at startup and every 30 seconds. Revoking a grant, changing
 its role, disabling the workspace or expiring the session closes the workspace
