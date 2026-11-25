@@ -252,8 +252,13 @@ impl SandboxRunner {
         let mut rules = vec![
             "(version 1)".to_string(),
             "(deny default)".to_string(),
-            "(allow process*)".to_string(),
-            "(allow signal)".to_string(),
+            // `process*` and a bare `signal` are accepted by some macOS
+            // versions and abort `sandbox-exec` with SIGABRT on others (macOS
+            // 26 in particular, with no stderr). Spell the operations out and
+            // scope signal to the sandbox's own process group.
+            "(allow process-exec)".to_string(),
+            "(allow process-fork)".to_string(),
+            "(allow signal (target pgrp))".to_string(),
             "(allow sysctl-read)".to_string(),
             "(allow mach-lookup)".to_string(),
             "(allow file-read-metadata)".to_string(),
