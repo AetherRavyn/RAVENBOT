@@ -109,7 +109,9 @@ namespace, while the owner grants operator or viewer access to a workspace.
 **Settings → Team** adds an existing account or creates one with a temporary
 password, changes roles, and removes a member without touching their files.
 Membership changes are audited, and every run records the acting account so the
-Runs panel can say **by alice (operator)**.
+Runs panel can say **by alice (operator)**. A work item can be claimed from its
+task drawer: the database settles the race, only the current owner can release
+it, and every claim and release lands in the task timeline.
 
 ### Start from a job, not a blank page
 
@@ -206,8 +208,11 @@ prevents two schedulers from fighting over the same database.
 
 Remote access is off by default. When enabled, a paired phone or browser gets a
 read/write client with viewer, operator, or admin roles, hashed tokens, device
-revocation, and an audit trail. There are no shell, filesystem, or settings
-endpoints on the remote listener.
+revocation, and an audit trail. On an account workspace the device must also
+sign in with a local RAVENBOT account, and the effective role is the lower of
+the paired role and the account's workspace grant; disabling the account or
+revoking its grant fails closed within a minute. There are no shell, filesystem,
+or settings endpoints on the remote listener.
 
 ## Quick start
 
@@ -368,10 +373,11 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,014 Rust tests** across the workspace, including 229 Tauri/command tests,
-  252 runtime tests, 171 skill tests, 103 database tests, 74 core tests, 35
-  memory tests, 33 MCP tests, and 15 remote-access tests.
-- **831 frontend tests** across 127 files. A gate rejects literal English
+- **1,035 Rust tests** across the workspace, including 222 Tauri library tests
+  plus 7 cross-tenant isolation tests, 246 runtime tests, 170 skill tests, 110
+  database tests, 74 core tests, 35 memory tests, 33 MCP tests, and 20
+  remote-access tests.
+- **835 frontend tests** across 127 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

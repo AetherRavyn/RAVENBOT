@@ -4,6 +4,25 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Team identity and ownership
+
+- **Remote sign-in is account-bound** — a paired phone must sign in with a
+  local RAVENBOT account when the host runs an account workspace. The effective
+  remote role is the lower of the paired device role and the account's
+  workspace grant, audit rows carry `@username`, and a disabled, deleted or
+  grant-revoked account fails closed within 60 seconds. Legacy single-user
+  daemons keep the device-role-only flow.
+- **Conflict-free task claims** — work items gain a human owner
+  (`work_items.owner_account` / `claimed_at`). Owners and operators claim or
+  release from the task drawer; a conditional update settles races, only the
+  current owner can release, and both transitions land in the task timeline.
+- **Cross-tenant isolation audit** — seven executable tests cover grants,
+  immediate revocation, session/workspace separation, per-tenant databases,
+  remote device tokens and thread-share capabilities. The audit found and fixed
+  a stale-grant path for disabled accounts. Migration 77 adds the nullable
+  identity-binding columns; the threat model and limits are in
+  [`docs/TENANT-ISOLATION.md`](docs/TENANT-ISOLATION.md).
+
 ### Oversight ladder
 
 - **Review no longer means Full** — unattended office, routine and channel runs

@@ -138,10 +138,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (74, include_str!("migrations/074_thread_shares.sql")),
     (75, include_str!("migrations/075_memory_fts.sql")),
     (76, include_str!("migrations/076_thread_visibility.sql")),
-    (
-        77,
-        include_str!("migrations/077_identity_bindings.sql"),
-    ),
+    (77, include_str!("migrations/077_identity_bindings.sql")),
 ];
 
 /// Split a migration into executable statements without breaking trigger

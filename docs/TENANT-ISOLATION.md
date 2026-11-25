@@ -128,10 +128,11 @@ that the IPC handlers call; the role matrix itself is a unit test because the
 - **`account env` is a deliberate bypass.** It exists for headless tooling and
   per-account daemons and does not perform the desktop login gate. It is
   documented in [ACCOUNTS.md](ACCOUNTS.md#cli).
-- **Remote account login is not implemented.** Remote access pairs a device
-  with a role inside one workspace; it does not sign a remote user in as a
-  registry account, and the shared-host relay is separate work. A paired
-  device therefore sees only the workspace whose listener it paired with.
+- **Remote sign-in is workspace-scoped, not a relay.** A paired device now
+  signs in as a local account, and its effective role is capped by that
+  account's grant in the workspace whose listener it paired with. The listener
+  still serves exactly one workspace database; a shared-host relay that routes
+  one device across several tenants is separate, unimplemented work.
 - **The IPC test coverage is unit-level.** The integration audit exercises the
   resolver and query layer the IPC handlers call. The role matrix itself is
   covered by `access::tests`; the webview bridge, UI hiding and a live remote
