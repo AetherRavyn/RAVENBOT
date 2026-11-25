@@ -16,16 +16,35 @@
 # `copyleft` policy fields.
 
 [advisories]
-# Advisories are reported, not ignored. The workflow job carries its own
-# `continue-on-error` for human triage; anything silenced here would never be
-# seen at all.
-ignore = []
+# Advisories are reported, not ignored without a reason. The workflow job
+# carries its own `continue-on-error` for human triage; every entry here names
+# the API or migration that makes it inapplicable, and gets revisited when that
+# changes.
+ignore = [
+    # chrono is unmaintained, not vulnerable. It is threaded through Tauri,
+    # sqlx and every stored timestamp; replacing it with jiff is a separate,
+    # behaviour-sensitive migration rather than an advisory fix.
+    "RUSTSEC-2026-0543",
+    # The zip 4.6 advisories all target extraction: `ZipArchive::extract`,
+    # `ZipStreamReader`, Unix permission application, symlink entries and AES
+    # entries. RAVENBOT only writes archives with `ZipWriter` and reads its own
+    # generated slides with `ZipArchive::by_name` (central-directory names).
+    # It never extracts an untrusted archive and never enables AES.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+    "RUSTSEC-2026-0429",
+    "RUSTSEC-2026-0545",
+    "RUSTSEC-2026-0548",
+]
 
 [licenses]
 # Everything not listed is denied — that is the default now, which is why
 # there is no `unlicensed`/`copyleft`/`default` key to set.
 allow = [
     "MIT",
+    "MIT-0",
+    "0BSD",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",

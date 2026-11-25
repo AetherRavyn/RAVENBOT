@@ -508,7 +508,8 @@ impl OfficeMemoryStore {
         let sql = format!(
             "SELECT id, chatroom_id, content, embedding, importance, category, created_by, access_count, last_accessed, created_at, source, source_thread_id, source_run_id, updated_at FROM office_memories WHERE chatroom_id = ? AND id IN ({placeholders})"
         );
-        let mut query = sqlx::query_as::<_, OfficeMemoryRow>(&sql).bind(chatroom_id.to_string());
+        let mut query = sqlx::query_as::<_, OfficeMemoryRow>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(chatroom_id.to_string());
         for id in ids {
             query = query.bind(id);
         }

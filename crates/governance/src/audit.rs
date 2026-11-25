@@ -230,7 +230,7 @@ const SEARCH_FIELDS: &[&str] = &[
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.ApprovalDecision.note') END, '')",
 ];
 
-fn push_clause<'a>(qb: &mut QueryBuilder<'a, Sqlite>, first: &mut bool, clause: &str) {
+fn push_clause(qb: &mut QueryBuilder<Sqlite>, first: &mut bool, clause: &str) {
     if *first {
         qb.push(" WHERE ");
         *first = false;
@@ -240,7 +240,7 @@ fn push_clause<'a>(qb: &mut QueryBuilder<'a, Sqlite>, first: &mut bool, clause: 
     qb.push(clause);
 }
 
-fn apply_audit_filters<'a>(qb: &mut QueryBuilder<'a, Sqlite>, filter: &'a NormalizedAuditQuery) {
+fn apply_audit_filters(qb: &mut QueryBuilder<Sqlite>, filter: &NormalizedAuditQuery) {
     let mut first = true;
 
     if let Some(bot_id) = &filter.bot_id {

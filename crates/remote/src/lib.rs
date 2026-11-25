@@ -315,10 +315,10 @@ fn ensure_self_signed(dir: &FsPath, allow_lan: bool) -> Result<(Vec<u8>, Vec<u8>
 }
 
 fn cert_fingerprint(cert_pem: &[u8]) -> Result<String, String> {
-    let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
-        rustls_pemfile::certs(&mut &cert_pem[..])
-            .collect::<Result<_, _>>()
-            .map_err(|error| format!("Cannot parse TLS certificate: {error}"))?;
+    use rustls::pki_types::{pem::PemObject, CertificateDer};
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem)
+        .collect::<Result<_, _>>()
+        .map_err(|error| format!("Cannot parse TLS certificate: {error}"))?;
     let first = certs
         .first()
         .ok_or_else(|| "TLS certificate file is empty".to_string())?;
@@ -327,16 +327,15 @@ fn cert_fingerprint(cert_pem: &[u8]) -> Result<String, String> {
 }
 
 fn tls_acceptor(cert_pem: &[u8], key_pem: &[u8]) -> Result<TlsAcceptor, String> {
-    let certs: Vec<rustls::pki_types::CertificateDer<'static>> =
-        rustls_pemfile::certs(&mut &cert_pem[..])
-            .collect::<Result<_, _>>()
-            .map_err(|error| format!("Cannot parse TLS certificate: {error}"))?;
+    use rustls::pki_types::{pem::PemObject, CertificateDer, PrivateKeyDer};
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(cert_pem)
+        .collect::<Result<_, _>>()
+        .map_err(|error| format!("Cannot parse TLS certificate: {error}"))?;
     if certs.is_empty() {
         return Err("TLS certificate file is empty".to_string());
     }
-    let key = rustls_pemfile::private_key(&mut &key_pem[..])
-        .map_err(|error| format!("Cannot parse TLS key: {error}"))?
-        .ok_or_else(|| "TLS key file is empty".to_string())?;
+    let key = PrivateKeyDer::from_pem_slice(key_pem)
+        .map_err(|error| format!("Cannot parse TLS key: {error}"))?;
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()

@@ -155,14 +155,24 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Service unit contracts
-        run: cargo test -p ravenbot --lib service::tests
+      # A Tauri lib test harness has no application manifest on Windows, so the
+      # process loads comctl32 v5, cannot resolve TaskDialogIndirect, and exits
+      # with STATUS_ENTRYPOINT_NOT_FOUND before a single test runs
+      # (tauri-apps/tauri#14580). Compile the contracts on Windows and execute
+      # them on macOS, where the harness loads. The sandbox contract lives in a
+      # separate crate with no Tauri link, so it runs on both.
+      - name: Service, account and environment contracts (compile)
+        run: |
+          cargo test -p ravenbot --lib service::tests --no-run
+          cargo test -p ravenbot --lib accounts::tests --no-run
+          cargo test -p ravenbot --test accounts_env --no-run
 
-      - name: Account contracts
-        run: cargo test -p ravenbot --lib accounts::tests
-
-      - name: Account environment handoff
-        run: cargo test -p ravenbot --test accounts_env
+      - name: Service, account and environment contracts (run)
+        if: runner.os == 'macOS'
+        run: |
+          cargo test -p ravenbot --lib service::tests
+          cargo test -p ravenbot --lib accounts::tests
+          cargo test -p ravenbot --test accounts_env
 
       # The platform contract tests assert the two things a build matrix cannot:
       # Windows refuses to run an unsandboxed agent command, and macOS Seatbelt

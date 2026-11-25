@@ -87,11 +87,12 @@ impl Skill for DbQuerySkill {
             .get("sql")
             .and_then(|v| v.as_str())
             .ok_or_else(|| SkillError::InvalidArguments("Missing sql".into()))?
-            .trim();
+            .trim()
+            .to_string();
         if sql.is_empty() {
             return Err(SkillError::InvalidArguments("Empty sql".into()));
         }
-        if !is_read_only_statement(sql) {
+        if !is_read_only_statement(&sql) {
             return Ok(SkillResult::failure(
                 "Only read-only statements are allowed (SELECT/PRAGMA/EXPLAIN/WITH).",
             ));
@@ -144,7 +145,9 @@ impl Skill for DbQuerySkill {
 
         // `.query` executes a single statement; sqlx rejects multiple statements
         // in one call, so `SELECT 1; DROP TABLE x` cannot run the drop.
-        let rows_result = sqlx::query(sql).fetch_all(&pool).await;
+        let rows_result = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
+            .fetch_all(&pool)
+            .await;
         pool.close().await;
 
         let rows = match rows_result {

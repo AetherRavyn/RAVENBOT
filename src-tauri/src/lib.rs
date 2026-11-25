@@ -7197,7 +7197,7 @@ async fn get_office_board(
              AND state NOT IN ('completed','failed','cancelled')",
             vec!["?"; node_threads.len()].join(",")
         );
-        let mut q = sqlx::query_as::<_, (String,)>(&sql);
+        let mut q = sqlx::query_as::<_, (String,)>(sqlx::AssertSqlSafe(sql));
         for id in &node_threads {
             q = q.bind(id);
         }
@@ -10762,15 +10762,15 @@ async fn resume_all(state: State<'_, AppState>) -> Result<(), String> {
 #[tauri::command]
 async fn get_status(state: State<'_, AppState>) -> Result<StatusInfo, String> {
     let running_states = "('planning','acting','observing','reflecting','waiting_on_user')";
-    let active_bots: i64 = sqlx::query_scalar(&format!(
+    let active_bots: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT COUNT(DISTINCT bot_id) FROM runs WHERE state IN {running_states}"
-    ))
+    )))
     .fetch_one(state.db.pool())
     .await
     .map_err(|e| e.to_string())?;
-    let running_tasks: i64 = sqlx::query_scalar(&format!(
+    let running_tasks: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT COUNT(*) FROM runs WHERE state IN {running_states}"
-    ))
+    )))
     .fetch_one(state.db.pool())
     .await
     .map_err(|e| e.to_string())?;

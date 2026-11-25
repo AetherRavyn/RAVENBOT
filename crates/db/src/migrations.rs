@@ -207,7 +207,10 @@ pub async fn run(pool: &SqlitePool) -> Result<(), super::DbError> {
                     // so a migration that adds a column fails on databases that
                     // already have it (e.g. a dev DB where it was added by hand).
                     // Treat "duplicate column name" as success in that case.
-                    match sqlx::query(statement).execute(pool).await {
+                    match sqlx::query(sqlx::AssertSqlSafe(statement.to_string()))
+                        .execute(pool)
+                        .await
+                    {
                         Ok(_) => {}
                         Err(e) if e.to_string().contains("duplicate column name") => {}
                         Err(e) => return Err(e.into()),
@@ -298,11 +301,14 @@ CREATE INDEX i ON t(kind);
             "DROP TRIGGER IF EXISTS memory_facts_fts_after_update",
             "DROP TABLE IF EXISTS memory_facts_fts",
         ] {
-            sqlx::query(statement).execute(&pool).await.unwrap();
+            sqlx::query(sqlx::AssertSqlSafe(statement.to_string()))
+                .execute(&pool)
+                .await
+                .unwrap();
         }
 
         for statement in split_sql_statements(include_str!("migrations/075_memory_fts.sql")) {
-            sqlx::query(&statement)
+            sqlx::query(sqlx::AssertSqlSafe(statement.as_str()))
                 .execute(&pool)
                 .await
                 .unwrap_or_else(|error| panic!("{statement}: {error}"));

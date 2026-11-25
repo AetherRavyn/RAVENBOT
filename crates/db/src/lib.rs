@@ -14,6 +14,12 @@ use std::path::Path;
 use std::time::Duration;
 use thiserror::Error;
 
+// A crafted database + WAL file can make SQLite before 3.54.0 return
+// uninitialized page-cache memory (RUSTSEC-2026-0459). The direct dependency
+// both forces that version and keeps the requirement visible here rather than
+// in a lockfile nobody reads.
+const _: () = assert!(libsqlite3_sys::SQLITE_VERSION_NUMBER >= 3_054_000);
+
 /// Database errors
 #[derive(Error, Debug)]
 pub enum DbError {

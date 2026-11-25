@@ -660,7 +660,7 @@ impl MessageQueries {
             "SELECT * FROM messages WHERE thread_id = ? AND id IN ({placeholders})
              ORDER BY created_at ASC, rowid ASC"
         );
-        let mut query = sqlx::query_as::<_, MessageRow>(&sql);
+        let mut query = sqlx::query_as::<_, MessageRow>(sqlx::AssertSqlSafe(sql.as_str()));
         query = query.bind(thread_id.to_string());
         for id in &ids {
             query = query.bind(id);
@@ -676,7 +676,8 @@ impl MessageQueries {
                  WHERE message_id IN ({placeholders})
                  ORDER BY created_at ASC, rowid ASC"
             );
-            let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+            let mut query =
+                sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql.as_str()));
             for id in &response_ids {
                 query = query.bind(id);
             }
@@ -745,7 +746,8 @@ impl MessageQueries {
                  WHERE message_id IN ({placeholders})
                  ORDER BY created_at ASC, rowid ASC"
             );
-            let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+            let mut query =
+                sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql.as_str()));
             for id in &ids {
                 query = query.bind(id);
             }
@@ -791,7 +793,8 @@ impl MessageQueries {
                  WHERE message_id IN ({placeholders})
                  ORDER BY created_at ASC, rowid ASC"
             );
-            let mut query = sqlx::query_as::<_, (String, String)>(&sql);
+            let mut query =
+                sqlx::query_as::<_, (String, String)>(sqlx::AssertSqlSafe(sql.as_str()));
             for id in &ids {
                 query = query.bind(id);
             }
@@ -1952,7 +1955,7 @@ impl WorkItemQueries {
                  WHERE office_id = ? AND status = 'failed' AND id NOT IN ({placeholders})"
             )
         };
-        let mut query = sqlx::query(&sql)
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(sql.as_str()))
             .bind(&now)
             .bind(&now)
             .bind(office_id.to_string());
@@ -4155,13 +4158,15 @@ impl UsageQueries {
             GROUP BY o.office_id, c.name";
         if days > 0 {
             let sql = format!("{base} WHERE datetime(r.created_at) >= datetime('now', ?){tail}");
-            sqlx::query_as(&sql)
+            sqlx::query_as(sqlx::AssertSqlSafe(sql))
                 .bind(format!("-{days} days"))
                 .fetch_all(pool)
                 .await
         } else {
             let sql = format!("{base}{tail}");
-            sqlx::query_as(&sql).fetch_all(pool).await
+            sqlx::query_as(sqlx::AssertSqlSafe(sql))
+                .fetch_all(pool)
+                .await
         }
     }
 
@@ -7107,10 +7112,10 @@ impl ChannelQueries {
         "id, name, description, instructions, working_folder, color, position, responder_rules, created_at, updated_at";
 
     pub async fn list(pool: &SqlitePool) -> Result<Vec<ravenbot_core::Channel>, sqlx::Error> {
-        let rows: Vec<ChannelRow> = sqlx::query_as(&format!(
+        let rows: Vec<ChannelRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM channels ORDER BY position ASC, name ASC",
             Self::COLS
-        ))
+        )))
         .fetch_all(pool)
         .await?;
         Ok(rows.into_iter().map(Self::row_to_domain).collect())
@@ -7120,11 +7125,13 @@ impl ChannelQueries {
         pool: &SqlitePool,
         id: Uuid,
     ) -> Result<Option<ravenbot_core::Channel>, sqlx::Error> {
-        let row: Option<ChannelRow> =
-            sqlx::query_as(&format!("SELECT {} FROM channels WHERE id = ?", Self::COLS))
-                .bind(id.to_string())
-                .fetch_optional(pool)
-                .await?;
+        let row: Option<ChannelRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {} FROM channels WHERE id = ?",
+            Self::COLS
+        )))
+        .bind(id.to_string())
+        .fetch_optional(pool)
+        .await?;
         Ok(row.map(Self::row_to_domain))
     }
 
@@ -7306,9 +7313,9 @@ impl McpEventTriggerQueries {
     }
 
     pub async fn get(pool: &SqlitePool, id: Uuid) -> Result<Option<McpEventTrigger>, sqlx::Error> {
-        let row: Option<McpEventTriggerRow> = sqlx::query_as(&format!(
+        let row: Option<McpEventTriggerRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {MCP_EVENT_TRIGGER_COLUMNS} FROM mcp_event_triggers WHERE id = ?"
-        ))
+        )))
         .bind(id.to_string())
         .fetch_optional(pool)
         .await?;
@@ -7320,13 +7327,13 @@ impl McpEventTriggerQueries {
         pool: &SqlitePool,
         bot_id: Uuid,
     ) -> Result<Vec<McpEventTrigger>, sqlx::Error> {
-        let rows: Vec<McpEventTriggerRow> = sqlx::query_as(&format!(
+        let rows: Vec<McpEventTriggerRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {MCP_EVENT_TRIGGER_COLUMNS_T}
              FROM mcp_event_triggers t
              JOIN routines r ON r.id = t.routine_id
              WHERE r.bot_id = ?
              ORDER BY t.created_at, t.event"
-        ))
+        )))
         .bind(bot_id.to_string())
         .fetch_all(pool)
         .await?;
@@ -7338,13 +7345,13 @@ impl McpEventTriggerQueries {
 
     /// Enabled triggers on enabled routines, for the listener supervisor.
     pub async fn list_enabled(pool: &SqlitePool) -> Result<Vec<McpEventTrigger>, sqlx::Error> {
-        let rows: Vec<McpEventTriggerRow> = sqlx::query_as(&format!(
+        let rows: Vec<McpEventTriggerRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {MCP_EVENT_TRIGGER_COLUMNS_T}
              FROM mcp_event_triggers t
              JOIN routines r ON r.id = t.routine_id
              WHERE t.enabled = 1 AND r.is_enabled = 1
              ORDER BY t.server_id, t.created_at"
-        ))
+        )))
         .fetch_all(pool)
         .await?;
         Ok(rows
@@ -8136,10 +8143,10 @@ impl ThreadWorktreeQueries {
         pool: &SqlitePool,
         thread_id: Uuid,
     ) -> Result<Option<ThreadWorktreeRecord>, sqlx::Error> {
-        let row: Option<ThreadWorktreeRow> = sqlx::query_as(&format!(
+        let row: Option<ThreadWorktreeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM thread_worktrees WHERE thread_id = ? AND status = 'active'",
             Self::COLUMNS
-        ))
+        )))
         .bind(thread_id.to_string())
         .fetch_optional(pool)
         .await?;
@@ -8151,11 +8158,11 @@ impl ThreadWorktreeQueries {
         pool: &SqlitePool,
         thread_id: Uuid,
     ) -> Result<Option<ThreadWorktreeRecord>, sqlx::Error> {
-        let row: Option<ThreadWorktreeRow> = sqlx::query_as(&format!(
+        let row: Option<ThreadWorktreeRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM thread_worktrees WHERE thread_id = ?
              ORDER BY updated_at DESC LIMIT 1",
             Self::COLUMNS
-        ))
+        )))
         .bind(thread_id.to_string())
         .fetch_optional(pool)
         .await?;
@@ -8831,10 +8838,10 @@ impl ChannelMessageQueries {
         limit: i64,
     ) -> Result<Vec<ravenbot_core::ChannelMessage>, sqlx::Error> {
         let limit = limit.clamp(1, 500);
-        let rows: Vec<ChannelMessageRow> = sqlx::query_as(&format!(
+        let rows: Vec<ChannelMessageRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM channel_messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?",
             Self::COLS
-        ))
+        )))
         .bind(channel_id.to_string())
         .bind(limit)
         .fetch_all(pool)
@@ -8928,7 +8935,7 @@ impl ChannelTaskQueries {
                 Self::COLS
             )
         };
-        let rows: Vec<ChannelTaskRow> = sqlx::query_as(&sql)
+        let rows: Vec<ChannelTaskRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
             .bind(channel_id.to_string())
             .fetch_all(pool)
             .await?;
@@ -8939,10 +8946,10 @@ impl ChannelTaskQueries {
         pool: &SqlitePool,
         task_id: Uuid,
     ) -> Result<Option<ravenbot_core::ChannelTask>, sqlx::Error> {
-        let row: Option<ChannelTaskRow> = sqlx::query_as(&format!(
+        let row: Option<ChannelTaskRow> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT {} FROM channel_tasks WHERE id = ?",
             Self::COLS
-        ))
+        )))
         .bind(task_id.to_string())
         .fetch_optional(pool)
         .await?;

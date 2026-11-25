@@ -256,7 +256,8 @@ impl MemoryStore {
              FROM memory_facts
              WHERE bot_id = ? AND id IN ({placeholders})"
         );
-        let mut query = sqlx::query_as::<_, FactRow>(&sql).bind(bot_id.to_string());
+        let mut query = sqlx::query_as::<_, FactRow>(sqlx::AssertSqlSafe(sql.as_str()))
+            .bind(bot_id.to_string());
         for id in ids {
             query = query.bind(id);
         }
