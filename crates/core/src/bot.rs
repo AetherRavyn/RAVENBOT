@@ -6,27 +6,37 @@ use uuid::Uuid;
 
 /// Bot status in the system
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum BotStatus {
     /// Bot is idle, waiting for work
+    #[serde(alias = "Idle")]
     Idle,
     /// Bot is currently thinking (processing a message)
+    #[serde(alias = "Thinking")]
     Thinking,
     /// Bot is executing a tool
+    #[serde(alias = "RunningTool")]
     RunningTool,
     /// Bot is waiting for user input
+    #[serde(alias = "WaitingOnUser")]
     WaitingOnUser,
     /// Bot has been paused by the user
+    #[serde(alias = "Paused")]
     Paused,
 }
 
 /// Sandbox tier for bot execution isolation
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum SandboxTier {
     /// OS-level sandbox (default, safest)
+    #[serde(alias = "OsLevel")]
     OsLevel,
     /// Docker container isolation
+    #[serde(alias = "Docker")]
     Docker,
     /// Host execution (explicitly opt-in, off by default)
+    #[serde(alias = "Host")]
     Host,
 }
 
@@ -253,5 +263,26 @@ mod tests {
         let back: BotConfig = serde_json::from_value(serde_json::to_value(&cfg).unwrap()).unwrap();
         assert_eq!(back.voice_id.as_deref(), Some("nova"));
         assert!(back.auto_read);
+    }
+
+    #[test]
+    fn ipc_enums_use_the_snake_case_the_frontend_switches_on() {
+        assert_eq!(
+            serde_json::to_string(&BotStatus::RunningTool).unwrap(),
+            "\"running_tool\""
+        );
+        assert_eq!(
+            serde_json::to_string(&BotStatus::WaitingOnUser).unwrap(),
+            "\"waiting_on_user\""
+        );
+        assert_eq!(
+            serde_json::to_string(&SandboxTier::OsLevel).unwrap(),
+            "\"os_level\""
+        );
+        // Old checkpoints/events used PascalCase; aliases keep them readable.
+        assert_eq!(
+            serde_json::from_str::<BotStatus>("\"Paused\"").unwrap(),
+            BotStatus::Paused
+        );
     }
 }

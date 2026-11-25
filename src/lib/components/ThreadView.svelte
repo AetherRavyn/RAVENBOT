@@ -2,7 +2,6 @@
   import { reasoning } from "$lib/chat/reasoning.svelte";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import { listen, type UnlistenFn } from "@tauri-apps/api/event";
   import { onMount, onDestroy, tick } from "svelte";
   import { Button } from "$lib/components/ui/button";
@@ -47,6 +46,7 @@
     rememberSelectedThread,
     threadTitleFromMessage,
   } from "$lib/chat/threadHistory";
+  import { decodeMessages, decodeThreads } from "$lib/ipc/decode";
   import {
     applyMention,
     filterMentionItems,
@@ -55,21 +55,16 @@
     type MentionSigil,
     type MentionToken,
   } from "$lib/chat/mentions";
-  import ComposerMentionMenu from "$lib/components/chat/ComposerMentionMenu.svelte";
   import SourceChips from "$lib/components/chat/SourceChips.svelte";
-  import ApprovalCard from "$lib/components/chat/ApprovalCard.svelte";
-  import InteractionBlockCard from "$lib/components/chat/InteractionBlock.svelte";
-  import type {
-    InteractionBlock as InteractionBlockPayload,
-    QuestionKind,
-  } from "$lib/chat/blocks";
-  import ContextMeter from "$lib/components/chat/ContextMeter.svelte";
+  import ThreadHITL from "$lib/components/chat/ThreadHITL.svelte";
+  import ThreadComposer from "$lib/components/chat/ThreadComposer.svelte";
+  import ThreadHeader from "$lib/components/chat/ThreadHeader.svelte";
+  import type { PendingApproval, PendingQuestion } from "$lib/chat/pending";
   import ImageGallery from "$lib/components/chat/ImageGallery.svelte";
   import ImageGeneration from "$lib/components/chat/ImageGeneration.svelte";
   import FileAttachmentCard from "$lib/components/chat/FileAttachmentCard.svelte";
   import { contextUsage } from "$lib/chat/contextUsage.svelte";
   import { canSteerRun } from "$lib/chat/steering";
-  import ModelPicker from "$lib/components/ModelPicker.svelte";
   import { makeArtifact } from "$lib/artifact";
   import { artifactStore } from "$lib/artifacts.svelte";
   import { sidePanel } from "$lib/workspace/sidePanel.svelte";
@@ -105,46 +100,29 @@
   } from "$lib/model-catalog";
   import {
     Plus,
-    DollarSign,
     Pause,
     Play,
-    Paperclip,
-    Mic,
     Loader2,
     Volume2,
-    Ghost,
-    Clock,
     Pencil,
     CheckCircle2,
     XCircle,
     Circle,
     Sparkles,
-    MessageSquare,
     Brain,
     AlertTriangle,
     Key,
     Settings,
-    ShieldAlert,
-    ArrowUp,
     ArrowDown,
     ChevronDown,
-    ChevronUp,
-    MoreHorizontal,
     X,
-    Reply,
     Copy,
     Check,
     RotateCcw,
-    Boxes,
     Search,
-    Globe,
     History,
     Trash2,
     Terminal,
-    Cpu,
-    Monitor,
-    Hash,
-    Users,
     Target,
     GitBranch,
     Share2,
@@ -324,8 +302,8 @@
     if (key) await revealMessage(key);
   }
 
-  function onSearchInput(event: Event) {
-    threadSearchQuery = (event.currentTarget as HTMLInputElement).value;
+  function onSearchInput(value: string) {
+    threadSearchQuery = value;
     threadSearchIndex = 0;
     if (threadSearchTimer) clearTimeout(threadSearchTimer);
     // Snap to the first hit once typing settles, not on every keystroke.
@@ -537,7 +515,7 @@
       .catch(console.error);
     initialLoad = (async () => {
       try {
-        const result = (await invoke("list_threads", { botId })) as any[];
+        const result = decodeThreads(await invoke("list_threads", { botId }));
         // A later bot switch owns the conversation now.
         if (seq !== loadSeq) return;
         threads = result;
@@ -669,11 +647,6 @@
   // ── Approval gate ("bots ask before they act") ──────────────────────────
   // Pending Allow/Deny cards. The composer blocks while any is pending; the
   // run parks server-side until decide_approval resolves it.
-  interface PendingApproval {
-    id: string; bot_id: string; thread_id: string; run_id: string;
-    tool_name: string; tool_label: string; arguments: any; risk: string;
-    status: string; created_at: string;
-  }
   let pendingApprovals = $state<PendingApproval[]>([]);
   let decidingApproval = $state<string | null>(null);
 
@@ -718,12 +691,6 @@
 
   // ── Human-in-the-loop questions ("ask_user") ────────────────────────────
   // The agent asks a question mid-run; the run parks until the user answers.
-  interface PendingQuestion {
-    id: string; bot_id: string; thread_id: string; run_id: string;
-    header: string; question: string; options: string[]; allow_custom: boolean;
-    kind?: QuestionKind | null; payload?: InteractionBlockPayload | null;
-    status: string; created_at: string;
-  }
   let pendingQuestions = $state<PendingQuestion[]>([]);
   let answeringQuestion = $state<string | null>(null);
 
@@ -1411,7 +1378,7 @@
         beforeId: null,
         limit: MESSAGE_PAGE_SIZE,
       });
-      messages = Array.isArray(page?.messages) ? page.messages : [];
+      messages = decodeMessages(page?.messages);
       hasEarlier = !!page?.has_more;
       messageWindow = Math.max(MESSAGE_WINDOW, messages.length);
       windowEnd = 0;
@@ -2238,6 +2205,20 @@
     return false;
   }
 
+  function handleComposerKeydown(event: KeyboardEvent) {
+    if (handleMentionKeydown(event)) return;
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendMessage();
+    } else if (event.key === "Escape" && editingMessage) {
+      event.preventDefault();
+      cancelEditing();
+    } else if (event.key === "Escape" && replyingTo) {
+      event.preventDefault();
+      cancelReply();
+    }
+  }
+
   function handleTextareaInput(e: Event) {
     const target = e.target as HTMLTextAreaElement;
     target.style.height = "auto";
@@ -2560,678 +2541,97 @@
 
 
 <div class="flex flex-col h-full overflow-hidden bg-[var(--surface-0)] text-[var(--text-primary)] font-sans relative">
-  <!-- Sleek Top Header Bar (Grok Style) -->
-  <header class="h-[46px] px-4 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center justify-between gap-3 z-20 shrink-0">
-    <!-- Left: Bot Avatar & Info + Thread Switcher Dropdown -->
-    <div class="flex items-center gap-3 min-w-0 flex-1">
-      <div class="relative size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] p-0.5 shrink-0 shadow-sm">
-        <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} style={bot.avatar_style} />
-        <span class="absolute bottom-0 right-0 size-2 rounded-full ring-1 ring-[var(--surface-0)] {botStatusTheme.dot}"></span>
-      </div>
-
-      <div class="flex items-center gap-2 min-w-0">
-        <span class="font-bold text-sm text-[var(--text-primary)] truncate">{bot.name}</span>
-
-        {#if bot?.config?.engine && bot.config.engine !== "native"}
-          <span
-            class="thread-header-engine text-[11px] font-mono py-0.5 px-2 rounded-md bg-[var(--brand-soft)] border border-[var(--brand)]/30 text-[var(--brand-text)] hidden sm:inline-flex items-center gap-1"
-            title={t("thread.cliBot")}
-          >
-            <Cpu class="size-2.5" /> {bot.config.engine}
-          </span>
-        {/if}
-
-        <!-- Model Quick Switcher (clickable pill, Grok-style) -->
-        <div class="relative thread-header-model">
-          <button
-            type="button"
-            class="text-[11px] font-mono py-0.5 px-2 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] truncate cursor-pointer transition-colors hidden sm:inline-flex items-center gap-1 max-w-[220px] {bot?.config?.engine && bot.config.engine !== 'native' ? 'opacity-40' : ''}"
-            onclick={(e) => {
-              e.stopPropagation();
-              openModelSwitcher();
-            }}
-            aria-expanded={showModelSwitcher}
-            aria-haspopup="dialog"
-            title={`${t("thread.switchModel")}${currentModelFacts(bot) ? " · " + currentModelFacts(bot) : ""}`}
-          >
-            <span class="truncate">{getModelDisplayName(bot)}</span>
-            <ChevronDown class="size-2.5 shrink-0" />
-          </button>
-
-          {#if showModelSwitcher}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="absolute left-0 top-7 z-50 w-[26rem] max-w-[calc(100vw-2rem)] bg-[var(--surface-1)] border border-[var(--hairline)] rounded-2xl shadow-2xl animate-in fade-in zoom-in-95  overflow-hidden"
-              onclick={(e) => e.stopPropagation()}
-            >
-              <span class="block px-3 py-2 text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono border-b border-[var(--hairline)]">
-                Switch Model · {bot?.config?.model_provider}/{bot?.config?.model_id?.split("/").pop()}
-              </span>
-
-              <div class="px-2.5 pt-2 pb-2">
-                <ModelPicker
-                  providers={switcherRailProviders}
-                  provider={switcherRailProvider?.id ?? ""}
-                  model={bot?.config?.model_id ?? ""}
-                  models={switcherAvailable}
-                  configured={switcherConfigured}
-                  loading={switcherLoading}
-                  error={switcherRailProvider && switcherRailReason(switcherRailProvider)
-                    ? `${switcherRailReason(switcherRailProvider)} — fallbacks shown.`
-                    : (switcherError && switcherAvailable.length === 0
-                        ? "Live list failed — catalog fallbacks shown."
-                        : null)}
-                  reasonFor={(p) => switcherRailReason(p)}
-                  onSelectProvider={selectSwitcherRail}
-                  onSelectModel={(id) => switcherRailProvider && switchProvider(switcherRailProvider.id, id)}
-                  heightClass="max-h-[18rem]"
-                  footerNote={switcherShowingAll
-                    ? undefined
-                    : `Showing suggested · search for all ${switcherAvailable.length}`}
-                />
-              </div>
-
-              <!-- Custom model id -->
-              <div class="flex items-center gap-1.5 pt-1 border-t border-[var(--hairline)] mt-1">
-                <input
-                  bind:value={switcherModel}
-                  aria-label="Custom model id"
-                  placeholder="model id…"
-                  class="flex-1 min-w-0 h-6 px-2 rounded-lg bg-[var(--surface-0)] border border-[var(--hairline)] text-[11px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
-                  onkeydown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      applySwitcherModel();
-                    }
-                  }}
-                />
-                <Button
-                  size="sm"
-                  class="h-6 px-2 text-[11px] bg-[var(--surface-light)] text-[var(--text-on-light)] hover:bg-[var(--surface-light-hover)] cursor-pointer shrink-0"
-                  onclick={applySwitcherModel}
-                >
-                  Apply
-                </Button>
-              </div>
-            </div>
-          {/if}
-        </div>
-
-        {#if currentThread?.ephemeral}
-          <span class="text-[11px] font-mono py-0.5 px-2 rounded-md bg-warning/15 border border-warning/30 text-warning flex items-center gap-1 shrink-0" title={t("thread.tempTip")}>
-            <Ghost class="size-3" />
-            <span>{t("thread.temp")}</span>
-          </span>
-        {/if}
-      </div>
-
-      <!-- Thread Switcher Dropdown -->
-      <div class="relative ml-2 min-w-0 shrink">
-        <button
-          type="button"
-          class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-xs text-[var(--text-secondary)] flex items-center gap-1.5 cursor-pointer font-medium transition-colors min-w-0"
-          onclick={(e) => {
-            e.stopPropagation();
-            showThreadDropdown = !showThreadDropdown;
-          }}
-          aria-expanded={showThreadDropdown}
-          title={t("thread.switchThread")}
-        >
-          <MessageSquare class="size-3 text-[var(--brand-text)] shrink-0" />
-          <span class="min-w-0 max-w-[130px] truncate text-[11px] font-mono">
-            {currentThread?.title || (threads.length > 0 ? "Threads (" + threads.length + ")" : "New Thread")}
-          </span>
-          <ChevronDown class="size-3 text-[var(--text-tertiary)] shrink-0" />
-        </button>
-
-        {#if showThreadDropdown}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="absolute left-0 top-9 z-50 w-64 bg-[var(--surface-1)] border border-[var(--hairline)] rounded-2xl shadow-2xl p-2 space-y-1 animate-in fade-in zoom-in-95 "
-            onclick={(e) => e.stopPropagation()}
-          >
-            <div class="flex items-center justify-between px-2 py-1 border-b border-[var(--hairline)]">
-              <span class="text-[11px] font-bold text-[var(--text-tertiary)] uppercase tracking-wider font-mono">{t("thread.chatHistory")}</span>
-              <button
-                type="button"
-                class="text-[11px] text-[var(--brand-text)] hover:text-[var(--brand-hover)] flex items-center gap-1 cursor-pointer"
-                onclick={createNewThread}
-              >
-                <Plus class="size-3" /> New
-              </button>
-            </div>
-
-            <div class="max-h-60 overflow-y-auto space-y-0.5 py-1">
-              {#each threads as thread (thread.id)}
-                {@const isSelected = selectedThreadId === thread.id}
-                <div
-                  class="group/thread flex items-center gap-0.5 rounded-xl border transition-colors {isSelected
-                    ? 'bg-[var(--surface-3)] text-[var(--text-primary)] border-[var(--hairline-strong)]'
-                    : 'border-transparent text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                >
-                  <button
-                    type="button"
-                    class="min-w-0 flex-1 truncate px-2.5 py-1.5 text-left text-xs cursor-pointer"
-                    onclick={() => loadMessages(thread.id)}
-                    aria-pressed={isSelected}
-                  >
-                    <span class="truncate">{thread.title || t("thread.untitled")}</span>
-                  </button>
-                  <div class="flex items-center gap-0.5 pr-1">
-                    <button
-                      type="button"
-                      class="flex size-6 items-center justify-center rounded-md text-[var(--text-muted)] opacity-70 hover:bg-[var(--surface-1)] hover:text-[var(--text-primary)] hover:opacity-100 focus:opacity-100 cursor-pointer"
-                      onclick={() => {
-                        beginRenameThread(thread);
-                        showThreadDropdown = false;
-                        showThreadDrawer = true;
-                      }}
-                      aria-label={t("thread.rename")}
-                      title={t("thread.rename")}
-                    >
-                      <Pencil class="size-3" />
-                    </button>
-                    <button
-                      type="button"
-                      class="flex size-6 items-center justify-center rounded-md opacity-70 hover:opacity-100 cursor-pointer {deleteArmed === thread.id
-                        ? 'bg-[var(--danger-soft)] text-[var(--danger-text)]'
-                        : 'text-[var(--text-muted)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger-text)]'}"
-                      onclick={() => void deleteThread(thread.id)}
-                      aria-label={deleteArmed === thread.id
-                        ? t("thread.confirmDelete")
-                        : t("thread.delete")}
-                      title={deleteArmed === thread.id
-                        ? t("thread.confirmDelete")
-                        : t("thread.delete")}
-                    >
-                      {#if deleteArmed === thread.id}
-                        <Check class="size-3" />
-                      {:else}
-                        <Trash2 class="size-3" />
-                      {/if}
-                    </button>
-                  </div>
-                </div>
-              {:else}
-                <div class="p-3 text-center text-xs text-[var(--text-muted)]">{t("thread.noPrev")}</div>
-              {/each}
-            </div>
-
-            <div class="border-t border-[var(--hairline)] px-2 pt-2 pb-1 space-y-1">
-              <button
-                type="button"
-                class="w-full flex items-center gap-2 rounded-xl px-2 py-1.5 text-xs transition-colors cursor-pointer disabled:opacity-50 {worktree?.enabled
-                  ? 'text-[var(--brand-text)]'
-                  : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                onclick={() => void toggleWorktreeIsolation()}
-                disabled={!selectedThreadId || worktreeBusy}
-                aria-pressed={Boolean(worktree?.enabled)}
-                title="Requires a clean Git repository with one project folder"
-              >
-                <GitBranch class="size-3.5 shrink-0" />
-                <span class="min-w-0 flex-1 text-left">Isolated Git worktree</span>
-                <span class="font-mono text-[11px]">{worktree?.enabled ? "On" : "Off"}</span>
-              </button>
-              <p class="px-2 text-[11px] leading-snug text-[var(--text-muted)]">
-                Runs write to a separate checkout until you review and apply them. Requires a clean Git repository; ignored local files are copied for reading, not applied.
-              </p>
-            </div>
-          </div>
-        {/if}
-      </div>
-
-      <!-- Quick New Thread Button -->
-      <button
-        type="button"
-        class="h-7 px-2 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] hover:bg-[var(--surface-3)] text-xs text-[var(--text-secondary)] flex items-center gap-1 cursor-pointer transition-colors shrink-0"
-        onclick={createNewThread}
-        title={t("thread.newThread")}
-      >
-        <Plus class="size-3.5" />
-        <span class="hidden md:inline text-[11px]">{t("thread.new")}</span>
-      </button>
-    </div>
-
-    <!-- Right Header Controls -->
-    <div class="flex items-center gap-2 shrink-0">
-      <!-- In-thread search -->
-      <div class="relative">
-        <button
-          type="button"
-          class="h-7 px-2 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-xs flex items-center gap-1.5 transition-colors cursor-pointer {threadSearchOpen
-            ? 'text-[var(--brand-text)] border-[var(--brand)]/40 bg-[var(--brand-soft)]'
-            : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)]'}"
-          onclick={() => (threadSearchOpen ? closeSearch() : void openSearch())}
-          aria-expanded={threadSearchOpen}
-          aria-label={t("thread.searchInThread")}
-          title={t("thread.searchInThread")}
-        >
-          <Search class="size-3.5" />
-          <span class="hidden lg:inline text-[11px]">{t("thread.searchShort")}</span>
-        </button>
-
-        {#if threadSearchOpen}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <div
-            class="thread-search"
-            role="search"
-            onkeydown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                closeSearch();
-              }
-            }}
-          >
-            <Search class="thread-search__icon size-3.5" aria-hidden="true" />
-            <input
-              bind:this={threadSearchInput}
-              class="thread-search__input"
-              type="search"
-              value={threadSearchQuery}
-              placeholder={t("thread.searchMessages")}
-              aria-label={t("thread.searchMessages")}
-              oninput={onSearchInput}
-              onkeydown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  stepSearch(event.shiftKey ? -1 : 1);
-                }
-              }}
-            />
-            <span class="thread-search__count" aria-live="polite">
-              {#if threadSearchMatches.length}
-                {t("thread.searchCount", {
-                  current: threadSearchPosition + 1,
-                  total: threadSearchMatches.length,
-                })}
-              {:else if threadSearchQuery.trim()}
-                {t("thread.searchNoResults")}
-              {/if}
-            </span>
-            <button
-              type="button"
-              class="thread-search__button"
-              disabled={!threadSearchMatches.length}
-              onclick={() => stepSearch(-1)}
-              aria-label={t("thread.searchPrevious")}
-              title={t("thread.searchPrevious")}
-            >
-              <ChevronUp class="size-3.5" />
-            </button>
-            <button
-              type="button"
-              class="thread-search__button"
-              disabled={!threadSearchMatches.length}
-              onclick={() => stepSearch(1)}
-              aria-label={t("thread.searchNext")}
-              title={t("thread.searchNext")}
-            >
-              <ChevronDown class="size-3.5" />
-            </button>
-            <button
-              type="button"
-              class="thread-search__button"
-              onclick={closeSearch}
-              aria-label={t("thread.searchClose")}
-              title={t("thread.searchClose")}
-            >
-              <X class="size-3.5" />
-            </button>
-          </div>
-        {/if}
-      </div>
-
-      <!-- Secondary actions collapse into the More menu in a narrow
-           conversation column. -->
-      <div class="thread-header-secondary flex items-center gap-2">
-      <!-- Session Telemetry Pill -->
-      <button
-        type="button"
-        class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-xs font-mono flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
-        onclick={() => (showCostInfo = !showCostInfo)}
-        aria-pressed={showCostInfo}
-        title={t("thread.telemetry")}
-      >
-        <DollarSign class="size-3 text-success" />
-        <span>${sessionCost.toFixed(4)}</span>
-      </button>
-
-      <!-- Agent Intelligence / Skills Button -->
-      <button
-        type="button"
-        class="h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-xs flex items-center gap-1.5 text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
-        onclick={() => (showIntelligence = true)}
-        title={t("thread.intelligence")}
-      >
-        <Brain class="size-3 text-[var(--brand-text)] shrink-0" />
-        <span class="hidden xl:inline text-[11px]">{bot.name.split(" ")[0]} Intelligence</span>
-      </button>
-
-      <!-- Thread Drawer Toggle Button -->
-      <button
-        type="button"
-        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showThreadDrawer ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
-        onclick={() => (showThreadDrawer = !showThreadDrawer)}
-        aria-pressed={showThreadDrawer}
-        aria-label={t("thread.historyToggle")}
-        title={t("thread.historyToggle")}
-      >
-        <History class="size-3.5" />
-      </button>
-
-      <!-- Computer / Desktop Panel Button -->
-      <button
-        type="button"
-        class="relative size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showComputer ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
-        onclick={() => (showComputer = true)}
-        aria-pressed={showComputer}
-        aria-label={t("thread.computer")}
-        title={agentActivity.computerPaused ? t("computer.takenOver") : t("thread.computer")}
-      >
-        <Monitor class="size-3.5" />
-        {#if agentActivity.computerPaused}
-          <span class="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-[var(--warning-text)] ring-2 ring-[var(--surface-2)]" aria-hidden="true"></span>
-        {/if}
-      </button>
-
-      <!-- Channel (context) picker for new threads -->
-      {#if channelOptions.length > 0}
-        <SimpleSelect
-          value={activeChannelId ?? ""}
-          options={[
-            { value: "", label: t("thread.noChannel") },
-            ...channelOptions.map((c) => ({ value: c.id, label: c.name })),
-          ]}
-          onValueChange={(v) => (activeChannelId = v || null)}
-          placeholder={t("thread.noChannel")}
-          class="h-7 w-32 rounded-lg text-[11px] font-mono"
-        />
-      {/if}
-
-      <!-- Channels manager -->
-      <button
-        type="button"
-        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showChannels ? 'bg-success/20 text-success border-success/40' : ''}"
-        onclick={() => (showChannels = true)}
-        aria-pressed={showChannels}
-        aria-label={t("thread.channels")}
-        title={t("thread.channels")}
-      >
-        <Hash class="size-3.5" />
-      </button>
-
-      <!-- Import a team -->
-      <button
-        type="button"
-        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showTeamImport ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
-        onclick={() => (showTeamImport = true)}
-        aria-pressed={showTeamImport}
-        aria-label={t("thread.importTeam")}
-        title={t("thread.importTeam")}
-      >
-        <Users class="size-3.5" />
-      </button>
-
-      {#if selectedThreadId && sessionRole.role === "owner"}
-        <!-- Read-only public conversation link -->
-        <button
-          type="button"
-          class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {shareOpen ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
-          onclick={() => void openShareDialog()}
-          aria-pressed={shareOpen}
-          aria-label={t("thread.shareConversation")}
-          title={t("thread.shareConversation")}
-        >
-          <Share2 class="size-3.5" />
-        </button>
-      {/if}
-
-      <!-- Routines / Scheduler Button -->
-      <button
-        type="button"
-        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showRoutines ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
-        onclick={() => (showRoutines = true)}
-        aria-pressed={showRoutines}
-        aria-label={t("routines.title")}
-        title={t("routines.title")}
-      >
-        <Clock class="size-3.5" />
-      </button>
-
-      <!-- Fleet Sync / Backup Button -->
-      <button
-        type="button"
-        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer {showSync ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/40' : ''}"
-        onclick={() => (showSync = true)}
-        aria-pressed={showSync}
-        aria-label={t("thread.fleetSync")}
-        title={t("thread.fleetSync")}
-      >
-        <Boxes class="size-3.5" />
-      </button>
-
-      <!-- Settings Shortcut -->
-      <button
-        type="button"
-        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
-        onclick={triggerOpenSettings}
-        aria-label={t("thread.settingsKeys")}
-        title={t("thread.settingsKeys")}
-      >
-        <Settings class="size-3.5" />
-      </button>
-      </div>
-
-      <!-- Narrow-column overflow: the same actions, one menu. -->
-      <div class="relative thread-header-more">
-        <button
-          type="button"
-          class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
-          onclick={(event) => {
-            event.stopPropagation();
-            showMoreMenu = !showMoreMenu;
-          }}
-          aria-haspopup="menu"
-          aria-expanded={showMoreMenu}
-          aria-label={t("thread.more")}
-          title={t("thread.more")}
-        >
-          <MoreHorizontal class="size-4" />
-        </button>
-
-        {#if showMoreMenu}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="absolute right-0 top-9 z-50 w-64 rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)] p-1.5 shadow-2xl animate-in fade-in zoom-in-95"
-            role="menu"
-            tabindex="-1"
-            onclick={(event) => event.stopPropagation()}
-            onkeydown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                showMoreMenu = false;
-              }
-            }}
-          >
-            <button
-              type="button"
-              role="menuitem"
-              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-              onclick={() => {
-                showMoreMenu = false;
-                showThreadDrawer = !showThreadDrawer;
-              }}
-            >
-              <History class="size-3.5 text-[var(--brand-text)]" />
-              {t("thread.historyToggle")}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-              onclick={() => {
-                showMoreMenu = false;
-                showComputer = true;
-              }}
-            >
-              <Monitor class="size-3.5 text-[var(--brand-text)]" />
-              {t("thread.computer")}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-              onclick={() => {
-                showMoreMenu = false;
-                showChannels = true;
-              }}
-            >
-              <Hash class="size-3.5 text-[var(--brand-text)]" />
-              {t("thread.channels")}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-              onclick={() => {
-                showMoreMenu = false;
-                showTeamImport = true;
-              }}
-            >
-              <Users class="size-3.5 text-[var(--brand-text)]" />
-              {t("thread.importTeam")}
-            </button>
-            {#if selectedThreadId && sessionRole.role === "owner"}
-              <button
-                type="button"
-                role="menuitem"
-                class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-                onclick={() => {
-                  showMoreMenu = false;
-                  void openShareDialog();
-                }}
-              >
-                <Share2 class="size-3.5 text-[var(--brand-text)]" />
-                {t("thread.shareConversation")}
-              </button>
-            {/if}
-            <button
-              type="button"
-              role="menuitem"
-              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-              onclick={() => {
-                showMoreMenu = false;
-                showRoutines = true;
-              }}
-            >
-              <Clock class="size-3.5 text-[var(--brand-text)]" />
-              {t("routines.title")}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-              onclick={() => {
-                showMoreMenu = false;
-                showSync = true;
-              }}
-            >
-              <Boxes class="size-3.5 text-[var(--brand-text)]" />
-              {t("thread.fleetSync")}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-              onclick={() => {
-                showMoreMenu = false;
-                showIntelligence = true;
-              }}
-            >
-              <Brain class="size-3.5 text-[var(--brand-text)]" />
-              {t("thread.intelligence")}
-            </button>
-            <button
-              type="button"
-              role="menuitem"
-              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-              onclick={() => {
-                showMoreMenu = false;
-                showCostInfo = !showCostInfo;
-              }}
-            >
-              <DollarSign class="size-3.5 text-[var(--brand-text)]" />
-              {t("thread.telemetry")}
-            </button>
-            <div class="my-1 border-t border-[var(--hairline)]"></div>
-            <button
-              type="button"
-              role="menuitem"
-              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
-              onclick={() => {
-                showMoreMenu = false;
-                triggerOpenSettings();
-              }}
-            >
-              <Settings class="size-3.5 text-[var(--brand-text)]" />
-              {t("thread.settingsKeys")}
-            </button>
-
-            {#if channelOptions.length > 0}
-              <div class="mt-1 border-t border-[var(--hairline)] px-2 pt-2 pb-1">
-                <span class="mb-1 block font-mono text-[11px] uppercase tracking-wider text-[var(--text-muted)]">
-                  {t("thread.channels")}
-                </span>
-                <SimpleSelect
-                  value={activeChannelId ?? ""}
-                  options={[
-                    { value: "", label: t("thread.noChannel") },
-                    ...channelOptions.map((c) => ({ value: c.id, label: c.name })),
-                  ]}
-                  onValueChange={(value) => (activeChannelId = value || null)}
-                  placeholder={t("thread.noChannel")}
-                  class="h-7 w-full rounded-lg text-[11px] font-mono"
-                />
-              </div>
-            {/if}
-          </div>
-        {/if}
-      </div>
-
-      {#if activeRunId}
-        <button
-          type="button"
-          class="size-7 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] flex items-center justify-center text-[var(--danger-text)] hover:bg-[var(--danger-soft-hover)] transition-colors cursor-pointer"
-          onclick={stopActiveRun}
-          aria-label="Stop the active run"
-          title="Stop the active run"
-        >
-          <XCircle class="size-3.5" />
-        </button>
-      {/if}
-
-      <!-- Pause / Play Agent -->
-      <button
-        type="button"
-        class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
-        onclick={togglePause}
-        aria-label={bot.status === "paused" ? "Resume agent" : "Pause all agents"}
-        aria-pressed={bot.status === "paused"}
-        title={bot.status === "paused" ? "Resume agent" : "Pause all agents (kill switch)"}
-      >
-        {#if bot.status === "paused"}
-          <Play class="size-3.5 fill-current text-[var(--brand-text)]" />
-        {:else}
-          <Pause class="size-3.5" />
-        {/if}
-      </button>
-    </div>
-  </header>
+  <ThreadHeader
+    botName={bot.name}
+    avatarUrl={bot.avatar_url}
+    avatarStyle={bot.avatar_style}
+    statusDot={botStatusTheme.dot}
+    engine={bot?.config?.engine ?? null}
+    paused={bot.status === "paused"}
+    modelLabel={getModelDisplayName(bot)}
+    modelFacts={currentModelFacts(bot)}
+    threadTitle={currentThread?.title || (threads.length > 0 ? "Threads (" + threads.length + ")" : "New Thread")}
+    threadEphemeral={Boolean(currentThread?.ephemeral)}
+    {threads}
+    {selectedThreadId}
+    {deleteArmed}
+    {showThreadDropdown}
+    {showModelSwitcher}
+    {threadSearchOpen}
+    switcherProviders={switcherRailProviders}
+    switcherProviderId={switcherRailProvider?.id ?? ""}
+    modelId={bot?.config?.model_id ?? ""}
+    modelProvider={bot?.config?.model_provider ?? ""}
+    switcherModels={switcherAvailable}
+    {switcherConfigured}
+    {switcherLoading}
+    switcherErrorText={switcherRailProvider && switcherRailReason(switcherRailProvider)
+      ? `${switcherRailReason(switcherRailProvider)} — fallbacks shown.`
+      : (switcherError && switcherAvailable.length === 0
+          ? "Live list failed — catalog fallbacks shown."
+          : null)}
+    switcherFooterNote={switcherShowingAll
+      ? undefined
+      : `Showing suggested · search for all ${switcherAvailable.length}`}
+    switcherReasonFor={(p) => switcherRailReason(p)}
+    bind:switcherModel={switcherModel}
+    {threadSearchQuery}
+    threadSearchMatchCount={threadSearchMatches.length}
+    {threadSearchPosition}
+    bind:threadSearchInput={threadSearchInput}
+    {sessionCost}
+    {showCostInfo}
+    {showThreadDrawer}
+    {showComputer}
+    computerPaused={agentActivity.computerPaused}
+    {channelOptions}
+    {activeChannelId}
+    {showChannels}
+    {showTeamImport}
+    canShare={Boolean(selectedThreadId && sessionRole.role === "owner")}
+    {shareOpen}
+    {showRoutines}
+    {showSync}
+    {showMoreMenu}
+    hasActiveRun={Boolean(activeRunId)}
+    worktreeEnabled={Boolean(worktree?.enabled)}
+    {worktreeBusy}
+    onToggleModelSwitcher={openModelSwitcher}
+    onSelectSwitcherProvider={selectSwitcherRail}
+    onSelectSwitcherModel={(id) => {
+      if (switcherRailProvider) switchProvider(switcherRailProvider.id, id);
+    }}
+    onApplySwitcherModel={applySwitcherModel}
+    onToggleThreadDropdown={() => (showThreadDropdown = !showThreadDropdown)}
+    onSelectThread={(id) => void loadMessages(id)}
+    onCreateThread={createNewThread}
+    onBeginRenameThread={(thread) => {
+      beginRenameThread(thread);
+      showThreadDropdown = false;
+      showThreadDrawer = true;
+    }}
+    onDeleteThread={(id) => void deleteThread(id)}
+    onToggleWorktree={() => void toggleWorktreeIsolation()}
+    onOpenSearch={() => void openSearch()}
+    onCloseSearch={closeSearch}
+    onQueryChange={onSearchInput}
+    onStepSearch={stepSearch}
+    onToggleTelemetry={() => (showCostInfo = !showCostInfo)}
+    onOpenIntelligence={() => (showIntelligence = true)}
+    onToggleThreadDrawer={() => (showThreadDrawer = !showThreadDrawer)}
+    onOpenComputer={() => (showComputer = true)}
+    onChannelChange={(id) => (activeChannelId = id || null)}
+    onOpenChannels={() => (showChannels = true)}
+    onOpenTeamImport={() => (showTeamImport = true)}
+    onOpenShare={() => void openShareDialog()}
+    onOpenRoutines={() => (showRoutines = true)}
+    onOpenSync={() => (showSync = true)}
+    onOpenSettings={triggerOpenSettings}
+    onToggleMoreMenu={() => (showMoreMenu = !showMoreMenu)}
+    onCloseMoreMenu={() => (showMoreMenu = false)}
+    onStopRun={stopActiveRun}
+    onTogglePause={togglePause}
+  />
 
   <!-- Telemetry Strip Banner -->
   {#if showCostInfo}
@@ -3764,33 +3164,15 @@
             {/if}
           {/if}
 
-          <!-- Approval cards: what the bot wants to do + Allow/Deny -->
-          {#each pendingApprovals as ap (ap.id)}
-            <ApprovalCard
-              botName={bot.name}
-              toolName={ap.tool_name}
-              toolLabel={ap.tool_label}
-              args={ap.arguments}
-              risk={ap.risk}
-              deciding={decidingApproval === ap.id}
-              onDecide={(allowed) => decideApproval(ap.id, allowed)}
-            />
-          {/each}
-
-          <!-- Question cards: the agent needs input to continue -->
-          {#each pendingQuestions as q (q.id)}
-            <InteractionBlockCard
-              botName={bot.name}
-              header={q.header}
-              question={q.question}
-              options={q.options || []}
-              allowCustom={q.allow_custom !== false}
-              kind={q.kind || "question"}
-              payload={q.payload || null}
-              answering={answeringQuestion === q.id}
-              onAnswer={(answer) => answerQuestion(q.id, answer)}
-            />
-          {/each}
+          <ThreadHITL
+            approvals={pendingApprovals}
+            questions={pendingQuestions}
+            botName={bot.name}
+            {decidingApproval}
+            {answeringQuestion}
+            onDecide={decideApproval}
+            onAnswer={answerQuestion}
+          />
         </div>
         </div>
         <MessageSelectionToolbar
@@ -3899,277 +3281,52 @@
         </div>
       {/if}
 
-      <!-- Grok Floating Capsule Composer -->
-      <div class="p-4 bg-[var(--surface-0)] shrink-0">
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="relative max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]  p-3 shadow-2xl transition-all duration-200 focus-within:border-[var(--brand)]"
-          ondragover={(e) => e.preventDefault()}
-          ondrop={handleComposerDrop}
-        >
-      {#if activeReply}
-        <div class="composer-reply">
-          <Reply class="composer-reply__icon size-3.5" strokeWidth={1.9} />
-          <div class="composer-reply__copy">
-            <span class="composer-reply__author">
-              {activeReply.author
-                ? t("thread.replyingTo", { name: activeReply.author })
-                : t("thread.replyingToMessage")}
-            </span>
-            {#if activeReply.text}
-              <span class="composer-reply__text">{activeReply.text}</span>
-            {/if}
-          </div>
-          <button
-            type="button"
-            class="composer-reply__close"
-            onclick={cancelReply}
-            aria-label={t("thread.cancelReply")}
-            title={t("thread.cancelReply")}
-          >
-            <X class="size-3.5" />
-          </button>
-        </div>
-      {/if}
-      <!-- Pending attachments (images as thumbnails, docs as chips) -->
-      {#if pendingAttachments.length}
-        <div class="flex flex-wrap gap-1.5 pb-1.5">
-          {#each pendingAttachments as att, idx}
-            {#if att.isImage}
-              <div class="relative size-14 rounded-lg overflow-hidden border border-[var(--hairline-strong)] bg-[var(--surface-2)] shadow-sm">
-                <img
-                  src={`data:${att.mime};base64,${att.data}`}
-                  alt={att.name}
-                  class="size-full object-cover"
-                />
-                <button
-                  type="button"
-                  class="absolute top-0.5 right-0.5 size-4 rounded-full bg-[var(--scrim)] text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
-                  onclick={() => removePendingAttachment(idx)}
-                  aria-label={t("room.removeAttachment")}
-                  title={t("room.removeAttachment")}
-                >
-                  ✕
-                </button>
-              </div>
-            {:else}
-              <div class="relative flex items-center gap-1.5 h-14 max-w-[220px] pl-2.5 pr-6 rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-2)] shadow-sm" title={att.name}>
-                <Paperclip class="size-3.5 text-[var(--brand-text)] shrink-0" />
-                <div class="min-w-0">
-                  <div class="text-[11px] text-[var(--text-secondary)] truncate">{att.name}</div>
-                  <div class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{att.mime.split("/").pop()}</div>
-                </div>
-                <button
-                  type="button"
-                  class="absolute top-1 right-1 size-4 rounded-full bg-[var(--scrim)] text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80 transition-colors"
-                  onclick={() => removePendingAttachment(idx)}
-                  aria-label={t("room.removeAttachment")}
-                  title={t("room.removeAttachment")}
-                >
-                  ✕
-                </button>
-              </div>
-            {/if}
-          {/each}
-        </div>
-      {/if}
-
-      {#if pendingApprovals.length > 0}
-        <div role="alert" class="mb-2 flex items-center gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning">
-          <ShieldAlert class="size-3.5 shrink-0" />
-          <span>Waiting on your approval — answer above to resume {bot.name}.</span>
-        </div>
-      {/if}
-      {#if pendingQuestions.length > 0}
-        <div role="status" class="mb-2 flex items-center gap-2 rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-3 py-2 text-[11px] text-[var(--brand-text)]">
-          <span class="size-1.5 rounded-full bg-[var(--brand)] animate-pulse shrink-0"></span>
-          <span>{bot.name} is waiting for your answer — reply to the question above.</span>
-        </div>
-      {/if}
-      {#if mentionOpen}
-        <ComposerMentionMenu
-          sigil={mentionSigil}
-          items={mentionItems}
-          activeIndex={mentionIndex}
-          onPick={chooseMention}
-        />
-      {/if}
-      <textarea
-        bind:this={textareaRef}
-        bind:value={newMessage}
-        aria-label="Message"
-        oninput={handleTextareaInput}
-        onpaste={handleComposerPaste}
-        placeholder={pendingApprovals.length > 0 ? "Answer the approval above first…" : pendingQuestions.length > 0 ? "Answer the question above…" : `Ask anything, run code, or attach images to ${bot.name}...`}
-        disabled={pendingApprovals.length > 0 || pendingQuestions.length > 0}
-        rows={1}
-        class="w-full bg-transparent text-xs sm:text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
-        onkeydown={(e) => {
-          if (handleMentionKeydown(e)) return;
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            sendMessage();
-          } else if (e.key === "Escape" && editingMessage) {
-            e.preventDefault();
-            cancelEditing();
-          } else if (e.key === "Escape" && replyingTo) {
-            e.preventDefault();
-            cancelReply();
-          }
-        }}
-      ></textarea>
-
-      <!-- Edit-and-resend banner -->
-      {#if editingMessage}
-        <div class="flex items-center justify-between pt-2 border-t border-warning/20 mt-1">
-          <div class="flex items-center gap-1.5 text-[11px] font-mono text-warning">
-            <Pencil class="size-3" />
-            <span>{t("thread.editingHint")}</span>
-          </div>
-          <button
-            type="button"
-            class="text-[11px] font-mono text-[var(--text-tertiary)] hover:text-[var(--text-primary)] cursor-pointer"
-            onclick={cancelEditing}
-            title={t("thread.cancelEdit")}
-          >
-            Cancel
-          </button>
-        </div>
-      {/if}
-
-          <!-- Action Toolbar Inside Capsule -->
-          <div class="flex items-center justify-between pt-2 border-t border-[var(--hairline)] mt-1">
-            <!-- Left Tool Toggles -->
-            <div class="flex items-center gap-1.5">
-              <button
-                type="button"
-                class="h-7 px-2.5 rounded-lg border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {deepSearchActive
-                  ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/50 '
-                  : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                onclick={() => (deepSearchActive = !deepSearchActive)}
-                aria-pressed={deepSearchActive}
-                title={t("home.deepSearch")}
-              >
-                <Globe class="size-3" />
-                <span>DeepSearch</span>
-              </button>
-
-              <button
-                type="button"
-                class="h-7 px-2.5 rounded-lg border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {thinkActive
-                  ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/50 '
-                  : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                onclick={() => (thinkActive = !thinkActive)}
-                aria-pressed={thinkActive}
-                title={t("home.think")}
-              >
-                <Brain class="size-3" />
-                <span>{t("home.thinkPill")}</span>
-              </button>
-
-              <ContextMeter threadId={selectedThreadId} class="ml-1" />
-              {#if selectedThreadId}
-                <button
-                  type="button"
-                  class="h-7 px-2.5 rounded-lg border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {threadGoal
-                    ? 'bg-[var(--brand-soft)] text-[var(--brand-text)] border-[var(--brand)]/50'
-                    : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                  onclick={openGoalDialog}
-                  aria-pressed={Boolean(threadGoal)}
-                  title="Run a persistent goal in this conversation"
-                >
-                  <Target class="size-3" />
-                  <span>Goal</span>
-                </button>
-              {/if}
-              <button
-                type="button"
-                class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center transition-colors cursor-pointer"
-                onclick={attachFile}
-                aria-label={t("home.attach")}
-                title={t("home.attach")}
-              >
-                <Paperclip class="size-3.5" />
-              </button>
-
-              <button
-                type="button"
-                class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {isListening ? 'text-danger bg-danger/20 border border-danger/50 animate-pulse shadow-sm' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                onclick={toggleVoice}
-                aria-pressed={isListening}
-                aria-label="Voice input"
-                title={isListening ? "Listening... (Click to stop speech-to-text)" : "Voice input (Speech-to-Text)"}
-              >
-                <Mic class="size-3.5" />
-              </button>
-
-              <button
-                type="button"
-                class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {voiceMode ? 'text-success bg-success/20 border border-success/50 shadow-sm' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'} {speaking ? 'animate-pulse' : ''}"
-                onclick={toggleVoiceMode}
-                aria-pressed={voiceMode}
-                aria-label="Voice mode"
-                title={voiceMode ? "Voice mode on — click to stop (hands-free loop)" : "Voice mode: hands-free talk → response spoken aloud"}
-              >
-                <Volume2 class="size-3.5" />
-              </button>
-
-              <button
-                type="button"
-                class="h-7 px-2.5 rounded-lg border text-[11px] font-mono flex items-center gap-1.5 transition-all cursor-pointer {bot?.config?.auto_read
-                  ? 'bg-success/15 text-success border-success/40'
-                  : 'border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                onclick={toggleAutoRead}
-                aria-pressed={Boolean(bot?.config?.auto_read)}
-                title={bot?.config?.auto_read ? "Auto-read ON — replies are spoken aloud" : "Auto-read: speak every reply aloud"}
-              >
-                <Volume2 class="size-3" />
-                <span>{t("thread.autoRead")}</span>
-              </button>
-
-              <button
-                type="button"
-                class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {tempActive ? 'text-warning bg-warning/15 border border-warning/40' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                onclick={() => (tempActive = !tempActive)}
-                aria-pressed={tempActive}
-                aria-label="Temporary chat"
-                title={tempActive ? "Temporary chat ON — new threads won't feed agent memory" : "Temporary chat: conversations won't feed agent memory"}
-              >
-                <Ghost class="size-3.5" />
-              </button>
-            </div>
-
-            <!-- Right Controls: Model Pill & High-Contrast Send Button -->
-            <div class="flex items-center gap-2">
-              <span class="text-[11px] font-mono text-[var(--text-muted)] px-2 py-0.5 rounded border border-[var(--hairline)] bg-[var(--surface-1)] hidden sm:inline">
-                {getModelDisplayName(bot)}
-              </span>
-
-              <button
-                type="button"
-                onclick={() => sendMessage()}
-                disabled={(!newMessage.trim() && pendingAttachments.length === 0) || (runActive && !canSteer)}
-                aria-label={canSteer ? t("thread.steer") : t("home.send")}
-                class="size-8 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer {(newMessage.trim() || pendingAttachments.length) && (!runActive || canSteer)
-                  ? 'btn-brand text-[var(--text-primary)] hover:scale-105 active:scale-95'
-                  : 'bg-[var(--surface-3)] text-[var(--text-muted)] cursor-not-allowed'}"
-                title={canSteer ? t("thread.steerTitle") : t("home.send")}
-              >
-                {#if runActive && !canSteer}
-                  <Loader2 class="size-3.5 animate-spin" />
-                {:else}
-                  <ArrowUp class="size-4 stroke-[2.5]" />
-                {/if}
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div class="text-center mt-2">
-          <span class="text-[11px] text-[var(--text-muted)] font-mono">
-            RAVENBOT local enclave active • ⌘K for command palette • ⌘, for settings
-          </span>
-        </div>
-      </div>
+      <ThreadComposer
+        botName={bot.name}
+        modelLabel={getModelDisplayName(bot)}
+        threadId={selectedThreadId}
+        bind:draft={newMessage}
+        bind:textarea={textareaRef}
+        attachments={pendingAttachments}
+        activeReply={activeReply}
+        editing={Boolean(editingMessage)}
+        hasPendingApprovals={pendingApprovals.length > 0}
+        hasPendingQuestions={pendingQuestions.length > 0}
+        mentionOpen={mentionOpen}
+        mentionSigil={mentionSigil}
+        mentionItems={mentionItems}
+        mentionIndex={mentionIndex}
+        deepSearchActive={deepSearchActive}
+        thinkActive={thinkActive}
+        tempActive={tempActive}
+        isListening={isListening}
+        voiceMode={voiceMode}
+        speaking={speaking}
+        autoRead={Boolean(bot?.config?.auto_read)}
+        showGoal={Boolean(selectedThreadId)}
+        goalActive={Boolean(threadGoal)}
+        runActive={runActive}
+        canSteer={canSteer}
+        sendDisabled={(!newMessage.trim() && pendingAttachments.length === 0) || (runActive && !canSteer)}
+        sendReady={Boolean((newMessage.trim() || pendingAttachments.length) && (!runActive || canSteer))}
+        onInput={handleTextareaInput}
+        onPaste={handleComposerPaste}
+        onDrop={handleComposerDrop}
+        onKeydown={handleComposerKeydown}
+        onSend={() => sendMessage()}
+        onCancelReply={cancelReply}
+        onRemoveAttachment={removePendingAttachment}
+        onMentionPick={chooseMention}
+        onCancelEdit={cancelEditing}
+        onToggleDeepSearch={() => (deepSearchActive = !deepSearchActive)}
+        onToggleThink={() => (thinkActive = !thinkActive)}
+        onOpenGoal={openGoalDialog}
+        onAttachFile={attachFile}
+        onToggleVoice={toggleVoice}
+        onToggleVoiceMode={toggleVoiceMode}
+        onToggleAutoRead={toggleAutoRead}
+        onToggleTemp={() => (tempActive = !tempActive)}
+      />
       </div>
 
     </div>

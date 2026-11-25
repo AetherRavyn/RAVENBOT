@@ -749,7 +749,11 @@ impl GraphExecutor {
                 tid
             }
             _ => {
-                let thread = ravenbot_core::Thread::new(bot_id, &instruction);
+                let thread = ravenbot_core::Thread::new_internal(
+                    ravenbot_core::ThreadKind::Node,
+                    bot_id,
+                    &instruction,
+                );
                 ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
                     .await
                     .map_err(|e| e.to_string())?;

@@ -233,9 +233,17 @@ impl OllamaProvider {
 
         if !response.status().is_success() {
             let status = response.status();
+            let retry_after = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
             let body = response.text().await.unwrap_or_default();
+            let suffix = retry_after
+                .map(|value| format!(" (retry-after: {value})"))
+                .unwrap_or_default();
             return Err(ModelError::Provider(format!(
-                "Ollama error {}: {}",
+                "Ollama error {}: {}{suffix}",
                 status, body
             )));
         }

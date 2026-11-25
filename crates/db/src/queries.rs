@@ -382,8 +382,8 @@ impl ThreadQueries {
         thread: &ravenbot_core::Thread,
     ) -> Result<(), sqlx::Error> {
         sqlx::query(
-            "INSERT INTO threads (id, bot_id, title, is_active, ephemeral, channel_id, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            "INSERT INTO threads (id, bot_id, title, is_active, ephemeral, channel_id, kind, visible, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         .bind(thread.id.to_string())
         .bind(thread.bot_id.to_string())
@@ -391,6 +391,8 @@ impl ThreadQueries {
         .bind(thread.is_active)
         .bind(thread.ephemeral)
         .bind(thread.channel_id.map(|u| u.to_string()))
+        .bind(thread.kind.as_str())
+        .bind(thread.visible)
         .bind(thread.created_at.to_rfc3339())
         .bind(thread.updated_at.to_rfc3339())
         .execute(pool)
@@ -427,6 +429,12 @@ impl ThreadQueries {
                         .channel_id
                         .as_deref()
                         .and_then(|s| Uuid::parse_str(s).ok()),
+                    kind: row
+                        .kind
+                        .as_deref()
+                        .map(ravenbot_core::ThreadKind::from_db)
+                        .unwrap_or_default(),
+                    visible: row.visible.unwrap_or(1) != 0,
                     created_at,
                     updated_at,
                 }))
@@ -466,6 +474,12 @@ impl ThreadQueries {
                         .channel_id
                         .as_deref()
                         .and_then(|s| Uuid::parse_str(s).ok()),
+                    kind: row
+                        .kind
+                        .as_deref()
+                        .map(ravenbot_core::ThreadKind::from_db)
+                        .unwrap_or_default(),
+                    visible: row.visible.unwrap_or(1) != 0,
                     created_at,
                     updated_at,
                 }
@@ -473,6 +487,28 @@ impl ThreadQueries {
             .collect();
 
         Ok(threads)
+    }
+
+    /// Threads the chat switcher should show. Internal node/delegation/routine
+    /// threads stay queryable by id but never appear in an agent's history.
+    pub async fn list_visible_by_bot(
+        pool: &SqlitePool,
+        bot_id: Uuid,
+    ) -> Result<Vec<ravenbot_core::Thread>, sqlx::Error> {
+        Ok(Self::list_by_bot(pool, bot_id)
+            .await?
+            .into_iter()
+            .filter(|thread| thread.visible)
+            .collect())
+    }
+
+    /// Whether a thread belongs in the user-facing history.
+    pub async fn is_visible(pool: &SqlitePool, thread_id: Uuid) -> Result<bool, sqlx::Error> {
+        let row: Option<(i64,)> = sqlx::query_as("SELECT visible FROM threads WHERE id = ?")
+            .bind(thread_id.to_string())
+            .fetch_optional(pool)
+            .await?;
+        Ok(row.map(|(visible,)| visible != 0).unwrap_or(false))
     }
 }
 
@@ -9468,6 +9504,34 @@ mod message_page_tests {
             .unwrap()
             .expect("thread");
         assert_eq!(unchanged.title, "a".repeat(200));
+    }
+
+    #[tokio::test]
+    async fn internal_threads_are_kept_out_of_the_chat_list() {
+        let pool = db().await;
+        let bot = ravenbot_core::Bot::new("Threads", "visibility test");
+        BotQueries::insert(&pool, &bot).await.unwrap();
+        let chat = ravenbot_core::Thread::new(bot.id, "Chat");
+        let node =
+            ravenbot_core::Thread::new_internal(ravenbot_core::ThreadKind::Node, bot.id, "Node");
+        ThreadQueries::create(&pool, &chat).await.unwrap();
+        ThreadQueries::create(&pool, &node).await.unwrap();
+
+        let visible = ThreadQueries::list_visible_by_bot(&pool, bot.id)
+            .await
+            .unwrap();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].id, chat.id);
+        assert!(!ThreadQueries::is_visible(&pool, node.id).await.unwrap());
+        assert!(ThreadQueries::is_visible(&pool, chat.id).await.unwrap());
+        assert_eq!(
+            ThreadQueries::list_by_bot(&pool, bot.id)
+                .await
+                .unwrap()
+                .len(),
+            2,
+            "internal threads stay queryable by id"
+        );
     }
 
     #[tokio::test]

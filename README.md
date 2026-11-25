@@ -342,10 +342,10 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **981 Rust tests** across the workspace, including 210 Tauri/command tests,
-  240 runtime tests, 170 skill tests, 102 database tests, 35 memory tests, 33 MCP
-  tests, and 15 remote-access tests.
-- **792 frontend tests** across 123 files.
+- **986 Rust tests** across the workspace, including 210 Tauri/command tests,
+  243 runtime tests, 170 skill tests, 103 database tests, 68 core tests, 35
+  memory tests, 33 MCP tests, and 15 remote-access tests.
+- **810 frontend tests** across 124 files.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
   `npm run check`, and `npm test` are the local gates.
 - CI runs the Rust workspace, the Docker sandbox live test, frontend checks, the

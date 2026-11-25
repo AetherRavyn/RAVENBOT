@@ -4,6 +4,9 @@ export type BotStatus = "idle" | "thinking" | "running_tool" | "waiting_on_user"
 
 export type SandboxTier = "os_level" | "docker" | "host";
 
+/** Rust `ApprovalMode`, serialized with `#[serde(rename_all = "snake_case")]`. */
+export type ApprovalMode = "ask" | "auto" | "full";
+
 export type Permission =
   | { FileSystem: { paths: string[] } }
   | { Network: { domains: string[] } }
@@ -24,6 +27,16 @@ export interface BotConfig {
   max_tokens: number | null;
   temperature: number | null;
   custom_prompt: string | null;
+  /** Maximum model↔tool rounds per run (null = runtime default). */
+  max_tool_rounds: number | null;
+  /** Preferred text-to-speech voice id (null = engine default). */
+  voice_id: string | null;
+  /** Read this bot's replies aloud automatically as they land. */
+  auto_read: boolean;
+  /** Allow this agent to control the host computer (mouse/keyboard). */
+  host_control: boolean;
+  /** Project folder this agent works in (null = inherit office/channel). */
+  working_folder: string | null;
 }
 
 export interface Bot {
@@ -31,21 +44,50 @@ export interface Bot {
   name: string;
   description: string;
   avatar_color: string;
+  /** DiceBear or custom avatar URL; animated via CSS when DiceBear. */
+  avatar_url: string | null;
+  /** DiceBear style (avataaars, bottts, personas, lorelei, ...). */
+  avatar_style: string | null;
+  /** Rank in office (e.g. CTO, Tech Lead). */
+  rank: string | null;
+  /** Specialty / role lane. */
+  specialty: string | null;
   status: BotStatus;
   config: BotConfig;
   permissions: Permission[];
   is_orchestrator: boolean;
   delegate_to: string[];
+  /** Enabled skill ids (empty = all built-ins enabled). */
+  skills: string[];
+  approval_mode: ApprovalMode;
   created_at: string;
   updated_at: string;
   last_active_at: string | null;
 }
+
+/** Rust `ThreadKind`, serialized snake_case. */
+export type ThreadKind =
+  | "chat"
+  | "office"
+  | "delegation"
+  | "routine"
+  | "node"
+  | "channel"
+  | "goal";
 
 export interface Thread {
   id: string;
   bot_id: string;
   title: string;
   is_active: boolean;
+  /** Ephemeral thread: skip agent-memory persistence (RAG, self-review). */
+  ephemeral: boolean;
+  /** Channel (context) this thread is filed under, if any. */
+  channel_id: string | null;
+  /** What created this thread. */
+  kind: ThreadKind;
+  /** Whether the thread belongs in the user-facing history list. */
+  visible: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -60,6 +102,10 @@ export interface Attachment {
   mime_type: string;
   size: number;
   path: string;
+  /** Inline base64 payload for pasted/dropped images sent without disk IO. */
+  data?: string | null;
+  /** Whether this attachment is an image the model can see. */
+  is_image?: boolean;
 }
 
 export interface ChecklistItem {
@@ -116,6 +162,8 @@ export interface ToolTrace {
   is_error?: boolean;
   /** Wall-clock milliseconds. A slow turn is usually one slow call. */
   duration_ms?: number | null;
+  /** User-configured per-call price for a paid tool, when one exists. */
+  cost?: number | null;
 }
 
 export interface TraceSpan {
@@ -169,6 +217,10 @@ export interface Run {
   outcome: any | null;
   tokens_consumed: number;
   cost_estimate: number;
+  /** Portion spent on interactive model calls. */
+  model_cost: number;
+  /** Portion spent on paid tool calls. */
+  tool_cost: number;
   created_at: string;
   updated_at: string;
   completed_at: string | null;
@@ -191,6 +243,164 @@ export interface Budget {
   period: BudgetPeriod;
   created_at: string;
   updated_at: string;
+}
+
+// ── Cross-fleet inbox ───────────────────────────────────────────────────────
+
+export type AttentionKind = "approval" | "question" | "queue" | "alert";
+export type AttentionFilter = "all" | AttentionKind;
+
+/**
+ * One item in the global attention inbox.
+ *
+ * Mirrors the Rust `AttentionItem` projection (src-tauri/src/lib.rs): approvals,
+ * questions, office queue rows, and budget alerts all share this shape. `state`
+ * is intentionally open — the backend may grow new queue states — while `kind`
+ * stays a closed union because the inbox groups and filters on it.
+ */
+export interface AttentionItem {
+  id: string;
+  kind: AttentionKind;
+  bot_id: string | null;
+  bot_name: string;
+  thread_id: string | null;
+  office_id: string | null;
+  office_name: string | null;
+  title: string;
+  detail: string;
+  risk: string | null;
+  /** `pending`, `running`, or `failed`; intentionally open for future states. */
+  state: string;
+  question_kind: string | null;
+  /** `budget` for an office health alert. */
+  alert_kind?: string | null;
+  percent?: number | null;
+  budget?: number | null;
+  cost?: number | null;
+  created_at: string;
+}
+
+// ── Run liveness ────────────────────────────────────────────────────────────
+
+/** Rust `RunProgress` (crates/db/src/queries.rs): liveness for one run. */
+export interface RunProgress {
+  run_id: string;
+  thread_id: string;
+  state: string;
+  phase: string;
+  last_tool: string | null;
+  last_error: string | null;
+  /** Answers "is it still moving?"; `updated_at` only changes on state. */
+  heartbeat_at: string | null;
+  lease_owner: string | null;
+  lease_expires_at: string | null;
+  updated_at: string;
+}
+
+// ── Office board ────────────────────────────────────────────────────────────
+
+export interface BoardNode {
+  nodeId: string;
+  botId: string;
+  label: string;
+  /** Node ids this task waits on (resolved deps from `plan_ready`). */
+  dependsOn: string[];
+  state: "pending" | "running" | "done" | "failed" | "skipped";
+  preview?: string;
+  /** Thread this node streams on; used to re-check liveness after a reload. */
+  nodeThreadId?: string;
+}
+
+export interface BotTodo {
+  id: string;
+  task: string;
+  done: boolean;
+}
+
+/** One row from the durable work ledger (previous cycles included). */
+export interface BoardWorkItem {
+  id: string;
+  title: string;
+  status: string;
+  owner_bot_id?: string | null;
+  attempts?: number;
+  max_attempts?: number;
+  error?: string | null;
+  result?: string | null;
+}
+
+/** Persisted office-board snapshot returned by `get_office_board`. */
+export interface OfficeBoard {
+  goal: string;
+  nodes: BoardNode[];
+  /** Node threads whose latest run is still non-terminal. */
+  liveNodeThreads?: string[];
+}
+
+// ── Scheduler ───────────────────────────────────────────────────────────────
+
+/** Rust `Routine` (crates/core/src/routine.rs). */
+export interface Routine {
+  id: string;
+  bot_id: string;
+  name: string;
+  description: string;
+  schedule: string;
+  instruction: string;
+  is_enabled: boolean;
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+// ── Connectors (MCP servers) ────────────────────────────────────────────────
+
+export type McpTransport = "stdio" | "http";
+
+/** One BYOC credential input, mirrors Rust `EnvField`. */
+export interface EnvField {
+  key: string;
+  label: string;
+  description: string;
+  required: boolean;
+  secret?: boolean;
+  placeholder?: string;
+}
+
+/** Rust `McpServerSummary` (crates/mcp/src/servers.rs). */
+export interface McpServerSummary {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  icon: string;
+  command: string;
+  args: string[];
+  env_keys: string[];
+  env_fields: EnvField[];
+  url: string | null;
+  transport: McpTransport;
+  enabled: boolean;
+  is_custom: boolean;
+  /** Whether the launcher package was found by the catalog audit. */
+  verified: boolean;
+  env_configured: boolean;
+  assigned_bot_ids: string[];
+  tools_count: number;
+}
+
+/** The app calls MCP servers "connectors"; same wire shape. */
+export type Connector = McpServerSummary;
+
+// ── App status ──────────────────────────────────────────────────────────────
+
+/** Rust `StatusInfo` returned by `get_status`. */
+export interface StatusInfo {
+  active_bots: number;
+  running_tasks: number;
+  session_tokens: number;
+  session_cost: number;
+  kill_switch_active: boolean;
 }
 
 // IPC Command types

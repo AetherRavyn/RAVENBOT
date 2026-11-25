@@ -4,6 +4,46 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### P2 scale and correctness
+
+- **Chat views split** — `ThreadView` (4,696 → 3,853 lines) now delegates its
+  header, HITL cards, search
+  and composer to `ThreadHeader`, `ThreadHITL`, `ThreadSearch` and
+  `ThreadComposer`; `ChatRoomView` (4,442 → 4,038) delegates office HITL, its
+  composer/queue capsule and the office header to `OfficeHITL`, `OfficeComposer`
+  and `OfficeHeader`. Chat rows, traces, source chips, the office board and the
+  DAG were already standalone.
+- **Thread visibility** — migration 76 adds `threads.kind` and
+  `threads.visible`. Node, delegation, routine, channel-task and office group
+  threads stay queryable by id and render in their owning surface, but
+  `list_threads`/remote history hide them and self-review skips them. Existing
+  rows are classified by the title/office-link conventions they already used.
+- **IPC enums match the frontend** — `BotStatus`, `SandboxTier` and `RunState`
+  now serialize snake_case, with aliases for old PascalCase checkpoints and
+  payloads. This fixes pause/resume and status labels reading a value the UI
+  never matched.
+- **Checkpoint image references** — paused-run checkpoints externalize inline
+  images to `cache/checkpoint-images` (0600 files, hashed names) and keep a
+  reference; resume rehydrates them. A checkpoint no longer copies base64
+  screenshots into SQLite or backups.
+- **Tool write locks** — mutating tools serialize per target path, while shell,
+  git, Docker, database and package operations share one global lock. Reads
+  remain concurrent, so one round cannot interleave two writes to the same file.
+- **Retry-After** — provider error messages now include the HTTP `Retry-After`
+  header, and 408/425 join the retryable set alongside the existing 429/5xx and
+  body parsing.
+- **Context accounting** — image inputs cost 1,024 tokens each in the compaction
+  estimate instead of being invisible.
+- **Live status** — `get_status` reports active/running runs and today's token
+  and cost totals instead of hardcoded zeroes.
+- **IPC decoders/types** — `types.ts` now covers threads, messages, attention,
+  runs, boards, routines and connectors; `ipc/decode.ts` safely normalizes
+  malformed lists at the Tauri boundary and is wired into attention, threads,
+  office messages and status.
+- **Eval evidence** — the existing five deterministic agent-task evals remain
+  the task-success suite; the IPC boundary gained 18 decoder tests and the
+  message-history helpers have focused unit coverage.
+
 ### P1 reliability and polish
 
 - **Load failures are visible and retryable** — 1:1 threads, office rooms, the

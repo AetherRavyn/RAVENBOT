@@ -346,29 +346,27 @@ working tree; the second is the remaining P0/P1 backlog.
 | **Resolved: team import URL mode** | preview fetched, import sent empty paste buffer | A successful preview imports the fetched Markdown. | The backend returns the fetched Markdown and the UI dispatches a fleet refresh. |
 | **Resolved: onboarding ready without keys** | `existingAgent` check ran before `hasKeys` | Setup no longer claims readiness when no provider can answer. | The key check runs first and the local fallback is used instead of an invented cloud model. |
 
-### 4.4 Remaining P2 — quality and scale
+### 4.4 P2 — quality and scale
 
-- `ThreadView` and `ChatRoomView` are still ~3k-line monoliths; split by chat
-  row, composer, header, HITL, trace, and search.
-- Transcripts load in cursor-paginated pages, hydrate rows independently (one
-  malformed message becomes a placeholder), resolve reply targets across pages,
-  and skip off-screen layout with `content-visibility`. A hand-written measured
-  virtualizer is not used because the page/window bound is 50/30 rows.
-- Internal node/routine/delegation threads pollute `list_threads` and
-  self-review. Add a `threads.kind`/visibility flag.
-- `types.ts` covers only a subset of payloads; most components use `any`.
-  Generate types from the Rust IPC contract or add runtime decoders.
-- `run.checkpoint` used to persist full base64 images forever; `Run::complete`
-  now clears it, but paused checkpoints still need image references instead of
-  bytes.
-- Compaction is truncation, not summarization; it always keeps the last 12
-  messages and ignores image tokens.
-- Tool calls in one round run with unbounded parallelism; mutating tools can
-  race file writes/git. Add read-vs-write classification and per-path locks.
-- Retry classification is substring-based and ignores `Retry-After`.
-- `get_status` returns hardcoded task/token/cost fields.
-- Memory `LocalEmbedding` remains a hash, not a model.
-- No agent-task eval suite; 500+ tests prove plumbing, not task success.
+> **Update:** the P2 backlog below has been worked through. The only deliberate
+> boundary left is the local embedding model: RAVENBOT ships a lexical feature
+> model and uses Ollama/OpenAI for true semantics, because bundling a neural
+> model would add tens of megabytes to every build.
+
+| Area | Resolution |
+|---|---|
+| **Split the chat monoliths** | `ThreadView` (4,696 → 3,853 lines) delegates its header, HITL cards, in-thread search and floating composer to `ThreadHeader`, `ThreadHITL`, `ThreadSearch` and `ThreadComposer`; `ChatRoomView` (4,442 → 4,038) delegates office HITL, its composer/queue capsule and the office header to `OfficeHITL`, `OfficeComposer` and `OfficeHeader`. `ChatMessageRow`, `TurnTrace`, `SourceChips`, `OfficeBoard` and `PlanDag` were already independent. |
+| **Transcript loading** | Cursor pages, reply-target hydration across pages, per-row placeholders for malformed rows and `content-visibility` are covered by `messagePaging`, `replyResolution`, `decode` and virtual-row tests. The 50/30 page window is intentional; the measured virtualizer is not needed at that bound. |
+| **Internal thread pollution** | Migration 76 adds `threads.kind` and `threads.visible`; node/delegation/routine/channel-task/office-group threads stay queryable by id but are hidden from `list_threads`, remote history and self-review. |
+| **IPC types** | `types.ts` covers threads, messages, attention, runs, boards, routines and connectors. `ipc/decode.ts` safely normalizes malformed list rows and is wired into attention, thread history, office messages and status. Remaining `any` is local optimistic UI state, not the IPC boundary. |
+| **Paused checkpoint images** | Image bytes are externalized to hashed 0600 files under `cache/checkpoint-images`; the checkpoint stores `checkpoint:<hash>` and resume rehydrates it. `Run::complete` still drops the checkpoint. |
+| **Compaction** | The runtime already asks the model for a structured handoff summary; image inputs now contribute 1,024 tokens each to the compaction estimate instead of being invisible. |
+| **Mutating-tool races** | Mutating tools serialize per target path; shell/git/Docker/database/package/computer tools share one global lock. Reads remain concurrent. |
+| **Retry classification** | `Retry-After` headers are included in provider errors and parsed; 408/425 join 429/5xx, with permanent auth/payment/protocol failures excluded. |
+| **Live status** | `get_status` reports distinct active bots, running tasks and today's token/cost totals from the run ledger instead of hardcoded zeroes. |
+| **Local embedding** | Accepted boundary: the default is a fast offline lexical feature model; semantic recall is opt-in through Ollama or an OpenAI-compatible embedding endpoint. The 50-fact hybrid benchmark remains 1.00 Recall@5. |
+| **Agent-task evals** | `crates/runtime/tests/agent_evals.rs` contains five deterministic end-to-end tasks (tool loop, partial stream, workflow loop, destructive denial, denied approval), backed by the unit suite. |
+
 
 ---
 

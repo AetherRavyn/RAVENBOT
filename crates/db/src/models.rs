@@ -115,6 +115,12 @@ pub struct ThreadRow {
     /// Added in migration 014 (nullable).
     #[sqlx(default)]
     pub channel_id: Option<String>,
+    /// Added in migration 076.
+    #[sqlx(default)]
+    pub kind: Option<String>,
+    /// Added in migration 076.
+    #[sqlx(default)]
+    pub visible: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -266,8 +272,8 @@ mod status_tests {
 
     #[test]
     fn the_stored_form_is_the_snake_case_the_frontend_expects() {
-        // The frontend switches on these exact strings, and `BotStatus` itself
-        // serialises as PascalCase because it has no serde rename.
+        // The frontend switches on these exact strings, and `BotStatus` now
+        // serialises to the same snake_case form at the IPC boundary.
         assert_eq!(bot_status_to_db(BotStatus::RunningTool), "running_tool");
         assert_eq!(
             bot_status_to_db(BotStatus::WaitingOnUser),

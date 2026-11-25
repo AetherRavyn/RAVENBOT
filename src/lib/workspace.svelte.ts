@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { announce } from "$lib/a11y";
 import { t } from "$lib/i18n";
 import { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
+import type { StatusInfo } from "$lib/types";
 
 export type RailDest =
   | "home"
@@ -158,7 +159,7 @@ class Workspace {
       try {
         this.chatrooms = await invoke("list_chatrooms");
       } catch {}
-      const status: any = await invoke("get_status");
+      const status = await invoke<StatusInfo>("get_status");
       this.killSwitchActive = status.kill_switch_active;
     } catch (e) {
       console.error("Failed to load data:", e);

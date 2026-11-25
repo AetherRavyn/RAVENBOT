@@ -32,6 +32,7 @@ use ravenbot_plugins::PluginRegistry;
 use ravenbot_sandbox::KillSwitch;
 use ravenbot_skills::{SkillContext, SkillKind, SkillRegistry};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use thiserror::Error;
@@ -406,6 +407,57 @@ fn tool_needs_approval(
     }
 }
 
+/// Which write lock a tool call needs, if any.
+///
+/// File tools serialize per target path; anything that can mutate arbitrary
+/// state (shell, git, Docker, database, package managers, remote SSH) takes the
+/// single global key. Read-only tools return `None` and keep running in
+/// parallel with everything else.
+fn tool_write_key(name: &str, args: &serde_json::Value) -> Option<String> {
+    const GLOBAL: &[&str] = &[
+        "shell_exec",
+        "git",
+        "docker",
+        "db_query",
+        "task_runner",
+        "package_manager",
+        "ssh_remote",
+        "computer_control",
+        "image_gen",
+        "browser_dom",
+    ];
+    if GLOBAL.contains(&name) {
+        return Some("global".to_string());
+    }
+    let file_tool = matches!(
+        name,
+        "file_write"
+            | "file_edit"
+            | "code_edit"
+            | "apply_patch"
+            | "edit_file"
+            | "write_file"
+            | "write_text_file"
+            | "create_file"
+            | "append_file"
+            | "file_delete"
+            | "make_document"
+            | "make_slides"
+    );
+    if !file_tool {
+        return None;
+    }
+    let path = ["path", "file_path", "output", "output_path"]
+        .iter()
+        .find_map(|key| args.get(*key).and_then(|value| value.as_str()))
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    Some(match path {
+        Some(path) => format!("path:{path}"),
+        None => "global".to_string(),
+    })
+}
+
 /// Keeps a run's heartbeat fresh while one long call is in flight.
 ///
 /// A model round or a tool can take minutes without changing the run's state,
@@ -502,6 +554,8 @@ pub struct Runtime {
     cancel_flags: std::sync::Mutex<HashSet<Uuid>>,
     /// Runs requested to pause at the next tool-round boundary (resumable).
     pause_flags: std::sync::Mutex<HashSet<Uuid>>,
+    /// Per-path / global locks for mutating tools in one tool round.
+    tool_write_locks: std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     /// Cross-run request pacing for model providers.
     provider_governor: governor::ProviderGovernor,
     /// Active thread runs and messages steered into their next tool boundary.
@@ -1250,6 +1304,7 @@ impl Runtime {
             force_compaction: std::sync::Mutex::new(HashSet::new()),
             cancel_flags: std::sync::Mutex::new(HashSet::new()),
             pause_flags: std::sync::Mutex::new(HashSet::new()),
+            tool_write_locks: std::sync::Mutex::new(HashMap::new()),
             provider_governor: governor::ProviderGovernor::default(),
             steering: std::sync::Mutex::new(SteeringState::default()),
         }
@@ -1294,6 +1349,23 @@ impl Runtime {
             .lock()
             .map(|flags| flags.contains(&run_id))
             .unwrap_or(false)
+    }
+
+    /// The lock a mutating tool must hold for this round. Unknown tools are
+    /// reads and take no lock; file tools key on their path, while shell/git/
+    /// Docker/database tools serialize globally because they can touch anything.
+    fn tool_write_lock(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .tool_write_locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if locks.len() > 256 {
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+        }
+        locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Build the ordered provider chain: primary (or test override) followed by
@@ -2521,7 +2593,8 @@ impl Runtime {
         }
 
         // Run the instruction through the real runtime in a fresh thread
-        let thread = ravenbot_core::Thread::new(
+        let thread = ravenbot_core::Thread::new_internal(
+            ravenbot_core::ThreadKind::Delegation,
             target.id,
             format!(
                 "Delegation: {}",
@@ -4734,13 +4807,14 @@ impl Runtime {
         }
 
         // Load thread to get the ephemeral flag (temporary chats skip memory)
-        let thread_row: Option<(bool,)> =
-            sqlx::query_as("SELECT ephemeral FROM threads WHERE id = ?")
+        let thread_row: Option<(bool, bool)> =
+            sqlx::query_as("SELECT ephemeral, visible FROM threads WHERE id = ?")
                 .bind(run.thread_id.to_string())
                 .fetch_optional(self.db.pool())
                 .await
                 .unwrap_or(None);
-        let thread_ephemeral = thread_row.map(|(e,)| e).unwrap_or(false);
+        let thread_ephemeral = thread_row.map(|(e, _)| e).unwrap_or(false);
+        let thread_visible = thread_row.map(|(_, visible)| visible).unwrap_or(true);
 
         // Get the bot for this run
         let bot = ravenbot_db::queries::BotQueries::get(self.db.pool(), run.bot_id)
@@ -5766,13 +5840,17 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
         // in the transcript) and continue from where it stopped.
         let mut resumed_rounds = 0u32;
         if run.state == ravenbot_core::RunState::Paused {
-            if let Some(restored) = run
+            let restored = run
                 .checkpoint
                 .as_ref()
                 .and_then(|cp| cp.state_data.get("model_messages"))
-                .and_then(|v| serde_json::from_value::<Vec<Message>>(v.clone()).ok())
-                .filter(|m| !m.is_empty())
-            {
+                .cloned()
+                .and_then(|mut value| {
+                    restore_checkpoint_images(&mut value);
+                    serde_json::from_value::<Vec<Message>>(value).ok()
+                })
+                .filter(|messages| !messages.is_empty());
+            if let Some(restored) = restored {
                 resumed_rounds = run
                     .checkpoint
                     .as_ref()
@@ -5991,10 +6069,7 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
             // of the previous round; `resume_run` re-enters from that state.
             if self.is_pause_requested(run.id) {
                 if run.checkpoint.is_none() {
-                    run.checkpoint(serde_json::json!({
-                        "model_messages": &model_messages,
-                        "rounds": resumed_rounds,
-                    }));
+                    run.checkpoint(checkpoint_state(&model_messages, resumed_rounds));
                 }
                 self.park_run_paused(run).await?;
                 return Ok(());
@@ -6368,6 +6443,14 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
                         arguments = %tool_call.arguments,
                         "Executing tool"
                     );
+                    // Serialize mutating tools. Reads still run in parallel, and
+                    // two writes to the same file cannot interleave. The guard
+                    // lives for exactly one tool call.
+                    let _write_guard = match tool_write_key(&tool_call.name, &tool_call.arguments)
+                    {
+                        Some(key) => Some(self_ref.tool_write_lock(&key).lock_owned().await),
+                        None => None,
+                    };
                     let json = self_ref
                         .execute_tool_call(
                             bot_ref,
@@ -6544,10 +6627,10 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
             // Checkpoint the in-flight loop state so a pause/crash can resume
             // it (the transcript does not contain native tool results).
             let rounds_used = total_tool_rounds.saturating_sub(max_tool_rounds);
-            run.checkpoint(serde_json::json!({
-                "model_messages": &model_messages,
-                "rounds": resumed_rounds + rounds_used,
-            }));
+            run.checkpoint(checkpoint_state(
+                &model_messages,
+                resumed_rounds + rounds_used,
+            ));
             let _ = ravenbot_db::queries::RunQueries::update(self.db.pool(), run).await;
             self.touch_run_progress(run.id, "checkpoint", None).await;
 
@@ -6893,8 +6976,10 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
         // Save to database
         ravenbot_db::queries::RunQueries::update(self.db.pool(), run).await?;
 
-        // Self-review and memory update (skipped for ephemeral threads)
-        if !thread_ephemeral {
+        // Self-review and memory update (skipped for ephemeral and internal
+        // threads: a delegation or node run is traceable, not a conversation
+        // the owner asked the assistant to learn from).
+        if !thread_ephemeral && thread_visible {
             if let Ok(review) = self.self_reviewer.review_run(run).await {
                 if !review.memory_updates.is_empty() {
                     let _ = self
@@ -7124,6 +7209,119 @@ fn estimate_text_tokens(text: &str) -> u64 {
     (text.chars().count() as u64).div_ceil(4)
 }
 
+/// Where paused-run image payloads live instead of the database.
+fn checkpoint_image_dir() -> std::path::PathBuf {
+    ravenbot_core::raven_root().join("cache/checkpoint-images")
+}
+
+fn image_content_hash(base64_data: &str) -> String {
+    let digest = Sha256::digest(base64_data.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Replace inline image bytes in a checkpoint with a content reference.
+///
+/// A paused run's model messages can contain several screenshots. `Run::complete`
+/// drops the checkpoint, but while paused the full base64 blobs would sit in
+/// `runs.checkpoint` and be copied into every backup. The original data is
+/// written once under `cache/checkpoint-images` and the checkpoint keeps a
+/// hash; [`restore_checkpoint_images`] rehydrates it on resume.
+fn externalize_checkpoint_images(value: &mut serde_json::Value) {
+    externalize_checkpoint_images_in(value, &checkpoint_image_dir());
+}
+
+fn externalize_checkpoint_images_in(value: &mut serde_json::Value, dir: &std::path::Path) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let is_image = map
+                .get("mime")
+                .and_then(|mime| mime.as_str())
+                .is_some_and(|mime| mime.starts_with("image/"));
+            if is_image {
+                if let Some(serde_json::Value::String(data)) = map.get_mut("data") {
+                    if data.len() > 2_000 {
+                        let hash = image_content_hash(data);
+                        let path = dir.join(format!("{hash}.b64"));
+                        if !path.exists() && std::fs::create_dir_all(dir).is_ok() {
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(
+                                    dir,
+                                    std::fs::Permissions::from_mode(0o700),
+                                );
+                            }
+                            if std::fs::write(&path, data.as_bytes()).is_ok() {
+                                #[cfg(unix)]
+                                {
+                                    use std::os::unix::fs::PermissionsExt;
+                                    let _ = std::fs::set_permissions(
+                                        &path,
+                                        std::fs::Permissions::from_mode(0o600),
+                                    );
+                                }
+                            }
+                        }
+                        if path.exists() {
+                            *data = format!("checkpoint:{hash}");
+                        }
+                    }
+                }
+            }
+            for child in map.values_mut() {
+                externalize_checkpoint_images_in(child, dir);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                externalize_checkpoint_images_in(child, dir);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn restore_checkpoint_images(value: &mut serde_json::Value) {
+    restore_checkpoint_images_from(value, &checkpoint_image_dir());
+}
+
+fn restore_checkpoint_images_from(value: &mut serde_json::Value, dir: &std::path::Path) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let is_image = map
+                .get("mime")
+                .and_then(|mime| mime.as_str())
+                .is_some_and(|mime| mime.starts_with("image/"));
+            if is_image {
+                if let Some(serde_json::Value::String(data)) = map.get_mut("data") {
+                    if let Some(hash) = data.strip_prefix("checkpoint:") {
+                        let path = dir.join(format!("{hash}.b64"));
+                        *data = std::fs::read_to_string(&path).unwrap_or_default();
+                    }
+                }
+            }
+            for child in map.values_mut() {
+                restore_checkpoint_images_from(child, dir);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for child in items {
+                restore_checkpoint_images_from(child, dir);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn checkpoint_state(model_messages: &[Message], rounds: u32) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "model_messages": model_messages,
+        "rounds": rounds,
+    });
+    externalize_checkpoint_images(&mut value);
+    value
+}
+
 /// Estimated tokens for one model message (content + native tool calls).
 fn estimate_message_tokens(msg: &ravenbot_models::Message) -> u64 {
     let mut total = estimate_text_tokens(&msg.content) + 4;
@@ -7131,6 +7329,11 @@ fn estimate_message_tokens(msg: &ravenbot_models::Message) -> u64 {
         total += estimate_text_tokens(&tc.name);
         total += estimate_text_tokens(&tc.arguments.to_string());
     }
+    // Vision input is not text: the provider bills a fixed image budget for
+    // each image, and a compaction that counted only the surrounding words
+    // would leave the next request over the model window. One kilotoken per
+    // image is a deliberate conservative estimate across providers.
+    total += msg.images.len() as u64 * 1_024;
     total
 }
 
@@ -8006,6 +8209,8 @@ fn is_retryable_model_error(err: &str) -> bool {
         || e.contains("rate limited")
         || e.contains("rate limit")
         || e.contains("429")
+        || e.contains("408")
+        || e.contains("425")
         || e.contains("500")
         || e.contains("502")
         || e.contains("503")
@@ -8239,6 +8444,8 @@ mod source_tests {
         assert!(is_retryable_model_error(
             "Rate limited, retry after 3 seconds"
         ));
+        assert!(is_retryable_model_error("HTTP 408 Request Timeout"));
+        assert!(is_retryable_model_error("HTTP 425 Too Early"));
         assert!(!is_retryable_model_error(
             "OpenRouter API key not configured"
         ));
@@ -14026,5 +14233,72 @@ mod incomplete_stream_tests {
         assert!(last.contains("ended before completion"));
         drop(db);
         let _ = std::fs::remove_file(db_path);
+    }
+}
+
+#[cfg(test)]
+mod p2_quality_tests {
+    use super::*;
+
+    #[test]
+    fn mutating_tools_take_path_or_global_locks() {
+        assert_eq!(
+            tool_write_key("file_write", &serde_json::json!({"path": "/tmp/a"})),
+            Some("path:/tmp/a".to_string())
+        );
+        assert_eq!(
+            tool_write_key("file_write", &serde_json::json!({"path": "/tmp/b"})),
+            Some("path:/tmp/b".to_string())
+        );
+        assert_eq!(
+            tool_write_key("shell_exec", &serde_json::json!({"command": "ls"})),
+            Some("global".to_string())
+        );
+        assert_eq!(
+            tool_write_key("file_read", &serde_json::json!({"path": "/tmp/a"})),
+            None
+        );
+        assert_eq!(
+            tool_write_key(
+                "make_document",
+                &serde_json::json!({"output": "/tmp/x.docx"})
+            ),
+            Some("path:/tmp/x.docx".to_string())
+        );
+    }
+
+    #[test]
+    fn image_input_counts_against_the_context_budget() {
+        let text_only = estimate_message_tokens(&Message::text("user", "hello"));
+        let with_image =
+            estimate_message_tokens(&Message::text("user", "hello").with_images(vec![
+                ravenbot_models::MessageImage {
+                    data: "AAAA".to_string(),
+                    mime: "image/png".to_string(),
+                },
+            ]));
+        assert_eq!(with_image - text_only, 1_024);
+    }
+
+    #[test]
+    fn checkpoint_images_are_replaced_by_a_reference_and_restored() {
+        let dir = std::env::temp_dir().join(format!(
+            "ravenbot-checkpoint-images-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let payload = format!("data:image/png;base64,{}", "A".repeat(4_000));
+        let mut value = serde_json::json!({
+            "mime": "image/png",
+            "data": payload,
+        });
+        externalize_checkpoint_images_in(&mut value, &dir);
+        let reference = value["data"].as_str().unwrap_or_default();
+        assert!(reference.starts_with("checkpoint:"));
+        assert!(!reference.contains("AAAA"));
+        assert!(dir.read_dir().unwrap().next().is_some());
+
+        restore_checkpoint_images_from(&mut value, &dir);
+        assert_eq!(value["data"].as_str(), Some(payload.as_str()));
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -5,24 +5,34 @@ use uuid::Uuid;
 
 /// State of a task execution
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
 pub enum RunState {
     /// Plan the next action
+    #[serde(alias = "Planning")]
     Planning,
     /// Execute an action
+    #[serde(alias = "Acting")]
     Acting,
     /// Observe the result
+    #[serde(alias = "Observing")]
     Observing,
     /// Reflect on the outcome
+    #[serde(alias = "Reflecting")]
     Reflecting,
     /// Waiting for user input
+    #[serde(alias = "WaitingOnUser")]
     WaitingOnUser,
     /// Paused by user
+    #[serde(alias = "Paused")]
     Paused,
     /// Completed successfully
+    #[serde(alias = "Completed")]
     Completed,
     /// Failed
+    #[serde(alias = "Failed")]
     Failed,
     /// Cancelled by user
+    #[serde(alias = "Cancelled")]
     Cancelled,
 }
 

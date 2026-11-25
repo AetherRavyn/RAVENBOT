@@ -9,35 +9,15 @@
  */
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { decodeAttentionItems } from "$lib/ipc/decode";
+import type { AttentionItem } from "$lib/types";
 import {
   deliverAttentionEmail,
   deliverAttentionWebhook,
   notifyAttentionItem,
 } from "$lib/notifications";
 
-export type AttentionKind = "approval" | "question" | "queue" | "alert";
-export type AttentionFilter = "all" | AttentionKind;
-
-export interface AttentionItem {
-  id: string;
-  kind: AttentionKind;
-  bot_id: string | null;
-  bot_name: string;
-  thread_id: string | null;
-  office_id: string | null;
-  office_name: string | null;
-  title: string;
-  detail: string;
-  risk: string | null;
-  state: "pending" | "running" | "failed" | string;
-  question_kind: string | null;
-  /** `budget` for an office health alert. */
-  alert_kind?: string | null;
-  percent?: number | null;
-  budget?: number | null;
-  cost?: number | null;
-  created_at: string;
-}
+export type { AttentionFilter, AttentionItem, AttentionKind } from "$lib/types";
 
 /** Broadcast after a local action that changes the inbox before the stream catches up. */
 export const ATTENTION_CHANGED_EVENT = "ravenbot:attention-changed";
@@ -78,8 +58,11 @@ class AttentionStore {
     this.loading = true;
     this.error = null;
     try {
-      const rows = await invoke<AttentionItem[]>("list_attention_items");
-      const next = Array.isArray(rows) ? rows : [];
+      const rows = await invoke<unknown>("list_attention_items");
+      // The IPC boundary is untyped in practice: a row from an older backend
+      // can be missing fields. Decode once here so the store and every consumer
+      // (Sidebar, inbox, notifications) read a complete item.
+      const next = decodeAttentionItems(rows);
       const keys = new Set(next.map(attentionKey));
       if (this.primed) {
         for (const item of next) {

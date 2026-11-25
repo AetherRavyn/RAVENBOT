@@ -1109,7 +1109,7 @@ async fn threads(
     State(state): State<Arc<RemoteState>>,
     Query(query): Query<ThreadsQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let threads = ThreadQueries::list_by_bot(&state.pool, query.bot_id)
+    let threads = ThreadQueries::list_visible_by_bot(&state.pool, query.bot_id)
         .await
         .map_err(|error| ApiError::internal("list threads", error))?;
     Ok(Json(json!({

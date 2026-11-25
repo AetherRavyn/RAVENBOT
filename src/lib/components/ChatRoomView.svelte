@@ -64,9 +64,9 @@
     type MentionSigil,
     type MentionToken,
   } from "$lib/chat/mentions";
-  import ComposerMentionMenu from "$lib/components/chat/ComposerMentionMenu.svelte";
-  import ApprovalCard from "$lib/components/chat/ApprovalCard.svelte";
-  import InteractionBlockCard from "$lib/components/chat/InteractionBlock.svelte";
+  import OfficeHITL from "$lib/components/chat/OfficeHITL.svelte";
+  import OfficeComposer from "$lib/components/chat/OfficeComposer.svelte";
+  import OfficeHeader from "$lib/components/chat/OfficeHeader.svelte";
   import type {
     InteractionBlock as InteractionBlockPayload,
     QuestionKind,
@@ -74,9 +74,7 @@
   import PlanDag from "$lib/components/chat/PlanDag.svelte";
   import OfficeBoard from "$lib/components/chat/OfficeBoard.svelte";
   import WorkflowLibrary from "$lib/components/chat/WorkflowLibrary.svelte";
-  import OfficeTaskCard from "$lib/components/chat/OfficeTaskCard.svelte";
   import WorkItemDrawer from "$lib/components/chat/WorkItemDrawer.svelte";
-  import AwaitingReplies from "$lib/components/chat/AwaitingReplies.svelte";
   import type { BoardNode, BotTodo, BoardWorkItem } from "$lib/components/chat/OfficeBoard.svelte";
   import RunTimelineStrip from "$lib/components/chat/RunTimeline.svelte";
   import { RunTimeline as RunTimelineState } from "$lib/chat/runTimeline.svelte";
@@ -91,9 +89,9 @@
   import { reasoning } from "$lib/chat/reasoning.svelte";
   import { contextUsage, type ContextUsage } from "$lib/chat/contextUsage.svelte";
   import { persistedContextUsage } from "$lib/chat/contextPersistence";
-  import ContextMeter from "$lib/components/chat/ContextMeter.svelte";
   import ImageGallery from "$lib/components/chat/ImageGallery.svelte";
   import SourceChips from "$lib/components/chat/SourceChips.svelte";
+  import { decodeMessages } from "$lib/ipc/decode";
   import FileAttachmentCard from "$lib/components/chat/FileAttachmentCard.svelte";
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
   import { StreamReveal } from "$lib/chat/streamReveal.svelte";
@@ -104,34 +102,21 @@
     Send,
     Sparkles,
     CheckCircle2,
-    XCircle,
     Loader2,
     Circle,
     ArrowRight,
     AlertTriangle,
-    Play,
-    Pause,
     Shield,
     Workflow,
     Layers,
     Cpu,
     Wrench,
     Server,
-    Paperclip,
-    Mic,
     Terminal,
-    Settings,
-    ArrowUp,
     ArrowDown,
     Copy,
     Check,
     Brain,
-    ListOrdered,
-    Reply,
-    Search,
-    ChevronUp,
-    ChevronDown,
-    X,
   } from "@lucide/svelte";
 
   interface Props {
@@ -1124,7 +1109,7 @@
       limit: MESSAGE_PAGE_SIZE,
     });
     hasEarlier = !!page?.has_more;
-    const messages = Array.isArray(page?.messages) ? page.messages : [];
+    const messages = decodeMessages(page?.messages);
     void resolveReplyTargets(targetThread, messages);
     return messages;
   }
@@ -1144,7 +1129,7 @@
           beforeId: oldestMessageId(messages),
           limit: MESSAGE_PAGE_SIZE,
         });
-        const older = Array.isArray(page?.messages) ? page.messages : [];
+        const older = decodeMessages(page?.messages);
         hasEarlier = !!page?.has_more;
         if (older.length === 0) return;
         messages = mergeOlderMessages(messages, older);
@@ -2377,6 +2362,17 @@
     return false;
   }
 
+  function handleComposerKeydown(event: KeyboardEvent) {
+    if (handleMentionKeydown(event)) return;
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      send();
+    } else if (event.key === "Escape" && replyingTo) {
+      event.preventDefault();
+      cancelReply();
+    }
+  }
+
   async function send(taskText?: string) {
     if (sessionRole.role === "viewer") return;
     const typed = (taskText || newMessage).trim();
@@ -2532,24 +2528,6 @@
     }
   }
 
-  // Header roster: live per-member activity from the global fleet state machine
-  function rosterRing(act: "working" | "attention" | "responded" | "idle"): string {
-    switch (act) {
-      case "working": return "ring-2 ring-[var(--brand)]";
-      case "attention": return "ring-2 ring-warning";
-      case "responded": return "ring-2 ring-success";
-      default: return "ring-1 ring-[var(--brand)]/40";
-    }
-  }
-  function rosterDot(act: "working" | "attention" | "responded" | "idle"): string {
-    switch (act) {
-      case "working": return "bg-[var(--brand)] animate-pulse";
-      case "attention": return "bg-warning animate-pulse";
-      case "responded": return "bg-success";
-      default: return "";
-    }
-  }
-
   function formatTime(isoStr: string) {
     if (!isoStr) return "";
     try {
@@ -2654,197 +2632,38 @@
        chips did. The four action buttons lost their resting borders for the
        same reason: four equally weighted boxes were the loudest thing on the
        bar. -->
-  <header class="px-4 py-2.5 border-b border-[var(--hairline)] bg-[var(--surface-0)] flex items-center gap-3 z-10 shrink-0">
-    <div class="size-9 rounded-xl overflow-hidden bg-[var(--surface-3)] shrink-0">
-      <RavenAvatar name={room.name} imageUrl={room.avatar_url} style={room.avatar_style} />
-    </div>
-
-    <div class="min-w-0">
-      <div class="flex items-center gap-2 min-w-0">
-        <span class="font-semibold text-sm text-[var(--text-primary)] truncate">{room.name}</span>
-        <span class="text-[11px] px-1.5 py-0.5 rounded bg-[var(--surface-3)] text-[var(--text-tertiary)] capitalize shrink-0">
-          {(room.office_template || "custom").replace("-", " ")}
-        </span>
-        <button
-          type="button"
-          class="text-[11px] px-1.5 py-0.5 rounded border shrink-0 inline-flex items-center gap-1 cursor-pointer transition-colors disabled:opacity-60 {autonomyOn
-            ? 'bg-success/10 text-success border-success/20 hover:bg-success/20'
-            : 'bg-[var(--surface-3)] text-[var(--text-muted)] border-[var(--hairline)] hover:text-[var(--text-secondary)]'}"
-          title={autonomyOn ? t("room.autonomyOnTip") : t("room.autonomyOffTip")}
-          aria-pressed={autonomyOn}
-          disabled={autonomyBusy}
-          onclick={() => void toggleAutonomy()}
-        >
-          {#if autonomyOn}
-            <span class="size-1.5 rounded-full bg-success" aria-hidden="true"></span>
-          {:else}
-            <Pause class="size-2.5" strokeWidth={2} />
-          {/if}
-          {autonomyOn ? t("room.autonomous") : t("room.autonomyPaused")}
-        </button>
-        {#if officeActive || sending}
-          <button
-            type="button"
-            class="text-[11px] px-1.5 py-0.5 rounded border shrink-0 inline-flex items-center gap-1 cursor-pointer bg-[var(--danger-soft)] text-[var(--danger-text)] border-[var(--danger-border)] hover:bg-[var(--danger-soft-hover)]"
-            title="Stop the active office run"
-            aria-label="Stop the active office run"
-            onclick={() => void stopOfficeTurn()}
-          >
-            <XCircle class="size-2.5" strokeWidth={2} />
-            Stop
-          </button>
-        {/if}
-      </div>
-      <!-- One meta line. The lane is a fact about the office, not a status
-           claim — the dot carries the status, so an idle office no longer
-           wears a green "running" badge. Cost appears only once there is
-           some; "$0.0000 · 0 tok" is not information. -->
-      <div class="flex items-center gap-1.5 text-[11px] text-[var(--text-muted)] mt-0.5 min-w-0">
-        <span class={cn("size-1.5 rounded-full shrink-0", teamActive || officeActive ? "bg-success" : "bg-[var(--text-faint)]")} aria-hidden="true"></span>
-        <span class="shrink-0">{t("room.parallelLane")}</span>
-        <span class="text-[var(--text-faint)]">·</span>
-        <span class="truncate">{members.length === 1 ? t("room.specialistAssigned", { n: members.length }) : t("room.specialistsAssigned", { n: members.length })}</span>
-        {#if officeTokens > 0}
-          <span class="text-[var(--text-faint)]">·</span>
-          <span class="font-mono tabular-nums shrink-0" title={t("room.telemetry")}>
-            ${officeCost.toFixed(4)} · {officeTokens.toLocaleString()} tok
-          </span>
-        {/if}
-      </div>
-    </div>
-
-    <div class="flex items-center gap-1 ml-auto shrink-0">
-      <!-- The roster. The face follows the work, so a glance shows which agent
-           is thinking, which needs an answer, and which failed — without
-           reading a label. Clicking one opens its manage sheet. -->
-      <div class="flex -space-x-1.5 mr-1">
-        {#each members.slice(0, 6) as m}
-          {@const botId = m.bot?.id ?? ""}
-          {@const act = fleetActivity.get(botId)}
-          <button
-            type="button"
-            class="relative size-7 shrink-0 rounded-full transition-transform hover:scale-110 hover:z-10 cursor-pointer"
-            onclick={() => openManageAgent(m)}
-            title={`${m.bot?.name || m.rank} — ${m.specialty} (click to manage)`}
-          >
-            <RavenAvatar
-              name={m.bot?.name || m.rank}
-              mood={fleetActivity.mood(botId)}
-              imageUrl={m.bot?.avatar_url}
-              style={m.bot?.avatar_style}
-              decorative
-              class={cn("size-full rounded-full", rosterRing(act))}
-            />
-            {#if act !== "idle"}
-              <span class={cn("absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-[var(--surface-0)]", rosterDot(act))}></span>
-            {/if}
-          </button>
-        {/each}
-        {#if members.length > 6}
-          <div class="size-7 rounded-full bg-[var(--surface-3)] text-[11px] font-bold text-[var(--text-tertiary)] flex items-center justify-center">
-            +{members.length - 6}
-          </div>
-        {/if}
-      </div>
-
-      <div class="relative">
-        <button
-          type="button"
-          onclick={() => (roomSearchOpen ? closeRoomSearch() : openRoomSearch())}
-          class="icon-btn size-8 {roomSearchOpen ? 'text-[var(--brand-text)] bg-[var(--brand-soft)]' : ''}"
-          title={t("thread.searchInThread")}
-          aria-label={t("thread.searchInThread")}
-          aria-expanded={roomSearchOpen}
-        >
-          <Search class="size-4" />
-        </button>
-
-        {#if roomSearchOpen}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-          <div
-            class="thread-search"
-            role="search"
-            onkeydown={(event) => {
-              if (event.key === "Escape") {
-                event.preventDefault();
-                closeRoomSearch();
-              }
-            }}
-          >
-            <Search class="thread-search__icon size-3.5" aria-hidden="true" />
-            <input
-              bind:this={roomSearchInput}
-              class="thread-search__input"
-              type="search"
-              value={roomSearchQuery}
-              placeholder={t("thread.searchMessages")}
-              aria-label={t("thread.searchMessages")}
-              oninput={onRoomSearchInput}
-              onkeydown={(event) => {
-                if (event.key === "Enter") {
-                  event.preventDefault();
-                  stepRoomSearch(event.shiftKey ? -1 : 1);
-                }
-              }}
-            />
-            <span class="thread-search__count" aria-live="polite">
-              {#if roomSearchMatches.length}
-                {t("thread.searchCount", {
-                  current: roomSearchPosition + 1,
-                  total: roomSearchMatches.length,
-                })}
-              {:else if roomSearchQuery.trim()}
-                {t("thread.searchNoResults")}
-              {/if}
-            </span>
-            <button
-              type="button"
-              class="thread-search__button"
-              disabled={!roomSearchMatches.length}
-              onclick={() => stepRoomSearch(-1)}
-              aria-label={t("thread.searchPrevious")}
-              title={t("thread.searchPrevious")}
-            >
-              <ChevronUp class="size-3.5" />
-            </button>
-            <button
-              type="button"
-              class="thread-search__button"
-              disabled={!roomSearchMatches.length}
-              onclick={() => stepRoomSearch(1)}
-              aria-label={t("thread.searchNext")}
-              title={t("thread.searchNext")}
-            >
-              <ChevronDown class="size-3.5" />
-            </button>
-            <button
-              type="button"
-              class="thread-search__button"
-              onclick={closeRoomSearch}
-              aria-label={t("thread.searchClose")}
-              title={t("thread.searchClose")}
-            >
-              <X class="size-3.5" />
-            </button>
-          </div>
-        {/if}
-      </div>
-
-      <button type="button" onclick={() => openHireModal()} class="icon-btn size-8" title={t("room.hire")} aria-label={t("room.hire")}>
-        <Users class="size-4" />
-      </button>
-      <button type="button" onclick={() => (showOfficeMemory = true)} class="icon-btn size-8" title={t("memory.title")} aria-label={t("memory.title")}>
-        <Brain class="size-4" />
-      </button>
-      <button type="button" onclick={() => openPlanModal()} class="icon-btn size-8" title={t("room.plan")} aria-label={t("room.plan")}>
-        <Workflow class="size-4" />
-      </button>
-      <button type="button" onclick={() => (showOfficeSettings = true)} class="icon-btn size-8" title={t("room.settings")} aria-label={t("room.settings")}>
-        <Settings class="size-4" />
-      </button>
-    </div>
-  </header>
+  <OfficeHeader
+    roomName={room.name}
+    roomAvatarUrl={room.avatar_url}
+    roomAvatarStyle={room.avatar_style}
+    officeTemplate={room.office_template}
+    {members}
+    {autonomyOn}
+    {autonomyBusy}
+    {officeActive}
+    {sending}
+    {teamActive}
+    {officeTokens}
+    {officeCost}
+    {roomSearchOpen}
+    {roomSearchQuery}
+    roomSearchMatchCount={roomSearchMatches.length}
+    {roomSearchPosition}
+    bind:roomSearchInput
+    activityFor={(botId) => fleetActivity.get(botId)}
+    moodFor={(botId) => fleetActivity.mood(botId)}
+    onToggleAutonomy={toggleAutonomy}
+    onStopOffice={stopOfficeTurn}
+    onManageAgent={openManageAgent}
+    onOpenSearch={openRoomSearch}
+    onCloseSearch={closeRoomSearch}
+    onSearchInput={onRoomSearchInput}
+    onStepSearch={stepRoomSearch}
+    onHire={openHireModal}
+    onMemory={() => (showOfficeMemory = true)}
+    onPlan={openPlanModal}
+    onSettings={() => (showOfficeSettings = true)}
+  />
 
   <!-- Below the office header: conversation on the left, the board docked on
        the right. The board used to consume a full-width strip above the chat,
@@ -3164,31 +2983,15 @@
         {/if}
 
         <!-- Human-in-the-loop cards from office nodes -->
-        {#each pendingApprovals as ap (ap.id)}
-          <ApprovalCard
-            botName={agentNameFor(ap.bot_id)}
-            toolName={ap.tool_name}
-            toolLabel={ap.tool_label}
-            args={ap.arguments}
-            risk={ap.risk}
-            deciding={decidingApproval === ap.id}
-            onDecide={(allowed) => decideApproval(ap.id, allowed)}
-          />
-        {/each}
-
-        {#each pendingQuestions as q (q.id)}
-          <InteractionBlockCard
-            botName={agentNameFor(q.bot_id)}
-            header={q.header}
-            question={q.question}
-            options={q.options || []}
-            allowCustom={q.allow_custom !== false}
-            kind={q.kind || "question"}
-            payload={q.payload || null}
-            answering={answeringQuestion === q.id}
-            onAnswer={(answer) => answerQuestion(q.id, answer)}
-          />
-        {/each}
+        <OfficeHITL
+          approvals={pendingApprovals}
+          questions={pendingQuestions}
+          botNameFor={agentNameFor}
+          decidingApproval={decidingApproval}
+          answeringQuestion={answeringQuestion}
+          onDecide={decideApproval}
+          onAnswer={answerQuestion}
+        />
 
         <!--
           Agent-to-agent handoffs, in flight.
@@ -3422,251 +3225,44 @@
     </div>
 
     <!-- Grok Floating Capsule Compose Bar -->
-    <div class="p-4 bg-[var(--surface-0)] shrink-0">
-      <div class="relative max-w-3xl lg:max-w-4xl xl:max-w-5xl mx-auto rounded-2xl border border-[var(--hairline)] bg-[var(--surface-1)]  p-3 shadow-2xl transition-all duration-200 focus-within:border-[var(--brand)]">
-        {#if boardNodes.length > 0}
-          <OfficeTaskCard
-            nodes={boardNodes}
-            nameFor={agentNameFor}
-            onOpen={openBoardNodeThread}
-          />
-        {/if}
-        <AwaitingReplies
-          items={threadHandoffs}
-          nameFor={agentNameFor}
-          onOpen={openHandoffThread}
-        />
-        {#if queueItems.length > 0 || queuePaused}
-          <div class="office-queue" aria-label={t("room.queueTitle", { count: queueItems.length })}>
-            <div class="office-queue-head">
-              <span class="office-queue-title">
-                <ListOrdered class="size-3.5" />
-                {t("room.queueTitle", { count: queueItems.length })}
-                {#if queuePaused}<span class="office-queue-paused">{t("room.queuePaused")}</span>{/if}
-              </span>
-              <button
-                type="button"
-                class="office-queue-toggle"
-                disabled={queueBusy}
-                onclick={() => void toggleQueuePause()}
-              >
-                {#if queuePaused}<Play class="size-3" />{:else}<Pause class="size-3" />{/if}
-                {queuePaused ? t("room.queueResume") : t("room.queuePause")}
-              </button>
-            </div>
-            {#if queueItems.length === 0}
-              <p class="office-queue-empty">{t("room.queueEmpty")}</p>
-            {:else}
-              {#each queueItems as item, index (item.id)}
-                <div class="office-queue-item" data-state={item.state}>
-                  <span class="office-queue-index">{index + 1}</span>
-                  {#if item.state === "pending"}
-                    <span class="office-queue-move">
-                      <button
-                        type="button"
-                        class="office-queue-move-button"
-                        aria-label={t("room.queueRunNext")}
-                        title={t("room.queueRunNext")}
-                        disabled={queueBusy}
-                        onclick={() => void runQueueItemNext(item)}
-                      >
-                        <Play class="size-3" />
-                      </button>
-                      <button
-                        type="button"
-                        class="office-queue-move-button"
-                        aria-label={t("room.queueMoveUp")}
-                        title={t("room.queueMoveUp")}
-                        disabled={!canMoveQueueItem(item, -1)}
-                        onclick={() => void moveQueueItem(item, -1)}
-                      >
-                        <ArrowUp class="size-3" />
-                      </button>
-                      <button
-                        type="button"
-                        class="office-queue-move-button"
-                        aria-label={t("room.queueMoveDown")}
-                        title={t("room.queueMoveDown")}
-                        disabled={!canMoveQueueItem(item, 1)}
-                        onclick={() => void moveQueueItem(item, 1)}
-                      >
-                        <ArrowDown class="size-3" />
-                      </button>
-                    </span>
-                  {/if}
-                  <span class="office-queue-text" title={item.visible || item.content}>
-                    {item.visible || item.content}
-                  </span>
-                  {#if item.attachment_names?.length}
-                    <span class="office-queue-attachments" title={item.attachment_names.join(", ")}>
-                      <Paperclip class="size-3" />{item.attachment_names.length}
-                    </span>
-                  {/if}
-                  {#if item.state === "running"}
-                    <span class="office-queue-state">
-                      <Loader2 class="size-3 animate-spin" />{t("room.queueRunning")}
-                    </span>
-                  {:else if item.state === "failed"}
-                    <span class="office-queue-state office-queue-state--failed" title={item.error || ""}>
-                      {t("room.queueFailed")}
-                    </span>
-                    <button
-                      type="button"
-                      class="office-queue-remove"
-                      aria-label={t("room.queueCancel")}
-                      title={t("room.queueCancel")}
-                      disabled={queueBusy}
-                      onclick={() => void removeQueueItem(item)}
-                    >✕</button>
-                  {:else}
-                    <button
-                      type="button"
-                      class="office-queue-remove"
-                      aria-label={t("room.queueCancel")}
-                      title={t("room.queueCancel")}
-                      disabled={queueBusy}
-                      onclick={() => void removeQueueItem(item)}
-                    >✕</button>
-                  {/if}
-                </div>
-              {/each}
-            {/if}
-          </div>
-        {/if}
-        {#if activeReply}
-          <div class="composer-reply">
-            <Reply class="composer-reply__icon size-3.5" strokeWidth={1.9} />
-            <div class="composer-reply__copy">
-              <span class="composer-reply__author">
-                {activeReply.author
-                  ? t("thread.replyingTo", { name: activeReply.author })
-                  : t("thread.replyingToMessage")}
-              </span>
-              {#if activeReply.text}
-                <span class="composer-reply__text">{activeReply.text}</span>
-              {/if}
-            </div>
-            <button
-              type="button"
-              class="composer-reply__close"
-              onclick={cancelReply}
-              aria-label={t("thread.cancelReply")}
-              title={t("thread.cancelReply")}
-            >
-              <X class="size-3.5" />
-            </button>
-          </div>
-        {/if}
-        {#if pendingAttachments.length}
-          <div class="flex flex-wrap gap-1.5 pb-2">
-            {#each pendingAttachments as att, idx}
-              {#if att.isImage}
-                <div class="relative size-12 rounded-lg overflow-hidden border border-[var(--hairline-strong)] bg-[var(--surface-2)]">
-                  <img src={`data:${att.mime};base64,${att.data}`} alt={att.name} class="size-full object-cover" />
-                  <button type="button" class="absolute top-0.5 right-0.5 size-4 rounded-full bg-[var(--scrim)] text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} title={t("room.removeAttachment")}>✕</button>
-                </div>
-              {:else}
-                <div class="relative flex items-center gap-1.5 h-12 max-w-[200px] pl-2.5 pr-6 rounded-lg border border-[var(--hairline-strong)] bg-[var(--surface-2)]" title={att.name}>
-                  <Paperclip class="size-3.5 text-[var(--brand-text)] shrink-0" />
-                  <div class="min-w-0">
-                    <div class="text-[11px] text-[var(--text-secondary)] truncate">{att.name}</div>
-                    <div class="text-[11px] text-[var(--text-muted)] font-mono uppercase">{att.mime.split("/").pop()}</div>
-                  </div>
-                  <button type="button" class="absolute top-1 right-1 size-4 rounded-full bg-[var(--scrim)] text-[var(--text-primary)] text-[11px] flex items-center justify-center cursor-pointer hover:bg-danger/80" onclick={() => removePendingAttachment(idx)} aria-label={t("room.removeAttachment")} title={t("room.removeAttachment")}>✕</button>
-                </div>
-              {/if}
-            {/each}
-          </div>
-        {/if}
-        {#if addressedTo}
-          <div class="composer-addressee" role="status">
-            <span class="composer-addressee__sigil">@</span>
-            <span class="composer-addressee__label">{t("room.addressedTo", { name: addressedTo.label })}</span>
-            <button
-              type="button"
-              class="composer-addressee__clear"
-              aria-label={t("room.clearAddressee")}
-              title={t("room.clearAddressee")}
-              onclick={clearAddressee}
-            >✕</button>
-          </div>
-        {/if}
-        {#if mentionOpen}
-          <ComposerMentionMenu
-            sigil={mentionSigil}
-            items={mentionItems}
-            activeIndex={mentionIndex}
-            onPick={chooseMention}
-          />
-        {/if}
-        <textarea
-          bind:this={composerRef}
-          bind:value={newMessage}
-          aria-label="Message"
-          placeholder={members.length === 0
-            ? t("room.hireFirstPh")
-            : t("room.taskPh", { name: room.name, n: members.length })}
-          rows={1}
-          class="w-full bg-transparent text-xs sm:text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none min-h-[44px] max-h-40 leading-relaxed font-sans"
-          oninput={handleComposerInput}
-          onkeydown={(e) => {
-            if (handleMentionKeydown(e)) return;
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            } else if (e.key === "Escape" && replyingTo) {
-              e.preventDefault();
-              cancelReply();
-            }
-          }}
-        ></textarea>
-
-        <!-- Action Toolbar Inside Capsule -->
-        <div class="flex items-center justify-between pt-2 border-t border-[var(--hairline)] mt-1">
-          <div class="flex items-center gap-1.5">
-            <button
-              type="button"
-              class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center transition-colors cursor-pointer"
-              onclick={attachFile}
-              title={t("home.attach")}
-            >
-              <Paperclip class="size-3.5" />
-            </button>
-
-            <button
-              type="button"
-              class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {isListening ? 'text-danger bg-danger/20 border border-danger/50 animate-pulse shadow-sm' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-              onclick={toggleVoice}
-              title={isListening ? "Listening... (Click to stop speech-to-text)" : "Voice input (Speech-to-Text)"}
-            >
-              <Mic class="size-3.5" />
-            </button>
-
-            <ContextMeter usage={officeContext} class="ml-1" />
-            <span class="text-[11px] font-mono text-[var(--text-muted)] ml-1">
-              {members.length} Parallel Agents Assigned
-            </span>
-          </div>
-
-          <button
-            type="button"
-            onclick={() => send()}
-            disabled={((!newMessage.trim() && pendingAttachments.length === 0) || sending || members.length === 0)}
-            class="h-8 px-4 rounded-full flex items-center gap-1.5 transition-all duration-200 cursor-pointer font-semibold text-xs {(newMessage.trim() || pendingAttachments.length) && !sending && members.length > 0
-              ? 'btn-brand text-[var(--text-primary)] hover:scale-[1.03] active:scale-95'
-              : 'bg-[var(--surface-3)] text-[var(--text-muted)] cursor-not-allowed'}"
-          >
-            {#if sending}
-              <Loader2 class="size-3.5 animate-spin" />
-              <span>{t("activity.working")}</span>
-            {:else}
-              <ArrowUp class="size-3.5 stroke-[2.5]" />
-              <span>{t("room.dispatch")}</span>
-            {/if}
-          </button>
-        </div>
-      </div>
-    </div>
+    <OfficeComposer
+      nodes={boardNodes}
+      handoffs={threadHandoffs}
+      {queueItems}
+      {queuePaused}
+      {queueBusy}
+      nameFor={agentNameFor}
+      onOpenNode={openBoardNodeThread}
+      onOpenHandoff={openHandoffThread}
+      onToggleQueue={toggleQueuePause}
+      onRunQueueNext={runQueueItemNext}
+      canMoveQueueItem={canMoveQueueItem}
+      onMoveQueueItem={moveQueueItem}
+      onRemoveQueueItem={removeQueueItem}
+      reply={activeReply}
+      onCancelReply={cancelReply}
+      attachments={pendingAttachments}
+      onRemoveAttachment={removePendingAttachment}
+      addressee={addressedTo}
+      onClearAddressee={clearAddressee}
+      {mentionOpen}
+      {mentionSigil}
+      {mentionItems}
+      {mentionIndex}
+      onPickMention={chooseMention}
+      bind:draft={newMessage}
+      bind:composerRef
+      onInput={handleComposerInput}
+      onKeydown={handleComposerKeydown}
+      {sending}
+      memberCount={members.length}
+      roomName={room.name}
+      contextUsage={officeContext}
+      {isListening}
+      onAttach={attachFile}
+      onToggleVoice={toggleVoice}
+      onSend={send}
+    />
   </div>
     </div>
   </div>

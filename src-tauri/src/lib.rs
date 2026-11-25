@@ -4155,7 +4155,7 @@ async fn create_thread(
 
 #[tauri::command]
 async fn list_threads(state: State<'_, AppState>, bot_id: Uuid) -> Result<Vec<Thread>, String> {
-    ravenbot_db::queries::ThreadQueries::list_by_bot(state.db.pool(), bot_id)
+    ravenbot_db::queries::ThreadQueries::list_visible_by_bot(state.db.pool(), bot_id)
         .await
         .map_err(|e| e.to_string())
 }
@@ -4422,7 +4422,11 @@ pub(crate) async fn execute_routine_instruction_with_context(
     routine: &ravenbot_core::Routine,
     context: Option<&serde_json::Value>,
 ) -> Result<(), String> {
-    let thread = Thread::new(routine.bot_id, format!("Routine: {}", routine.name));
+    let thread = Thread::new_internal(
+        ThreadKind::Routine,
+        routine.bot_id,
+        format!("Routine: {}", routine.name),
+    );
     ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
         .await
         .map_err(|e| e.to_string())?;
@@ -5255,7 +5259,11 @@ async fn start_channel_task_inner(
     }
     let setup = async {
         let mut thread =
-            Thread::new(task.owner_bot_id, format!("Channel task: {}", task.title));
+            Thread::new_internal(
+            ThreadKind::Node,
+            task.owner_bot_id,
+            format!("Channel task: {}", task.title),
+        );
         thread.channel_id = Some(task.channel_id);
         ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
             .await
@@ -10714,17 +10722,35 @@ async fn resume_all(state: State<'_, AppState>) -> Result<(), String> {
 
 #[tauri::command]
 async fn get_status(state: State<'_, AppState>) -> Result<StatusInfo, String> {
-    let bots = ravenbot_db::queries::BotQueries::list(state.db.pool())
-        .await
-        .map_err(|e| e.to_string())?;
+    let running_states = "('planning','acting','observing','reflecting','waiting_on_user')";
+    let active_bots: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(DISTINCT bot_id) FROM runs WHERE state IN {running_states}"
+    ))
+    .fetch_one(state.db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+    let running_tasks: i64 = sqlx::query_scalar(&format!(
+        "SELECT COUNT(*) FROM runs WHERE state IN {running_states}"
+    ))
+    .fetch_one(state.db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
+    let (session_tokens, session_cost): (i64, f64) = sqlx::query_as(
+        "SELECT CAST(COALESCE(SUM(tokens_consumed), 0) AS INTEGER),
+                COALESCE(SUM(cost_estimate), 0)
+         FROM runs WHERE date(created_at) = date('now')",
+    )
+    .fetch_one(state.db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
 
     let kill_switch_active = state.runtime.is_paused().await;
 
     Ok(StatusInfo {
-        active_bots: bots.len() as u32,
-        running_tasks: 0,
-        session_tokens: 0,
-        session_cost: 0.0,
+        active_bots: active_bots.max(0) as u32,
+        running_tasks: running_tasks.max(0) as u32,
+        session_tokens: session_tokens.max(0) as u64,
+        session_cost: session_cost.max(0.0),
         kill_switch_active,
     })
 }
@@ -14161,7 +14187,11 @@ async fn ensure_chatroom_thread(
         .await
         .map_err(|e| e.to_string())?
         .ok_or("Chatroom not found")?;
-    let thread = Thread::new(first_bot, format!("{} — group", room.name));
+    let thread = Thread::new_internal(
+        ThreadKind::Office,
+        first_bot,
+        format!("{} — group", room.name),
+    );
     ravenbot_db::queries::ThreadQueries::create(pool, &thread)
         .await
         .map_err(|e| e.to_string())?;
