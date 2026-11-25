@@ -1133,6 +1133,23 @@ mod platform_contract_tests {
         assert!(runner.is_isolated());
         assert!(runner.network_isolated());
 
+        // A SIGABRT from sandbox-exec has no stderr. Run every profile prefix
+        // up front so a failure or a hang still leaves the offending rule in
+        // the log.
+        let sandbox_exec = match runner.backend() {
+            SandboxBackend::Seatbelt(path) => path,
+            _ => unreachable!("the runner was checked above"),
+        };
+        let profile = runner.seatbelt_profile(Some(&work));
+        let rules: Vec<&str> = profile.lines().collect();
+        for end in 1..=rules.len() {
+            let prefix = rules[..end].join("\n");
+            let result = std::process::Command::new(sandbox_exec)
+                .args(["-p", prefix.as_str(), "/bin/echo", "prefix-ok"])
+                .output();
+            eprintln!("profile prefix {end}: {result:?}");
+        }
+
         let script = format!(
             "cat marker.txt; \
              if cat '{}' >/dev/null 2>&1; then echo OUTSIDE-LEAK; else echo no-outside-read; fi; \
@@ -1151,11 +1168,6 @@ mod platform_contract_tests {
         let stderr = String::from_utf8_lossy(&out.stderr);
         use std::os::unix::process::ExitStatusExt;
         if !out.status.success() {
-            let sandbox_exec = match runner.backend() {
-                SandboxBackend::Seatbelt(path) => path,
-                _ => unreachable!("the runner was checked above"),
-            };
-            let profile = runner.seatbelt_profile(Some(&work));
             eprintln!(
                 "seatbelt status={:?} code={:?} signal={:?} stdout={stdout:?} stderr={stderr:?}",
                 out.status,
@@ -1198,16 +1210,6 @@ mod platform_contract_tests {
                 .args(["-p", profile.as_str(), "/bin/sh", "-c", "echo sh-ok"])
                 .status()
                 .ok();
-            // Find the first rule that makes the parser abort. A SIGABRT here
-            // has no stderr, so the prefix that first fails is the only clue.
-            let rules: Vec<&str> = profile.lines().collect();
-            for end in 1..=rules.len() {
-                let prefix = rules[..end].join("\n");
-                let result = std::process::Command::new(sandbox_exec)
-                    .args(["-p", prefix.as_str(), "/bin/echo", "prefix-ok"])
-                    .output();
-                eprintln!("profile prefix {end}: {result:?}");
-            }
         }
         assert!(
             out.status.success(),
