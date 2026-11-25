@@ -380,7 +380,7 @@
           </button>
           <button
             type="button"
-            aria-label="Refresh"
+            aria-label={t("a11y.refresh")}
             onclick={grab}
             disabled={loading}
             class="size-7 rounded-full bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer disabled:opacity-50"
@@ -391,7 +391,7 @@
         {/if}
         <button
           type="button"
-          aria-label="Close"
+          aria-label={t("ui.close")}
           onclick={onClose}
           class="size-7 rounded-full bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer"
           title={t("ui.close")}

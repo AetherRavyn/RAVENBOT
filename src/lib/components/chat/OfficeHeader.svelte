@@ -155,7 +155,7 @@
           type="button"
           class="text-[11px] px-1.5 py-0.5 rounded border shrink-0 inline-flex items-center gap-1 cursor-pointer bg-[var(--danger-soft)] text-[var(--danger-text)] border-[var(--danger-border)] hover:bg-[var(--danger-soft-hover)]"
           title="Stop the active office run"
-          aria-label="Stop the active office run"
+          aria-label={t("a11y.stopOfficeRun")}
           onclick={() => void onStopOffice()}
         >
           <XCircle class="size-2.5" strokeWidth={2} />

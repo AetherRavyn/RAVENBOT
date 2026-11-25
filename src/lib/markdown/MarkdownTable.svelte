@@ -91,7 +91,7 @@
     <button
       type="button"
       class="md-table-action"
-      aria-label="Copy table as Markdown"
+      aria-label={t("a11y.copyMarkdown")}
       onclick={() => exportTable("markdown")}
     >
       {#if copied === "markdown"}
@@ -105,7 +105,7 @@
     <button
       type="button"
       class="md-table-action"
-      aria-label="Copy table as CSV"
+      aria-label={t("a11y.copyCsv")}
       onclick={() => exportTable("csv")}
     >
       {#if copied === "csv"}

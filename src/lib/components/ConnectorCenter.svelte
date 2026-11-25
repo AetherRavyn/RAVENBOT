@@ -885,7 +885,7 @@
           <button
             type="button"
             class="absolute right-2.5 top-1/2 -translate-y-1/2 grid place-items-center size-6 text-[var(--text-muted)] hover:text-[var(--text-primary)] rounded-md hover:bg-[var(--surface-3)] cursor-pointer"
-            aria-label="Clear search"
+            aria-label={t("a11y.clearSearch")}
             title="Clear search"
             onclick={() => (query = "")}
           >

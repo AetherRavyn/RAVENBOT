@@ -903,12 +903,12 @@
         />
       </form>
 
-      <div class="browser-dock__zoom" role="group" aria-label="Page zoom">
+      <div class="browser-dock__zoom" role="group" aria-label={t("a11y.pageZoom")}>
         <button
           type="button"
           class="browser-dock__button"
           title="Zoom out"
-          aria-label="Zoom out"
+          aria-label={t("a11y.zoomOut")}
           onclick={() => void setZoom(zoom - 0.1)}
         >
           <ZoomOut class="size-3.5" />
@@ -926,7 +926,7 @@
           type="button"
           class="browser-dock__button"
           title="Zoom in"
-          aria-label="Zoom in"
+          aria-label={t("a11y.zoomIn")}
           onclick={() => void setZoom(zoom + 0.1)}
         >
           <ZoomIn class="size-3.5" />

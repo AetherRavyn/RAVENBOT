@@ -118,7 +118,7 @@
 
       <button
         type="button"
-        aria-label="Download"
+        aria-label={t("a11y.download")}
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={downloadArtifact}
         title={t("artifact.download")}
@@ -128,7 +128,7 @@
 
       <button
         type="button"
-        aria-label="Copy"
+        aria-label={t("a11y.copy")}
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={copyArtifact}
         title={t("artifact.copy")}
@@ -142,7 +142,7 @@
 
       <button
         type="button"
-        aria-label="Close"
+        aria-label={t("ui.close")}
         class="size-7 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:border-[var(--hairline-strong)] transition-colors cursor-pointer"
         onclick={onClose}
         title={t("artifact.close")}

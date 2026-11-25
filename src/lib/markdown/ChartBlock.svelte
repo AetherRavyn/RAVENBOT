@@ -11,6 +11,7 @@
    *   { "type": "bar", "title": "...", "labels": ["Q1"], "series": [{"name":"Revenue","values":[12]}] }
    * Also accepted: `data` rows with `x`/`y`/`series` keys, or a numeric array.
    */
+  import { t } from "$lib/i18n";
 
   interface Props {
     code: string;
@@ -585,7 +586,7 @@
 </script>
 
 {#if showSkeleton}
-  <figure class="md-chart md-chart--loading" aria-label="Chart is being written">
+  <figure class="md-chart md-chart--loading" aria-label={t("a11y.chartLoading")}>
     <div class="md-chart-skeleton">
       <span class="md-chart-skeleton-bar" style="height: 42%"></span>
       <span class="md-chart-skeleton-bar" style="height: 68%"></span>
@@ -596,7 +597,7 @@
     <figcaption>Building chart…</figcaption>
   </figure>
 {:else if parsed.error || !parsed.chart || !parsed.layout}
-  <figure class="md-chart md-chart--error" aria-label="Chart could not be rendered">
+  <figure class="md-chart md-chart--error" aria-label={t("a11y.chartError")}>
     <figcaption>Chart could not be rendered</figcaption>
     <p class="md-chart-error-text">{parsed.error}</p>
     <pre class="md-chart-source">{code}</pre>
@@ -736,7 +737,7 @@
     </svg>
 
     {#if layout.legend.length > 0 && chart.type !== "pie" && chart.type !== "donut"}
-      <div class="md-chart-legend" aria-label="Legend">
+      <div class="md-chart-legend" aria-label={t("a11y.legend")}>
         {#each layout.legend as item, index (index)}
           <span class="md-chart-legend-item">
             <span class="md-chart-swatch" style="background: {item.color}"></span>

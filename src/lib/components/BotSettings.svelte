@@ -1046,7 +1046,7 @@
               <input
                 type="checkbox"
                 bind:checked={isOrchestrator}
-                aria-label="Orchestrator mode"
+                aria-label={t("bot.orchestratorMode")}
                 class="size-4 accent-[var(--brand)] rounded cursor-pointer"
               />
             </div>

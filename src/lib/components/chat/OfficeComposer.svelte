@@ -305,7 +305,7 @@
     <textarea
       bind:this={composerRef}
       bind:value={draft}
-      aria-label="Message"
+      aria-label={t("a11y.message")}
       placeholder={memberCount === 0
         ? t("room.hireFirstPh")
         : t("room.taskPh", { name: roomName, n: memberCount })}

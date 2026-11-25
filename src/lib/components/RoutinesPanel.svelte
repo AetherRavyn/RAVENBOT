@@ -411,14 +411,14 @@
       <div class="grid grid-cols-2 gap-2">
         <input
           bind:value={newName}
-          aria-label="Routine name"
+          aria-label={t("routines.name")}
           placeholder={t("routines.name")}
           class="h-7 px-2.5 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
         />
         <div class="relative">
           <input
             bind:value={newSchedule}
-            aria-label="Schedule (cron expression)"
+            aria-label={t("a11y.scheduleCron")}
             placeholder={t("routines.schedule")}
             class="w-full h-7 px-2.5 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
           />
@@ -440,7 +440,7 @@
 
       <textarea
         bind:value={newInstruction}
-        aria-label="Instruction"
+        aria-label={t("a11y.instruction")}
         placeholder={t("routines.instruction")}
         rows={2}
         class="w-full px-2.5 py-2 rounded-lg bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
@@ -487,7 +487,7 @@
             <div class="flex items-center gap-1 shrink-0">
               <button
                 type="button"
-                aria-label="Run now"
+                aria-label={t("routines.runNow")}
                 class="size-5 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--brand-hover)] hover:border-[var(--brand)]/40 flex items-center justify-center cursor-pointer transition-colors"
                 onclick={() => runNow(routine)}
                 title={t("routines.runNow")}
@@ -496,7 +496,7 @@
               </button>
               <button
                 type="button"
-                aria-label="Toggle webhook"
+                aria-label={t("a11y.toggleWebhook")}
                 aria-pressed={!!webhookEnabled[routine.id]}
                 class="size-5 rounded-md border flex items-center justify-center cursor-pointer transition-colors {webhookEnabled[routine.id] ? 'bg-success/15 border-success/40 text-success' : 'bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-success hover:border-success/40'}"
                 onclick={() => toggleWebhook(routine)}
@@ -506,7 +506,7 @@
               </button>
               <button
                 type="button"
-                aria-label="MCP event triggers"
+                aria-label={t("routines.mcpEvents")}
                 aria-pressed={eventRoutineId === routine.id}
                 class="size-5 rounded-md border flex items-center justify-center cursor-pointer transition-colors {triggersFor(routine.id).length > 0 ? 'bg-[var(--brand-soft)] border-[var(--brand)]/40 text-[var(--brand-text)]' : 'bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-[var(--brand-text)] hover:border-[var(--brand)]/40'}"
                 onclick={() => toggleEventPanel(routine)}
@@ -516,7 +516,7 @@
               </button>
               <button
                 type="button"
-                aria-label="Delete routine"
+                aria-label={t("routines.delete")}
                 class="size-5 rounded-md bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-tertiary)] hover:text-danger hover:border-danger/40 flex items-center justify-center cursor-pointer transition-colors"
                 onclick={() => deleteRoutine(routine)}
                 title={t("routines.delete")}
@@ -558,7 +558,7 @@
                 </div>
                 <button
                   type="button"
-                  aria-label="Close MCP event triggers"
+                  aria-label={t("a11y.closeMcpEvents")}
                   class="size-5 shrink-0 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer"
                   onclick={() => (eventRoutineId = null)}
                 >
@@ -680,7 +680,7 @@
                 </div>
                 <button
                   type="button"
-                  aria-label="Copy webhook URL"
+                  aria-label={t("a11y.copyWebhookUrl")}
                   class="size-5 shrink-0 rounded-md bg-success/15 border border-success/40 text-success flex items-center justify-center cursor-pointer"
                   onclick={copyWebhook}
                   title={t("routines.copyUrl")}

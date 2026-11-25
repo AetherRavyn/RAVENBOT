@@ -35,6 +35,9 @@ Rules:
 4. A focusable control has a visible focus ring. A scroll container that is
    reachable by keyboard is focusable.
 5. Text never sits below the 11px floor. `type-scale.test.ts` enforces it.
+6. Every accessible name is translatable: use `aria-label={t("a11y.…")}` (or a
+   brand constant expression), never a literal English `aria-label`.
+   `scripts/check-aria-labels.mjs` rejects regressions.
 
 ## Chat grammar
 

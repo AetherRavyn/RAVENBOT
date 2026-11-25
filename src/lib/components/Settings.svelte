@@ -3156,7 +3156,7 @@
                 bind:value={lspConfigText}
                 rows={10}
                 spellcheck="false"
-                aria-label="Language server configuration JSON"
+                aria-label={t("a11y.lspConfig")}
                 class="w-full resize-y rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2 font-mono text-[11px] leading-relaxed text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/50"
               ></textarea>
               {#if lspConfigError}

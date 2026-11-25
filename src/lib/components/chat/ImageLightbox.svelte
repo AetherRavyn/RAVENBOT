@@ -6,6 +6,7 @@
    * events, so any renderer can open an image without owning modal state.
    * The native <dialog> supplies focus trapping and Escape handling.
    */
+  import { t } from "$lib/i18n";
   import { onMount } from "svelte";
   import { ChevronLeft, ChevronRight, Download, X } from "@lucide/svelte";
 
@@ -96,7 +97,7 @@
         <button
           type="button"
           class="image-lightbox-button"
-          aria-label="Previous image"
+          aria-label={t("a11y.previousImage")}
           onclick={() => go(-1)}
         >
           <ChevronLeft class="size-4" />
@@ -104,20 +105,20 @@
         <button
           type="button"
           class="image-lightbox-button"
-          aria-label="Next image"
+          aria-label={t("a11y.nextImage")}
           onclick={() => go(1)}
         >
           <ChevronRight class="size-4" />
         </button>
       {/if}
-      <button type="button" class="image-lightbox-button" aria-label="Download image" onclick={download}>
+      <button type="button" class="image-lightbox-button" aria-label={t("a11y.downloadImage")} onclick={download}>
         <Download class="size-4" />
       </button>
       <button
         bind:this={closeButton}
         type="button"
         class="image-lightbox-button"
-        aria-label="Close image"
+        aria-label={t("a11y.closeImage")}
         onclick={close}
       >
         <X class="size-4" />

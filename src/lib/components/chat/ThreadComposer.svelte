@@ -229,7 +229,7 @@
     <textarea
       bind:this={textarea}
       bind:value={draft}
-      aria-label="Message"
+      aria-label={t("a11y.message")}
       oninput={onInput}
       onpaste={onPaste}
       placeholder={hasPendingApprovals ? "Answer the approval above first…" : hasPendingQuestions ? "Answer the question above…" : `Ask anything, run code, or attach images to ${botName}...`}
@@ -317,7 +317,7 @@
           class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {isListening ? 'text-danger bg-danger/20 border border-danger/50 animate-pulse shadow-sm' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
           onclick={() => onToggleVoice()}
           aria-pressed={isListening}
-          aria-label="Voice input"
+          aria-label={t("home.voice")}
           title={isListening ? "Listening... (Click to stop speech-to-text)" : "Voice input (Speech-to-Text)"}
         >
           <Mic class="size-3.5" />
@@ -328,7 +328,7 @@
           class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {voiceMode ? 'text-success bg-success/20 border border-success/50 shadow-sm' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'} {speaking ? 'animate-pulse' : ''}"
           onclick={() => onToggleVoiceMode()}
           aria-pressed={voiceMode}
-          aria-label="Voice mode"
+          aria-label={t("a11y.voiceMode")}
           title={voiceMode ? "Voice mode on — click to stop (hands-free loop)" : "Voice mode: hands-free talk → response spoken aloud"}
         >
           <Volume2 class="size-3.5" />
@@ -352,7 +352,7 @@
           class="size-7 rounded-lg flex items-center justify-center transition-all cursor-pointer {tempActive ? 'text-warning bg-warning/15 border border-warning/40' : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
           onclick={() => onToggleTemp()}
           aria-pressed={tempActive}
-          aria-label="Temporary chat"
+          aria-label={t("a11y.temporaryChat")}
           title={tempActive ? "Temporary chat ON — new threads won't feed agent memory" : "Temporary chat: conversations won't feed agent memory"}
         >
           <Ghost class="size-3.5" />

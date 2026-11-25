@@ -669,7 +669,7 @@
                     <div class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)]">
                       <FolderOpen class="size-3.5 text-[var(--text-muted)] shrink-0" />
                       <span class="flex-1 min-w-0 text-[11px] font-mono text-[var(--text-secondary)] truncate" title={folder}>{folder}</span>
-                      <button type="button" class="text-[var(--text-muted)] hover:text-danger cursor-pointer shrink-0" aria-label="Remove folder" onclick={() => removeFolder(idx)} title={t("office.removeFolder")}>✕</button>
+                      <button type="button" class="text-[var(--text-muted)] hover:text-danger cursor-pointer shrink-0" aria-label={t("office.removeFolder")} onclick={() => removeFolder(idx)} title={t("office.removeFolder")}>✕</button>
                     </div>
                   {:else}
                     <div class="text-[11px] text-[var(--text-muted)] italic px-1">{t("office.foldersEmpty")}</div>
@@ -679,7 +679,7 @@
                 <div class="flex items-center gap-2">
                   <Input
                     bind:value={newFolder}
-                    aria-label="Project folder path"
+                    aria-label={t("a11y.projectFolderPath")}
                     placeholder="/home/you/projects/my-app"
                     class="h-8 text-xs font-mono bg-[var(--surface-2)] border-[var(--hairline)]"
                     onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFolder(); } }}
@@ -848,7 +848,7 @@
                             variant="ghost"
                             size="sm"
                             class="size-7 p-0 text-[var(--text-tertiary)] hover:text-danger hover:bg-danger/10 cursor-pointer rounded-lg"
-                            aria-label="Remove agent"
+                            aria-label={t("a11y.removeAgent")}
                             title={t("office.removeAgent")}
                             onclick={() => removeMember(m.bot_id)}
                           >
@@ -880,7 +880,7 @@
                     <Search class="size-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-[var(--text-muted)]" />
                     <Input
                       bind:value={searchQuery}
-                      aria-label="Search fleet"
+                      aria-label={t("a11y.searchFleet")}
                       placeholder={t("office.searchFleet")}
                       class="pl-8 h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-primary)]"
                     />
@@ -920,19 +920,19 @@
                   <div class="space-y-2">
                     <Input
                       bind:value={newBotName}
-                      aria-label="Agent name"
+                      aria-label={t("sidebar.agentName")}
                       placeholder={t("office.phName")}
                       class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-primary)]"
                     />
                     <Input
                       bind:value={newBotRank}
-                      aria-label="Agent rank"
+                      aria-label={t("a11y.agentRank")}
                       placeholder={t("office.phRank")}
                       class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-primary)]"
                     />
                     <Input
                       bind:value={newBotSpecialty}
-                      aria-label="Agent specialty"
+                      aria-label={t("a11y.agentSpecialty")}
                       placeholder={t("office.phSpecialty")}
                       class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-primary)]"
                     />
@@ -1077,7 +1077,7 @@
 
               <Textarea
                 bind:value={policy}
-                aria-label="Office policy"
+                aria-label={t("a11y.officePolicy")}
                 placeholder={t("office.policyPh")}
                 rows={9}
                 class="font-mono text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] focus-visible:border-[var(--brand)] leading-relaxed"
@@ -1116,7 +1116,7 @@
 
               <Textarea
                 bind:value={terms}
-                aria-label="Office terms and conditions"
+                aria-label={t("a11y.officeTerms")}
                 placeholder={t("office.termsPh")}
                 rows={9}
                 class="font-mono text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] focus-visible:border-[var(--brand)] leading-relaxed"
@@ -1209,7 +1209,7 @@
 
               <Textarea
                 bind:value={goal}
-                aria-label="Quarterly goal"
+                aria-label={t("a11y.quarterlyGoal")}
                 placeholder={t("office.goalPh")}
                 rows={7}
                 class="text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] focus-visible:border-[var(--brand)] leading-relaxed"

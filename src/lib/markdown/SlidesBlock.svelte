@@ -7,6 +7,7 @@
    * stage scrolls internally so a long slide never widens or stretches the
    * message column.
    */
+  import { t } from "$lib/i18n";
   import { onMount } from "svelte";
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
   import { ChevronLeft, ChevronRight, Maximize2 } from "@lucide/svelte";
@@ -84,7 +85,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <figure
     class="md-slides"
-    aria-label="Slide deck"
+    aria-label={t("a11y.slideDeck")}
     tabindex="0"
     onkeydown={keys}
     aria-keyshortcuts="ArrowLeft ArrowRight Home End"
@@ -94,7 +95,7 @@
       class="md-slides-stage"
       role="group"
       aria-roledescription="carousel"
-      aria-label="Slide {index + 1} of {slides.length}"
+      aria-label={t("a11y.slideOf", { index: index + 1, total: slides.length })}
     >
       <div class="md-slides-page">
         <MarkdownRenderer content={slides[index]} />
@@ -105,7 +106,7 @@
       <button
         type="button"
         class="md-slides-button"
-        aria-label="Previous slide"
+        aria-label={t("a11y.previousSlide")}
         disabled={slides.length < 2}
         onclick={() => go(-1)}
       >
@@ -115,7 +116,7 @@
       <button
         type="button"
         class="md-slides-button"
-        aria-label="Next slide"
+        aria-label={t("a11y.nextSlide")}
         disabled={slides.length < 2}
         onclick={() => go(1)}
       >

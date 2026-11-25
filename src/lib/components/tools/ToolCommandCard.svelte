@@ -4,6 +4,7 @@
    * and its output. The generic trace row still exists for tools without a
    * richer shape; this is the one that answers "what did it actually run?"
    */
+  import { t } from "$lib/i18n";
   import { Check, Copy } from "@lucide/svelte";
   import type { ToolTrace } from "$lib/types";
   import { commandCard } from "$lib/chat/toolCards";
@@ -45,7 +46,7 @@
       <button
         type="button"
         class="tool-card__icon"
-        aria-label="Copy command"
+        aria-label={t("a11y.copyCommand")}
         title="Copy command"
         onclick={() => void copyCommand()}
       >

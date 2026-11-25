@@ -341,7 +341,7 @@
           <button
             type="button"
             class="message-action-button"
-            aria-label="Reply"
+            aria-label={t("thread.reply")}
             title="Reply"
             onclick={onReply}
           >
@@ -368,7 +368,7 @@
             <button
               type="button"
               class="message-action-button"
-              aria-label="Add reaction"
+              aria-label={t("a11y.addReaction")}
               title="Add reaction"
               aria-expanded={reactionOpen}
               onclick={() => (reactionOpen = !reactionOpen)}
@@ -376,7 +376,7 @@
               <SmilePlus class="size-3" strokeWidth={1.8} />
             </button>
             {#if reactionOpen}
-              <span class="message-reaction-palette" role="group" aria-label="Choose a reaction">
+              <span class="message-reaction-palette" role="group" aria-label={t("a11y.chooseReaction")}>
                 {#each REACTION_PALETTE as emoji (emoji)}
                   <button
                     type="button"
@@ -396,7 +396,7 @@
     {/if}
 
     {#if reactions.length > 0}
-      <div class="message-reactions" aria-label="Reactions">
+      <div class="message-reactions" aria-label={t("a11y.reactions")}>
         {#each reactions as emoji (emoji)}
           <button
             type="button"

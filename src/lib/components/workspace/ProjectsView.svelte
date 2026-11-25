@@ -1212,7 +1212,7 @@
                 type="button"
                 class="proj__iconbtn"
                 title="Run language diagnostics on this file"
-                aria-label="Run language diagnostics on this file"
+                aria-label={t("a11y.runDiagnostics")}
                 disabled={diagnosticsLoading || selected.entry.isBinary}
                 onclick={() => void runDiagnostics()}
               >
@@ -1495,7 +1495,7 @@
           type="button"
           class="flex size-6 shrink-0 cursor-pointer items-center justify-center rounded-md font-mono text-xs text-[var(--text-tertiary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]"
           onclick={closeDiagnostics}
-          aria-label="Close diagnostics"
+          aria-label={t("a11y.closeDiagnostics")}
         >
           ✕
         </button>

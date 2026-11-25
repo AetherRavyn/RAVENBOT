@@ -290,7 +290,7 @@
               <div class="flex items-center gap-1.5 pt-1 border-t border-[var(--hairline)] mt-1">
                 <input
                   bind:value={switcherModel}
-                  aria-label="Custom model id"
+                  aria-label={t("a11y.customModelId")}
                   placeholder="model id…"
                   class="flex-1 min-w-0 h-6 px-2 rounded-lg bg-[var(--surface-0)] border border-[var(--hairline)] text-[11px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"
                   onkeydown={(e) => {
@@ -801,7 +801,7 @@
           type="button"
           class="size-7 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] flex items-center justify-center text-[var(--danger-text)] hover:bg-[var(--danger-soft-hover)] transition-colors cursor-pointer"
           onclick={() => onStopRun()}
-          aria-label="Stop the active run"
+          aria-label={t("a11y.stopRun")}
           title="Stop the active run"
         >
           <XCircle class="size-3.5" />

@@ -3480,7 +3480,7 @@
                     class="h-7 w-11 px-1 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-[var(--brand)]/50"
                   />
                 </label>
-                <button type="button" onclick={() => removePlanTask(idx)} aria-label="Remove task" class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
+                <button type="button" onclick={() => removePlanTask(idx)} aria-label={t("a11y.removeTask")} class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
               </div>
               {#if idx > 0}
                 <div class="flex items-center gap-1 flex-wrap">
@@ -3858,7 +3858,7 @@
                 <input bind:value={role.name} aria-label={t("room.name")} placeholder={t("room.name")} class="w-28 h-7 px-2 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
                 <input bind:value={role.rank} aria-label={t("room.rank")} placeholder={t("room.rank")} class="w-24 h-7 px-2 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
                 <input bind:value={role.specialty} aria-label={t("room.specialty")} placeholder={t("room.specialty")} class="flex-1 h-7 px-2 text-[11px] bg-[var(--surface-2)] border border-[var(--hairline)] text-[var(--text-secondary)] rounded-lg focus:outline-none focus:border-success/50" />
-                <button type="button" onclick={() => removeHireRole(idx)} aria-label="Remove role" class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
+                <button type="button" onclick={() => removeHireRole(idx)} aria-label={t("a11y.removeRole")} class="text-[var(--text-muted)] hover:text-danger cursor-pointer">✕</button>
               </div>
               <div class="flex items-center gap-2">
                 <button

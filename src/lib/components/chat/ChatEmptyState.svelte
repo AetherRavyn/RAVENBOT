@@ -7,6 +7,7 @@
    * the person can send, not a decorative card. The composer remains the main
    * control; these are shortcuts, never a gate.
    */
+  import { t } from "$lib/i18n";
   import { ArrowUpRight, ListChecks, Search, Sparkles } from "@lucide/svelte";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
 
@@ -64,7 +65,7 @@
   <h2 class="chat-empty__title">{name}</h2>
   <p class="chat-empty__purpose">{purpose}</p>
 
-  <div class="chat-empty__suggestions" role="group" aria-label="Suggested first prompts">
+  <div class="chat-empty__suggestions" role="group" aria-label={t("a11y.suggestedPrompts")}>
     {#each suggestions as suggestion (suggestion.title)}
       {@const Icon = suggestion.icon}
       <button

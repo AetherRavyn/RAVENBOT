@@ -11,6 +11,7 @@
    * In the browser preview (no Tauri) the page falls back to `srcdoc`, which is
    * enough for development and keeps the component testable.
    */
+  import { t } from "$lib/i18n";
   import { onDestroy, onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { openExternal } from "$lib/external";
@@ -341,7 +342,7 @@
 <svelte:window onmessage={onMessage} onkeydown={onKeydown} />
 
 {#if streaming}
-  <figure class="md-visual md-visual--loading" aria-label="Interactive visual is being written">
+  <figure class="md-visual md-visual--loading" aria-label={t("a11y.visualLoading")}>
     <div class="md-visual-loading">
       <span class="md-visual-loading-dot"></span>
       <span class="md-visual-loading-dot"></span>
@@ -350,7 +351,7 @@
     <figcaption>Building interactive visual…</figcaption>
   </figure>
 {:else if error}
-  <figure class="md-visual md-visual--error" aria-label="Interactive visual could not be rendered">
+  <figure class="md-visual md-visual--error" aria-label={t("a11y.visualError")}>
     <figcaption>Interactive visual could not be rendered</figcaption>
     <p class="md-visual-error-text">{error}</p>
     <MarkdownCode code={code} language="html" />
@@ -362,7 +363,7 @@
         <ShieldCheck class="size-3" />
         Interactive
       </span>
-      <div class="md-visual-tabs" role="group" aria-label="Visual view">
+      <div class="md-visual-tabs" role="group" aria-label={t("a11y.visualView")}>
         <button
           type="button"
           class="md-visual-tab"

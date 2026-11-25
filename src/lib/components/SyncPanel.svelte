@@ -203,7 +203,7 @@
     </div>
     <textarea
       bind:value={importJson}
-      aria-label="Bot bundle JSON"
+      aria-label={t("a11y.botBundleJson")}
       rows={3}
       placeholder={t("sync.pastePh")}
       class="w-full px-2.5 py-2 rounded-xl bg-[var(--surface-1)] border border-[var(--hairline)] text-[11px] font-mono text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 focus:border-[var(--brand)]/50"

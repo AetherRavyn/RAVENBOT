@@ -3264,16 +3264,16 @@
               {/if}
             </div>
             {#if threadGoal.goal.status === "active"}
-              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void threadGoalAction("pause")} title="Pause goal" aria-label="Pause goal" disabled={goalBusy}>
+              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void threadGoalAction("pause")} title="Pause goal" aria-label={t("a11y.pauseGoal")} disabled={goalBusy}>
                 <Pause class="size-3.5" />
               </button>
             {:else if threadGoal.goal.status === "paused" || threadGoal.goal.status === "blocked"}
-              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void resumeThreadGoal(false)} title="Resume goal" aria-label="Resume goal" disabled={goalBusy}>
+              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void resumeThreadGoal(false)} title="Resume goal" aria-label={t("a11y.resumeGoal")} disabled={goalBusy}>
                 <Play class="size-3.5" />
               </button>
             {/if}
             {#if !["done", "cancelled", "failed"].includes(threadGoal.goal.status)}
-              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--danger)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void threadGoalAction("cancel")} title="Stop goal" aria-label="Stop goal" disabled={goalBusy}>
+              <button type="button" class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--danger)] hover:bg-[var(--surface-3)] flex items-center justify-center" onclick={() => void threadGoalAction("cancel")} title="Stop goal" aria-label={t("a11y.stopGoal")} disabled={goalBusy}>
                 <X class="size-3.5" />
               </button>
             {/if}
@@ -3430,7 +3430,7 @@
           type="button"
           class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono shrink-0"
           onclick={() => (shareOpen = false)}
-          aria-label="Close share dialog"
+          aria-label={t("a11y.closeShare")}
         >
           ✕
         </button>
@@ -3483,7 +3483,7 @@
                   type="button"
                   class="size-6 shrink-0 rounded-md border border-success/40 bg-success/15 text-success flex items-center justify-center cursor-pointer"
                   onclick={() => void copyShareLink()}
-                  aria-label="Copy share link"
+                  aria-label={t("a11y.copyShareLink")}
                   title="Copy share link"
                 >
                   {#if shareCopied}<Check class="size-3" />{:else}<Copy class="size-3" />{/if}
@@ -3549,7 +3549,7 @@
       onclick={(e) => e.stopPropagation()}
       role="dialog"
       aria-modal="true"
-      aria-label="Persistent goal"
+      aria-label={t("a11y.persistentGoal")}
       tabindex="-1"
     >
       <div class="flex items-start justify-between gap-3 border-b border-[var(--hairline)] pb-2">
@@ -3566,7 +3566,7 @@
           type="button"
           class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono"
           onclick={() => (goalOpen = false)}
-          aria-label="Close goal dialog"
+          aria-label={t("a11y.closeGoal")}
         >
           ✕
         </button>
@@ -3746,7 +3746,7 @@
           type="button"
           class="size-6 rounded-md hover:bg-[var(--surface-3)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] flex items-center justify-center cursor-pointer text-xs font-mono shrink-0"
           onclick={() => (worktreeReview = null)}
-          aria-label="Close worktree review"
+          aria-label={t("a11y.closeWorktree")}
         >
           ✕
         </button>

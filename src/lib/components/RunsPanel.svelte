@@ -184,7 +184,7 @@
       onclick={load}
       disabled={isLoading}
       title="Refresh"
-      aria-label="Refresh run list"
+      aria-label={t("a11y.refreshRuns")}
     >
       {#if isLoading}<Loader2 class="size-3.5 animate-spin" />{:else}<RefreshCw class="size-3.5" />{/if}
     </button>

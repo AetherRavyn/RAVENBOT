@@ -143,7 +143,7 @@
       <textarea
         bind:this={promptEl}
         bind:value={prompt}
-        aria-label="Message"
+        aria-label={t("a11y.message")}
         placeholder={t("home.placeholder")}
         rows={2}
         class="w-full bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] resize-none focus:outline-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 min-h-[52px] leading-relaxed font-sans"
@@ -195,7 +195,7 @@
 
           <button
             type="button"
-            aria-label="Attach file"
+            aria-label={t("a11y.attachFile")}
             class="size-7 rounded-md text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center cursor-pointer"
             style="transition-duration: var(--duration-hover)"
             onclick={attachFile}
@@ -219,7 +219,7 @@
 
         <button
           type="button"
-          aria-label="Send message"
+          aria-label={t("thread.send")}
           onclick={() => send()}
           disabled={!prompt.trim() || sending}
           class="size-8 rounded-md flex items-center justify-center cursor-pointer {prompt.trim() && !sending
