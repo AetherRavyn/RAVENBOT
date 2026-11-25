@@ -42,6 +42,12 @@
   } from "$lib/chat/replyResolution";
   import { drafts, threadDraftKey } from "$lib/chat/drafts";
   import {
+    isPlaceholderThreadTitle,
+    readSelectedThread,
+    rememberSelectedThread,
+    threadTitleFromMessage,
+  } from "$lib/chat/threadHistory";
+  import {
     applyMention,
     filterMentionItems,
     mentionAtCaret,
@@ -522,6 +528,11 @@
         threads = result;
         const target = takePendingMessageFocus(botId);
         const threadTarget = takePendingThreadFocus(botId);
+        const remembered = readSelectedThread(botId);
+        const rememberedThread =
+          remembered && result.some((thread: any) => thread.id === remembered)
+            ? remembered
+            : null;
         if (target) {
           await loadMessages(target.threadId);
           if (seq !== loadSeq) return;
@@ -529,6 +540,8 @@
           await revealMessage(target.messageId);
         } else if (threadTarget) {
           await loadMessages(threadTarget.threadId);
+        } else if (rememberedThread) {
+          await loadMessages(rememberedThread);
         } else if (threads.length > 0) {
           await loadMessages(threads[0].id);
         }
@@ -820,6 +833,7 @@
   let regenerating = $state(false);
   let renamingThreadId = $state<string | null>(null);
   let renameValue = $state("");
+  let renameInput = $state<HTMLInputElement | null>(null);
   // Cross-thread message search
   let searchQuery = $state("");
   let searchResults = $state<any[]>([]);
@@ -1355,6 +1369,7 @@
     virtualTarget = "";
     railPositions = {};
     selectedThreadId = threadId;
+    if (bot?.id) rememberSelectedThread(bot.id, threadId);
     void loadThreadGoal(threadId);
     void loadThreadWorktree(threadId);
     if (changed && bot?.id) {
@@ -1401,6 +1416,11 @@
   // Focus the field a keyboard user came to fill. Svelte rejects a bare
   // `autofocus`, and a modal that opens with focus left behind the scrim is
   // not actually usable without a pointer.
+  $effect(() => {
+    if (!renamingThreadId) return;
+    void tick().then(() => renameInput?.focus());
+  });
+
   $effect(() => {
     if (!goalOpen || !goalObjectiveRef) return;
     void tick().then(() => goalObjectiveRef?.focus());
@@ -1603,6 +1623,7 @@
       });
       threads = [thread, ...threads];
       selectedThreadId = (thread as any).id;
+      if (bot?.id) rememberSelectedThread(bot.id, (thread as any).id);
       messages = [];
       threadGoal = null;
       worktree = null;
@@ -1683,22 +1704,29 @@
     }
   }
 
-  async function renameThread(threadId: string) {
-    if (renamingThreadId === threadId) {
-      // Second click: commit
-      const title = renameValue.trim();
-      if (title) {
-        try {
-          await invoke("rename_thread", { threadId, title });
-          threads = threads.map((t) => (t.id === threadId ? { ...t, title } : t));
-        } catch (e) {
-          console.error("Failed to rename thread:", e);
-        }
-      }
+  function beginRenameThread(thread: any) {
+    renamingThreadId = thread.id;
+    renameValue = thread.title || "";
+  }
+
+  function cancelRenameThread() {
+    renamingThreadId = null;
+    renameValue = "";
+  }
+
+  async function commitRenameThread(threadId: string) {
+    const title = renameValue.trim();
+    if (!title) {
+      cancelRenameThread();
+      return;
+    }
+    try {
+      await invoke("rename_thread", { threadId, title });
+      threads = threads.map((t) => (t.id === threadId ? { ...t, title } : t));
       renamingThreadId = null;
-    } else {
-      renamingThreadId = threadId;
-      renameValue = threads.find((t) => t.id === threadId)?.title || "";
+      renameValue = "";
+    } catch (e) {
+      console.error("Failed to rename thread:", e);
     }
   }
 
@@ -1722,6 +1750,8 @@
         messages = [];
         if (threads.length > 0) {
           await loadMessages(threads[0].id);
+        } else if (bot?.id) {
+          rememberSelectedThread(bot.id, null);
         }
       }
     } catch (e) {
@@ -1814,6 +1844,26 @@
         });
         threads = [thread, ...threads];
         selectedThreadId = (thread as any).id;
+        if (bot?.id) rememberSelectedThread(bot.id, (thread as any).id);
+      }
+
+      // A blank thread created from the header or history is called
+      // "Thread #N" until it has a first message. Use that first message as
+      // the name; once a person renames it, the title no longer matches the
+      // placeholder and we leave it alone.
+      const selected = threads.find((thread) => thread.id === selectedThreadId);
+      if (selected && selectedThreadId && isPlaceholderThreadTitle(selected.title)) {
+        const title = threadTitleFromMessage(rawText);
+        if (title) {
+          try {
+            await invoke("rename_thread", { threadId: selectedThreadId, title });
+            threads = threads.map((thread) =>
+              thread.id === selectedThreadId ? { ...thread, title } : thread,
+            );
+          } catch (error) {
+            console.error("Failed to auto-title thread:", error);
+          }
+        }
       }
 
       // Optimistically show user message right away so it is NEVER lost
@@ -2669,19 +2719,54 @@
             <div class="max-h-60 overflow-y-auto space-y-0.5 py-1">
               {#each threads as thread (thread.id)}
                 {@const isSelected = selectedThreadId === thread.id}
-                <button
-                  type="button"
-                  class="w-full text-left px-2.5 py-1.5 rounded-xl text-xs truncate transition-colors cursor-pointer flex items-center justify-between {isSelected
-                    ? 'bg-[var(--surface-3)] text-[var(--text-primary)] font-medium border border-[var(--hairline-strong)]'
-                    : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-                  onclick={() => loadMessages(thread.id)}
-                  aria-pressed={isSelected}
+                <div
+                  class="group/thread flex items-center gap-0.5 rounded-xl border transition-colors {isSelected
+                    ? 'bg-[var(--surface-3)] text-[var(--text-primary)] border-[var(--hairline-strong)]'
+                    : 'border-transparent text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
                 >
-                  <span class="truncate">{thread.title || "Untitled"}</span>
-                  {#if isSelected}
-                    <span class="size-1.5 rounded-full bg-[var(--brand)] shrink-0 ml-2"></span>
-                  {/if}
-                </button>
+                  <button
+                    type="button"
+                    class="min-w-0 flex-1 truncate px-2.5 py-1.5 text-left text-xs cursor-pointer"
+                    onclick={() => loadMessages(thread.id)}
+                    aria-pressed={isSelected}
+                  >
+                    <span class="truncate">{thread.title || t("thread.untitled")}</span>
+                  </button>
+                  <div class="flex items-center gap-0.5 pr-1">
+                    <button
+                      type="button"
+                      class="flex size-6 items-center justify-center rounded-md text-[var(--text-muted)] opacity-70 hover:bg-[var(--surface-1)] hover:text-[var(--text-primary)] hover:opacity-100 focus:opacity-100 cursor-pointer"
+                      onclick={() => {
+                        beginRenameThread(thread);
+                        showThreadDropdown = false;
+                        showThreadDrawer = true;
+                      }}
+                      aria-label={t("thread.rename")}
+                      title={t("thread.rename")}
+                    >
+                      <Pencil class="size-3" />
+                    </button>
+                    <button
+                      type="button"
+                      class="flex size-6 items-center justify-center rounded-md opacity-70 hover:opacity-100 cursor-pointer {deleteArmed === thread.id
+                        ? 'bg-[var(--danger-soft)] text-[var(--danger-text)]'
+                        : 'text-[var(--text-muted)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger-text)]'}"
+                      onclick={() => void deleteThread(thread.id)}
+                      aria-label={deleteArmed === thread.id
+                        ? t("thread.confirmDelete")
+                        : t("thread.delete")}
+                      title={deleteArmed === thread.id
+                        ? t("thread.confirmDelete")
+                        : t("thread.delete")}
+                    >
+                      {#if deleteArmed === thread.id}
+                        <Check class="size-3" />
+                      {:else}
+                        <Trash2 class="size-3" />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
               {:else}
                 <div class="p-3 text-center text-xs text-[var(--text-muted)]">{t("thread.noPrev")}</div>
               {/each}
@@ -3051,16 +3136,91 @@
         <div class="flex-1 overflow-y-auto p-2 space-y-1">
           {#each threads as thread (thread.id)}
             {@const isSelected = selectedThreadId === thread.id}
-            <button
-              type="button"
-              class="w-full text-left px-3 py-2 rounded-xl text-xs truncate transition-all block focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 cursor-pointer {isSelected
-                ? 'bg-[var(--surface-3)] border border-[var(--hairline-strong)] text-[var(--text-primary)] font-medium shadow-sm'
-                : 'text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)]'}"
-              onclick={() => loadMessages(thread.id)}
-              aria-pressed={isSelected}
+            <div
+              class="group/thread flex items-center gap-1 rounded-xl border transition-colors {isSelected
+                ? 'bg-[var(--surface-3)] border-[var(--hairline-strong)] text-[var(--text-primary)] shadow-sm'
+                : 'border-transparent text-[var(--text-tertiary)] hover:bg-[var(--surface-3)] hover:text-[var(--text-primary)]'}"
             >
-              {thread.title || "Untitled thread"}
-            </button>
+              {#if renamingThreadId === thread.id}
+                <form
+                  class="flex w-full items-center gap-1 p-1"
+                  onsubmit={(event) => {
+                    event.preventDefault();
+                    void commitRenameThread(thread.id);
+                  }}
+                >
+                  <input
+                    bind:this={renameInput}
+                    bind:value={renameValue}
+                    maxlength="120"
+                    aria-label={t("thread.rename")}
+                    class="h-7 min-w-0 flex-1 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-2 text-[11px] text-[var(--text-primary)] focus:border-[var(--brand)]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/40"
+                    onkeydown={(event) => {
+                      if (event.key === "Escape") {
+                        event.preventDefault();
+                        cancelRenameThread();
+                      }
+                    }}
+                  />
+                  <button
+                    type="submit"
+                    class="flex size-7 items-center justify-center rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--success-text)] hover:bg-[var(--surface-2)] cursor-pointer"
+                    aria-label={t("thread.save")}
+                    title={t("thread.save")}
+                  >
+                    <Check class="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    class="flex size-7 items-center justify-center rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-2)] cursor-pointer"
+                    onclick={cancelRenameThread}
+                    aria-label={t("thread.cancel")}
+                    title={t("thread.cancel")}
+                  >
+                    <X class="size-3.5" />
+                  </button>
+                </form>
+              {:else}
+                <button
+                  type="button"
+                  class="min-w-0 flex-1 truncate px-3 py-2 text-left text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 cursor-pointer"
+                  onclick={() => loadMessages(thread.id)}
+                  aria-pressed={isSelected}
+                >
+                  {thread.title || t("thread.untitled")}
+                </button>
+                <div class="flex items-center gap-0.5 pr-1">
+                  <button
+                    type="button"
+                    class="flex size-7 items-center justify-center rounded-lg text-[var(--text-muted)] opacity-70 transition-all hover:bg-[var(--surface-1)] hover:text-[var(--text-primary)] hover:opacity-100 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 cursor-pointer"
+                    onclick={() => beginRenameThread(thread)}
+                    aria-label={t("thread.rename")}
+                    title={t("thread.rename")}
+                  >
+                    <Pencil class="size-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    class="flex size-7 items-center justify-center rounded-lg opacity-70 transition-all hover:opacity-100 focus:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60 cursor-pointer {deleteArmed === thread.id
+                      ? 'bg-[var(--danger-soft)] text-[var(--danger-text)]'
+                      : 'text-[var(--text-muted)] hover:bg-[var(--danger-soft)] hover:text-[var(--danger-text)]'}"
+                    onclick={() => void deleteThread(thread.id)}
+                    aria-label={deleteArmed === thread.id
+                      ? t("thread.confirmDelete")
+                      : t("thread.delete")}
+                    title={deleteArmed === thread.id
+                      ? t("thread.confirmDelete")
+                      : t("thread.delete")}
+                  >
+                    {#if deleteArmed === thread.id}
+                      <Check class="size-3.5" />
+                    {:else}
+                      <Trash2 class="size-3.5" />
+                    {/if}
+                  </button>
+                </div>
+              {/if}
+            </div>
           {:else}
             <div class="p-4 text-center text-xs text-[var(--text-muted)]">{t("thread.noThreads")}</div>
           {/each}

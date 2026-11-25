@@ -95,6 +95,9 @@ The lead agent (`The Raven` by default) designs offices from a one-line mission,
 proposes the roster, and assigns only the skills and connectors that are actually
 installed and configured on this machine. You can talk to the lead, mention a
 specialist directly, or open any agent's thread and work with it one to one.
+Conversations take their name from the first message, can be renamed or deleted
+from the history drawer, and the last thread you opened for an agent is restored
+after a reload.
 
 ### Offices with real coordination
 
@@ -333,10 +336,10 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **980 Rust tests** across the workspace, including 210 Tauri/command tests,
-  240 runtime tests, 170 skill tests, 101 database tests, 35 memory tests, 33 MCP
+- **981 Rust tests** across the workspace, including 210 Tauri/command tests,
+  240 runtime tests, 170 skill tests, 102 database tests, 35 memory tests, 33 MCP
   tests, and 15 remote-access tests.
-- **777 frontend tests** across 120 files.
+- **783 frontend tests** across 121 files.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
   `npm run check`, and `npm test` are the local gates.
 - CI runs the Rust workspace, the Docker sandbox live test, frontend checks, the

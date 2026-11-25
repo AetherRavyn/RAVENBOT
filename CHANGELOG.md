@@ -4,6 +4,18 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Conversation history
+
+- **Threads have names you can manage** — the history drawer and the thread
+  dropdown now expose rename and a two-step delete. A blank `Thread #N` takes
+  its title from the first user message, with `[Think]` and `[DeepSearch]`
+  control prefixes stripped, and the last thread opened for each bot is
+  restored after a reload or bot switch. The selected thread is stored per bot,
+  so switching agents no longer drops you back at the first conversation.
+- Tests cover per-bot selection storage (including unavailable/quota-blocked
+  storage), placeholder detection, prefix stripping, whitespace collapse, and
+  long-title truncation on a word boundary.
+
 ### Interruptible human waits
 
 - **Pause and cancel stop parked runs** — approval, `ask_user` and budget

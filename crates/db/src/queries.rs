@@ -3823,8 +3823,11 @@ impl ThreadQueries {
         thread_id: Uuid,
         title: &str,
     ) -> Result<(), sqlx::Error> {
+        // A conversation name is a label, not a document. Trim and cap it so a
+        // direct IPC call cannot put a paragraph in the history list.
         let title = title.trim();
-        if title.is_empty() {
+        let title: String = title.chars().take(200).collect();
+        if title.trim().is_empty() {
             return Err(sqlx::Error::Decode(
                 "Title cannot be empty".to_string().into(),
             ));
@@ -9436,6 +9439,35 @@ mod message_page_tests {
             .await
             .unwrap();
         assert_eq!(full.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn renaming_a_thread_trims_and_caps_the_label() {
+        let pool = db().await;
+        let bot = ravenbot_core::Bot::new("Renamer", "thread title test");
+        BotQueries::insert(&pool, &bot).await.unwrap();
+        let thread = ravenbot_core::Thread::new(bot.id, "Thread #1");
+        ThreadQueries::create(&pool, &thread).await.unwrap();
+
+        let long = format!("  {}  ", "a".repeat(300));
+        ThreadQueries::rename(&pool, thread.id, &long)
+            .await
+            .expect("rename");
+        let renamed = ThreadQueries::get(&pool, thread.id)
+            .await
+            .unwrap()
+            .expect("thread");
+        assert_eq!(renamed.title.chars().count(), 200);
+        assert_eq!(renamed.title, "a".repeat(200));
+
+        assert!(ThreadQueries::rename(&pool, thread.id, "   ")
+            .await
+            .is_err());
+        let unchanged = ThreadQueries::get(&pool, thread.id)
+            .await
+            .unwrap()
+            .expect("thread");
+        assert_eq!(unchanged.title, "a".repeat(200));
     }
 
     #[tokio::test]
