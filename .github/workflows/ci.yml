@@ -163,3 +163,15 @@ jobs:
 
       - name: Account environment handoff
         run: cargo test -p ravenbot --test accounts_env
+
+      # The platform contract tests assert the two things a build matrix cannot:
+      # Windows refuses to run an unsandboxed agent command, and macOS Seatbelt
+      # really denies network and outside-workspace reads. The live Seatbelt
+      # test is ignored by default because it needs a real macOS host; this job
+      # is that host.
+      - name: Sandbox platform contract
+        run: cargo test -p ravenbot-sandbox platform_contract_tests -- --nocapture
+
+      - name: Live Seatbelt contract
+        if: runner.os == 'macOS'
+        run: cargo test -p ravenbot-sandbox platform_contract_tests -- --ignored --nocapture

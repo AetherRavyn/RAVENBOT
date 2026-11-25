@@ -1015,3 +1015,82 @@ mod tests {
         assert!(kb <= 64 * 1024 + 4096, "vmem limit not applied: {kb} KB");
     }
 }
+
+#[cfg(test)]
+mod platform_contract_tests {
+    use super::*;
+
+    #[test]
+    fn a_missing_backend_never_claims_filesystem_or_network_isolation() {
+        let runner = SandboxRunner {
+            config: SandboxConfig {
+                tier: SandboxTier::OsLevel,
+                ..Default::default()
+            },
+            backend: SandboxBackend::None,
+        };
+        let report = runner.report();
+        assert_eq!(report.backend, "none");
+        assert!(!report.filesystem_isolated);
+        assert!(!report.network_isolated);
+        assert!(report.note.contains("Unsandboxed execution is not allowed"));
+        assert!(!runner.is_isolated());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_fails_closed_without_a_sandbox_backend() {
+        let runner = SandboxRunner::from_tier(SandboxTier::OsLevel);
+        assert!(matches!(runner.backend(), SandboxBackend::None));
+        let error = runner
+            .command("cmd", &["/C".to_string(), "echo hello".to_string()], None)
+            .expect_err("Windows agent commands must fail closed");
+        assert!(error.contains("Refusing to run an unsandboxed command"));
+        assert!(runner.report().note.contains("Windows"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "requires a real macOS host and sandbox-exec; run in the macOS contract job"]
+    async fn seatbelt_live_contract() {
+        let work =
+            std::env::temp_dir().join(format!("ravenbot-seatbelt-live-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&work).expect("work dir");
+        std::fs::write(work.join("marker.txt"), b"seatbelt-marker").expect("marker");
+        let runner = SandboxRunner::new(SandboxConfig {
+            tier: SandboxTier::OsLevel,
+            resource_limits: ResourceLimits::default(),
+            network_policy: NetworkPolicy::blocked(),
+            allowed_paths: vec![work.to_string_lossy().to_string()],
+            ..Default::default()
+        });
+        if !matches!(runner.backend(), SandboxBackend::Seatbelt(_)) {
+            eprintln!("sandbox-exec unavailable; skipping live seatbelt test");
+            let _ = std::fs::remove_dir_all(&work);
+            return;
+        }
+        assert!(runner.is_isolated());
+        assert!(runner.network_isolated());
+
+        let mut cmd = runner
+            .command(
+                "sh",
+                &[
+                    "-c".to_string(),
+                    "cat marker.txt; test ! -e \"$HOME/.ssh\" && echo no-ssh; if curl -m 2 -sS https://example.com >/dev/null 2>&1; then echo NET-LEAK; else echo net-blocked; fi; echo seatbelt-ok".to_string(),
+                ],
+                Some(&work),
+            )
+            .expect("build seatbelt command");
+        let out = cmd.output().await.expect("run seatbelt command");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "seatbelt failed: {stderr}");
+        assert!(stdout.contains("seatbelt-marker"), "{stdout} {stderr}");
+        assert!(stdout.contains("no-ssh"), "{stdout} {stderr}");
+        assert!(stdout.contains("net-blocked"), "{stdout} {stderr}");
+        assert!(!stdout.contains("NET-LEAK"), "{stdout} {stderr}");
+        assert!(stdout.contains("seatbelt-ok"), "{stdout} {stderr}");
+        let _ = std::fs::remove_dir_all(work);
+    }
+}
