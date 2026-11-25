@@ -99,31 +99,18 @@ jobs:
   security-audit:
     name: Security Audit
     runs-on: ubuntu-latest
-    # Advisory/license findings shouldn't block a merge on their own — they are
-    # surfaced here for a human to triage. Flip this to `false` once the
-    # advisory backlog is cleared.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # Run cargo-audit directly rather than through rustsec/audit-check: that
-      # action's whole job is writing SARIF to a code-scanning service this
-      # repo has never enabled, so it failed with a permission error before it
-      # produced any findings. The findings are what we want, and the log is a
-      # perfectly good place for them.
-      - name: Run cargo-audit
-        run: |
-          cargo install cargo-audit --locked
-          cargo audit
-
-      # `!cancelled()` so a RustSec advisory cannot silence the licence/ban
-      # report — the two checks answer different questions, and both belong to
-      # the triage this job exists to surface.
+      # cargo-deny is the gate: the same RustSec data as cargo-audit, plus
+      # licences, duplicate bans and source pinning. The previous cargo-audit
+      # step was redundant and could only pass by duplicating the ignore list
+      # that deny.toml already documents. A new advisory now blocks the job
+      # until it is fixed or added to deny.toml with a concrete reason.
       - name: Run cargo-deny
-        if: ${{ !cancelled() }}
         uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
