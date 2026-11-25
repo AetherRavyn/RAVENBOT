@@ -124,9 +124,9 @@ jobs:
       # the triage this job exists to surface.
       - name: Run cargo-deny
         if: ${{ !cancelled() }}
-        uses: EmbarkStudios/cargo-deny-action@v1
+        uses: EmbarkStudios/cargo-deny-action@v2
         with:
-          command: check all
+          command: check
 
   # The Linux job executes the real systemd service. These jobs compile and run
   # the unit/task/account contracts on macOS and Windows, where launchd and Task
