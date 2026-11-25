@@ -14,6 +14,7 @@
   import ChatRoomView from "$lib/components/ChatRoomView.svelte";
   import ConnectorCenter from "$lib/components/ConnectorCenter.svelte";
   import RoutinesPanel from "$lib/components/RoutinesPanel.svelte";
+  import JobLibrary from "$lib/components/JobLibrary.svelte";
   import SkillManager from "$lib/components/SkillManager.svelte";
   import PluginsStore from "$lib/components/PluginsStore.svelte";
   import WorkspaceRail from "$lib/components/workspace/WorkspaceRail.svelte";
@@ -159,6 +160,7 @@
       workspace.dest !== "inbox" &&
       workspace.dest !== "connectors" &&
       workspace.dest !== "routines" &&
+      workspace.dest !== "jobs" &&
       workspace.dest !== "channels",
   );
   // A side-by-side browser column needs room for the conversation. The dock is
@@ -379,6 +381,17 @@
       {:else if workspace.dest === "channels"}
         <div class="relative flex-1 min-h-0 overflow-hidden">
           <TeamChannelsView />
+        </div>
+      {:else if workspace.dest === "jobs"}
+        <div class="flex-1 min-h-0 overflow-hidden">
+          <JobLibrary
+            bots={workspace.bots}
+            onOpenAgent={(bot) => workspace.selectBot(bot.id)}
+            onOpenRoutine={(botId) => {
+              routinesBotId = botId;
+              workspace.goto("routines");
+            }}
+          />
         </div>
       {:else if workspace.dest === "routines"}
         <!-- RoutinesPanel owns the pane header (title chips, bot switcher, New);

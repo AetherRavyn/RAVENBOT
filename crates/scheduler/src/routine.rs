@@ -15,7 +15,7 @@ impl RoutineManager {
         Self { pool }
     }
 
-    /// Create a new routine
+    /// Create a new routine, enabled.
     pub async fn create(
         &self,
         bot_id: Uuid,
@@ -23,10 +23,32 @@ impl RoutineManager {
         schedule: &str,
         instruction: &str,
     ) -> Result<Routine, String> {
-        // Validate cron expression
-        crate::cron::CronParser::parse(schedule)?;
-
         let routine = Routine::new(bot_id, name, schedule, instruction);
+        self.insert(&routine).await?;
+        Ok(routine)
+    }
+
+    /// Create a routine that is **paused from the first row**, so the scheduler
+    /// cannot fire it between an insert and a follow-up update. Job installs
+    /// and team imports use this: unattended work starts only when a human
+    /// enables it.
+    pub async fn create_paused(
+        &self,
+        bot_id: Uuid,
+        name: &str,
+        schedule: &str,
+        instruction: &str,
+    ) -> Result<Routine, String> {
+        let mut routine = Routine::new(bot_id, name, schedule, instruction);
+        routine.is_enabled = false;
+        self.insert(&routine).await?;
+        Ok(routine)
+    }
+
+    /// Validate and persist one routine.
+    async fn insert(&self, routine: &Routine) -> Result<(), String> {
+        // Validate the schedule even for @manual, so a typo cannot be stored.
+        crate::cron::CronParser::parse(&routine.schedule)?;
 
         sqlx::query(
             "INSERT INTO routines (id, bot_id, name, description, schedule, instruction, is_enabled, last_run_at, created_at, updated_at)
@@ -46,8 +68,8 @@ impl RoutineManager {
         .await
         .map_err(|e| e.to_string())?;
 
-        tracing::info!(routine_id = %routine.id, "Routine created");
-        Ok(routine)
+        tracing::info!(routine_id = %routine.id, enabled = routine.is_enabled, "Routine created");
+        Ok(())
     }
 
     /// Update a routine

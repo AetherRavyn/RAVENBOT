@@ -14,7 +14,8 @@ export type RailDest =
   | "projects"
   | "channels"
   | "connectors"
-  | "routines";
+  | "routines"
+  | "jobs";
 
 // OpenBot layout-constants (WorkspaceShell / layout-constants.ts): the sidebar
 // drags between 128–400px; below the 424px conversation minimum it auto-compact

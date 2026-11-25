@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { Building2, GitBranch, Sparkles, Store, Plug, Clock, Settings, Plus, Home, Globe, Hash, Inbox } from "@lucide/svelte";
+  import { Building2, GitBranch, Sparkles, Store, Plug, Clock, Settings, Plus, Home, Globe, Hash, Inbox, Briefcase } from "@lucide/svelte";
   import { workspace } from "$lib/workspace.svelte";
   import { browserDock } from "$lib/browserDock.svelte";
   import { sidePanel } from "$lib/workspace/sidePanel.svelte";
@@ -29,6 +29,7 @@
 
   const bottomItems = [
     { dest: "connectors", icon: Plug, label: "rail.mcpsConnectors" },
+    { dest: "jobs", icon: Briefcase, label: "rail.jobs" },
     { dest: "routines", icon: Clock, label: "rail.routines" },
   ] as const;
 

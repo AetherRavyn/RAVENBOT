@@ -101,6 +101,19 @@ after a reload. Narrow windows keep the conversation usable: secondary header
 actions move into a **More** menu and the browser dock becomes an overlay rather
 than squeezing the thread below its minimum width.
 
+### Start from a job, not a blank page
+
+The **Job library** ships thirty installable jobs across marketing, sales,
+engineering, operations, finance, people, research, and personal work. Each job
+carries a role prompt, a routine instruction, a cadence, and an oversight level.
+Installing one creates a real agent and a routine that is **paused from the
+first row** — you read the instruction, adjust the schedule or oversight, and
+enable it when it is actually ready. One-off jobs install as manual routines you
+run with **Run now**. A visible welcome thread records what was installed and
+what is still paused. The routines panel can also receive inbound webhook
+content (including an email forwarded as JSON or form data); the content is
+labelled as untrusted input, and high-risk tools still park for approval.
+
 ### Offices with real coordination
 
 An office has a goal, a policy, shared memory, a document workspace, and a task

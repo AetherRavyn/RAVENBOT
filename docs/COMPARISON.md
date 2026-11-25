@@ -22,6 +22,11 @@ at all (real MCP consumption, real sandboxing, Ed25519 fleet sync, offices, a ki
 It is behind on **product surface**: Grok Bot ships status, a job library and an avatar as
 first-class UI, and OpenBot ships a rendering system with motion and density discipline.
 
+> **Update (November 2026):** this document records the design gap at the time it was
+> written. The oversight ladder, job library, avatar states and `thinking` indicator have
+> since shipped. `COMPETITIVE-AUDIT-2026.md` is the current status, including the platform
+> and release-trust limits that remain.
+
 The three superpowers that actually matter, extracted:
 
 | Superpower | Grok Bot | OpenBot | RAVENBOT |
@@ -199,8 +204,9 @@ Three things, and they compound:
    irreversible tier. This is what makes delegation economically sane at scale — and it is the
    single most copyable idea here, because it needs no new backend.
 
-RAVENBOT already has the hard parts (sandbox, approvals, offices, MCP, memory). What is missing
-is the **product surface**: the ladder, the job library, the full avatar, and `thinking`.
+RAVENBOT already has the hard parts (sandbox, approvals, offices, MCP, memory). What was
+missing at the time was the **product surface**: the ladder, the job library, the full avatar,
+and `thinking`. Those have since shipped; see the audit for what remains.
 
 ---
 

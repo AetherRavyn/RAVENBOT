@@ -23,6 +23,7 @@ pub mod chat_webhook;
 pub mod daemon;
 pub mod discord;
 mod fleet;
+mod job_library;
 pub mod mcp_events;
 mod office_org;
 pub mod service;
@@ -4589,6 +4590,57 @@ async fn import_bot_bundle_from_file(
     manager.import_from_file(&path).await
 }
 
+// ---- Job library ----
+
+/// The shipped catalog. Only 30 small rows, so the front end can filter and
+/// search locally without another round trip per keystroke.
+#[tauri::command]
+fn list_job_library() -> Vec<ravenbot_core::JobTemplate> {
+    ravenbot_core::JobCatalog::all().to_vec()
+}
+
+#[tauri::command]
+async fn install_job(
+    state: State<'_, AppState>,
+    job_id: String,
+    name: Option<String>,
+    schedule: Option<String>,
+    oversight: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<job_library::InstalledJob, String> {
+    let parsed_oversight = match oversight
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        Some(value) => Some(
+            ravenbot_core::JobOversight::parse(value)
+                .ok_or_else(|| format!("Unknown oversight level '{value}'"))?,
+        ),
+        None => None,
+    };
+    let (provider, model) = match (provider, model) {
+        (None, None) => {
+            let (provider, model) = resolve_default_model(state.db.pool()).await;
+            (Some(provider), Some(model))
+        }
+        (provider, model) => (provider, model),
+    };
+    job_library::install_job(
+        state.db.pool(),
+        &job_id,
+        job_library::InstallOptions {
+            name,
+            schedule,
+            oversight: parsed_oversight,
+            provider,
+            model,
+        },
+    )
+    .await
+}
+
 // ---- Routines (scheduler) commands ----
 
 #[tauri::command]
@@ -5011,12 +5063,10 @@ async fn import_team_into(
             .schedule
             .clone()
             .unwrap_or_else(|| "0 9 * * *".to_string());
-        if let Ok(mut routine) = manager
-            .create(bot_id, &spec.name, &schedule, &spec.instruction)
+        if let Ok(routine) = manager
+            .create_paused(bot_id, &spec.name, &schedule, &spec.instruction)
             .await
         {
-            routine.is_enabled = false;
-            let _ = manager.update(&routine).await;
             created_routines
                 .push(serde_json::json!({ "name": routine.name, "id": routine.id.to_string() }));
         }
@@ -22303,6 +22353,8 @@ pub fn run() {
         export_bot_bundle,
         import_bot_bundle,
         import_bot_bundle_from_file,
+        list_job_library,
+        install_job,
         create_routine,
         get_routine,
         list_routines,

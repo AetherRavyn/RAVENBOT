@@ -16,9 +16,27 @@ pub struct CronExpression {
 /// Cron parser for scheduling
 pub struct CronParser;
 
+impl CronExpression {
+    /// A manual routine has no schedule. It is valid, paused and only runs when
+    /// the user presses **Run now** (or a webhook/MCP event triggers it).
+    pub fn is_manual(&self) -> bool {
+        self.minutes.is_empty()
+    }
+}
+
 impl CronParser {
-    /// Parse a cron expression (5-field format: minute hour day month weekday)
+    /// Parse a cron expression (5-field format: minute hour day month weekday),
+    /// or `@manual` for a routine that should never fire on a timer.
     pub fn parse(expr: &str) -> Result<CronExpression, String> {
+        if expr.trim() == "@manual" {
+            return Ok(CronExpression {
+                minutes: Vec::new(),
+                hours: Vec::new(),
+                days_of_month: Vec::new(),
+                months: Vec::new(),
+                days_of_week: Vec::new(),
+            });
+        }
         let fields: Vec<&str> = expr.split_whitespace().collect();
 
         if fields.len() != 5 {
@@ -117,6 +135,9 @@ impl CronParser {
 
     /// Get the next execution time
     pub fn next_execution(expr: &CronExpression, after: &DateTime<Utc>) -> Option<DateTime<Utc>> {
+        if expr.is_manual() {
+            return None;
+        }
         let mut candidate = *after + chrono::Duration::minutes(1);
         candidate = candidate.with_second(0).unwrap_or(candidate);
 
@@ -161,5 +182,14 @@ mod tests {
     fn test_parse_range() {
         let expr = CronParser::parse("0 9-17 * * *").unwrap();
         assert_eq!(expr.hours, (9..=17).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn manual_is_valid_but_never_matches_or_advances() {
+        let expr = CronParser::parse("@manual").expect("@manual is a valid schedule");
+        assert!(expr.is_manual());
+        assert!(!CronParser::matches(&expr, &Utc::now()));
+        assert_eq!(CronParser::next_execution(&expr, &Utc::now()), None);
+        assert_eq!(CronParser::parse(" @manual ").unwrap().minutes.len(), 0);
     }
 }

@@ -59,6 +59,7 @@
     { label: t("routines.p3"), value: "0 0 * * *" },
     { label: t("routines.p4"), value: "0 9 * * 1" },
     { label: t("routines.p5"), value: "*/5 * * * *" },
+    { label: t("routines.manualShort"), value: "@manual" },
   ]);
 
   let schedulerStatus = $state<{ running: boolean } | null>(null);
@@ -527,7 +528,7 @@
 
           <div class="flex items-center gap-2 text-[11px] font-mono text-[var(--text-muted)]">
             <span class="px-1.5 py-0.5 rounded bg-[var(--brand-soft)] border border-[var(--brand)]/25 text-[var(--brand-text)]">
-              {routine.schedule}
+              {routine.schedule === "@manual" ? t("routines.manual") : routine.schedule}
             </span>
             <span>{t("routines.lastRun", { when: formatLastRun(routine.last_run_at) })}</span>
           </div>

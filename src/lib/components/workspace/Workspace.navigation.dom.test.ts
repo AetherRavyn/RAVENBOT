@@ -156,6 +156,8 @@ beforeEach(() => {
         return { username: "owner", workspace: "owner", role: "owner", workspace_owner: true };
       case "list_custom_providers":
         return [];
+      case "list_job_library":
+        return [];
       case "get_ollama_url":
         return "http://localhost:11434";
       default:
@@ -175,6 +177,7 @@ describe("workspace navigation", () => {
       ["Projects", "projects"],
       ["Channels", "channels"],
       ["MCPs & Connectors", "connectors"],
+      ["Job library", "jobs"],
       ["Routines", "routines"],
       ["Inbox", "inbox"],
     ] as const;

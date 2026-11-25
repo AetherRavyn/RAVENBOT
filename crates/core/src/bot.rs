@@ -98,6 +98,13 @@ pub struct BotConfig {
     /// Project folder this agent works in (None = inherit the office/channel).
     #[serde(default)]
     pub working_folder: Option<String>,
+    /// Job-library template this agent was installed from, if any.
+    ///
+    /// It is stored in the config JSON so an installed agent stays traceable to
+    /// the template without a new column, and so installing the same job again
+    /// is visible rather than silently producing an identical stranger.
+    #[serde(default)]
+    pub job_id: Option<String>,
 }
 
 impl Default for BotConfig {
@@ -116,6 +123,7 @@ impl Default for BotConfig {
             auto_read: false,
             host_control: false,
             working_folder: None,
+            job_id: None,
         }
     }
 }

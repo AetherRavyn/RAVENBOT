@@ -34,13 +34,14 @@ We are behind on the things that decide adoption:
 
 1. **Activation** — the API-key wall. OpenBot wins by using the ChatGPT,
    Claude, Gemini, Grok, Cursor or Muse subscription the user already pays for.
-2. **Reach** — a desktop-only process that stops when the laptop sleeps.
-   OpenBot has mobile/web remote access; Grok Bot and Muse are 24/7 cloud
-   computers.
-3. **Trust** — plaintext credentials, forced `Full` approval in offices, and a
-   sandbox that fails open on macOS/Windows or without bubblewrap.
-4. **Retention** — no real job library, no personal goals surface, no
-   demonstration learning, and memory that is lexical by default unless a semantic backend is configured.
+2. **Reach** — the daemon and remote read-only client now survive the window,
+   but there is no mobile write client and no hosted 24/7 computer. OpenBot has
+   mobile/web remote access; Grok Bot and Muse are 24/7 cloud computers.
+3. **Trust** — the vault and oversight ladder shipped; unsigned artifacts, real
+   Windows execution and an external security review remain.
+4. **Retention** — the job library, paused installs and personal goals shipped;
+   demonstration learning remains, and memory is lexical by default unless a
+   semantic backend is configured.
 5. **Team** — one human at the keyboard. OpenBot has multiplayer and roles;
    Grok Bot and Muse define the consumer assistant bar.
 
@@ -461,13 +462,14 @@ in “recommended”; 90% install success; zero credential leaks.
    subscriptions; RAVENBOT removed the CLI engine layer. Fix: detect
    Ollama/LM Studio, offer a keyless path, setup checklist, optional
    subscription/ACP bridge without making it core.
-3. **Trust.** Plaintext secrets, forced `Full` offices, fail-open sandbox,
-   unsigned builds. One breach or one autonomous destructive action ends the
-   “sovereign” story. Fix: vault, oversight ladder, signed releases, audit UI.
-4. **Retention.** No job library, no personal goals, no demonstration learning;
-   memory is lexical and noisy. A toolkit requires the user to invent work every
-   day; an assistant does not. Fix: semantic embeddings + editable memory, then a
-   job library with cadence/oversight and triggers.
+3. **Trust.** The vault, oversight ladder and audit UI shipped; unsigned builds
+   and the absent Windows backend are the remaining trust gaps. One breach or
+   one autonomous destructive action ends the “sovereign” story. Fix: signed
+   releases, a real Windows backend, external review.
+4. **Retention.** The job library, paused installs, personal goals and trigger
+   paths shipped. Demonstration learning is the remaining gap: a toolkit still
+   asks the user to choose the work, while an assistant learns it by watching.
+   Fix: E14 demonstration learning, then semantic embeddings.
 5. **Team.** A team product with one human. No accounts, roles, shared host, or
    per-user audit. Fix after vault/API: accounts + roles + relay + per-user
    audit.
@@ -499,7 +501,7 @@ Those are not the bottleneck.
 |---|---|---|
 | **E6 Stable local API + read-only web client + paired device** — tokens, pairing, TLS/origin checks | G1 | Pair one device; three surfaces readable; zero write endpoints; revoke works; p95 <200 ms on LAN |
 | **E7 Memory v2** — shipped: editable/deletable memory, provenance, FTS5 hybrid retrieval, Ollama/OpenAI embeddings, the 50-fact Recall@5/MRR benchmark (hybrid and vector-only), duplicate detection, and summarized replacement | G4 | Recall@5 ≥0.8 on a 50-fact fixture vs hash baseline; local hybrid measured 1.00, old byte hash 0.10; zero whole-answer dumps; edits/deletes persist |
-| **E8 Job library + triggers** — 30 jobs with group/cadence/oversight; install creates paused bot+routine; email/content trigger; approval steps | G4 | 30 jobs with metadata; install creates paused routine; email-trigger fixture passes; 80% success on 20 tasks |
+| **E8 Job library + triggers** — shipped: 30 curated jobs across eight groups, each with cadence and oversight; install creates a real agent plus a routine paused **in its first row** and a visible welcome thread; inbound webhook content accepts JSON, form-encoded and plain-text bodies, and manual routines use `@manual`; oversight levels map to the interactive approval modes | G4 | 30 jobs with metadata and unique ids; install creates a paused routine and a welcome thread; email-shaped JSON/form fixtures reach the routine as labelled untrusted content; an oversized body is rejected before execution. The 80%-on-20-tasks office benchmark remains open (separate eval work) |
 | **E9 Cross-platform execution** — Windows shell/sandbox, macOS sandbox, input backends, browser DOM; macOS now has Docker as a real container backend, Windows remains fail-closed | G1, G3 | CI on Linux/macOS/Windows; `shell_exec` works on all three; sandbox report on all three; browser DOM on two |
 | **E10 Audit and fleet observability** — live roster (HTTPS webhook and SMTP email alerts shipped) | G3 | Zero unlogged high-risk actions; remote alert delivery verified |
 | **E11 i18n/a11y completion** — remove hardcoded strings, 12 locales, expand axe gate, keyboard-only audit | G2 | Zero hardcoded strings in top 20 surfaces; 12 locales key parity; axe zero serious/critical on 10 screens |
@@ -541,8 +543,9 @@ Those are not the bottleneck.
    RAVENBOT and work in Grok/Muse.
 5. **Keeping the API-key wall.** OpenBot's “use your existing subscription” is
    the better activation story for most of the market.
-6. **No job library and no proactivity.** A toolkit requires the user to invent
-   work every day; an assistant does not.
+6. **Proactivity that still needs a trigger.** The job library and scheduled,
+   webhook and MCP triggers ship, but the agent cannot yet learn a workflow by
+   watching the user. Fix: demonstration learning (E14).
 7. **Fake learning.** Promoting whole answers as memories makes the agent
    noisier, not smarter.
 8. **No human multiplayer/roles.** Offices remain a solo demo; OpenBot sells

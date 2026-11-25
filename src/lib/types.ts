@@ -37,6 +37,8 @@ export interface BotConfig {
   host_control: boolean;
   /** Project folder this agent works in (null = inherit office/channel). */
   working_folder: string | null;
+  /** Job-library template this agent was installed from, if any. */
+  job_id?: string | null;
 }
 
 export interface Bot {
@@ -351,6 +353,47 @@ export interface Routine {
   last_run_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+// ── Job library ─────────────────────────────────────────────────────────────
+
+export type JobGroup =
+  | "marketing"
+  | "sales"
+  | "engineering"
+  | "operations"
+  | "finance"
+  | "people"
+  | "research"
+  | "personal";
+
+export type JobCadence = "one_off" | "recurring" | "monitoring";
+
+export type JobOversight = "low" | "review" | "approval";
+
+/** Rust `JobTemplate` (crates/core/src/job.rs). */
+export interface JobTemplate {
+  id: string;
+  name: string;
+  summary: string;
+  group: JobGroup;
+  cadence: JobCadence;
+  /** Five-field cron, or `@manual` for a one-off. */
+  schedule: string;
+  oversight: JobOversight;
+  role_title: string;
+  agent_prompt: string;
+  routine_instruction: string;
+  deliverable: string;
+}
+
+/** Result of the `install_job` command. */
+export interface InstalledJob {
+  job_id: string;
+  bot: Bot;
+  routine: Routine;
+  thread_id: string;
+  duplicate: boolean;
 }
 
 // ── Connectors (MCP servers) ────────────────────────────────────────────────
