@@ -10199,7 +10199,10 @@ mod integration_tests {
                 .await
                 .unwrap()
                 .expect("bot row");
-            for _ in 0..200 {
+            // A detached status writer competes with 250 other tests on a loaded
+            // CI runner. Ten seconds is a deadline, not an expected wait: the
+            // normal path settles in a few milliseconds.
+            for _ in 0..1000 {
                 if row.status == ravenbot_core::BotStatus::Idle && row.last_active_at.is_some() {
                     break;
                 }
