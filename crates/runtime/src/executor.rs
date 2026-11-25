@@ -1015,10 +1015,10 @@ impl GraphExecutor {
             run
         };
 
-        // Office nodes run unattended. Safe work proceeds without a card; the
-        // runtime's hard safety policy blocks destructive shell/database/file
-        // operations before execution. This is per-run and cannot leak into
-        // another node.
+        // Office nodes run unattended. Reads and low-stakes writes proceed;
+        // high-risk tools park on the attention card, and the hard safety
+        // policy refuses destructive shell/database/file operations before a
+        // card is created. This is per-run and cannot leak into another node.
         runtime.review_approvals_for_run(run.id, true);
         // Bound each node by *progress*, not wall clock. A node that is still
         // streaming tokens or running tools should be allowed to finish; a node

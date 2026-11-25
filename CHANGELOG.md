@@ -4,6 +4,28 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Oversight ladder
+
+- **Review no longer means Full** — unattended office, routine and channel runs
+  now use `Auto`: reads and low-stakes writes proceed, while high-risk tools
+  park on the attention card. The hard safety policy still refuses destructive
+  shell/database/file operations before a card is created. A global or per-run
+  `AllowAll` is the explicit bypass; the old implicit `Full` path is gone.
+- A runtime test proves a Review-policy `shell_exec` parks, a denial keeps the
+  command from running, and the run continues; the approval-ladder unit test
+  pins high-risk parking and low-risk passage.
+
+### P3 release and platform trust
+
+- **Docker isolation on macOS** — the Docker tier is now detected and wired on
+  macOS as well as Linux, using the same read-only container, capability drop,
+  workspace mounts and blocked egress. Windows still fails closed until a real
+  filesystem/network backend exists.
+- **SBOM and release runbook** — `scripts/generate-sbom.py` emits a CycloneDX
+  1.5 inventory from both lockfiles; the release workflow uploads it beside
+  `SHA256SUMS.txt`. `docs/RELEASE.md` documents the signing, notarization and
+  updater secrets and why the current artifacts remain unsigned.
+
 ### P2 scale and correctness
 
 - **Chat views split** — `ThreadView` (4,696 → 3,853 lines) now delegates its

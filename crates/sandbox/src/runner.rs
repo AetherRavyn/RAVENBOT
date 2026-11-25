@@ -5,7 +5,7 @@
 //! * **Filesystem** — Linux uses bubblewrap (`bwrap`) to mount the system
 //!   read-only, hide the user's home (so `~/.ssh`, `~/.aws`, browser profiles, …
 //!   are simply not present), and bind only the configured allowed paths plus
-//!   the working directory read-write. The Linux Docker tier runs the command
+//!   the working directory read-write. The Docker tier (Linux and macOS) runs the command
 //!   in a read-only container with the same workspace mounts. macOS uses a
 //!   default-deny Seatbelt profile with the same workspace-only write rule.
 //! * **Namespaces** — PID, UTS, IPC (and network when policy blocks it) are
@@ -33,7 +33,7 @@ pub enum SandboxBackend {
     Bubblewrap(PathBuf),
     /// macOS seatbelt profile (`sandbox-exec`)
     Seatbelt(PathBuf),
-    /// Linux Docker container (`docker run`)
+    /// Docker container (`docker run`) on Linux or macOS
     Docker(PathBuf),
     /// No OS isolation — limits only (host tier, or a backend is unavailable)
     None,
@@ -109,14 +109,14 @@ impl SandboxRunner {
         if config.tier == SandboxTier::Host {
             return SandboxBackend::None;
         }
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         if config.tier == SandboxTier::Docker {
             if let Some(path) = find_on_path("docker") {
                 return SandboxBackend::Docker(path);
             }
             return SandboxBackend::None;
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         if config.tier == SandboxTier::Docker {
             return SandboxBackend::None;
         }
@@ -154,28 +154,17 @@ impl SandboxRunner {
     /// Describe the effective protection for the UI.
     pub fn report(&self) -> SandboxReport {
         match &self.backend {
-            SandboxBackend::Bubblewrap(path) => {
-                let docker_note = if self.config.tier == SandboxTier::Docker {
-                    " (Docker daemon backend is not wired up, so namespaces are used instead.)"
+            SandboxBackend::Bubblewrap(path) => SandboxReport {
+                backend: format!("bubblewrap ({})", path.display()),
+                filesystem_isolated: true,
+                network_isolated: !self.config.network_policy.enabled,
+                resource_limits: true,
+                note: if self.config.network_policy.enabled {
+                    "Filesystem + PID/IPC/UTS namespaces enforced; network shared (domain allowlist applies to HTTP tools).".to_string()
                 } else {
-                    ""
-                };
-                SandboxReport {
-                    backend: format!("bubblewrap ({})", path.display()),
-                    filesystem_isolated: true,
-                    network_isolated: !self.config.network_policy.enabled,
-                    resource_limits: true,
-                    note: format!(
-                        "{}{}",
-                        if self.config.network_policy.enabled {
-                            "Filesystem + PID/IPC/UTS namespaces enforced; network shared (domain allowlist applies to HTTP tools)."
-                        } else {
-                            "Filesystem + PID/IPC/UTS + network namespaces enforced."
-                        },
-                        docker_note
-                    ),
-                }
-            }
+                    "Filesystem + PID/IPC/UTS + network namespaces enforced.".to_string()
+                },
+            },
             SandboxBackend::Seatbelt(path) => SandboxReport {
                 backend: format!("seatbelt ({})", path.display()),
                 filesystem_isolated: true,
@@ -210,11 +199,7 @@ impl SandboxRunner {
                 } else if cfg!(target_os = "macos") {
                     "sandbox-exec not found on PATH, so commands are blocked"
                 } else if self.config.tier == SandboxTier::Docker {
-                    if cfg!(target_os = "linux") {
-                        "Docker is not installed or not on PATH, so commands are blocked"
-                    } else {
-                        "Docker sandbox tier is only implemented on Linux; commands are blocked"
-                    }
+                    "Docker is not installed or not on PATH, so commands are blocked"
                 } else {
                     "bubblewrap not found on PATH, so commands are blocked"
                 };
@@ -445,7 +430,7 @@ impl SandboxRunner {
             .unwrap_or_else(|| "debian:bookworm-slim".to_string())
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     fn apply_docker_args(&self, cmd: &mut Command, cwd: Option<&Path>) {
         use std::os::unix::fs::MetadataExt;
         cmd.args([
@@ -534,7 +519,7 @@ impl SandboxRunner {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(unix))]
     fn apply_docker_args(&self, _cmd: &mut Command, _cwd: Option<&Path>) {}
 
     fn apply_bwrap_args(&self, cmd: &mut Command, cwd: Option<&Path>) {
@@ -731,6 +716,7 @@ mod tests {
         )
     }
 
+    #[cfg(unix)]
     #[test]
     fn docker_backend_builds_a_locked_down_command() {
         let work = std::env::temp_dir().join(format!("ravenbot-docker-{}", uuid::Uuid::new_v4()));
@@ -771,7 +757,6 @@ mod tests {
             "--memory",
             "--pids-limit",
             "--cpus",
-            "--user",
             "alpine:3.20",
             "/bin/sh",
         ] {
@@ -780,6 +765,11 @@ mod tests {
                 "missing {expected}: {args:?}"
             );
         }
+        #[cfg(target_os = "linux")]
+        assert!(
+            args.iter().any(|arg| arg == "--user"),
+            "Linux Docker runs as the invoking uid/gid: {args:?}"
+        );
         assert!(args.iter().any(|arg| arg == "--tmpfs"));
         assert!(args
             .windows(2)
@@ -889,7 +879,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(unix)]
     #[tokio::test]
     #[ignore = "requires Docker and alpine:3.20; run with RAVENBOT_DOCKER_TEST=1"]
     async fn docker_tier_runs_in_a_real_isolated_container() {

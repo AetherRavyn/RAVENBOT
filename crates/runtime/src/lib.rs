@@ -364,9 +364,12 @@ pub enum RuntimeError {
 pub enum RunApprovalPolicy {
     /// No gates (headless CLI, explicit tests).
     AllowAll,
-    /// Unattended run: safe tools proceed, and destructive shell/database/file
-    /// operations are refused by the hard safety policy instead of parking on
-    /// an approval card nobody can answer.
+    /// Unattended run: reads and low-stakes writes proceed; high-risk tools
+    /// park on the attention card and a timeout or cancellation denies them.
+    /// The hard safety policy still refuses destructive operations before a
+    /// card is ever created. A human can resolve the card from the desktop,
+    /// remote client or notification channel; an unattended office does not
+    /// silently get `Full` just because nobody is looking at the window.
     Review,
 }
 
@@ -379,10 +382,7 @@ fn approval_mode_for(
         return ravenbot_core::ApprovalMode::Full;
     }
     match policy {
-        // Unattended work is YOLO: the safety policy, not a missing human,
-        // decides what may run. A destructive command is blocked before it
-        // reaches this point; everything else proceeds.
-        Some(RunApprovalPolicy::Review) => ravenbot_core::ApprovalMode::Full,
+        Some(RunApprovalPolicy::Review) => ravenbot_core::ApprovalMode::Auto,
         _ => bot_mode,
     }
 }
@@ -2102,9 +2102,9 @@ impl Runtime {
         self.set_run_approval_policy(run_id, allow.then_some(RunApprovalPolicy::AllowAll));
     }
 
-    /// Mark an unattended run: safe work proceeds without a card. Destructive
-    /// shell/database/file operations are refused by the safety policy, so
-    /// there is no gate to park on for a missing human.
+    /// Mark an unattended run: reads and low-stakes writes proceed without a
+    /// card. High-risk tools park on the attention card; the hard safety policy
+    /// refuses destructive shell/database/file operations before that point.
     pub fn review_approvals_for_run(&self, run_id: Uuid, review: bool) {
         self.set_run_approval_policy(run_id, review.then_some(RunApprovalPolicy::Review));
     }
@@ -12915,6 +12915,86 @@ mod parity_tests {
     }
 
     #[tokio::test]
+    async fn review_policy_parks_a_high_risk_tool_instead_of_forcing_full() {
+        let _ = std::fs::remove_file("/tmp/ravenbot-review-parked");
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+        let bot = Bot::new("Reviewed Office", "review policy test");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (_thread, mut run) = seed_run(&db, &bot).await;
+        let run_id = run.id;
+        runtime.review_approvals_for_run(run_id, true);
+
+        let provider = Arc::new(ScriptProvider::new(vec![
+            ModelResponse {
+                content: None,
+                tool_calls: vec![tool_call(
+                    "shell_exec",
+                    serde_json::json!({"command": "touch /tmp/ravenbot-review-parked"}),
+                    "review-shell",
+                )],
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                },
+                reasoning: None,
+            },
+            ModelResponse {
+                content: Some("I stopped at the review gate.".to_string()),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 3,
+                    output_tokens: 1,
+                },
+                reasoning: None,
+            },
+        ]));
+        runtime
+            .set_provider_override(Some(provider as Arc<dyn ModelProviderTrait>))
+            .await;
+
+        let task_runtime = runtime.clone();
+        let handle = tokio::spawn(async move {
+            let result = task_runtime.execute_run(&mut run).await;
+            (result, run)
+        });
+
+        let approval_id = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Ok(Some((id,))) = sqlx::query_as::<_, (String,)>(
+                    "SELECT id FROM approvals WHERE run_id = ? AND status = 'pending' LIMIT 1",
+                )
+                .bind(run_id.to_string())
+                .fetch_optional(db.pool())
+                .await
+                {
+                    return id;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("Review must create an approval card for a high-risk tool");
+        let approval_id = Uuid::parse_str(&approval_id).unwrap();
+        assert!(ravenbot_db::queries::ApprovalQueries::decide(
+            db.pool(),
+            approval_id,
+            false,
+            Some("denied by review test"),
+        )
+        .await
+        .unwrap());
+
+        let (result, run) = handle.await.expect("run task");
+        result.expect("the run continues after a review denial");
+        assert!(!std::path::Path::new("/tmp/ravenbot-review-parked").exists());
+        assert_eq!(run.tool_cost, 0.0);
+        assert!(run.state == ravenbot_core::RunState::Completed);
+    }
+
+    #[tokio::test]
     async fn cancel_while_waiting_for_approval_ends_the_run_promptly() {
         let db = temp_db().await;
         let runtime = Arc::new(Runtime::new(db.clone()));
@@ -14096,10 +14176,10 @@ mod approval_ladder_tests {
     use ravenbot_skills::SkillRisk;
 
     #[test]
-    fn unattended_runs_do_not_park_on_high_risk_cards() {
+    fn unattended_review_parks_high_risk_but_not_low_risk() {
         let mode = approval_mode_for(Some(RunApprovalPolicy::Review), false, ApprovalMode::Full);
-        assert_eq!(mode, ApprovalMode::Full);
-        assert!(!tool_needs_approval(&mode, SkillRisk::High, "shell_exec"));
+        assert_eq!(mode, ApprovalMode::Auto);
+        assert!(tool_needs_approval(&mode, SkillRisk::High, "shell_exec"));
         assert!(!tool_needs_approval(&mode, SkillRisk::Low, "browser_open"));
         assert!(!tool_needs_approval(
             &mode,

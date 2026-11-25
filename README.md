@@ -160,6 +160,9 @@ The default posture is useful autonomy, not blind autonomy:
 - A global inbox collects pending approvals and questions across every agent;
   the sidebar's **Waiting on me** filter reads the same live source, so a parked
   run is still discoverable after a reload.
+- Unattended office, routine and channel runs use **Review**: reads and low-risk
+  writes proceed, high-risk tools park for a person, and destructive operations
+  are refused before a card is created.
 - Destructive operations require an explicit decision in `Ask` mode; `Auto`
   gates high-risk calls; `Full` is the deliberate opt-in.
 - The approval, question, and budget-confirmation waits all honor cancel and
@@ -342,8 +345,8 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **986 Rust tests** across the workspace, including 210 Tauri/command tests,
-  243 runtime tests, 170 skill tests, 103 database tests, 68 core tests, 35
+- **987 Rust tests** across the workspace, including 210 Tauri/command tests,
+  244 runtime tests, 170 skill tests, 103 database tests, 68 core tests, 35
   memory tests, 33 MCP tests, and 15 remote-access tests.
 - **810 frontend tests** across 124 files.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
@@ -363,13 +366,16 @@ limitations rather than finished features:
 
 - **Linux is the primary target.** Desktop, sandbox, daemon, Docker isolation,
   and desktop control are exercised here.
-- **macOS** builds and ships a default-deny Seatbelt profile, but it still needs
+- **macOS** builds and ships a default-deny Seatbelt profile, and can use Docker
+  Desktop as a real container backend. The Seatbelt path still needs
   real-machine validation before it should be treated as equal to Linux.
 - **Windows** builds and supports the desktop app, headless daemon, and logon
   task, but the command sandbox backend is not implemented yet. Agent shell
   commands are blocked rather than silently run unsandboxed.
 - **Release artifacts are unsigned.** macOS Gatekeeper and Windows SmartScreen
-  will warn until signing and notarization are configured.
+  will warn until signing and notarization are configured. `SHA256SUMS.txt` and
+  a CycloneDX SBOM are attached to every release; [`docs/RELEASE.md`](docs/RELEASE.md)
+  documents the signing/updater setup.
 - **The default memory backend is lexical, not neural.** It is fast and fully
   offline; use Ollama or an OpenAI-compatible embedding endpoint when you need
   semantic paraphrase recall. No bundled neural model is shipped.
@@ -394,6 +400,7 @@ analysis, including the remaining trust and product gaps, is in
 | [`docs/ACCOUNTS.md`](docs/ACCOUNTS.md) | Local accounts, sessions, and workspace roles |
 | [`docs/REMOTE-ACCESS.md`](docs/REMOTE-ACCESS.md) | Pairing, RBAC, and the remote listener |
 | [`docs/SERVICE.md`](docs/SERVICE.md) | systemd, launchd, and Windows logon service |
+| [`docs/RELEASE.md`](docs/RELEASE.md) | Signing, notarization, updater, checksums and SBOM |
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
 | [`docs/LIVE-CHECKS.md`](docs/LIVE-CHECKS.md) | Opt-in provider and platform checks |

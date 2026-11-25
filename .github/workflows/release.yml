@@ -149,3 +149,21 @@ jobs:
           test -s SHA256SUMS.txt
 
           gh release upload "${GITHUB_REF_NAME}" SHA256SUMS.txt --clobber
+
+  sbom:
+    name: SBOM
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate CycloneDX SBOM
+        run: python3 scripts/generate-sbom.py sbom.cdx.json
+
+      - name: Upload SBOM to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "${GITHUB_REF_NAME}" sbom.cdx.json --clobber

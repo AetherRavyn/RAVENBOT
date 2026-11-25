@@ -42,6 +42,13 @@ accounts/
 # Logs
 *.log
 
+# Generated release inventory
+/sbom.cdx.json
+
+# Python bytecode
+__pycache__/
+*.pyc
+
 # Signing keys (never commit)
 .update-keys/
 

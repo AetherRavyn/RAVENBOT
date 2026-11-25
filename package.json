@@ -12,7 +12,8 @@
     "test": "vitest run",
     "tauri": "WEBKIT_DISABLE_DMABUF_RENDERER=1 WEBKIT_DISABLE_COMPOSITING_MODE=1 tauri",
     "check:ui": "node scripts/check-ui-foundation.mjs",
-    "check:ui:update": "node scripts/check-ui-foundation.mjs --update"
+    "check:ui:update": "node scripts/check-ui-foundation.mjs --update",
+    "sbom": "python3 scripts/generate-sbom.py sbom.cdx.json"
   },
   "license": "MIT",
   "dependencies": {
