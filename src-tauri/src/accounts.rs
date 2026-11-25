@@ -910,6 +910,16 @@ pub async fn workspace_for_actor(
     actor_id: &str,
     workspace_id: &str,
 ) -> Result<Option<(Account, String)>, String> {
+    // A disabled account cannot act, even if a grant still names it. Sessions
+    // are already filtered by `validate_session`, but this resolver must not
+    // depend on the caller having validated one first: a stale grant row is
+    // not a capability.
+    let Some(actor) = account_by_id(base, actor_id).await? else {
+        return Ok(None);
+    };
+    if actor.disabled {
+        return Ok(None);
+    }
     let Some(workspace) = account_by_id(base, workspace_id).await? else {
         return Ok(None);
     };

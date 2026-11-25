@@ -108,6 +108,19 @@ process on the next check.
   `8810/8811/8812` and move in steps of ten. A workspace is still protected by
   its own fleet lock, so two windows cannot write the same database at once.
 
+## Isolation audit
+
+The cross-tenant invariants — grants, revocation, sessions, per-workspace
+databases, remote device tokens and thread shares — are executable:
+
+```sh
+cargo test -p ravenbot --test tenant_isolation
+```
+
+The threat model, the invariant → test table and the honest limits (accounts
+on one Unix user share that OS account) are in
+[TENANT-ISOLATION.md](TENANT-ISOLATION.md).
+
 ## CLI
 
 ```sh
