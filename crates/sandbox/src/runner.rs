@@ -244,8 +244,16 @@ impl SandboxRunner {
             writable.push(cwd.to_string_lossy().to_string());
         }
         // Only this user's temp directory, not the whole /private/var/folders
-        // tree shared by every account.
-        writable.push(std::env::temp_dir().to_string_lossy().to_string());
+        // tree shared by every account. `/var` is a symlink to `/private/var`,
+        // and Seatbelt matches the kernel's canonical path, so add both forms.
+        let temp = std::env::temp_dir();
+        writable.push(temp.to_string_lossy().to_string());
+        if let Ok(canonical) = temp.canonicalize() {
+            let canonical = canonical.to_string_lossy().to_string();
+            if !writable.contains(&canonical) {
+                writable.push(canonical);
+            }
+        }
         writable.sort();
         writable.dedup();
 
@@ -262,6 +270,10 @@ impl SandboxRunner {
             "(allow sysctl-read)".to_string(),
             "(allow mach-lookup)".to_string(),
             "(allow file-read-metadata)".to_string(),
+            // dyld maps the executable and shared cache through this operation;
+            // file-read* alone lets it stat the files but not map them, which
+            // aborts the child with SIGABRT and no stderr.
+            "(allow file-map-executable)".to_string(),
             "(allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/Library\") (subpath \"/opt\") (subpath \"/etc\") (subpath \"/private/etc\") (subpath \"/dev\"))".to_string(),
             "(allow file-write* (subpath \"/tmp\") (subpath \"/private/tmp\") (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))".to_string(),
         ];
