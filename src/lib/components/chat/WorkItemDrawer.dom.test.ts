@@ -17,6 +17,8 @@ function makeDetail(): any {
       instruction: "Render the dashboard charts from the collected data.",
       status: "failed",
       owner_bot_id: "b1",
+      owner_account: null,
+      claimed_at: null,
       thread_id: "t1",
       run_id: "r1",
       attempts: 1,
@@ -66,15 +68,53 @@ function makeDetail(): any {
 }
 
 let current: any = makeDetail();
+let claimConflict: string | null = null;
 
 beforeEach(() => {
   cleanup();
   setLocale("en");
   invokeMock.mockReset();
   current = makeDetail();
+  claimConflict = null;
   invokeMock.mockImplementation(async (command: string, args?: any) => {
+    if (command === "get_current_account") {
+      return {
+        username: "alice",
+        workspace: "alice",
+        role: "owner",
+        workspace_owner: true,
+      };
+    }
     if (command === "get_work_item") {
       return structuredClone(current);
+    }
+    if (command === "claim_work_item") {
+      if (claimConflict) {
+        throw `This task is already claimed by @${claimConflict}.`;
+      }
+      current.item.owner_account = "alice";
+      current.item.claimed_at ??= "2026-11-21T10:05:00Z";
+      current.events.push({
+        id: `e${current.events.length + 1}`,
+        kind: "claimed",
+        payload: { account: "alice", previous_owner: null },
+        created_at: current.item.claimed_at,
+      });
+      return structuredClone(current.item);
+    }
+    if (command === "release_work_item") {
+      if (current.item.owner_account !== "alice") {
+        throw "This task is not claimed.";
+      }
+      current.item.owner_account = null;
+      current.item.claimed_at = null;
+      current.events.push({
+        id: `e${current.events.length + 1}`,
+        kind: "released",
+        payload: { account: "alice", previous_owner: "alice" },
+        created_at: "2026-11-21T10:06:00Z",
+      });
+      return structuredClone(current.item);
     }
     if (command === "add_work_comment") {
       const comment = {
@@ -148,8 +188,67 @@ describe("WorkItemDrawer", () => {
     await waitFor(() => expect(container.textContent).toContain("Pending"));
   });
 
-  it("adds a human comment to the record", async () => {
-    const { container, getByLabelText, getByText } = render(WorkItemDrawer, {
+  it("claims an unclaimed task for the signed-in account and refreshes the record", async () => {
+    const { container, getByText } = render(WorkItemDrawer, { props: props() });
+    await waitFor(() => expect(container.textContent).toContain("Unclaimed"));
+    expect(container.textContent).not.toContain("Release claim");
+
+    const loadsBefore = invokeMock.mock.calls.filter(
+      ([command]) => command === "get_work_item",
+    ).length;
+    await fireEvent.click(getByText("Claim task").closest("button")!);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("claim_work_item", { id: "n1" }),
+    );
+    await waitFor(() => expect(container.textContent).toContain("@alice"));
+    await waitFor(() => expect(container.textContent).toContain("Release claim"));
+    const loadsAfter = invokeMock.mock.calls.filter(
+      ([command]) => command === "get_work_item",
+    ).length;
+    expect(loadsAfter).toBeGreaterThan(loadsBefore);
+  });
+
+  it("offers release only to the account that owns the claim", async () => {
+    current.item.owner_account = "alice";
+    current.item.claimed_at = "2026-11-21T10:05:00Z";
+    const { container, getByText } = render(WorkItemDrawer, { props: props() });
+    await waitFor(() => expect(container.textContent).toContain("@alice"));
+    await waitFor(() => expect(container.textContent).toContain("Release claim"));
+    expect(container.textContent).not.toContain("Claim task");
+
+    await fireEvent.click(getByText("Release claim").closest("button")!);
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("release_work_item", { id: "n1" }),
+    );
+    await waitFor(() => expect(container.textContent).toContain("Unclaimed"));
+  });
+
+  it("shows another person's claim as read-only, with no claim or release button", async () => {
+    current.item.owner_account = "bob";
+    current.item.claimed_at = "2026-11-21T10:05:00Z";
+    const { container, queryByText } = render(WorkItemDrawer, { props: props() });
+    await waitFor(() => expect(container.textContent).toContain("@bob"));
+    expect(container.textContent).toContain("Claimed by @bob");
+    expect(queryByText("Claim task")).toBeNull();
+    expect(queryByText("Release claim")).toBeNull();
+  });
+
+  it("renders a claim conflict as an inline alert and keeps the record", async () => {
+    claimConflict = "bob";
+    const { container, getByText } = render(WorkItemDrawer, { props: props() });
+    await waitFor(() => expect(container.textContent).toContain("Unclaimed"));
+
+    await fireEvent.click(getByText("Claim task").closest("button")!);
+    await waitFor(() =>
+      expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+        "This task is already claimed by @bob.",
+      ),
+    );
+    expect(container.textContent).toContain("Unclaimed");
+    expect(container.textContent).not.toContain("Release claim");
+  });
+
+  it("adds a human comment to the record", async () => {    const { container, getByLabelText, getByText } = render(WorkItemDrawer, {
       props: props(),
     });
     await waitFor(() => expect(container.textContent).toContain("Try the cached data."));

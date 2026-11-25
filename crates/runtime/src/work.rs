@@ -83,7 +83,9 @@ impl WorkLedger {
             return;
         }
 
-        match WorkItemQueries::claim(&self.pool, &id, run_id, "graph-executor", LEASE_SECS).await {
+        match WorkItemQueries::claim_for_run(&self.pool, &id, run_id, "graph-executor", LEASE_SECS)
+            .await
+        {
             Ok(true) => {}
             Ok(false) => {
                 // A graph that predates the ledger has no row. Seed one from

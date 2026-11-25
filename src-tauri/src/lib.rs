@@ -3,6 +3,7 @@
 //! This crate provides the Tauri shell and IPC handlers.
 
 use ravenbot_core::*;
+use ravenbot_db::queries::ClaimError;
 use ravenbot_db::Database;
 use ravenbot_memory::EmbeddingProvider;
 use ravenbot_models::ModelDiscovery;
@@ -9888,6 +9889,44 @@ async fn add_work_comment(
     ravenbot_db::queries::WorkItemQueries::add_comment(state.db.pool(), id, author, body)
         .await
         .map_err(|error| error.to_string())
+}
+
+/// Claim a task for the signed-in person. The actor is taken from the
+/// authenticated session, never from the frontend, so a client cannot claim
+/// work as somebody else.
+#[tauri::command]
+async fn claim_work_item(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ravenbot_db::queries::WorkItem, String> {
+    let account = state.account.username.clone();
+    ravenbot_db::queries::WorkItemQueries::claim(state.db.pool(), id.trim(), &account)
+        .await
+        .map_err(|error| match error {
+            ClaimError::Conflict { owner: Some(owner) } => {
+                format!("This task is already claimed by @{owner}.")
+            }
+            other => other.to_string(),
+        })
+}
+
+/// Release the signed-in person's claim on a task. Only the current owner may
+/// release it; the database checks that condition, not the UI.
+#[tauri::command]
+async fn release_work_item(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ravenbot_db::queries::WorkItem, String> {
+    let account = state.account.username.clone();
+    ravenbot_db::queries::WorkItemQueries::release(state.db.pool(), id.trim(), &account)
+        .await
+        .map_err(|error| match error {
+            ClaimError::Conflict { owner: Some(owner) } => {
+                format!("This task is claimed by @{owner}. Only they can release it.")
+            }
+            ClaimError::Conflict { owner: None } => "This task is not claimed.".to_string(),
+            other => other.to_string(),
+        })
 }
 
 /// Reset a node and every dependent for another run.
@@ -22415,6 +22454,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         list_work_items,
         get_work_item,
         add_work_comment,
+        claim_work_item,
+        release_work_item,
         retry_work_item,
         block_work_item,
         unblock_work_item,

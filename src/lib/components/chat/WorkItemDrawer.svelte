@@ -16,6 +16,8 @@
     Play,
     RefreshCw,
     Send,
+    UserMinus,
+    UserPlus,
     X,
   } from "@lucide/svelte";
 
@@ -25,6 +27,8 @@
     instruction: string;
     status: string;
     owner_bot_id: string | null;
+    owner_account: string | null;
+    claimed_at: string | null;
     thread_id: string | null;
     run_id: string | null;
     attempts: number;
@@ -79,6 +83,7 @@
   let { itemId, label, botName, onClose }: Props = $props();
 
   let detail = $state<WorkItemDetail | null>(null);
+  let currentUsername = $state("");
   let loading = $state(true);
   let loadError = $state("");
   let comment = $state("");
@@ -111,6 +116,13 @@
   const canApprove = $derived(detail?.item.status === "review");
   const canBlock = $derived(
     !["running", "done", "blocked"].includes(detail?.item.status ?? ""),
+  );
+  const ownerAccount = $derived(detail?.item.owner_account ?? "");
+  const isMyClaim = $derived(
+    ownerAccount !== "" && ownerAccount === currentUsername,
+  );
+  const canClaim = $derived(
+    detail != null && ownerAccount === "" && detail.item.status !== "archived",
   );
 
   function statusLabel(value: string): string {
@@ -175,6 +187,25 @@
   $effect(() => {
     const id = itemId;
     void load(id);
+  });
+
+  // The command decides who may claim, but the drawer needs the signed-in
+  // name to show "your claim" instead of a read-only owner line.
+  $effect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const account = await invoke<{ username?: string } | null>(
+          "get_current_account",
+        );
+        if (!cancelled) currentUsername = account?.username?.trim() ?? "";
+      } catch {
+        if (!cancelled) currentUsername = "";
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   });
 
   $effect(() => {
@@ -351,6 +382,17 @@
           <div class="text-[var(--text-muted)]">{t("work.thread")}: <span class="font-mono text-[var(--text-tertiary)]">{detail.item.thread_id?.slice(0, 8) ?? "—"}</span></div>
           <div class="text-[var(--text-muted)]">{t("work.created")}: {formatTime(detail.item.created_at)}</div>
           <div class="text-[var(--text-muted)]">{t("work.updated")}: {formatTime(detail.item.updated_at)}</div>
+          <div class="col-span-2 flex flex-wrap items-baseline gap-1.5">
+            <span class="text-[var(--text-muted)]">{t("work.owner")}:</span>
+            {#if detail.item.owner_account}
+              <span class="font-semibold text-[var(--text-primary)]">@{detail.item.owner_account}</span>
+              {#if detail.item.claimed_at}
+                <span class="text-[var(--text-faint)]">{t("work.claimedAt", { time: formatTime(detail.item.claimed_at) })}</span>
+              {/if}
+            {:else}
+              <span class="text-[var(--text-faint)]">{t("work.unclaimed")}</span>
+            {/if}
+          </div>
         </section>
 
         {#if actionError}
@@ -362,6 +404,28 @@
             {t("work.actions")}
           </div>
           <div class="flex flex-wrap gap-1.5">
+            {#if canClaim}
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-[11px] text-[var(--text-secondary)] cursor-pointer disabled:opacity-50"
+                disabled={actionBusy !== ""}
+                onclick={() => void runAction("claim", "claim_work_item", { id: detail?.item.id ?? "" })}
+              >
+                {#if actionBusy === "claim"}<Loader2 class="size-3 animate-spin" />{:else}<UserPlus class="size-3" />{/if}
+                {t("work.claim")}
+              </button>
+            {/if}
+            {#if isMyClaim}
+              <button
+                type="button"
+                class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] text-[11px] text-[var(--text-secondary)] cursor-pointer disabled:opacity-50"
+                disabled={actionBusy !== ""}
+                onclick={() => void runAction("release", "release_work_item", { id: detail?.item.id ?? "" })}
+              >
+                {#if actionBusy === "release"}<Loader2 class="size-3 animate-spin" />{:else}<UserMinus class="size-3" />{/if}
+                {t("work.release")}
+              </button>
+            {/if}
             {#if canRetry}
               <button
                 type="button"
@@ -427,6 +491,10 @@
               </button>
             {/if}
           </div>
+
+          {#if ownerAccount && !isMyClaim}
+            <p class="text-[11px] text-[var(--text-muted)]">{t("work.claimedBy", { owner: ownerAccount })}</p>
+          {/if}
 
           {#if blockOpen}
             <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-2.5 space-y-2">

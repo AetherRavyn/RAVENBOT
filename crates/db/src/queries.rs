@@ -1703,6 +1703,10 @@ pub struct WorkItem {
     pub contract: serde_json::Value,
     pub status: String,
     pub owner_bot_id: Option<String>,
+    /// The person who claimed the task for coordination, if any.
+    pub owner_account: Option<String>,
+    /// When the human claim was taken. Preserved when the same person re-claims.
+    pub claimed_at: Option<String>,
     pub reviewer_bot_id: Option<String>,
     pub attempts: i64,
     pub max_attempts: i64,
@@ -1781,6 +1785,8 @@ struct WorkItemRow {
     contract_json: String,
     status: String,
     owner_bot_id: Option<String>,
+    owner_account: Option<String>,
+    claimed_at: Option<String>,
     reviewer_bot_id: Option<String>,
     attempts: i64,
     max_attempts: i64,
@@ -1813,6 +1819,8 @@ impl From<WorkItemRow> for WorkItem {
                 .unwrap_or_else(|_| serde_json::json!({})),
             status: row.status,
             owner_bot_id: row.owner_bot_id,
+            owner_account: row.owner_account,
+            claimed_at: row.claimed_at,
             reviewer_bot_id: row.reviewer_bot_id,
             attempts: row.attempts,
             max_attempts: row.max_attempts,
@@ -1833,6 +1841,78 @@ impl From<WorkItemRow> for WorkItem {
     }
 }
 
+/// Why a human claim or release could not be applied.
+#[derive(Debug)]
+pub enum ClaimError {
+    /// No work item has this id.
+    NotFound,
+    /// Another account holds the claim (`Some`), or nobody does (`None`, for a
+    /// release). The owner is carried so the caller can name them.
+    Conflict {
+        owner: Option<String>,
+    },
+    /// The item's status does not allow the transition (archived work).
+    InvalidState(String),
+    /// The account name is empty, too long, or contains control characters.
+    InvalidAccount(&'static str),
+    Database(sqlx::Error),
+}
+
+impl std::fmt::Display for ClaimError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => write!(f, "The work item was not found."),
+            Self::Conflict { owner: Some(owner) } => {
+                write!(f, "This task is already claimed by @{owner}.")
+            }
+            Self::Conflict { owner: None } => write!(f, "This task is not claimed."),
+            Self::InvalidState(status) => {
+                write!(f, "A task in '{status}' state cannot be claimed.")
+            }
+            Self::InvalidAccount(message) => f.write_str(message),
+            Self::Database(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ClaimError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Database(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<sqlx::Error> for ClaimError {
+    fn from(error: sqlx::Error) -> Self {
+        Self::Database(error)
+    }
+}
+
+/// Normalize an account name for storage. Names are usernames, not display
+/// names, so they are trimmed, capped, and rejected if they contain control
+/// characters that would corrupt the timeline payload.
+fn valid_claim_account(account: &str) -> Result<&str, ClaimError> {
+    let account = account.trim();
+    if account.is_empty() {
+        return Err(ClaimError::InvalidAccount(
+            "An account is required to claim a task.",
+        ));
+    }
+    if account.chars().count() > 64 {
+        return Err(ClaimError::InvalidAccount(
+            "An account name must be at most 64 characters.",
+        ));
+    }
+    if account.chars().any(char::is_control) {
+        return Err(ClaimError::InvalidAccount(
+            "An account name cannot contain control characters.",
+        ));
+    }
+    Ok(account)
+}
+
 /// Durable work items, dependencies, comments, artifacts, and transitions.
 ///
 /// The graph remains the scheduler. Every graph transition is mirrored here so
@@ -1844,6 +1924,9 @@ impl WorkItemQueries {
     /// Insert a planned item, or refresh the planning fields of an existing one.
     /// Seed never moves an item backwards: a resumed graph must not turn a done
     /// task into pending.
+    ///
+    /// `owner_account` and `claimed_at` are deliberately absent from the
+    /// upsert: a graph replan must never clear or rewrite a person's claim.
     pub async fn seed(pool: &SqlitePool, item: &NewWorkItem) -> Result<(), sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         sqlx::query(
@@ -2060,13 +2143,127 @@ impl WorkItemQueries {
         Ok(rows.into_iter().map(WorkItem::from).collect())
     }
 
-    /// Atomically take ownership of an item.
+    /// Atomically claim an item for a person.
+    ///
+    /// The human claim is coordination state, separate from the graph lease:
+    /// it does not move the status, spend an attempt, or touch the instruction,
+    /// result, or run attribution. The conditional `UPDATE` is the arbiter, so
+    /// two people racing for the same task cannot both see success.
+    pub async fn claim(pool: &SqlitePool, id: &str, account: &str) -> Result<WorkItem, ClaimError> {
+        let account = valid_claim_account(account)?;
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(ClaimError::NotFound);
+        }
+        let now = Utc::now().to_rfc3339();
+
+        // Read only to describe the transition and preserve an existing
+        // `claimed_at`. The UPDATE condition below decides every race.
+        let before = Self::get(pool, id).await?.ok_or(ClaimError::NotFound)?;
+        if before.status == "archived" {
+            return Err(ClaimError::InvalidState(before.status));
+        }
+
+        let changed = sqlx::query(
+            "UPDATE work_items
+             SET owner_account = ?, claimed_at = COALESCE(claimed_at, ?), updated_at = ?
+             WHERE id = ? AND status != 'archived'
+               AND (owner_account IS NULL OR owner_account = ?)",
+        )
+        .bind(account)
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .bind(account)
+        .execute(pool)
+        .await?
+        .rows_affected();
+
+        if changed == 0 {
+            let current = Self::get(pool, id).await?.ok_or(ClaimError::NotFound)?;
+            if current.status == "archived" {
+                return Err(ClaimError::InvalidState(current.status));
+            }
+            return Err(ClaimError::Conflict {
+                owner: current.owner_account,
+            });
+        }
+
+        // Re-claiming a task you already own is idempotent: the row keeps its
+        // original `claimed_at`, and there is no transition to record.
+        if before.owner_account.as_deref() != Some(account) {
+            Self::event(
+                pool,
+                id,
+                None,
+                "claimed",
+                serde_json::json!({
+                    "account": account,
+                    "previous_owner": before.owner_account,
+                }),
+            )
+            .await?;
+        }
+
+        Self::get(pool, id).await?.ok_or(ClaimError::NotFound)
+    }
+
+    /// Release a human claim. Only the account that holds it may release it;
+    /// an unowned task and another person's task are both conflicts.
+    pub async fn release(
+        pool: &SqlitePool,
+        id: &str,
+        account: &str,
+    ) -> Result<WorkItem, ClaimError> {
+        let account = valid_claim_account(account)?;
+        let id = id.trim();
+        if id.is_empty() {
+            return Err(ClaimError::NotFound);
+        }
+        let now = Utc::now().to_rfc3339();
+
+        let changed = sqlx::query(
+            "UPDATE work_items
+             SET owner_account = NULL, claimed_at = NULL, updated_at = ?
+             WHERE id = ? AND owner_account = ?",
+        )
+        .bind(&now)
+        .bind(id)
+        .bind(account)
+        .execute(pool)
+        .await?
+        .rows_affected();
+
+        if changed == 0 {
+            let current = Self::get(pool, id).await?.ok_or(ClaimError::NotFound)?;
+            return Err(ClaimError::Conflict {
+                owner: current.owner_account,
+            });
+        }
+
+        Self::event(
+            pool,
+            id,
+            None,
+            "released",
+            serde_json::json!({ "account": account, "previous_owner": account }),
+        )
+        .await?;
+
+        Self::get(pool, id).await?.ok_or(ClaimError::NotFound)
+    }
+
+    /// Atomically take the execution lease on an item.
     ///
     /// Two workers may race on the same ready row; only the `UPDATE` that
     /// changes a pending/ready row wins. A failed item with attempts remaining
     /// is retryable, and a currently running item can be re-leased only by the
     /// run that already owns it (resume after a restart).
-    pub async fn claim(
+    ///
+    /// This is the graph executor's lease. A person claiming the task for
+    /// coordination is [`WorkItemQueries::claim`], which is a separate column
+    /// and does not move the task's status or spend an attempt.
+    pub async fn claim_for_run(
         pool: &SqlitePool,
         id: &str,
         run_id: Uuid,
@@ -10050,19 +10247,19 @@ mod work_item_tests {
 
         let first_run = Uuid::new_v4();
         assert!(
-            WorkItemQueries::claim(&pool, &key, first_run, "worker-a", 60)
+            WorkItemQueries::claim_for_run(&pool, &key, first_run, "worker-a", 60)
                 .await
                 .expect("first claim")
         );
         assert!(
-            !WorkItemQueries::claim(&pool, &key, Uuid::new_v4(), "worker-b", 60)
+            !WorkItemQueries::claim_for_run(&pool, &key, Uuid::new_v4(), "worker-b", 60)
                 .await
                 .expect("second claim"),
             "a live lease must not be stolen"
         );
         // The same run may re-lease its own item after a restart.
         assert!(
-            WorkItemQueries::claim(&pool, &key, first_run, "worker-a", 60)
+            WorkItemQueries::claim_for_run(&pool, &key, first_run, "worker-a", 60)
                 .await
                 .expect("resume claim")
         );
@@ -10078,7 +10275,7 @@ mod work_item_tests {
             .expect("fail");
         let second_run = Uuid::new_v4();
         assert!(
-            WorkItemQueries::claim(&pool, &key, second_run, "worker-b", 60)
+            WorkItemQueries::claim_for_run(&pool, &key, second_run, "worker-b", 60)
                 .await
                 .expect("retry claim")
         );
@@ -10092,7 +10289,7 @@ mod work_item_tests {
             .await
             .expect("fail again");
         assert!(
-            !WorkItemQueries::claim(&pool, &key, Uuid::new_v4(), "worker-c", 60)
+            !WorkItemQueries::claim_for_run(&pool, &key, Uuid::new_v4(), "worker-c", 60)
                 .await
                 .expect("exhausted claim"),
             "attempt cap must stop an automatic retry"
@@ -10227,9 +10424,11 @@ mod work_item_tests {
         // A deliberate rerun resets the attempt counter; a rework deserves a
         // fresh retry budget instead of inheriting the previous failure.
         let run = Uuid::new_v4();
-        assert!(WorkItemQueries::claim(&pool, &key, run, "worker", 60)
-            .await
-            .expect("claim"));
+        assert!(
+            WorkItemQueries::claim_for_run(&pool, &key, run, "worker", 60)
+                .await
+                .expect("claim")
+        );
         WorkItemQueries::mark_failed(&pool, &key, Some(run), "first attempt died")
             .await
             .expect("fail");
@@ -10288,7 +10487,7 @@ mod work_item_tests {
             .await
             .expect("seed");
         assert!(
-            WorkItemQueries::claim(&pool, &id.to_string(), Uuid::new_v4(), "graph", 60)
+            WorkItemQueries::claim_for_run(&pool, &id.to_string(), Uuid::new_v4(), "graph", 60)
                 .await
                 .expect("claim"),
             "the item should be claimed"
@@ -10363,7 +10562,7 @@ mod work_item_tests {
             .expect("seed");
         let key = id.to_string();
         assert!(
-            WorkItemQueries::claim(&pool, &key, Uuid::new_v4(), "crashed", 0)
+            WorkItemQueries::claim_for_run(&pool, &key, Uuid::new_v4(), "crashed", 0)
                 .await
                 .expect("short claim")
         );
@@ -10371,7 +10570,7 @@ mod work_item_tests {
 
         let new_run = Uuid::new_v4();
         assert!(
-            WorkItemQueries::claim(&pool, &key, new_run, "replacement", 60)
+            WorkItemQueries::claim_for_run(&pool, &key, new_run, "replacement", 60)
                 .await
                 .expect("reclaim")
         );
@@ -10395,9 +10594,11 @@ mod work_item_tests {
         let key = id.to_string();
         let run_id = Uuid::new_v4();
 
-        assert!(WorkItemQueries::claim(&pool, &key, run_id, "graph", 60)
-            .await
-            .expect("claim"));
+        assert!(
+            WorkItemQueries::claim_for_run(&pool, &key, run_id, "graph", 60)
+                .await
+                .expect("claim")
+        );
         assert!(WorkItemQueries::heartbeat(&pool, &key, 60)
             .await
             .expect("heartbeat"));
@@ -10413,7 +10614,7 @@ mod work_item_tests {
             "terminal transitions are idempotent"
         );
         assert!(
-            !WorkItemQueries::claim(&pool, &key, Uuid::new_v4(), "thief", 60)
+            !WorkItemQueries::claim_for_run(&pool, &key, Uuid::new_v4(), "thief", 60)
                 .await
                 .expect("done claim"),
             "a completed item is never reclaimed"
@@ -10465,13 +10666,206 @@ mod work_item_tests {
             .expect("seed");
         let key = id.to_string();
         let (a, b) = tokio::join!(
-            WorkItemQueries::claim(&pool, &key, Uuid::new_v4(), "worker-a", 60),
-            WorkItemQueries::claim(&pool, &key, Uuid::new_v4(), "worker-b", 60),
+            WorkItemQueries::claim_for_run(&pool, &key, Uuid::new_v4(), "worker-a", 60),
+            WorkItemQueries::claim_for_run(&pool, &key, Uuid::new_v4(), "worker-b", 60),
         );
         let wins = usize::from(a.expect("claim a")) + usize::from(b.expect("claim b"));
         assert_eq!(wins, 1, "exactly one concurrent claim may win");
         drop(database);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn the_first_human_claim_wins_and_the_loser_is_told_who_has_it() {
+        let pool = db().await;
+        let office = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        WorkItemQueries::seed(&pool, &item(id, office, "pending", 1))
+            .await
+            .expect("seed");
+        let key = id.to_string();
+
+        let winner = WorkItemQueries::claim(&pool, &key, "alice")
+            .await
+            .expect("first claim");
+        assert_eq!(winner.owner_account.as_deref(), Some("alice"));
+        assert!(winner.claimed_at.is_some());
+
+        let error = WorkItemQueries::claim(&pool, &key, "bob")
+            .await
+            .expect_err("the second claim must lose");
+        match error {
+            ClaimError::Conflict { owner } => {
+                assert_eq!(owner.as_deref(), Some("alice"));
+            }
+            other => panic!("expected a conflict carrying the owner, got {other:?}"),
+        }
+
+        let stored = WorkItemQueries::get(&pool, &key)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(stored.owner_account.as_deref(), Some("alice"));
+        assert_eq!(stored.claimed_at, winner.claimed_at);
+        assert_eq!(stored.updated_at, winner.updated_at);
+    }
+
+    #[tokio::test]
+    async fn reclaiming_your_own_task_is_idempotent_and_preserves_the_stamp() {
+        let pool = db().await;
+        let office = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        let planned = item(id, office, "pending", 1);
+        WorkItemQueries::seed(&pool, &planned).await.expect("seed");
+        let key = id.to_string();
+
+        let first = WorkItemQueries::claim(&pool, &key, "alice")
+            .await
+            .expect("first claim");
+        let claimed_at = first.claimed_at.clone().expect("claim stamp");
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+
+        let again = WorkItemQueries::claim(&pool, &key, "  alice  ")
+            .await
+            .expect("re-claim");
+        assert_eq!(again.owner_account.as_deref(), Some("alice"));
+        assert_eq!(again.claimed_at.as_deref(), Some(claimed_at.as_str()));
+
+        // A resumed planner reseeds the same node; that must not clear the
+        // person's claim or reset the stamp.
+        WorkItemQueries::seed(&pool, &planned)
+            .await
+            .expect("reseed");
+        let stored = WorkItemQueries::get(&pool, &key)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(stored.owner_account.as_deref(), Some("alice"));
+        assert_eq!(stored.claimed_at, Some(claimed_at));
+
+        let detail = WorkItemQueries::detail(&pool, &key)
+            .await
+            .expect("detail")
+            .expect("record");
+        let claims = detail
+            .events
+            .iter()
+            .filter(|event| event.kind == "claimed")
+            .count();
+        assert_eq!(claims, 1, "an idempotent re-claim is not a new transition");
+    }
+
+    #[tokio::test]
+    async fn only_the_owner_may_release_and_release_frees_the_next_claim() {
+        let pool = db().await;
+        let office = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        WorkItemQueries::seed(&pool, &item(id, office, "pending", 1))
+            .await
+            .expect("seed");
+        let key = id.to_string();
+
+        WorkItemQueries::claim(&pool, &key, "alice")
+            .await
+            .expect("claim");
+
+        let error = WorkItemQueries::release(&pool, &key, "bob")
+            .await
+            .expect_err("a non-owner cannot release");
+        match error {
+            ClaimError::Conflict { owner } => {
+                assert_eq!(owner.as_deref(), Some("alice"));
+            }
+            other => panic!("expected a conflict, got {other:?}"),
+        }
+        let still_owned = WorkItemQueries::get(&pool, &key)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(still_owned.owner_account.as_deref(), Some("alice"));
+
+        let released = WorkItemQueries::release(&pool, &key, "alice")
+            .await
+            .expect("owner release");
+        assert!(released.owner_account.is_none());
+        assert!(released.claimed_at.is_none());
+
+        let error = WorkItemQueries::release(&pool, &key, "alice")
+            .await
+            .expect_err("a released task has nothing to release");
+        match error {
+            ClaimError::Conflict { owner } => assert!(owner.is_none()),
+            other => panic!("expected an unclaimed conflict, got {other:?}"),
+        }
+
+        let next = WorkItemQueries::claim(&pool, &key, "bob")
+            .await
+            .expect("after release the next person can claim");
+        assert_eq!(next.owner_account.as_deref(), Some("bob"));
+        assert!(next.claimed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn claim_and_release_transitions_are_durable_timeline_events() {
+        let pool = db().await;
+        let office = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        WorkItemQueries::seed(&pool, &item(id, office, "pending", 1))
+            .await
+            .expect("seed");
+        let key = id.to_string();
+
+        WorkItemQueries::claim(&pool, &key, "alice")
+            .await
+            .expect("claim");
+        WorkItemQueries::release(&pool, &key, "alice")
+            .await
+            .expect("release");
+        WorkItemQueries::claim(&pool, &key, "bob")
+            .await
+            .expect("second claim");
+
+        let detail = WorkItemQueries::detail(&pool, &key)
+            .await
+            .expect("detail")
+            .expect("record");
+        let claimed: Vec<_> = detail
+            .events
+            .iter()
+            .filter(|event| event.kind == "claimed")
+            .collect();
+        let released: Vec<_> = detail
+            .events
+            .iter()
+            .filter(|event| event.kind == "released")
+            .collect();
+        assert_eq!(claimed.len(), 2);
+        assert_eq!(released.len(), 1);
+        assert_eq!(claimed[0].payload["account"], "alice");
+        assert!(claimed[0].payload["previous_owner"].is_null());
+        assert_eq!(claimed[1].payload["account"], "bob");
+        assert!(claimed[1].payload["previous_owner"].is_null());
+        assert_eq!(released[0].payload["account"], "alice");
+        assert_eq!(released[0].payload["previous_owner"], "alice");
+    }
+
+    #[tokio::test]
+    async fn an_archived_task_cannot_be_claimed() {
+        let pool = db().await;
+        let office = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        WorkItemQueries::seed(&pool, &item(id, office, "archived", 1))
+            .await
+            .expect("seed");
+        let key = id.to_string();
+
+        match WorkItemQueries::claim(&pool, &key, "alice")
+            .await
+            .expect_err("archived work is not claimable")
+        {
+            ClaimError::InvalidState(status) => assert_eq!(status, "archived"),
+            other => panic!("expected an invalid state, got {other:?}"),
+        }
     }
 }
 

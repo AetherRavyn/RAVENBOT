@@ -74,6 +74,8 @@ const OPERATOR_EXTRA: &[&str] = &[
     "write_workspace_file",
     "fill_browser_from_vault",
     "send_attention_notification",
+    "claim_work_item",
+    "release_work_item",
     "computer_takeover",
     "set_computer_takeover",
     "start_bot_desktop",
@@ -168,6 +170,16 @@ mod tests {
         assert!(!role_allows("operator", "add_workspace_member"));
         assert!(!role_allows("operator", "set_workspace_member_role"));
         assert!(!role_allows("operator", "unknown_future_command"));
+    }
+
+    #[test]
+    fn operators_can_claim_and_release_tasks_but_viewers_cannot() {
+        assert!(role_allows("operator", "claim_work_item"));
+        assert!(role_allows("operator", "release_work_item"));
+        assert!(role_allows("owner", "claim_work_item"));
+        assert!(role_allows("owner", "release_work_item"));
+        assert!(!role_allows("viewer", "claim_work_item"));
+        assert!(!role_allows("viewer", "release_work_item"));
     }
 
     #[test]

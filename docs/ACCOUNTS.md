@@ -92,6 +92,26 @@ Grants are checked at startup and every 30 seconds. Revoking a grant, changing
 its role, disabling the workspace or expiring the session closes the workspace
 process on the next check.
 
+### Task claims
+
+Any owner or operator can claim a task from its record in the task drawer. The
+claim records the account username in `work_items.owner_account` and the time in
+`work_items.claimed_at`, so the team can see who is handling the task. A viewer
+cannot claim or release, and the IPC gate enforces that even if a button is
+stale.
+
+Claiming is coordination only: it does not change the task status, spend a retry
+attempt, take the graph executor's lease, or rewrite the instruction and result.
+The claim is resolved by a single conditional `UPDATE` in the database, so two
+people racing for the same task cannot both believe they own it. The loser is
+told who holds the claim. Re-claiming your own task is idempotent and keeps the
+original `claimed_at`; only the current owner may release, which clears both
+fields and lets somebody else claim it.
+
+Every claim and release appends a `claimed` or `released` event with the account
+(and the previous owner where relevant) to the task timeline. Releasing a claim
+does not release a running graph: the execution lease remains the executor's.
+
 ## Security model
 
 - Passwords are hashed with **Argon2id** (default parameters) and a random salt.
