@@ -103,6 +103,14 @@ after a reload. Narrow windows keep the conversation usable: secondary header
 actions move into a **More** menu and the browser dock becomes an overlay rather
 than squeezing the thread below its minimum width.
 
+Local **accounts and workspace roles** let two people share one host without
+sharing a database: each account keeps its own root, session and keychain
+namespace, while the owner grants operator or viewer access to a workspace.
+**Settings → Team** adds an existing account or creates one with a temporary
+password, changes roles, and removes a member without touching their files.
+Membership changes are audited, and every run records the acting account so the
+Runs panel can say **by alice (operator)**.
+
 ### Start from a job, not a blank page
 
 The **Job library** ships thirty installable jobs across marketing, sales,
@@ -360,10 +368,10 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,008 Rust tests** across the workspace, including 225 Tauri/command tests,
+- **1,013 Rust tests** across the workspace, including 229 Tauri/command tests,
   252 runtime tests, 171 skill tests, 103 database tests, 74 core tests, 35
   memory tests, 33 MCP tests, and 15 remote-access tests.
-- **815 frontend tests** across 125 files.
+- **820 frontend tests** across 126 files.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
   `npm run check`, and `npm test` are the local gates.
 - CI runs the Rust workspace, the Docker sandbox live test, frontend checks, the

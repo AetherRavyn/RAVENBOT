@@ -66,8 +66,25 @@ Roles:
 The role check is **server-side** in the Tauri IPC gate. Non-owner roles are
 fail-closed: a command must be explicitly allowed for the role. The UI hides
 owner-only Settings sections and shows an operator/read-only banner, but the IPC
-gate is what enforces the matrix. The Settings profile shows the active
-workspace and role and gives the owner a grant/revoke card.
+gate is what enforces the matrix.
+
+### Team panel
+
+The owner manages members in **Settings → Team** (also linked from the profile
+card). The panel lists the owner and every grantee, and can:
+
+- add an existing local account with a role;
+- create a new local account with a temporary password and grant it in the same
+  step (the account is rolled back if the grant fails);
+- change a member's role;
+- remove a member without deleting their account or files.
+
+New accounts sign in from the launcher with the password the owner set. The
+password is not stored in the clear, never enters the audit event, and is not
+shown again. Membership changes write a `WorkspaceMembershipChanged` audit row
+with the actor, workspace, member, role and action. Each run also records the
+acting account in `run_actors`, so the Runs panel can show **by alice
+(operator)** and every tool call remains attributable through its run.
 
 Grants are checked at startup and every 30 seconds. Revoking a grant, changing
 its role, disabling the workspace or expiring the session closes the workspace

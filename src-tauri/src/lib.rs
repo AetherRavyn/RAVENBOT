@@ -3863,17 +3863,48 @@ async fn list_runs(
     limit: Option<u32>,
 ) -> Result<serde_json::Value, String> {
     let limit = limit.unwrap_or(50).min(200) as i64;
-    let rows: Vec<(String, String, String, String, i64, f64, String, String, Option<String>, Option<String>)> =
-        sqlx::query_as(
-            "SELECT id, bot_id, thread_id, state, tokens_consumed, cost_estimate, created_at, updated_at, completed_at, outcome FROM runs ORDER BY created_at DESC LIMIT ?",
-        )
-        .bind(limit)
-        .fetch_all(state.db.pool())
-        .await
-        .map_err(|e| e.to_string())?;
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        String,
+        i64,
+        f64,
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT r.id, r.bot_id, r.thread_id, r.state, r.tokens_consumed, r.cost_estimate,
+                r.created_at, r.updated_at, r.completed_at, r.outcome,
+                ra.actor_name, ra.role
+         FROM runs r
+         LEFT JOIN run_actors ra ON ra.run_id = r.id
+         ORDER BY r.created_at DESC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(state.db.pool())
+    .await
+    .map_err(|e| e.to_string())?;
 
     let mut out = Vec::with_capacity(rows.len());
-    for (id, bot_id, thread_id, state, tokens, cost, created, updated, completed, outcome) in rows {
+    for (
+        id,
+        bot_id,
+        thread_id,
+        state,
+        tokens,
+        cost,
+        created,
+        updated,
+        completed,
+        outcome,
+        actor_name,
+        actor_role,
+    ) in rows
+    {
         out.push(serde_json::json!({
             "id": id,
             "bot_id": bot_id,
@@ -3885,6 +3916,8 @@ async fn list_runs(
             "updated_at": updated,
             "completed_at": completed,
             "outcome": outcome,
+            "actor_name": actor_name,
+            "actor_role": actor_role,
         }));
     }
     Ok(serde_json::Value::Array(out))
@@ -21698,6 +21731,80 @@ async fn get_run_actor(
         .map_err(|error| error.to_string())
 }
 
+/// Record a membership change in the audit ledger.
+///
+/// The password used to create an account never reaches this function or the
+/// event; only the member, the resulting role and the action are recorded.
+async fn audit_workspace_membership(state: &AppState, member: &str, role: &str, action: &str) {
+    let entry = ravenbot_core::AuditEntry::new(
+        Uuid::nil(),
+        ravenbot_core::AuditEventType::WorkspaceMembershipChanged {
+            actor: state.account.username.clone(),
+            workspace: state.workspace.username.clone(),
+            member: member.to_string(),
+            role: role.to_string(),
+            action: action.to_string(),
+        },
+    );
+    if let Err(error) = state.runtime.audit_logger().log(&entry).await {
+        tracing::warn!(%error, "Could not audit a workspace membership change");
+    }
+}
+
+#[tauri::command]
+async fn list_workspace_members(
+    state: State<'_, AppState>,
+) -> Result<Vec<accounts::WorkspaceMember>, String> {
+    if state.role != "owner" {
+        return Err("Only the workspace owner can see the member list.".to_string());
+    }
+    accounts::workspace_members(&state.account_base, &state.workspace.username).await
+}
+
+#[tauri::command]
+async fn add_workspace_member(
+    state: State<'_, AppState>,
+    username: String,
+    password: Option<String>,
+    role: String,
+) -> Result<accounts::WorkspaceMember, String> {
+    if state.role != "owner" {
+        return Err("Only the workspace owner can add members.".to_string());
+    }
+    let role = role.trim().to_ascii_lowercase();
+    let member = accounts::add_workspace_member(
+        &state.account_base,
+        &state.workspace.username,
+        &username,
+        password.as_deref(),
+        &role,
+    )
+    .await?;
+    audit_workspace_membership(&state, &member.username, &member.role, "added").await;
+    Ok(member)
+}
+
+#[tauri::command]
+async fn set_workspace_member_role(
+    state: State<'_, AppState>,
+    username: String,
+    role: String,
+) -> Result<(), String> {
+    if state.role != "owner" {
+        return Err("Only the workspace owner can change a member's role.".to_string());
+    }
+    let role = role.trim().to_ascii_lowercase();
+    accounts::set_workspace_member_role(
+        &state.account_base,
+        &state.workspace.username,
+        &username,
+        &role,
+    )
+    .await?;
+    audit_workspace_membership(&state, &username, &role, "role_changed").await;
+    Ok(())
+}
+
 #[tauri::command]
 async fn list_workspace_grants(
     state: State<'_, AppState>,
@@ -21717,13 +21824,25 @@ async fn grant_workspace_access(
     if state.role != "owner" {
         return Err("Only the workspace owner can manage grants.".to_string());
     }
+    let existed = accounts::list_workspace_grants(&state.account_base, &state.workspace.username)
+        .await?
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(&username));
     accounts::grant_workspace(
         &state.account_base,
         &state.workspace.username,
         &username,
         &role,
     )
-    .await
+    .await?;
+    audit_workspace_membership(
+        &state,
+        &username,
+        &role.trim().to_ascii_lowercase(),
+        if existed { "role_changed" } else { "added" },
+    )
+    .await;
+    Ok(())
 }
 
 #[tauri::command]
@@ -21734,7 +21853,20 @@ async fn revoke_workspace_access(
     if state.role != "owner" {
         return Err("Only the workspace owner can manage grants.".to_string());
     }
-    accounts::revoke_workspace(&state.account_base, &state.workspace.username, &username).await
+    let previous_role =
+        accounts::list_workspace_grants(&state.account_base, &state.workspace.username)
+            .await?
+            .into_iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(&username))
+            .map(|(_, role)| role)
+            .unwrap_or_default();
+    let removed =
+        accounts::revoke_workspace(&state.account_base, &state.workspace.username, &username)
+            .await?;
+    if removed {
+        audit_workspace_membership(&state, &username, &previous_role, "removed").await;
+    }
+    Ok(removed)
 }
 
 #[tauri::command]
@@ -22084,6 +22216,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         ravenbot_account_mode,
         get_current_account,
         get_run_actor,
+        list_workspace_members,
+        add_workspace_member,
+        set_workspace_member_role,
         list_workspace_grants,
         grant_workspace_access,
         revoke_workspace_access,

@@ -931,6 +931,129 @@ pub async fn workspace_for_actor(
     Ok(role.and_then(|(role,)| valid_role(&role).then_some((workspace, role))))
 }
 
+/// A member of one workspace, as the Team panel shows them.
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkspaceMember {
+    pub username: String,
+    pub role: String,
+    pub owner: bool,
+    pub disabled: bool,
+    pub created_at: String,
+}
+
+/// The owner plus every account holding a grant on this workspace.
+pub async fn workspace_members(
+    base: &Path,
+    workspace_username: &str,
+) -> Result<Vec<WorkspaceMember>, String> {
+    let workspace = account_by_username(base, workspace_username)
+        .await?
+        .ok_or_else(|| "That workspace owner does not exist.".to_string())?;
+    let accounts = list_accounts(base).await?;
+    let by_name: HashMap<String, Account> = accounts
+        .into_iter()
+        .map(|account| (account.username.to_ascii_lowercase(), account))
+        .collect();
+
+    let mut members = vec![WorkspaceMember {
+        username: workspace.username.clone(),
+        role: "owner".to_string(),
+        owner: true,
+        disabled: workspace.disabled,
+        created_at: workspace.created_at.clone(),
+    }];
+    for (username, role) in list_workspace_grants(base, workspace_username).await? {
+        let Some(account) = by_name.get(&username.to_ascii_lowercase()) else {
+            continue;
+        };
+        members.push(WorkspaceMember {
+            username: account.username.clone(),
+            role,
+            owner: false,
+            disabled: account.disabled,
+            created_at: account.created_at.clone(),
+        });
+    }
+    members.sort_by(|a, b| {
+        b.owner.cmp(&a.owner).then_with(|| {
+            a.username
+                .to_ascii_lowercase()
+                .cmp(&b.username.to_ascii_lowercase())
+        })
+    });
+    Ok(members)
+}
+
+/// Add an existing account, or create a new one and grant it in the same step.
+///
+/// A new account is rolled back if the grant fails, so a half-added member
+/// never leaves an account with no workspace behind. An existing account is
+/// never recreated or given a new password; the password argument is ignored
+/// for it.
+pub async fn add_workspace_member(
+    base: &Path,
+    workspace_username: &str,
+    username: &str,
+    password: Option<&str>,
+    role: &str,
+) -> Result<WorkspaceMember, String> {
+    let role = role.trim().to_ascii_lowercase();
+    if !valid_role(&role) {
+        return Err("The role must be owner, operator or viewer.".to_string());
+    }
+    if username
+        .trim()
+        .eq_ignore_ascii_case(workspace_username.trim())
+    {
+        return Err("The workspace owner is already a member.".to_string());
+    }
+    let existing = account_by_username(base, username).await?;
+    let (account, created) = match existing {
+        Some(account) => {
+            if account.disabled {
+                return Err("That account is disabled. Enable it before adding it.".to_string());
+            }
+            (account, false)
+        }
+        None => {
+            let password = password
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| "A password is required for a new account.".to_string())?;
+            (create_account(base, username, password).await?, true)
+        }
+    };
+    if let Err(error) = grant_workspace(base, workspace_username, &account.username, &role).await {
+        if created {
+            let _ = delete_account(base, &account.username, true).await;
+        }
+        return Err(error);
+    }
+    Ok(WorkspaceMember {
+        username: account.username,
+        role,
+        owner: false,
+        disabled: account.disabled,
+        created_at: account.created_at,
+    })
+}
+
+/// Change an existing member's role. The owner's own role is not a grant.
+pub async fn set_workspace_member_role(
+    base: &Path,
+    workspace_username: &str,
+    member_username: &str,
+    role: &str,
+) -> Result<(), String> {
+    if member_username
+        .trim()
+        .eq_ignore_ascii_case(workspace_username.trim())
+    {
+        return Err("The workspace owner's role cannot be changed.".to_string());
+    }
+    grant_workspace(base, workspace_username, member_username, role).await
+}
+
 pub async fn list_workspace_grants(
     base: &Path,
     workspace_username: &str,
@@ -1644,6 +1767,120 @@ mod tests {
             .expect("delete");
         assert_eq!(purged.username, "renamed");
         assert!(!PathBuf::from(&purged.data_root).exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn a_new_member_is_created_granted_promoted_and_removed() {
+        let base = temp_base();
+        create_account(&base, "owner", "correct horse battery")
+            .await
+            .expect("owner");
+        let member = add_workspace_member(
+            &base,
+            "owner",
+            "alice",
+            Some("alice password 123"),
+            "operator",
+        )
+        .await
+        .expect("add alice");
+        assert_eq!(member.username, "alice");
+        assert_eq!(member.role, "operator");
+        assert!(!member.owner);
+        assert!(!member.disabled);
+        assert!(account_by_username(&base, "alice")
+            .await
+            .expect("lookup")
+            .is_some());
+
+        let members = workspace_members(&base, "owner").await.expect("members");
+        assert_eq!(members.len(), 2);
+        assert!(members[0].owner);
+        assert_eq!(members[1].username, "alice");
+
+        set_workspace_member_role(&base, "owner", "alice", "viewer")
+            .await
+            .expect("promote");
+        let members = workspace_members(&base, "owner").await.expect("members");
+        assert_eq!(members[1].role, "viewer");
+
+        assert!(revoke_workspace(&base, "owner", "alice")
+            .await
+            .expect("revoke"));
+        let members = workspace_members(&base, "owner").await.expect("members");
+        assert_eq!(members.len(), 1);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn an_existing_account_is_granted_without_a_password() {
+        let base = temp_base();
+        create_account(&base, "owner", "correct horse battery")
+            .await
+            .expect("owner");
+        create_account(&base, "bob", "bob password 123")
+            .await
+            .expect("bob");
+        let member = add_workspace_member(&base, "owner", "bob", None, "viewer")
+            .await
+            .expect("grant bob");
+        assert_eq!(member.username, "bob");
+        assert_eq!(member.role, "viewer");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn the_owner_cannot_be_added_or_demoted_and_a_bad_role_is_rejected() {
+        let base = temp_base();
+        create_account(&base, "owner", "correct horse battery")
+            .await
+            .expect("owner");
+        assert!(
+            add_workspace_member(&base, "owner", "owner", None, "viewer")
+                .await
+                .is_err()
+        );
+        create_account(&base, "bob", "bob password 123")
+            .await
+            .expect("bob");
+        assert!(set_workspace_member_role(&base, "owner", "owner", "viewer")
+            .await
+            .is_err());
+        assert!(add_workspace_member(&base, "owner", "bob", None, "admin")
+            .await
+            .is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn a_failed_grant_does_not_leave_a_new_account_behind() {
+        let base = temp_base();
+        create_account(&base, "owner", "correct horse battery")
+            .await
+            .expect("owner");
+        assert!(add_workspace_member(
+            &base,
+            "missing",
+            "ghost",
+            Some("ghost password 123"),
+            "viewer"
+        )
+        .await
+        .is_err());
+        assert!(account_by_username(&base, "ghost")
+            .await
+            .expect("lookup")
+            .is_none());
+        assert!(
+            add_workspace_member(&base, "owner", "nopassword", None, "viewer")
+                .await
+                .is_err()
+        );
+        assert!(account_by_username(&base, "nopassword")
+            .await
+            .expect("lookup")
+            .is_none());
         let _ = std::fs::remove_dir_all(&base);
     }
 

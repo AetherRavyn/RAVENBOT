@@ -35,6 +35,7 @@
     ShieldCheck,
     Square,
     Trash2,
+    Users,
     Wrench,
   } from "@lucide/svelte";
 
@@ -296,6 +297,8 @@
         return t("audit.kind.denied");
       case "ApprovalDecision":
         return t("audit.kind.approval");
+      case "WorkspaceMembershipChanged":
+        return t("audit.kind.team");
       case "BotStarted":
         return t("audit.kind.started");
       case "BotPaused":
@@ -321,6 +324,19 @@
         return t("audit.memoryDeleted");
       default:
         return action || t("audit.memoryUpdated");
+    }
+  }
+
+  function membershipActionLabel(action: string | null): string {
+    switch (action) {
+      case "added":
+        return t("audit.teamAdded");
+      case "role_changed":
+        return t("audit.teamRoleChanged");
+      case "removed":
+        return t("audit.teamRemoved");
+      default:
+        return action || "";
     }
   }
 
@@ -360,6 +376,8 @@
       case "MemoryChanged":
       case "MemoryEmbeddingsUpdated":
         return Brain;
+      case "WorkspaceMembershipChanged":
+        return Users;
       default:
         return Bot;
     }
@@ -557,6 +575,7 @@
       <option value="PermissionGranted">{t("audit.kind.granted")}</option>
       <option value="PermissionDenied">{t("audit.kind.denied")}</option>
       <option value="ApprovalDecision">{t("audit.kind.approval")}</option>
+      <option value="WorkspaceMembershipChanged">{t("audit.kind.team")}</option>
       <option value="BotStarted">{t("audit.kind.started")}</option>
       <option value="BotPaused">{t("audit.kind.paused")}</option>
       <option value="BotStopped">{t("audit.kind.stopped")}</option>
@@ -798,6 +817,11 @@
                   : "font-semibold text-[var(--danger-text)]"}
               >
                 {entry.permission === "approved" ? t("audit.approved") : t("audit.denied")}
+              </span>
+              {#if entry.reason}<span class="min-w-0 break-words">{entry.reason}</span>{/if}
+            {:else if entry.kind === "WorkspaceMembershipChanged"}
+              <span class="font-mono text-[var(--text-secondary)]">
+                {membershipActionLabel(entry.permission)}
               </span>
               {#if entry.reason}<span class="min-w-0 break-words">{entry.reason}</span>{/if}
             {:else if entry.kind === "MemoryEmbeddingsUpdated"}

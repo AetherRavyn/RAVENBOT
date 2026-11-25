@@ -228,6 +228,13 @@ const SEARCH_FIELDS: &[&str] = &[
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.ApprovalDecision.tool_name') END, '')",
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.ApprovalDecision.source') END, '')",
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.ApprovalDecision.note') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceAccess.actor') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceAccess.workspace') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceMembershipChanged.actor') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceMembershipChanged.workspace') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceMembershipChanged.member') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceMembershipChanged.role') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.WorkspaceMembershipChanged.action') END, '')",
 ];
 
 fn push_clause(qb: &mut QueryBuilder<Sqlite>, first: &mut bool, clause: &str) {
@@ -680,6 +687,17 @@ impl AuditLogger {
                                 row.permission = Some(format!("workspace:{role}"));
                                 row.reason = Some(format!("{actor} opened {workspace}"));
                             }
+                            AuditEventType::WorkspaceMembershipChanged {
+                                actor,
+                                workspace,
+                                member,
+                                role,
+                                action,
+                            } => {
+                                row.permission = Some(action);
+                                row.reason =
+                                    Some(format!("{actor} → {member} ({role}) in {workspace}"));
+                            }
                         }
                     }
                     row
@@ -1120,6 +1138,44 @@ mod query_tests {
             .await
             .unwrap_err()
             .contains("after the end"));
+    }
+
+    #[tokio::test]
+    async fn workspace_membership_changes_project_actor_member_and_role() {
+        let test = TestDb::new().await;
+        let logger = AuditLogger::new(test.pool().clone());
+        logger
+            .log(&entry(
+                Uuid::nil(),
+                None,
+                AuditEventType::WorkspaceMembershipChanged {
+                    actor: "alice".into(),
+                    workspace: "acme".into(),
+                    member: "bob".into(),
+                    role: "operator".into(),
+                    action: "added".into(),
+                },
+                Duration::minutes(1),
+            ))
+            .await
+            .unwrap();
+
+        // The member name is searchable even though it is not a row column.
+        let page = logger
+            .query(&AuditQuery {
+                search: Some("bob".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("membership change is searchable by member");
+        assert_eq!(page.total, 1);
+        let row = &page.entries[0];
+        assert_eq!(row.kind, "WorkspaceMembershipChanged");
+        assert_eq!(row.permission.as_deref(), Some("added"));
+        assert_eq!(
+            row.reason.as_deref(),
+            Some("alice → bob (operator) in acme")
+        );
     }
 
     #[tokio::test]

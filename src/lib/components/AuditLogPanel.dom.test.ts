@@ -107,6 +107,16 @@ const approvalEntry = {
   reason: "desktop: too risky",
 };
 
+const membershipEntry = {
+  ...toolEntry,
+  id: "a6",
+  kind: "WorkspaceMembershipChanged",
+  timestamp: "2026-11-09T07:58:30.000+00:00",
+  tool_name: null,
+  permission: "added",
+  reason: "alice → bob (operator) in acme",
+};
+
 function page(entries: unknown[], total = entries.length) {
   return { entries, total, limit: 50, offset: 0 };
 }
@@ -123,7 +133,14 @@ beforeEach(() => {
   invokeMock.mockImplementation(async (command: string) => {
     if (command === "list_audit_entries")
       return page(
-        [modelEntry, toolEntry, approvalEntry, memoryEntry, embeddingsEntry],
+        [
+          modelEntry,
+          toolEntry,
+          approvalEntry,
+          membershipEntry,
+          memoryEntry,
+          embeddingsEntry,
+        ],
         120,
       );
     if (command === "export_audit_log") {
@@ -159,6 +176,7 @@ describe("AuditLogPanel", () => {
     expect(getByText("shell_exec")).toBeTruthy();
     expect(getByText("denied")).toBeTruthy();
     expect(getByText("desktop: too risky")).toBeTruthy();
+    expect(getByText("alice → bob (operator) in acme")).toBeTruthy();
     expect(getByText("Release review")).toBeTruthy();
     expect(getAllByText("Memory change")).toHaveLength(2);
     expect(getByText("Office memory")).toBeTruthy();

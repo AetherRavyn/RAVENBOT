@@ -21,6 +21,8 @@ const completedRun = {
   updated_at: "2026-11-17T11:01:00Z",
   completed_at: "2026-11-17T11:01:00Z",
   outcome: null,
+  actor_name: "swadhin",
+  actor_role: "operator",
 };
 
 const emptyConflicts = { skipped: [], conflicts: [] };
@@ -148,5 +150,14 @@ describe("RunsPanel", () => {
     );
     await waitFor(() => expect(getByText("completed")).toBeTruthy());
     expect(listCalls).toBe(2);
+  });
+
+  it("shows which account started a run", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "list_runs") return [completedRun];
+      throw new Error(`unexpected command ${command}`);
+    });
+    const { getByText } = render(RunsPanel);
+    await waitFor(() => expect(getByText("by swadhin (operator)")).toBeTruthy());
   });
 });

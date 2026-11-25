@@ -30,6 +30,7 @@ const VIEWER_DENY: &[&str] = &[
     "get_remote_status",
     "list_remote_devices",
     "list_workspace_grants",
+    "list_workspace_members",
     "list_audit_entries",
     "export_audit_log",
     "verify_audit_export",
@@ -148,6 +149,9 @@ mod tests {
         assert!(!role_allows("viewer", "get_mcp_server_env"));
         assert!(!role_allows("viewer", "reveal_vault_item"));
         assert!(!role_allows("viewer", "list_remote_devices"));
+        assert!(!role_allows("viewer", "list_workspace_members"));
+        assert!(!role_allows("viewer", "add_workspace_member"));
+        assert!(!role_allows("viewer", "set_workspace_member_role"));
     }
 
     #[test]
@@ -160,6 +164,9 @@ mod tests {
         assert!(!role_allows("operator", "create_mcp_event_trigger"));
         assert!(!role_allows("operator", "set_bot_budget"));
         assert!(!role_allows("operator", "get_mcp_server_env"));
+        assert!(!role_allows("operator", "list_workspace_members"));
+        assert!(!role_allows("operator", "add_workspace_member"));
+        assert!(!role_allows("operator", "set_workspace_member_role"));
         assert!(!role_allows("operator", "unknown_future_command"));
     }
 

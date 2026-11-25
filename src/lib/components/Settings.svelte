@@ -5,6 +5,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import RunsPanel from "$lib/components/RunsPanel.svelte";
   import AuditLogPanel from "$lib/components/AuditLogPanel.svelte";
+  import TeamPanel from "$lib/components/TeamPanel.svelte";
   import NotificationSettings from "$lib/components/NotificationSettings.svelte";
   import BrowserProfilesPanel from "$lib/components/BrowserProfilesPanel.svelte";
   import MemoryEmbeddingSettings from "$lib/components/MemoryEmbeddingSettings.svelte";
@@ -36,6 +37,7 @@
     DollarSign, Shield, BookOpen, Settings, ChevronRight, Sparkles,
     Cpu, Globe, Lock, Unlock, Trash2, ExternalLink, X, Plug, Plus,
     Activity, BarChart3, Bell, Bot, Brain, Search, Power, MessageSquare, LogOut,
+    Users,
   } from "@lucide/svelte";
 
   interface Props {
@@ -110,6 +112,7 @@
     { id: "diagnostics", label: "Diagnostics", icon: Activity, color: "text-[var(--text-tertiary)]", keywords: "runs errors logs audit" },
     { id: "notifications", label: t("notifications.nav"), icon: Bell, color: "text-[var(--brand-text)]", keywords: "notifications desktop alerts system" },
     { id: "browser", label: t("browserProfiles.nav"), icon: Globe, color: "text-[var(--brand-text)]", keywords: "browser profiles cookies sessions web" },
+    { id: "team", label: t("settings.navTeam"), icon: Users, color: "text-info", keywords: "team members roles accounts workspace shared access" },
     { id: "profile", label: t("settings.navProfile"), icon: User, color: "text-[var(--brand-text)]", keywords: "profile avatar name identity" },
     { id: "themes", label: t("settings.navThemes"), icon: Palette, color: "text-info", keywords: "theme appearance dark light color" },
     { id: "local", label: t("settings.navLocal"), icon: Server, color: "text-success", keywords: "local ollama endpoint offline background service systemd launchd daemon hidden login" },
@@ -240,11 +243,6 @@
   let currentAccount = $state<any>(null);
   let accountBusy = $state(false);
   let accountError = $state<string | null>(null);
-  let workspaceGrants = $state<[string, string][]>([]);
-  let grantUsername = $state("");
-  let grantRole = $state("viewer");
-  let grantBusy = $state(false);
-  let grantError = $state<string | null>(null);
   const PAID_TOOL_KEYS = [
     "tavily_search",
     "image_gen",
@@ -1220,53 +1218,10 @@
       currentAccount = await invoke("get_current_account");
       if (currentAccount?.role && currentAccount.role !== "owner") {
         activeSection = "profile";
-      } else if (currentAccount?.role === "owner") {
-        loadWorkspaceGrants();
       }
     } catch (e) {
       currentAccount = null;
       accountError = String(e);
-    }
-  }
-
-  async function loadWorkspaceGrants() {
-    try {
-      workspaceGrants = await invoke("list_workspace_grants");
-      grantError = null;
-    } catch (e) {
-      workspaceGrants = [];
-      grantError = String(e);
-    }
-  }
-
-  async function grantWorkspaceAccess() {
-    const username = grantUsername.trim();
-    if (!username || grantBusy) return;
-    grantBusy = true;
-    grantError = null;
-    try {
-      await invoke("grant_workspace_access", { username, role: grantRole });
-      grantUsername = "";
-      await loadWorkspaceGrants();
-    } catch (e) {
-      grantError = String(e);
-    } finally {
-      grantBusy = false;
-    }
-  }
-
-  async function revokeWorkspaceAccess(username: string) {
-    if (grantBusy) return;
-    if (!confirm(t("settings.workspaceGrantConfirm", { username }))) return;
-    grantBusy = true;
-    grantError = null;
-    try {
-      await invoke("revoke_workspace_access", { username });
-      await loadWorkspaceGrants();
-    } catch (e) {
-      grantError = String(e);
-    } finally {
-      grantBusy = false;
     }
   }
 
@@ -3263,6 +3218,10 @@
         </div>
       {/if}
 
+      {#if activeSection === "team"}
+        <TeamPanel {currentAccount} />
+      {/if}
+
       {#if activeSection === "profile"}
         <div class="flex-1 overflow-y-auto no-scrollbar p-6">
           <div class="max-w-2xl mx-auto space-y-6">
@@ -3305,62 +3264,26 @@
                     {accountRoleLabel(currentAccount?.role)} · {t("settings.accountIsolation")}
                   </p>
                 </div>
-                <Button size="sm" variant="outline" class="gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={logoutAccount} disabled={accountBusy}>
-                  <LogOut class="size-3.5" /> {t("settings.accountLogout")}
-                </Button>
+                <div class="flex flex-wrap items-center gap-2">
+                  {#if currentAccount?.role === "owner"}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      class="gap-1.5"
+                      onclick={() => selectSection("team")}
+                    >
+                      <Users class="size-3.5" /> {t("workspaceTeam.manage")}
+                    </Button>
+                  {/if}
+                  <Button size="sm" variant="outline" class="gap-1.5 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={logoutAccount} disabled={accountBusy}>
+                    <LogOut class="size-3.5" /> {t("settings.accountLogout")}
+                  </Button>
+                </div>
               </div>
               {#if accountError}
                 <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2 mt-3">{accountError}</p>
               {/if}
             </div>
-            {#if currentAccount?.role === "owner"}
-              <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
-                <div>
-                  <p class="text-xs font-bold text-[var(--text-primary)]">{t("settings.workspaceAccessTitle")}</p>
-                  <p class="text-[11px] text-[var(--text-tertiary)] mt-1">{t("settings.workspaceAccessDesc")}</p>
-                </div>
-                {#if workspaceGrants.length > 0}
-                  <ul class="divide-y divide-[var(--hairline)]">
-                    {#each workspaceGrants as [name, role] (name)}
-                      <li class="flex items-center justify-between gap-2 py-2">
-                        <div class="min-w-0">
-                          <p class="text-xs font-semibold text-[var(--text-primary)]">{name}</p>
-                          <p class="text-[11px] text-[var(--text-muted)]">{role}</p>
-                        </div>
-                        <Button size="sm" variant="outline" class="h-7 border-[var(--danger-border)] text-[var(--danger-text)]" onclick={() => revokeWorkspaceAccess(name)} disabled={grantBusy}>
-                          {t("settings.workspaceGrantRevoke")}
-                        </Button>
-                      </li>
-                    {/each}
-                  </ul>
-                {:else}
-                  <p class="text-[11px] text-[var(--text-muted)]">{t("settings.workspaceGrantEmpty")}</p>
-                {/if}
-                <div class="flex flex-wrap items-end gap-2">
-                  <label class="text-[11px] text-[var(--text-muted)] flex-1 min-w-40">
-                    <span class="block mb-1">{t("settings.workspaceGrantUsername")}</span>
-                    <Input bind:value={grantUsername} class="h-9" placeholder="alice" />
-                  </label>
-                  <label class="text-[11px] text-[var(--text-muted)]">
-                    <span class="block mb-1">{t("settings.workspaceGrantRole")}</span>
-                    <SimpleSelect
-                      value={grantRole}
-                      class="h-9"
-                      options={[
-                        { value: "viewer", label: t("settings.accountRoleViewer") },
-                        { value: "operator", label: t("settings.accountRoleOperator") },
-                        { value: "owner", label: t("settings.accountRoleOwner") },
-                      ]}
-                      onValueChange={(value) => (grantRole = value)}
-                    />
-                  </label>
-                  <Button size="sm" class="h-9" onclick={grantWorkspaceAccess} disabled={grantBusy || !grantUsername.trim()}>{t("settings.workspaceGrantButton")}</Button>
-                </div>
-                {#if grantError}
-                  <p class="text-[11px] text-danger bg-danger/10 border border-danger/20 rounded-lg px-2.5 py-2">{grantError}</p>
-                {/if}
-              </div>
-            {/if}
             <div class="p-5 rounded-2xl border bg-card/60" style="border-color: {currentTheme.borderHex};">
               <Label for="settings-locale" class="text-xs font-bold">{t("settings.language")}</Label>
               <p class="text-sm text-[var(--text-tertiary)] mt-0.5 mb-2">{t("settings.languageDesc")}</p>

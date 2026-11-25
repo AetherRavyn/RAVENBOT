@@ -50,4 +50,5 @@ export const AUDIT_KINDS = [
   "MemoryChanged",
   "MemoryEmbeddingsUpdated",
   "WorkspaceAccess",
+  "WorkspaceMembershipChanged",
 ] as const;

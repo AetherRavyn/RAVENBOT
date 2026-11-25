@@ -182,6 +182,23 @@ function mockSettings() {
         return currentAccountMock;
       case "list_workspace_grants":
         return [["bob", "operator"]];
+      case "list_workspace_members":
+        return [
+          {
+            username: "owner",
+            role: "owner",
+            owner: true,
+            disabled: false,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+          {
+            username: "bob",
+            role: "operator",
+            owner: false,
+            disabled: false,
+            created_at: "2026-01-02T00:00:00Z",
+          },
+        ];
       case "get_teams_status":
         return {
           enabled: true,
@@ -397,8 +414,8 @@ describe("Settings accessibility", () => {
     expect(violations, JSON.stringify(violations)).toEqual([]);
   });
 
-  it("renders the signed-in account without axe violations", async () => {
-    render(Settings, {
+  it("renders the signed-in account and opens the team manager", async () => {
+    const { getByText } = render(Settings, {
       props: {
         open: true,
         onClose: vi.fn(),
@@ -408,10 +425,9 @@ describe("Settings accessibility", () => {
     });
     await waitFor(() => expect(document.body.textContent).toContain("owner"));
     expect(document.body.textContent).toContain("Log out");
-    await waitFor(() =>
-      expect(document.body.textContent).toContain("Workspace access"),
-    );
-    expect(document.body.textContent).toContain("bob");
+    await fireEvent.click(getByText("Manage team"));
+    await waitFor(() => expect(getByText("bob")).toBeTruthy());
+    expect(document.body.textContent).toContain("Members (2)");
     const violations = await a11yViolations(document.body);
     expect(violations, JSON.stringify(violations)).toEqual([]);
   });

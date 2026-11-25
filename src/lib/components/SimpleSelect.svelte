@@ -19,6 +19,8 @@
     contentClass?: string;
     id?: string;
     disabled?: boolean;
+    /** Accessible name when the trigger has no visible label. */
+    ariaLabel?: string;
   }
 
   let {
@@ -30,6 +32,7 @@
     contentClass = "",
     id,
     disabled = false,
+    ariaLabel,
   }: Props = $props();
 
   let selected = $derived(options.find((o) => o.value === value));
@@ -38,6 +41,7 @@
 <Select.Root type="single" {value} onValueChange={(v) => onValueChange(v ?? "")} {disabled}>
   <Select.Trigger
     {id}
+    aria-label={ariaLabel}
     class="w-full h-9 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)] hover:border-[var(--hairline-strong)] px-2.5 flex items-center justify-between gap-2 text-xs text-[var(--text-secondary)] cursor-pointer outline-none transition-colors data-[placeholder]:text-[var(--text-muted)] {className}"
   >
     <span class={selected ? "truncate" : "truncate text-[var(--text-muted)]"}>

@@ -74,6 +74,15 @@ pub enum AuditEventType {
         workspace: String,
         role: String,
     },
+    /// A workspace owner added, changed or removed a member.
+    WorkspaceMembershipChanged {
+        actor: String,
+        workspace: String,
+        member: String,
+        role: String,
+        /// "added", "role_changed" or "removed".
+        action: String,
+    },
 }
 
 impl AuditEventType {
@@ -95,6 +104,7 @@ impl AuditEventType {
             Self::MemoryChanged { .. } => "MemoryChanged",
             Self::MemoryEmbeddingsUpdated { .. } => "MemoryEmbeddingsUpdated",
             Self::WorkspaceAccess { .. } => "WorkspaceAccess",
+            Self::WorkspaceMembershipChanged { .. } => "WorkspaceMembershipChanged",
         }
     }
 }
@@ -115,6 +125,7 @@ pub const AUDIT_EVENT_KINDS: &[&str] = &[
     "MemoryChanged",
     "MemoryEmbeddingsUpdated",
     "WorkspaceAccess",
+    "WorkspaceMembershipChanged",
 ];
 
 /// An audit log entry
@@ -218,6 +229,18 @@ mod tests {
                 model: "nomic-embed-text".into(),
                 base_url: "http://127.0.0.1:11434".into(),
                 reindexed: 12,
+            },
+            AuditEventType::WorkspaceAccess {
+                actor: "alice".into(),
+                workspace: "acme".into(),
+                role: "operator".into(),
+            },
+            AuditEventType::WorkspaceMembershipChanged {
+                actor: "alice".into(),
+                workspace: "acme".into(),
+                member: "bob".into(),
+                role: "viewer".into(),
+                action: "added".into(),
             },
         ];
         for event in events {

@@ -32,6 +32,8 @@
     updated_at: string;
     completed_at: string | null;
     outcome: string | null;
+    actor_name?: string | null;
+    actor_role?: string | null;
   }
 
   interface RevertConflict {
@@ -243,6 +245,13 @@
           <div class="flex items-center gap-3 text-[11px] font-mono text-[var(--text-muted)]">
             <span>{run.tokens_consumed.toLocaleString()} tok</span>
             <span>${run.cost_estimate.toFixed(4)}</span>
+            {#if run.actor_name}
+              <span class="truncate">
+                {run.actor_role
+                  ? t("runs.byActorRole", { name: run.actor_name, role: run.actor_role })
+                  : t("runs.byActor", { name: run.actor_name })}
+              </span>
+            {/if}
             {#if run.completed_at}
               <span class="ml-auto">{fmtTime(run.completed_at)}</span>
             {/if}
