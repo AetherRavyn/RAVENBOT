@@ -2406,6 +2406,7 @@
     "next": "Page suivante",
     "argumentsRedacted": "Les arguments des outils sont masqués : ils peuvent contenir des secrets. Le journal interne conserve l’appel.",
     "deletedAgent": "Agent supprimé",
+    "workspace": "Espace de travail",
     "run": "exécution",
     "kind": {
       "model": "Appel au modèle",

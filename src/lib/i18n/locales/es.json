@@ -2406,6 +2406,7 @@
     "next": "Página siguiente",
     "argumentsRedacted": "Los argumentos de las herramientas se ocultan: pueden contener secretos. El registro interno conserva la llamada.",
     "deletedAgent": "Agente eliminado",
+    "workspace": "Espacio de trabajo",
     "run": "ejecución",
     "kind": {
       "model": "Llamada al modelo",

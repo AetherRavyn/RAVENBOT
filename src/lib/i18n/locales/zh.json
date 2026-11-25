@@ -2406,6 +2406,7 @@
     "next": "下一页",
     "argumentsRedacted": "工具参数不会显示，因为它们可能包含机密信息。审计存储仍会记录此次调用。",
     "deletedAgent": "已删除的代理",
+    "workspace": "工作区",
     "run": "运行",
     "kind": {
       "model": "模型调用",

@@ -2406,6 +2406,7 @@
     "next": "Next page",
     "argumentsRedacted": "Tool arguments are withheld: they can contain secrets. The audit store still records the call.",
     "deletedAgent": "Deleted agent",
+    "workspace": "Workspace",
     "run": "run",
     "kind": {
       "model": "Model call",

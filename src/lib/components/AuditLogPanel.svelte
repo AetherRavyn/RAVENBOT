@@ -348,6 +348,12 @@
     if (entry.kind === "MemoryEmbeddingsUpdated") {
       return t("audit.memorySettings");
     }
+    if (
+      entry.kind === "WorkspaceMembershipChanged" ||
+      entry.kind === "WorkspaceAccess"
+    ) {
+      return t("audit.workspace");
+    }
     return t("audit.deletedAgent");
   }
 

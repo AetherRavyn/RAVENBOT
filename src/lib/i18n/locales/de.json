@@ -2406,6 +2406,7 @@
     "next": "Nächste Seite",
     "argumentsRedacted": "Tool-Argumente werden zurückgehalten: Sie können Geheimnisse enthalten. Der interne Speicher zeichnet den Aufruf weiterhin auf.",
     "deletedAgent": "Gelöschter Agent",
+    "workspace": "Arbeitsbereich",
     "run": "Lauf",
     "kind": {
       "model": "Modellaufruf",

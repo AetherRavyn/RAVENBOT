@@ -110,6 +110,11 @@ const approvalEntry = {
 const membershipEntry = {
   ...toolEntry,
   id: "a6",
+  bot_id: "00000000-0000-0000-0000-000000000000",
+  bot_name: null,
+  run_id: null,
+  thread_id: null,
+  thread_title: null,
   kind: "WorkspaceMembershipChanged",
   timestamp: "2026-11-09T07:58:30.000+00:00",
   tool_name: null,
@@ -177,6 +182,7 @@ describe("AuditLogPanel", () => {
     expect(getByText("denied")).toBeTruthy();
     expect(getByText("desktop: too risky")).toBeTruthy();
     expect(getByText("alice → bob (operator) in acme")).toBeTruthy();
+    expect(getByText("Workspace")).toBeTruthy();
     expect(getByText("Release review")).toBeTruthy();
     expect(getAllByText("Memory change")).toHaveLength(2);
     expect(getByText("Office memory")).toBeTruthy();
