@@ -1198,6 +1198,16 @@ mod platform_contract_tests {
                 .args(["-p", profile.as_str(), "/bin/sh", "-c", "echo sh-ok"])
                 .status()
                 .ok();
+            // Find the first rule that makes the parser abort. A SIGABRT here
+            // has no stderr, so the prefix that first fails is the only clue.
+            let rules: Vec<&str> = profile.lines().collect();
+            for end in 1..=rules.len() {
+                let prefix = rules[..end].join("\n");
+                let result = std::process::Command::new(sandbox_exec)
+                    .args(["-p", prefix.as_str(), "/bin/echo", "prefix-ok"])
+                    .output();
+                eprintln!("profile prefix {end}: {result:?}");
+            }
         }
         assert!(
             out.status.success(),
