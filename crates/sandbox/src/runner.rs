@@ -274,7 +274,7 @@ impl SandboxRunner {
             // file-read* alone lets it stat the files but not map them, which
             // aborts the child with SIGABRT and no stderr.
             "(allow file-map-executable)".to_string(),
-            "(allow file-read* (subpath \"/System\") (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/Library\") (subpath \"/opt\") (subpath \"/etc\") (subpath \"/private/etc\") (subpath \"/dev\") (subpath \"/var/db/dyld\") (subpath \"/private/var/db/dyld\"))".to_string(),
+            "(allow file-read* (literal \"/\") (subpath \"/System\") (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/Library\") (subpath \"/opt\") (subpath \"/etc\") (subpath \"/private/etc\") (subpath \"/dev\") (subpath \"/var/db/dyld\") (subpath \"/private/var/db/dyld\"))".to_string(),
             "(allow file-write* (subpath \"/tmp\") (subpath \"/private/tmp\") (literal \"/dev/null\") (literal \"/dev/stdout\") (literal \"/dev/stderr\"))".to_string(),
         ];
         for path in writable {
@@ -876,6 +876,10 @@ mod tests {
         };
         let profile = runner.seatbelt_profile(Some(Path::new("/tmp/office/sub")));
         assert!(profile.contains("(deny default)"));
+        // dyld needs the root directory and executable mapping; `file-read*`
+        // on the system paths alone aborts a dynamically linked child.
+        assert!(profile.contains("(literal \"/\")"));
+        assert!(profile.contains("(allow file-map-executable)"));
         assert!(profile.contains("(subpath \"/tmp/office\")"));
         assert!(profile.contains("(subpath \"/tmp/office/sub\")"));
         assert!(!profile.contains("(allow network*)"));
