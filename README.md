@@ -109,7 +109,8 @@ gets its own thread so its reasoning and tool calls stay attributable. A node
 that fails is reported as a failure instead of a misleading "done" card. A
 background heartbeat starts the next turn when the office is idle, and stops on
 a pending question, a budget ceiling, a kill switch, or repeated no-progress
-cycles.
+cycles. Research answers keep their source chips in the office too, and a failed
+load is an error with a retry rather than an empty room.
 
 ### Memory that is retrieved, not dumped
 
@@ -344,7 +345,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
 - **981 Rust tests** across the workspace, including 210 Tauri/command tests,
   240 runtime tests, 170 skill tests, 102 database tests, 35 memory tests, 33 MCP
   tests, and 15 remote-access tests.
-- **788 frontend tests** across 122 files.
+- **792 frontend tests** across 123 files.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
   `npm run check`, and `npm test` are the local gates.
 - CI runs the Rust workspace, the Docker sandbox live test, frontend checks, the

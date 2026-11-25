@@ -45,6 +45,7 @@
 
   let tree = $state<Tree | null>(null);
   let loading = $state(false);
+  let loadError = $state<string | null>(null);
   let showHidden = $state(false);
   let selected = $state<Entry | null>(null);
   /** Directories the user has opened. A workspace can be wide, so nothing is
@@ -59,12 +60,14 @@
       return;
     }
     loading = true;
+    loadError = null;
     try {
       tree = await invoke<Tree>("browse_workspace", { path: current, showHidden });
       // A selection from a different folder is not a selection any more.
       if (selected && !tree.entries.some((e) => e.path === selected!.path)) selected = null;
     } catch (e) {
       tree = null;
+      loadError = String(e);
       notify(t("wsb.loadFailed") + String(e), "error");
     } finally {
       loading = false;
@@ -178,6 +181,19 @@
     <p class="raven-wsb__empty flex items-center gap-2 justify-center">
       <Loader2 class="size-3.5 animate-spin" /> {t("wsb.loading")}
     </p>
+  {:else if loadError}
+    <div class="raven-wsb__empty space-y-2" role="alert">
+      <AlertTriangle class="size-5 text-[var(--danger-text)]" />
+      <p class="font-medium text-[var(--danger-text)]">{t("errors.loadFailed")}</p>
+      <p class="max-w-sm break-words text-[11px]">{loadError}</p>
+      <button
+        type="button"
+        class="rounded-lg border border-[var(--danger-border)] bg-[var(--surface-1)] px-3 py-1.5 text-[11px] font-semibold text-[var(--danger-text)] hover:bg-[var(--surface-2)] cursor-pointer"
+        onclick={() => void load()}
+      >
+        {t("ui.retry")}
+      </button>
+    </div>
   {:else if tree?.missing}
     <!--
       Not created yet. Distinct from empty, and it needs saying plainly: the

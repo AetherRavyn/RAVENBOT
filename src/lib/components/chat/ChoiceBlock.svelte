@@ -61,7 +61,7 @@
 <article
   class="chat-interaction chat-interaction--choice"
   aria-busy={answering ? "true" : undefined}
-  aria-label={payload.title || header || "Choose an option"}
+  aria-label={payload.title || header || t("thread.chooseOption")}
 >
   <BlockHeader
     {botName}
@@ -115,7 +115,7 @@
       disabled={answering || (selected.length === 0 && !text.trim())}
       onclick={submit}
     >
-      {answering ? "Sending…" : submitLabel(payload, t("thread.blockSubmit"))}
+      {answering ? t("thread.sendingAnswer") : submitLabel(payload, t("thread.blockSubmit"))}
     </button>
     {#if hint}<span class="block-error" role="status">{hint}</span>{/if}
     <span class="chat-interaction__hint">{t("thread.blockResumeHint")}</span>

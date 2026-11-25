@@ -214,4 +214,12 @@ describe("workspace navigation", () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(sidePanel.open).toBe(true);
   });
+
+  it("keeps the workspace root selectable and out of application mode", () => {
+    const { container } = render(Workspace);
+    expect(container.querySelector('[role="application"]')).toBeNull();
+    const root = container.firstElementChild as HTMLElement | null;
+    expect(root).not.toBeNull();
+    expect(root?.classList.contains("select-none")).toBe(false);
+  });
 });

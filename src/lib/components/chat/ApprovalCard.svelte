@@ -38,26 +38,35 @@
   const summary = $derived(approvalSummary(args));
   const high = $derived(risk === "high");
   const action = $derived(toolLabel.trim() || toolName);
+  const title = $derived(
+    botName
+      ? t("thread.namedWantsTo", { name: botName, action })
+      : t("thread.agentWantsTo", { action }),
+  );
 </script>
 
 <article
   class={"chat-interaction chat-interaction--approval " + cls}
   data-risk={risk}
   aria-busy={deciding ? "true" : undefined}
-  aria-label={`${botName || "An agent"} requests permission to ${action}`}
+  aria-label={title}
 >
   <header class="chat-interaction__header">
     <span class="chat-interaction__icon" data-tone={high ? "warning" : "brand"} aria-hidden="true">
       <ShieldAlert class="size-4" strokeWidth={1.8} />
     </span>
     <div class="chat-interaction__heading">
-      <span class="chat-interaction__eyebrow">Permission request</span>
+      <span class="chat-interaction__eyebrow">{t("thread.permissionRequest")}</span>
       <h3 class="chat-interaction__title">
-        {#if botName}<span class="chat-interaction__agent">{botName}</span> wants to {/if}{action}
+        {#if botName}
+          <span class="chat-interaction__agent">{botName}</span> {t("thread.wantsTo", { action })}
+        {:else}
+          {t("thread.agentWantsTo", { action })}
+        {/if}
       </h3>
     </div>
     <span class="chat-interaction__chip" data-tone={high ? "warning" : "neutral"}>
-      {high ? "High stakes" : "Review"}
+      {high ? t("thread.highStakesChip") : t("thread.review")}
     </span>
   </header>
 
@@ -78,10 +87,10 @@
     >
       {#if deciding}
         <Loader2 class="size-3.5 animate-spin" />
-        Allowing…
+        {t("thread.allowing")}
       {:else}
         <Check class="size-3.5" strokeWidth={2.2} />
-        Allow
+        {t("thread.allow")}
       {/if}
     </button>
     <button
@@ -91,8 +100,8 @@
       onclick={() => onDecide(false)}
     >
       <X class="size-3.5" strokeWidth={2.2} />
-      Deny
+      {t("thread.deny")}
     </button>
-    <span class="chat-interaction__hint">{toolName} · the run resumes after you decide</span>
+    <span class="chat-interaction__hint">{t("thread.resumeAfterDecision", { tool: toolName })}</span>
   </footer>
 </article>

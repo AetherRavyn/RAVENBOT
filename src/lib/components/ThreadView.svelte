@@ -56,6 +56,7 @@
     type MentionToken,
   } from "$lib/chat/mentions";
   import ComposerMentionMenu from "$lib/components/chat/ComposerMentionMenu.svelte";
+  import SourceChips from "$lib/components/chat/SourceChips.svelte";
   import ApprovalCard from "$lib/components/chat/ApprovalCard.svelte";
   import InteractionBlockCard from "$lib/components/chat/InteractionBlock.svelte";
   import type {
@@ -201,7 +202,7 @@
   /** The first thread load, so a focus request can wait for it instead of racing it. */
   let initialLoad: Promise<void> | null = null;
   let loadedBotId: string | null = null;
-  let loadingBotId: string | null = null;
+  let loadingBotId = $state<string | null>(null);
   let loadError = $state<string | null>(null);
   let loadSeq = 0;
 
@@ -491,6 +492,19 @@
    * Load a conversation exactly once per bot. Both the mount path and the
    * bot-change effect call this, and the first caller owns the work.
    */
+  /**
+   * Retry a failed thread-list/message load without requiring a bot switch.
+   * `ensureBotLoaded` refuses a bot it already owns, so clear the ownership
+   * marker first; the failed load deliberately left it unset anyway.
+   */
+  function retryThreadLoad() {
+    if (!bot?.id) return;
+    loadedBotId = null;
+    loadingBotId = null;
+    loadError = null;
+    ensureBotLoaded(bot.id);
+  }
+
   function ensureBotLoaded(botId: string) {
     if (!botId || loadedBotId === botId || loadingBotId === botId) return;
     if (loadedBotId) {
@@ -876,23 +890,6 @@
   let unlisten: UnlistenFn | null = null;
   /** Refreshes the goal banner and transcript after a background goal round. */
   let goalUnlisten: UnlistenFn | null = null;
-
-  async function openSource(url: string) {
-    try {
-      const { openUrl } = await import("@tauri-apps/plugin-opener");
-      await openUrl(url);
-    } catch (e) {
-      console.error("Failed to open source:", e);
-    }
-  }
-
-  function domainOf(url: string) {
-    try {
-      return new URL(url).hostname.replace(/^www\./, "");
-    } catch {
-      return url;
-    }
-  }
 
   let botStatusTheme = $derived(getStatusTheme(bot?.status));
   let currentThread = $derived(threads.find((t) => t.id === selectedThreadId));
@@ -2561,30 +2558,6 @@
   onkeydown={handleMessageNavKey}
 />
 
-{#snippet sourcesChips(sources: any[])}
-  {#if sources && sources.length > 0}
-    <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-2.5 space-y-1.5">
-      <div class="flex items-center gap-1.5 text-[11px] font-mono text-[var(--text-tertiary)] uppercase tracking-wider">
-        <Globe class="size-3 text-[var(--brand-text)]" />
-        <span>Sources ({sources.length})</span>
-      </div>
-      <div class="flex flex-wrap gap-1.5">
-        {#each sources as src, idx}
-          {@const label = domainOf(src.url)}
-          <button
-            type="button"
-            class="max-w-[220px] h-6 px-2 rounded-lg bg-[var(--surface-2)] border border-[var(--hairline)] hover:bg-[var(--brand-soft)] hover:border-[var(--brand)]/40 flex items-center gap-1.5 text-[11px] text-[var(--text-secondary)] hover:text-[var(--brand-hover)] transition-colors cursor-pointer"
-            title={src.title || src.url}
-            onclick={() => openSource(src.url)}
-          >
-            <span class="size-3.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] font-mono flex items-center justify-center text-[11px] shrink-0">{idx + 1}</span>
-            <span class="truncate font-mono">{label}</span>
-          </button>
-        {/each}
-      </div>
-    </div>
-  {/if}
-{/snippet}
 
 <div class="flex flex-col h-full overflow-hidden bg-[var(--surface-0)] text-[var(--text-primary)] font-sans relative">
   <!-- Sleek Top Header Bar (Grok Style) -->
@@ -3443,7 +3416,25 @@
               </button>
             </div>
           {/if}
-          {#if messages.length === 0 && !sending && !regenerating}
+          {#if loadError && messages.length === 0}
+            <div class="mx-auto my-8 max-w-xl rounded-2xl border border-[var(--danger-border)] bg-[var(--danger-soft)] p-5 text-center space-y-2" role="alert">
+              <AlertTriangle class="mx-auto size-5 text-[var(--danger-text)]" />
+              <p class="text-sm font-semibold text-[var(--danger-text)]">{t("errors.loadFailed")}</p>
+              <p class="break-words text-xs text-[var(--text-secondary)]">{loadError}</p>
+              <button
+                type="button"
+                class="mt-2 inline-flex h-8 items-center rounded-lg border border-[var(--danger-border)] bg-[var(--surface-1)] px-3 text-xs font-semibold text-[var(--danger-text)] hover:bg-[var(--surface-2)] cursor-pointer"
+                onclick={retryThreadLoad}
+              >
+                {t("ui.retry")}
+              </button>
+            </div>
+          {:else if loadingBotId === bot.id && messages.length === 0}
+            <div class="flex items-center justify-center gap-2 py-16 text-xs text-[var(--text-tertiary)]" role="status">
+              <Loader2 class="size-4 animate-spin" />
+              {t("ui.loading")}
+            </div>
+          {:else if messages.length === 0 && !sending && !regenerating}
             <ChatEmptyState
               name={bot.name}
               description={bot.description}
@@ -3555,7 +3546,9 @@
                 ? (emoji) => void reactToMessage(message, emoji)
                 : undefined}
               text={hasChecklist ? (message.content.text || "") : rawContent}
-              reasoning={message.content.reasoning ?? null}
+              reasoning={typeof message.content === "object" && message.content !== null
+                ? (message.content.reasoning ?? null)
+                : null}
               tools={message.content.tools ?? []}
               spans={message.content.spans ?? []}
               time={formatTime(message.created_at)}
@@ -3637,7 +3630,7 @@
 
               {#snippet belowBubble()}
                 {@render messageAttachmentsBlock()}
-                {@render sourcesChips(messageSources)}
+                <SourceChips sources={messageSources} />
               {/snippet}
 
               {#snippet actions()}
@@ -3721,7 +3714,7 @@
 
           {#snippet liveExtras()}
             <!-- Live source chips during streaming -->
-            {@render sourcesChips(streamingSources)}
+            <SourceChips sources={streamingSources} />
             <!-- Live tool images (e.g. screenshots) during streaming -->
             {#if streamingImages.length}
               <div class="flex flex-wrap gap-2 pt-1">

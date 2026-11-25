@@ -93,6 +93,7 @@
   import { persistedContextUsage } from "$lib/chat/contextPersistence";
   import ContextMeter from "$lib/components/chat/ContextMeter.svelte";
   import ImageGallery from "$lib/components/chat/ImageGallery.svelte";
+  import SourceChips from "$lib/components/chat/SourceChips.svelte";
   import FileAttachmentCard from "$lib/components/chat/FileAttachmentCard.svelte";
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
   import { StreamReveal } from "$lib/chat/streamReveal.svelte";
@@ -319,6 +320,8 @@
     }
   }
   let newMessage = $state("");
+  let loadError = $state<string | null>(null);
+  let loadingRoom = $state(false);
   let draftRoomId: string | null = null;
   let mentionOpen = $state(false);
   let mentionSigil = $state<MentionSigil>("#");
@@ -610,6 +613,8 @@
     rounds: string[];
   }
   let lanes = $state<Record<string, Lane>>({});
+  let laneSources = $state<Record<string, any[]>>({});
+  let laneImages = $state<Record<string, { name: string; data_url: string }[]>>({});
   // Current tool each agent is running (live)
   let agentTool = $state<Record<string, string>>({});
   // Office board (planner → kanban → live DAG) fed by plan_ready/node_* events
@@ -774,6 +779,8 @@
       commitTimer = undefined;
     }
     lanes = {};
+    laneSources = {};
+    laneImages = {};
     agentStatus = {};
     agentTool = {};
     boardGoal = "";
@@ -794,6 +801,8 @@
     commitTimer = window.setTimeout(() => {
       commitTimer = undefined;
       lanes = {};
+      laneSources = {};
+      laneImages = {};
       agentTool = {};
       agentStatus = {};
       activeThreads.clear();
@@ -1010,6 +1019,8 @@
         const active = await invoke<boolean>("get_office_active", { chatroomId: room.id });
         if (active) return;
         lanes = {};
+        laneSources = {};
+        laneImages = {};
         agentTool = {};
         agentStatus = {};
         activeThreads.clear();
@@ -1261,6 +1272,8 @@
     hasEarlier = false;
     replyTargets = [];
     staticEntries = true;
+    loadingRoom = true;
+    loadError = null;
     try {
       const mems = (await invoke("list_chatroom_members", { chatroomId: room.id })) as any[];
       members = mems.map((m) => ({ ...m, bot: bots.find((b: any) => b.id === m.bot_id) }));
@@ -1282,8 +1295,15 @@
       await tick();
       scrollToBottom(true);
     } catch (e) {
+      loadError = String(e);
+      // A failed room load must not leave the previous office's transcript,
+      // members or thread id behind: sending would target the wrong room.
+      messages = [];
+      members = [];
+      threadId = null;
       console.error(e);
     } finally {
+      loadingRoom = false;
       staticEntries = false;
     }
   }
@@ -1633,6 +1653,35 @@
           // is on track, and it used to be cleared away the moment any tool ran.
           if (tid && p.bot_id) botToThread.set(String(p.bot_id), tid);
           reasoning.ingest(p);
+        } else if (kind === "sources") {
+          const botId = String(p.bot_id || "");
+          if (!botId) return;
+          if (tid) botToThread.set(botId, tid);
+          const key = threadToNode.get(tid) || `bot:${botId}`;
+          const current = laneSources[key] || [];
+          const next = [...current];
+          for (const source of p.sources || []) {
+            if (source?.url && !next.some((existing) => existing.url === source.url)) {
+              next.push(source);
+            }
+          }
+          if (next.length !== current.length) {
+            laneSources = { ...laneSources, [key]: next };
+            scrollToBottom();
+          }
+        } else if (kind === "image") {
+          const botId = String(p.bot_id || "");
+          if (!botId || !p.data_url) return;
+          if (tid) botToThread.set(botId, tid);
+          const key = threadToNode.get(tid) || `bot:${botId}`;
+          laneImages = {
+            ...laneImages,
+            [key]: [
+              ...(laneImages[key] || []),
+              { name: String(p.name || "image"), data_url: String(p.data_url) },
+            ],
+          };
+          scrollToBottom();
         } else if (kind === "delta") {
           // Route the token stream to its NODE lane (parallel same-bot nodes
           // stay separate); unattributed deltas fall back to a per-bot lane.
@@ -2830,7 +2879,7 @@
         <div class="flex items-center gap-2 px-4 py-1.5 border-b border-[var(--hairline)] bg-[var(--brand-soft)] text-[11px] text-[var(--text-secondary)] shrink-0" role="status">
           <Loader2 class="size-3.5 animate-spin text-[var(--brand)] shrink-0" />
           <span class="font-semibold text-[var(--text-primary)]">{officePhaseLabel}</span>
-          <span class="text-[var(--text-muted)]">The office keeps working while you are away.</span>
+          <span class="text-[var(--text-muted)]">{t("room.officeKeepsWorking")}</span>
         </div>
       {/if}
       <!-- Run timeline: live "who is doing what" pills from agent-stream -->
@@ -2867,7 +2916,25 @@
             </button>
           </div>
         {/if}
-        {#if messages.length === 0}
+        {#if loadError && messages.length === 0}
+          <div class="mx-auto my-8 max-w-xl rounded-2xl border border-[var(--danger-border)] bg-[var(--danger-soft)] p-5 text-center space-y-2" role="alert">
+            <AlertTriangle class="mx-auto size-5 text-[var(--danger-text)]" />
+            <p class="text-sm font-semibold text-[var(--danger-text)]">{t("errors.loadFailed")}</p>
+            <p class="break-words text-xs text-[var(--text-secondary)]">{loadError}</p>
+            <button
+              type="button"
+              class="mt-2 inline-flex h-8 items-center rounded-lg border border-[var(--danger-border)] bg-[var(--surface-1)] px-3 text-xs font-semibold text-[var(--danger-text)] hover:bg-[var(--surface-2)] cursor-pointer"
+              onclick={() => void load()}
+            >
+              {t("ui.retry")}
+            </button>
+          </div>
+        {:else if loadingRoom && messages.length === 0}
+          <div class="flex items-center justify-center gap-2 py-16 text-xs text-[var(--text-tertiary)]" role="status">
+            <Loader2 class="size-4 animate-spin" />
+            {t("ui.loading")}
+          </div>
+        {:else if messages.length === 0}
           <!-- Empty State: Modern Office Mission Control -->
           <div class="p-8 text-center border border-dashed border-[var(--hairline)] rounded-xl bg-[var(--surface-0)]/80 max-w-xl mx-auto my-6 shadow-xl space-y-4">
             <div class="size-16 rounded-2xl bg-[var(--surface-2)] border border-[var(--hairline-strong)] mx-auto flex items-center justify-center text-[var(--brand-text)] shadow-2xl">
@@ -2963,6 +3030,7 @@
           {@const messageImages = messageAttachments.filter((a: any) => a.is_image)}
           {@const messageMedia = messageAttachments.filter((a: any) => !a.is_image && /^(audio|video)\//i.test(a.mime_type || ""))}
           {@const messageDocs = messageAttachments.filter((a: any) => !a.is_image && !/^(audio|video)\//i.test(a.mime_type || ""))}
+          {@const messageSources = Array.isArray(msg.content?.sources) ? msg.content.sources : []}
 
           {#snippet messageAttachmentsBlock()}
             {#if messageImages.length}
@@ -3001,6 +3069,11 @@
                 {#each messageDocs as att (att.id || att.name)}
                   <FileAttachmentCard {att} />
                 {/each}
+              </div>
+            {/if}
+            {#if messageSources.length}
+              <div class="px-3 pt-2">
+                <SourceChips sources={messageSources} />
               </div>
             {/if}
           {/snippet}
@@ -3198,7 +3271,7 @@
           <div class="space-y-3">
             <div class="flex items-center gap-2 text-[11px] font-bold uppercase tracking-wider text-[var(--text-muted)]">
               <span class="size-1.5 rounded-full bg-success animate-pulse"></span>
-              Live team activity · {activeMembers.length > 0 ? `${activeMembers.length} working` : "orchestrating"}
+              {t("room.liveTeam")} · {activeMembers.length > 0 ? t("room.liveWorking", { count: activeMembers.length }) : t("room.orchestrating")}
             </div>
 
             {#snippet statusRow(name: string, avatar: string, color: string, toolName?: string)}
@@ -3262,8 +3335,26 @@
                     {:else if st === "thinking" || st === "running_tool" || st === "waiting_on_user"}
                       <div class="px-3">
                         <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-warning/10 border border-warning/30 text-warning">
-                          {st === "waiting_on_user" ? "waiting" : "thinking"}
+                          {st === "waiting_on_user" ? t("room.waiting") : t("room.thinking")}
                         </span>
+                      </div>
+                    {/if}
+                    {#if laneSources[key]?.length || laneImages[key]?.length}
+                      <div class="px-3 pt-2 space-y-2">
+                        {#if laneSources[key]?.length}
+                          <SourceChips sources={laneSources[key]} />
+                        {/if}
+                        {#if laneImages[key]?.length}
+                          <div class="flex flex-wrap gap-2">
+                            {#each laneImages[key] as img, index (img.data_url + index)}
+                              <img
+                                src={img.data_url}
+                                alt={img.name}
+                                class="max-h-64 max-w-full rounded-lg object-contain bg-[var(--surface-1)]"
+                              />
+                            {/each}
+                          </div>
+                        {/if}
                       </div>
                     {/if}
                   {/snippet}
@@ -3287,7 +3378,7 @@
             {#if activeMembers.length === 0}
               <div class="flex items-center gap-2 text-[11px] text-[var(--text-tertiary)] pl-1">
                 <Loader2 class="size-3.5 animate-spin text-[var(--brand)]" />
-                <span>{planGenerating ? "Dispatching the plan…" : "CEO is planning the work…"}</span>
+                <span>{planGenerating ? t("room.dispatchingPlan") : t("room.planningWork")}</span>
               </div>
             {/if}
           </div>

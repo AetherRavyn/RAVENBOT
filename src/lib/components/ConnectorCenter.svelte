@@ -92,6 +92,7 @@
   let selectedCategory = $state("All");
   let activeTab = $state<"all" | "active" | "global" | "configured" | "custom">("all");
   let syncing = $state(false);
+  let loadError = $state<string | null>(null);
 
   // Multi-Selection State for Batch Operations
   let selectedConnectorIds = $state<Set<string>>(new Set());
@@ -375,6 +376,7 @@
 
   async function load() {
     syncing = true;
+    loadError = null;
     try {
       servers = await invoke("list_mcp_servers", { category: null });
       
@@ -391,6 +393,7 @@
       botServersMap = map;
     } catch (e) {
       console.error("Failed to load connectors:", e);
+      loadError = String(e);
     } finally {
       syncing = false;
     }
@@ -1175,6 +1178,26 @@
   <!-- Main Scrollable Connector Grid (Native Smooth Scroll) -->
   <div class="flex-1 min-h-0 overflow-y-auto px-6 py-5 overscroll-contain scroll-smooth focus:outline-none">
     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 pb-12">
+      {#if loadError}
+        <div class="col-span-full rounded-2xl border border-[var(--danger-border)] bg-[var(--danger-soft)] p-8 text-center space-y-3" role="alert">
+          <AlertCircle class="mx-auto size-7 text-[var(--danger-text)]" />
+          <p class="text-sm font-semibold text-[var(--danger-text)]">{t("errors.loadFailed")}</p>
+          <p class="mx-auto max-w-lg break-words text-xs text-[var(--text-secondary)]">{loadError}</p>
+          <button
+            type="button"
+            class="inline-flex h-8 items-center rounded-lg border border-[var(--danger-border)] bg-[var(--surface-1)] px-3 text-xs font-semibold text-[var(--danger-text)] hover:bg-[var(--surface-2)] cursor-pointer"
+            onclick={() => void load()}
+          >
+            {t("ui.retry")}
+          </button>
+        </div>
+      {:else}
+      {#if syncing && servers.length === 0}
+        <div class="col-span-full flex items-center justify-center gap-2 py-20 text-xs text-[var(--text-tertiary)]" role="status">
+          <RefreshCw class="size-4 animate-spin" />
+          {t("connector.syncing")}
+        </div>
+      {:else}
       {#each filtered as s (s.id)}
         {@const isCurrentBotEnabled = currentBotId ? currentBotServers.has(s.id) : false}
         {@const isGlobalEnabled = s.enabled}
@@ -1468,6 +1491,8 @@
           </div>
         </div>
       {/each}
+      {/if}
+      {/if}
     </div>
   </div>
 </div>

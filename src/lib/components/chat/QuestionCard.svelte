@@ -45,7 +45,7 @@
 <article
   class={"chat-interaction chat-interaction--question " + cls}
   aria-busy={answering ? "true" : undefined}
-  aria-label={header || "Question from an agent"}
+  aria-label={header || t("thread.questionFromAgent")}
 >
   <header class="chat-interaction__header">
     <span class="chat-interaction__icon" data-tone="question" aria-hidden="true">
@@ -53,17 +53,17 @@
     </span>
     <div class="chat-interaction__heading">
       <span class="chat-interaction__eyebrow">
-        {#if botName}<span class="chat-interaction__agent">{botName}</span> asks{:else}Agent question{/if}
+        {#if botName}{t("thread.namedAsks", { name: botName })}{:else}{t("thread.agentQuestion")}{/if}
       </span>
-      <h3 class="chat-interaction__title">{header || "Question"}</h3>
+      <h3 class="chat-interaction__title">{header || t("thread.question")}</h3>
     </div>
-    <span class="chat-interaction__chip" data-tone="question">Needs you</span>
+    <span class="chat-interaction__chip" data-tone="question">{t("thread.blockNeedsYou")}</span>
   </header>
 
   <p class="chat-interaction__question">{question}</p>
 
   {#if choices.length}
-    <div class="chat-question__options" role="group" aria-label="Suggested answers">
+    <div class="chat-question__options" role="group" aria-label={t("thread.suggestedAnswers")}>
       {#each choices as option (option)}
         <button
           type="button"
@@ -88,7 +88,7 @@
     >
       <input
         class="chat-question__input"
-        aria-label="Answer"
+        aria-label={t("thread.answer")}
         placeholder={t("thread.answerPlaceholder")}
         bind:value={draft}
         disabled={answering}
@@ -100,10 +100,10 @@
       >
         {#if answering}
           <Loader2 class="size-3.5 animate-spin" />
-          Sending…
+          {t("thread.sendingAnswer")}
         {:else}
           <Send class="size-3.5" strokeWidth={2} />
-          Answer
+          {t("thread.answer")}
         {/if}
       </button>
     </form>

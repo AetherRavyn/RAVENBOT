@@ -14,6 +14,7 @@
    */
   import { invoke } from "@tauri-apps/api/core";
   import { Key, ChevronRight, X, Sparkles, Bot, Loader2, CheckCircle2, AlertTriangle } from "@lucide/svelte";
+  import { t } from "$lib/i18n";
 
   interface Props {
     open: boolean;
@@ -128,20 +129,20 @@
           </div>
           <div class="min-w-0">
             <h2 id="onboarding-title" class="text-sm font-bold text-[var(--text-primary)]">
-              {step === 2 ? "You're ready" : "Welcome to RAVENBOT"}
+              {step === 2 ? t("onboarding.ready") : t("onboarding.welcome")}
             </h2>
             <p class="text-[11px] text-[var(--text-tertiary)] mt-0.5">
               {step === 0
-                ? "Connect a provider so the app can think"
+                ? t("onboarding.providerStep")
                 : step === 1
-                  ? "Choose your default agent"
-                  : "Your default agent is ready"}
+                  ? t("onboarding.agentStep")
+                  : t("onboarding.readyStep")}
             </p>
           </div>
           <button
             type="button"
             class="ml-auto size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center cursor-pointer"
-            aria-label="Close"
+            aria-label={t("onboarding.close")}
             onclick={onSkip}
           >
             <X class="size-4" />
@@ -153,65 +154,65 @@
         <div class="px-6 pb-4 space-y-2.5">
           <p class="text-[12px] text-[var(--text-secondary)] leading-relaxed">
             {localAvailable
-              ? "RAVENBOT found a local Ollama instance. You can start without an API key, or connect any cloud or OpenAI-compatible provider."
-              : "RAVENBOT runs on your machine, but it needs an API key to think. Pick any provider you have an account with — OpenRouter, Anthropic, OpenAI, OpenCode Go, a local LM Studio, or any OpenAI-compatible endpoint — and paste the key."}
+              ? t("onboarding.introLocal")
+              : t("onboarding.introCloud")}
           </p>
           {#if localAvailable && preferredLocal}
             <div class="rounded-xl border border-[var(--brand)]/30 bg-[var(--brand-soft)] px-3 py-2.5 space-y-1.5">
-              <p class="text-[12px] font-semibold text-[var(--brand-text)]">Local Ollama detected</p>
+              <p class="text-[12px] font-semibold text-[var(--brand-text)]">{t("onboarding.localDetected")}</p>
               <p class="text-[11px] text-[var(--text-secondary)]">
-                {localModels.length} model{localModels.length === 1 ? "" : "s"} ready · no API key needed.
+                {localModels.length === 1
+                  ? t("onboarding.localModelOne")
+                  : t("onboarding.localModels", { count: localModels.length })}
               </p>
               <button
                 type="button"
                 class="h-8 px-3 rounded-lg bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] text-[11px] font-semibold cursor-pointer"
                 onclick={useLocalOllama}
               >
-                Use {preferredLocal.name || preferredLocal.id}
+                {t("onboarding.useLocal", { model: preferredLocal.name || preferredLocal.id })}
               </button>
             </div>
           {/if}
           <div class="flex items-start gap-3">
             <span class="size-5 rounded-full bg-[var(--surface-3)] text-[11px] font-bold text-[var(--text-tertiary)] flex items-center justify-center shrink-0 mt-0.5">1</span>
             <div class="min-w-0">
-              <p class="text-[12px] font-medium text-[var(--text-primary)]">Open Settings</p>
-              <p class="text-[11px] text-[var(--text-muted)]">Press ⌘, or click the gear in the sidebar.</p>
+              <p class="text-[12px] font-medium text-[var(--text-primary)]">{t("onboarding.openSettings")}</p>
+              <p class="text-[11px] text-[var(--text-muted)]">{t("onboarding.settingsHint")}</p>
             </div>
           </div>
           <div class="flex items-start gap-3">
             <span class="size-5 rounded-full bg-[var(--surface-3)] text-[11px] font-bold text-[var(--text-tertiary)] flex items-center justify-center shrink-0 mt-0.5">2</span>
             <div class="min-w-0">
-              <p class="text-[12px] font-medium text-[var(--text-primary)]">Add a provider key</p>
-              <p class="text-[11px] text-[var(--text-muted)]">Paste your key under <span class="font-mono text-[var(--text-secondary)]">API Keys</span>, or add a custom OpenAI-compatible endpoint.</p>
+              <p class="text-[12px] font-medium text-[var(--text-primary)]">{t("onboarding.keyTitle")}</p>
+              <p class="text-[11px] text-[var(--text-muted)]">{t("onboarding.keyHint")}</p>
             </div>
           </div>
         </div>
       {:else if step === 1}
         <div class="px-6 pb-4 space-y-3">
           <p class="text-[12px] text-[var(--text-secondary)] leading-relaxed">
-            The Raven is your default agent. It reads the tools, connectors, skills, and
-            plugins installed here, turns a name and a mission into a charter and a team,
-            and leads the fleet. It designs offices; it does not do their work.
+            {t("onboarding.agentIntro")}
           </p>
           <div class="space-y-1.5">
             <label for="onboarding-agent-name" class="text-[11px] font-semibold text-[var(--text-tertiary)]">
-              Agent name
+              {t("onboarding.agentNameLabel")}
             </label>
             <input
               id="onboarding-agent-name"
               bind:value={agentName}
               class="w-full h-9 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] px-3 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]/60"
-              placeholder="The Raven"
+              placeholder={t("onboarding.agentNamePlaceholder")}
             />
           </div>
           <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] px-3 py-2.5">
             <div class="flex items-center gap-2 text-[11px] text-[var(--text-tertiary)]">
               <Bot class="size-3.5 text-[var(--brand-text)] shrink-0" />
-              <span class="font-semibold text-[var(--text-secondary)]">Model</span>
+              <span class="font-semibold text-[var(--text-secondary)]">{t("onboarding.modelLabel")}</span>
               <span class="ml-auto font-mono truncate">{provider}/{model}</span>
             </div>
             <p class="text-[11px] text-[var(--text-muted)] mt-1 leading-relaxed">
-              Change the default model in Settings → Default agent first if you want a different brain.
+              {t("onboarding.modelHint")}
             </p>
           </div>
           {#if error}
@@ -224,12 +225,10 @@
       {:else}
         <div class="px-6 pb-4 space-y-2">
           <p class="text-[12px] text-[var(--text-secondary)] leading-relaxed">
-            <span class="font-semibold text-[var(--text-primary)]">{existingAgent?.name || "The Raven"}</span>
-            will design each office from its name and mission, using only the tools that exist
-            on this machine.
+            {t("onboarding.readyBody", { name: existingAgent?.name || "The Raven" })}
           </p>
           <p class="text-[11px] text-[var(--text-muted)]">
-            You can change it later in Settings → Default agent.
+            {t("onboarding.readyHint")}
           </p>
         </div>
       {/if}
@@ -242,7 +241,7 @@
             class="text-[11px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
             onclick={onSkip}
           >
-            Skip for now
+            {t("onboarding.skip")}
           </button>
           <div class="flex items-center gap-2">
             <button
@@ -251,14 +250,14 @@
               onclick={check}
               disabled={checking}
             >
-              {#if checking}<Loader2 class="size-3.5 animate-spin" />{:else}I've connected it{/if}
+              {#if checking}<Loader2 class="size-3.5 animate-spin" />{:else}{t("onboarding.connected")}{/if}
             </button>
             <button
               type="button"
               class="h-9 px-4 rounded-xl bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
               onclick={onOpenSettings}
             >
-              Open Settings
+              {t("onboarding.openSettings")}
               <ChevronRight class="size-3.5" />
             </button>
           </div>
@@ -268,7 +267,7 @@
             class="text-[11px] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] transition-colors cursor-pointer"
             onclick={onSkip}
           >
-            Skip for now
+            {t("onboarding.skip")}
           </button>
           <button
             type="button"
@@ -277,7 +276,7 @@
             disabled={creating}
           >
             {#if creating}<Loader2 class="size-3.5 animate-spin" />{:else}<Sparkles class="size-3.5" />{/if}
-            {creating ? "Creating…" : "Create The Raven"}
+            {creating ? t("onboarding.creating") : t("onboarding.create")}
           </button>
         {:else}
           <span></span>
@@ -286,7 +285,7 @@
             class="h-9 px-4 rounded-xl bg-[var(--brand)] hover:bg-[var(--brand-hover)] text-[var(--text-on-light)] text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
             onclick={onSkip}
           >
-            Start working
+            {t("onboarding.start")}
             <ChevronRight class="size-3.5" />
           </button>
         {/if}

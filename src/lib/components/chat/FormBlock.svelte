@@ -52,7 +52,7 @@
 <article
   class="chat-interaction chat-interaction--form"
   aria-busy={answering ? "true" : undefined}
-  aria-label={payload.title || header || "Form"}
+  aria-label={payload.title || header || t("thread.form")}
 >
   <BlockHeader
     {botName}
@@ -115,7 +115,7 @@
       disabled={answering}
       onclick={submit}
     >
-      {answering ? "Sending…" : submitLabel(payload, t("thread.blockSubmit"))}
+      {answering ? t("thread.sendingAnswer") : submitLabel(payload, t("thread.blockSubmit"))}
     </button>
     {#if error}<span class="block-error" role="alert">{error}</span>{/if}
     <span class="chat-interaction__hint">{t("thread.blockResumeHint")}</span>

@@ -4,6 +4,29 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### P1 reliability and polish
+
+- **Load failures are visible and retryable** — 1:1 threads, office rooms, the
+  connector centre and the workspace browser now distinguish loading from empty
+  and show the actual error with a Retry action. A failed room load clears the
+  previous room's messages, members and thread id instead of leaving a stale
+  conversation that can still be written to.
+- **Office citations and images** — `sources` and `image` stream events are
+  routed to their office lane and rendered as numbered chips and inline images;
+  persisted assistant messages render stored sources through the same shared
+  component as a 1:1 thread.
+- **Decision points are localized** — approval, question, structured
+  choice/form cards, their aria labels, onboarding, and live office status
+  labels now use the six-locale dictionary.
+- **Global error boundary** — a SvelteKit error page shows status, message and
+  Reload instead of a blank window, and ThreadView no longer reads `reasoning`
+  from a non-object message.
+- **Root accessibility regression test** — the workspace root is asserted to
+  have no `role="application"` and no global `select-none`.
+- **P1 audit** — every remaining P1 row now records its fix and regression
+  coverage; the product backlog moves to P2 view decomposition and the
+  longer-term epics.
+
 ### Narrow windows
 
 - **The conversation keeps its space** — the thread header is now driven by a
