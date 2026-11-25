@@ -122,7 +122,14 @@ impl SandboxRunner {
         }
         #[cfg(target_os = "macos")]
         if let Some(path) = find_on_path("sandbox-exec") {
-            return SandboxBackend::Seatbelt(path);
+            if seatbelt_is_usable(&path) {
+                return SandboxBackend::Seatbelt(path);
+            }
+            tracing::warn!(
+                "sandbox-exec exists but cannot apply a profile on this macOS; \
+                 refusing to run an unsandboxed command"
+            );
+            return SandboxBackend::None;
         }
         if let Some(path) = find_on_path("bwrap") {
             return SandboxBackend::Bubblewrap(path);
@@ -197,7 +204,7 @@ impl SandboxRunner {
                 } else if cfg!(target_os = "windows") {
                     "Windows sandbox backend is not implemented; commands are blocked"
                 } else if cfg!(target_os = "macos") {
-                    "sandbox-exec not found on PATH, so commands are blocked"
+                    "sandbox-exec is missing or cannot apply a profile on this macOS, so commands are blocked"
                 } else if self.config.tier == SandboxTier::Docker {
                     "Docker is not installed or not on PATH, so commands are blocked"
                 } else {
@@ -209,8 +216,16 @@ impl SandboxRunner {
                     network_isolated: false,
                     resource_limits: true,
                     note: format!(
-                        "Unsandboxed execution is not allowed: {}. Install bubblewrap on Linux or explicitly select the Host tier for this agent. RAVENBOT_ALLOW_UNSANDBOXED=1 is a deliberate global override.",
-                        reason
+                        "Unsandboxed execution is not allowed: {}. {}{}",
+                        reason,
+                        if cfg!(target_os = "macos") {
+                            "Select the Docker tier (Docker Desktop) or explicitly choose Host for this agent. "
+                        } else if cfg!(target_os = "windows") {
+                            "There is no Windows backend yet; explicitly choose Host only if you accept unsandboxed execution. "
+                        } else {
+                            "Install bubblewrap or Docker, or explicitly choose Host for this agent. "
+                        },
+                        "RAVENBOT_ALLOW_UNSANDBOXED=1 is a deliberate global override."
                     ),
                 }
             }
@@ -665,6 +680,28 @@ fn expand_path(raw: &str) -> PathBuf {
 ///
 /// Anything that looks like a credential is dropped even if it is not in this
 /// list; the allowlist is deliberate rather than a deny-list of known keys.
+/// Whether `sandbox-exec` can actually apply a profile here.
+///
+/// macOS 26 still ships the binary in some images but refuses to apply a
+/// profile. Treating "the file exists" as "isolation works" would let the app
+/// claim a sandbox and then fail every command — or, worse, tempt a fallback to
+/// the host. Probe once per process and fail closed when the probe rejects.
+#[cfg(target_os = "macos")]
+fn seatbelt_is_usable(path: &std::path::Path) -> bool {
+    use std::sync::OnceLock;
+    static USABLE: OnceLock<bool> = OnceLock::new();
+    *USABLE.get_or_init(|| {
+        std::process::Command::new(path)
+            .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    })
+}
+
 fn allowed_child_env(key: &str) -> bool {
     matches!(
         key,
@@ -1065,7 +1102,10 @@ mod platform_contract_tests {
             ..Default::default()
         });
         if !matches!(runner.backend(), SandboxBackend::Seatbelt(_)) {
-            eprintln!("sandbox-exec unavailable; skipping live seatbelt test");
+            eprintln!(
+                "sandbox-exec is unavailable or cannot apply a profile on this macOS; \
+                 skipping the live seatbelt test"
+            );
             let _ = std::fs::remove_dir_all(&work);
             return;
         }
