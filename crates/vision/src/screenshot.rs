@@ -151,6 +151,70 @@ async fn capture_with_grim(region: Option<Region>) -> Result<Screenshot, Screens
     })
 }
 
+/// The xcap path, deliberately synchronous.
+///
+/// `Monitor`/`Window` wrap platform handles. On Windows that includes
+/// `HMONITOR`, a `*mut c_void` with no `Send` implementation. An async fn that
+/// holds one across an await makes the whole future non-`Send`, and every
+/// `#[async_trait]` skill that calls it then fails to compile on Windows.
+/// Returning owned data from a sync frame keeps the async boundary clean.
+fn capture_with_xcap() -> Result<Screenshot, ScreenshotError> {
+    use xcap::{image::ImageFormat, Monitor};
+
+    let monitors = Monitor::all().map_err(|e| match e.to_string().as_str() {
+        s if s.contains("permission") => ScreenshotError::PermissionDenied,
+        _ => ScreenshotError::CaptureFailed(format!("Failed to enumerate monitors: {}", e)),
+    })?;
+
+    if monitors.is_empty() {
+        return Err(ScreenshotError::NoMonitors);
+    }
+
+    let monitor = monitors
+        .iter()
+        // xcap 0.5+ made these getters fallible; a monitor we cannot read
+        // metadata for is simply not the primary one.
+        .find(|m| m.is_primary().unwrap_or(false))
+        .unwrap_or(&monitors[0]);
+    let origin_x = monitor.x().unwrap_or(0);
+    let origin_y = monitor.y().unwrap_or(0);
+
+    let img = monitor.capture_image().map_err(|e| {
+        let msg = e.to_string().to_lowercase();
+        if msg.contains("permission") || msg.contains("denied") {
+            ScreenshotError::PermissionDenied
+        } else {
+            ScreenshotError::CaptureFailed(format!("Capture failed: {}", e))
+        }
+    })?;
+
+    let width = img.width();
+    let height = img.height();
+
+    let mut png_bytes: Vec<u8> = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut png_bytes);
+    img.write_to(&mut cursor, ImageFormat::Png)
+        .map_err(|e| ScreenshotError::FormatError(e.to_string()))?;
+
+    if width < 2 || height < 2 {
+        return Err(ScreenshotError::CaptureFailed(
+            "Captured frame is implausibly small — capture likely failed silently".to_string(),
+        ));
+    }
+
+    tracing::info!(width = width, height = height, "Screenshot captured");
+
+    Ok(Screenshot {
+        data: general_purpose::STANDARD.encode(&png_bytes),
+        format: "png".to_string(),
+        width,
+        height,
+        origin_x,
+        origin_y,
+        timestamp: Utc::now(),
+    })
+}
+
 impl ScreenshotCapture {
     pub fn new() -> Self {
         Self { region: None }
@@ -171,60 +235,12 @@ impl ScreenshotCapture {
                 return Ok(shot);
             }
         }
-        use xcap::{image::ImageFormat, Monitor};
-
-        let monitors = Monitor::all().map_err(|e| match e.to_string().as_str() {
-            s if s.contains("permission") => ScreenshotError::PermissionDenied,
-            _ => ScreenshotError::CaptureFailed(format!("Failed to enumerate monitors: {}", e)),
-        })?;
-
-        if monitors.is_empty() {
-            return capture_with_grim(None).await;
-        }
-
-        let monitor = monitors
-            .iter()
-            // xcap 0.5+ made these getters fallible; a monitor we cannot read
-            // metadata for is simply not the primary one.
-            .find(|m| m.is_primary().unwrap_or(false))
-            .unwrap_or(&monitors[0]);
-        let origin_x = monitor.x().unwrap_or(0);
-        let origin_y = monitor.y().unwrap_or(0);
-
-        let img = monitor.capture_image().map_err(|e| {
-            let msg = e.to_string().to_lowercase();
-            if msg.contains("permission") || msg.contains("denied") {
-                ScreenshotError::PermissionDenied
-            } else {
-                ScreenshotError::CaptureFailed(format!("Capture failed: {}", e))
-            }
-        })?;
-
-        let width = img.width();
-        let height = img.height();
-
-        let mut png_bytes: Vec<u8> = Vec::new();
-        let mut cursor = std::io::Cursor::new(&mut png_bytes);
-        img.write_to(&mut cursor, ImageFormat::Png)
-            .map_err(|e| ScreenshotError::FormatError(e.to_string()))?;
-
-        if width < 2 || height < 2 {
-            return Err(ScreenshotError::CaptureFailed(
-                "Captured frame is implausibly small — capture likely failed silently".to_string(),
-            ));
-        }
-
-        tracing::info!(width = width, height = height, "Screenshot captured");
-
-        Ok(Screenshot {
-            data: general_purpose::STANDARD.encode(&png_bytes),
-            format: "png".to_string(),
-            width,
-            height,
-            origin_x,
-            origin_y,
-            timestamp: Utc::now(),
-        })
+        // xcap's platform types hold native handles (on Windows, HMONITOR is a
+        // raw pointer) that are not `Send`. Keeping the entire xcap path in a
+        // synchronous function means the async state machine never stores one
+        // across an await, which is what makes this future usable by the
+        // `#[async_trait]` skills on Windows.
+        capture_with_xcap()
     }
 
     /// List available monitors (for a future "pick monitor" UI).
@@ -267,56 +283,60 @@ impl ScreenshotCapture {
                 }
             }
         }
-        use xcap::{image::ImageFormat, Window};
-
-        let windows = Window::all().map_err(|e| {
-            ScreenshotError::CaptureFailed(format!("Failed to enumerate windows: {}", e))
-        })?;
-
-        let window = windows
-            .iter()
-            // `id()` is fallible as of xcap 0.5; a window we cannot identify
-            // just does not match the one that was asked for.
-            .find(|w| w.id().ok().map(|id| id as u64) == Some(window_id))
-            .ok_or_else(|| {
-                ScreenshotError::CaptureFailed(format!("Window {} not found", window_id))
-            })?;
-
-        let img = window.capture_image().map_err(|e| {
-            let msg = e.to_string().to_lowercase();
-            if msg.contains("permission") || msg.contains("denied") {
-                ScreenshotError::PermissionDenied
-            } else {
-                ScreenshotError::CaptureFailed(format!("Window capture failed: {}", e))
-            }
-        })?;
-
-        let width = img.width();
-        let height = img.height();
-        let origin_x = window.x().unwrap_or(0);
-        let origin_y = window.y().unwrap_or(0);
-
-        let mut png_bytes: Vec<u8> = Vec::new();
-        let mut cursor = std::io::Cursor::new(&mut png_bytes);
-        img.write_to(&mut cursor, ImageFormat::Png)
-            .map_err(|e| ScreenshotError::FormatError(e.to_string()))?;
-
-        if width < 2 || height < 2 {
-            return Err(ScreenshotError::CaptureFailed(
-                "Captured window frame is implausibly small".to_string(),
-            ));
-        }
-
-        Ok(Screenshot {
-            data: general_purpose::STANDARD.encode(&png_bytes),
-            format: "png".to_string(),
-            width,
-            height,
-            origin_x,
-            origin_y,
-            timestamp: Utc::now(),
-        })
+        capture_window_with_xcap(window_id)
     }
+}
+
+/// Window capture, synchronous for the same platform-handle reason as
+/// [`capture_with_xcap`].
+fn capture_window_with_xcap(window_id: u64) -> Result<Screenshot, ScreenshotError> {
+    use xcap::{image::ImageFormat, Window};
+
+    let windows = Window::all().map_err(|e| {
+        ScreenshotError::CaptureFailed(format!("Failed to enumerate windows: {}", e))
+    })?;
+
+    let window = windows
+        .iter()
+        // `id()` is fallible as of xcap 0.5; a window we cannot identify
+        // just does not match the one that was asked for.
+        .find(|w| w.id().ok().map(|id| id as u64) == Some(window_id))
+        .ok_or_else(|| ScreenshotError::CaptureFailed(format!("Window {} not found", window_id)))?;
+
+    let img = window.capture_image().map_err(|e| {
+        let msg = e.to_string().to_lowercase();
+        if msg.contains("permission") || msg.contains("denied") {
+            ScreenshotError::PermissionDenied
+        } else {
+            ScreenshotError::CaptureFailed(format!("Window capture failed: {}", e))
+        }
+    })?;
+
+    let width = img.width();
+    let height = img.height();
+    let origin_x = window.x().unwrap_or(0);
+    let origin_y = window.y().unwrap_or(0);
+
+    let mut png_bytes: Vec<u8> = Vec::new();
+    let mut cursor = std::io::Cursor::new(&mut png_bytes);
+    img.write_to(&mut cursor, ImageFormat::Png)
+        .map_err(|e| ScreenshotError::FormatError(e.to_string()))?;
+
+    if width < 2 || height < 2 {
+        return Err(ScreenshotError::CaptureFailed(
+            "Captured window frame is implausibly small".to_string(),
+        ));
+    }
+
+    Ok(Screenshot {
+        data: general_purpose::STANDARD.encode(&png_bytes),
+        format: "png".to_string(),
+        width,
+        height,
+        origin_x,
+        origin_y,
+        timestamp: Utc::now(),
+    })
 }
 
 impl Default for ScreenshotCapture {

@@ -21995,7 +21995,14 @@ pub(crate) async fn audit_maintenance_loop(pool: sqlx::SqlitePool) {
     }
 }
 
-pub fn run() {
+/// Run the desktop app.
+///
+/// The Tauri context is passed in by `main.rs` instead of expanded here.
+/// `generate_context!()` embeds the macOS `Info.plist` as a linker symbol; when
+/// the library test harness expanded it too, macOS failed to link with
+/// "symbol `_EMBED_INFO_PLIST` is already defined". Keeping the macro in the
+/// binary means it is expanded exactly once, by the target that links it.
+pub fn run(context: tauri::Context<tauri::Wry>) {
     // Wayland/WebKitGTK fix for Hyprland/Omarchy (Gdk Error 71: Protocol error)
     // Must be set before any WebKit webview is created.
     // Safe to set unconditionally — WebKit checks these env vars at init.
@@ -22858,7 +22865,7 @@ pub fn run() {
                 true
             }
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running ravenbot");
 }
 

@@ -68,7 +68,7 @@ fn run_desktop() {
         );
         std::process::exit(1);
     }
-    ravenbot_lib::run();
+    ravenbot_lib::run(tauri::generate_context!());
 }
 
 fn dev_server_reachable() -> bool {
