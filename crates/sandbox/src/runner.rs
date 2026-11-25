@@ -1184,6 +1184,13 @@ mod platform_contract_tests {
             ),
             ("users", "(allow file-read* (subpath \"/Users\"))"),
             ("private", "(allow file-read* (subpath \"/private\"))"),
+            ("root", "(allow file-read* (literal \"/\"))"),
+            ("tmp", "(allow file-read* (subpath \"/tmp\"))"),
+            ("var", "(allow file-read* (literal \"/var\") (literal \"/private/var\"))"),
+            (
+                "root-tmp-var",
+                "(allow file-read* (literal \"/\") (subpath \"/tmp\") (literal \"/var\") (literal \"/private/var\"))",
+            ),
         ] {
             let candidate = format!("{profile}\n{extra}");
             let result = std::process::Command::new(sandbox_exec)
