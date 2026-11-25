@@ -28,7 +28,7 @@ ravenbot-mcp = { path = "../crates/mcp" }
 ravenbot-skills = { path = "../crates/skills" }
 ravenbot-sandbox = { path = "../crates/sandbox" }
 ravenbot-vision = { path = "../crates/vision" }
-ravenbot-ipc = { path = "../crates/ipc" }
+
 ravenbot-remote = { path = "../crates/remote" }
 
 # Tauri
@@ -79,7 +79,7 @@ subtle = "2"
 # Slack Socket Mode uses a WebSocket; rustls avoids the OpenSSL toolchain.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots", "url"] }
 futures.workspace = true
-tauri-plugin-single-instance = "2"
+
 # One fleet owner (desktop or headless daemon) at a time.
 fs2 = "0.4"
 
