@@ -277,6 +277,63 @@ CREATE INDEX i ON t(kind);
     }
 
     #[tokio::test]
+    async fn identity_bindings_are_nullable_additions() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        crate::migrations::run(&pool).await.expect("migrations");
+
+        async fn columns(pool: &sqlx::SqlitePool, table: &str) -> Vec<String> {
+            sqlx::query_as::<_, (i64, String, String, i64, Option<String>, i64)>(
+                sqlx::AssertSqlSafe(format!("PRAGMA table_info({table})")),
+            )
+            .fetch_all(pool)
+            .await
+            .expect("table info")
+            .into_iter()
+            .map(|row| row.1)
+            .collect()
+        }
+
+        let devices = columns(&pool, "remote_devices").await;
+        for column in ["account_id", "account_name", "account_role"] {
+            assert!(
+                devices.iter().any(|name| name == column),
+                "remote_devices is missing {column}: {devices:?}"
+            );
+        }
+        let audit = columns(&pool, "remote_audit").await;
+        assert!(
+            audit.iter().any(|name| name == "account_name"),
+            "remote_audit is missing account_name: {audit:?}"
+        );
+        let work = columns(&pool, "work_items").await;
+        for column in ["owner_account", "claimed_at"] {
+            assert!(
+                work.iter().any(|name| name == column),
+                "work_items is missing {column}: {work:?}"
+            );
+        }
+
+        // The additions are optional: a pre-migration pairing or task must
+        // still exist and stay valid without an account or a claim.
+        sqlx::query(
+            "INSERT INTO remote_devices (id, name, token_hash) VALUES ('legacy', 'Old phone', 'hash')",
+        )
+        .execute(&pool)
+        .await
+        .expect("legacy device");
+        let unbound: Option<String> =
+            sqlx::query_scalar("SELECT account_name FROM remote_devices WHERE id = 'legacy'")
+                .fetch_one(&pool)
+                .await
+                .expect("unbound device");
+        assert_eq!(unbound, None);
+    }
+
+    #[tokio::test]
     async fn memory_fts_migration_backfills_existing_facts() {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
