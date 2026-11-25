@@ -29,6 +29,20 @@ pub enum AuditEventType {
     PermissionGranted { permission: String },
     /// Permission denied
     PermissionDenied { permission: String, reason: String },
+    /// A decision on a tool that needed approval.
+    ///
+    /// `ApprovalRequested` alone says a gate existed; this row says what came
+    /// out of it, who or what decided, and whether the tool was allowed to run.
+    /// It is the difference between "the agent tried" and "a person let it".
+    ApprovalDecision {
+        approval_id: String,
+        tool_name: String,
+        allowed: bool,
+        /// "desktop", "remote", "chat", "headless", "timeout", "cancelled",
+        /// "paused", "kill_switch", "startup" or "missing".
+        source: String,
+        note: Option<String>,
+    },
     /// Bot started
     BotStarted,
     /// Bot paused
@@ -74,6 +88,7 @@ impl AuditEventType {
             Self::FileWrite { .. } => "FileWrite",
             Self::PermissionGranted { .. } => "PermissionGranted",
             Self::PermissionDenied { .. } => "PermissionDenied",
+            Self::ApprovalDecision { .. } => "ApprovalDecision",
             Self::BotStarted => "BotStarted",
             Self::BotPaused => "BotPaused",
             Self::BotStopped => "BotStopped",
@@ -93,6 +108,7 @@ pub const AUDIT_EVENT_KINDS: &[&str] = &[
     "FileWrite",
     "PermissionGranted",
     "PermissionDenied",
+    "ApprovalDecision",
     "BotStarted",
     "BotPaused",
     "BotStopped",
@@ -179,6 +195,13 @@ mod tests {
             AuditEventType::PermissionDenied {
                 permission: "shell".into(),
                 reason: "denied".into(),
+            },
+            AuditEventType::ApprovalDecision {
+                approval_id: Uuid::new_v4().to_string(),
+                tool_name: "shell_exec".into(),
+                allowed: false,
+                source: "desktop".into(),
+                note: Some("looks unsafe".into()),
             },
             AuditEventType::BotStarted,
             AuditEventType::BotPaused,

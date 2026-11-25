@@ -52,19 +52,18 @@ pub async fn decide_approval(
     if !decided {
         return Err("That approval was already decided.".to_string());
     }
-    let permission = format!("tool:{}", request.tool_name);
-    let event = if allowed {
-        ravenbot_core::AuditEventType::PermissionGranted { permission }
-    } else {
-        ravenbot_core::AuditEventType::PermissionDenied {
-            permission,
-            reason: "Denied from the paired chat".to_string(),
-        }
-    };
-    let entry = ravenbot_core::AuditEntry::new(request.bot_id, event)
-        .with_run_id(request.run_id)
-        .with_thread_id(request.thread_id);
-    let _ = runtime.audit_logger().log(&entry).await;
+    runtime
+        .audit_approval_decision(
+            &request,
+            allowed,
+            "chat",
+            if allowed {
+                None
+            } else {
+                Some("Denied from the paired chat")
+            },
+        )
+        .await;
     Ok(if allowed {
         "Approved.".to_string()
     } else {

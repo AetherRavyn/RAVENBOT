@@ -294,6 +294,8 @@
         return t("audit.kind.granted");
       case "PermissionDenied":
         return t("audit.kind.denied");
+      case "ApprovalDecision":
+        return t("audit.kind.approval");
       case "BotStarted":
         return t("audit.kind.started");
       case "BotPaused":
@@ -345,6 +347,7 @@
       case "FileWrite":
         return FileText;
       case "PermissionGranted":
+      case "ApprovalDecision":
         return ShieldCheck;
       case "PermissionDenied":
         return ShieldAlert;
@@ -553,6 +556,7 @@
       <option value="FileWrite">{t("audit.kind.fileWrite")}</option>
       <option value="PermissionGranted">{t("audit.kind.granted")}</option>
       <option value="PermissionDenied">{t("audit.kind.denied")}</option>
+      <option value="ApprovalDecision">{t("audit.kind.approval")}</option>
       <option value="BotStarted">{t("audit.kind.started")}</option>
       <option value="BotPaused">{t("audit.kind.paused")}</option>
       <option value="BotStopped">{t("audit.kind.stopped")}</option>
@@ -785,6 +789,16 @@
               {/if}
             {:else if entry.kind === "PermissionGranted" || entry.kind === "PermissionDenied"}
               <span class="font-mono text-[var(--text-secondary)]">{entry.permission}</span>
+              {#if entry.reason}<span class="min-w-0 break-words">{entry.reason}</span>{/if}
+            {:else if entry.kind === "ApprovalDecision"}
+              <span class="font-mono text-[var(--text-secondary)]">{entry.tool_name}</span>
+              <span
+                class={entry.permission === "approved"
+                  ? "font-semibold text-[var(--success-text)]"
+                  : "font-semibold text-[var(--danger-text)]"}
+              >
+                {entry.permission === "approved" ? t("audit.approved") : t("audit.denied")}
+              </span>
               {#if entry.reason}<span class="min-w-0 break-words">{entry.reason}</span>{/if}
             {:else if entry.kind === "MemoryEmbeddingsUpdated"}
               <span class="font-mono text-[var(--text-secondary)]">{entry.provider}/{entry.model}</span>

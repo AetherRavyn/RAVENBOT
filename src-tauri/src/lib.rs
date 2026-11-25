@@ -7104,21 +7104,10 @@ async fn decide_approval(
     .map_err(|e| e.to_string())?;
     if decided {
         if let Some(request) = request {
-            let permission = format!("tool:{}", request.tool_name);
-            let event = if allowed {
-                ravenbot_core::AuditEventType::PermissionGranted { permission }
-            } else {
-                ravenbot_core::AuditEventType::PermissionDenied {
-                    permission,
-                    reason: note
-                        .filter(|note| !note.trim().is_empty())
-                        .unwrap_or_else(|| "Denied by the user".to_string()),
-                }
-            };
-            let entry = ravenbot_core::AuditEntry::new(request.bot_id, event)
-                .with_run_id(request.run_id)
-                .with_thread_id(request.thread_id);
-            let _ = state.runtime.audit_logger().log(&entry).await;
+            state
+                .runtime
+                .audit_approval_decision(&request, allowed, "desktop", note.as_deref())
+                .await;
         }
     }
     Ok(decided)
@@ -20615,6 +20604,15 @@ async fn reconcile_startup_state(
     .await?
     .rows_affected();
 
+    // Remember the orphaned cards before expiring them so the audit ledger
+    // says what was denied on the user's behalf, not just that a counter went
+    // up. There is no live run to observe this decision.
+    let orphaned_approvals: Vec<(String, String, String, String, String)> = sqlx::query_as(
+        "SELECT id, bot_id, thread_id, run_id, tool_name FROM approvals WHERE status = 'pending'",
+    )
+    .fetch_all(pool)
+    .await?;
+
     let expired_approvals = sqlx::query(
         "UPDATE approvals SET status = 'expired',
             note = 'app quit while waiting for approval', decided_at = ?
@@ -20624,6 +20622,34 @@ async fn reconcile_startup_state(
     .execute(pool)
     .await?
     .rows_affected();
+
+    if !orphaned_approvals.is_empty() {
+        let logger = ravenbot_governance::AuditLogger::new(pool.clone());
+        for (id, bot_id, thread_id, run_id, tool_name) in &orphaned_approvals {
+            let (Ok(bot_id), Ok(thread_id), Ok(run_id)) = (
+                Uuid::parse_str(bot_id),
+                Uuid::parse_str(thread_id),
+                Uuid::parse_str(run_id),
+            ) else {
+                continue;
+            };
+            let entry = AuditEntry::new(
+                bot_id,
+                AuditEventType::ApprovalDecision {
+                    approval_id: id.clone(),
+                    tool_name: tool_name.clone(),
+                    allowed: false,
+                    source: "startup".to_string(),
+                    note: Some("app quit while waiting for approval".to_string()),
+                },
+            )
+            .with_run_id(run_id)
+            .with_thread_id(thread_id);
+            if let Err(error) = logger.log(&entry).await {
+                tracing::warn!(%error, "Could not audit a startup approval expiry");
+            }
+        }
+    }
 
     let expired_questions = sqlx::query(
         "UPDATE questions SET status = 'expired', answered_at = ?
@@ -26025,6 +26051,16 @@ mod startup_reconciliation_tests {
         assert_eq!(state.resumed_offices, 1);
         assert_eq!(state.failed_workflow_runs, 1);
         assert_eq!(state.expired_approvals, 1);
+        let startup_decision: (String,) =
+            sqlx::query_as("SELECT event FROM audit_log WHERE event_kind = 'ApprovalDecision'")
+                .fetch_one(db.pool())
+                .await
+                .expect("an approval expired at startup must be audited");
+        assert!(
+            startup_decision.0.contains("\"source\":\"startup\""),
+            "{}",
+            startup_decision.0
+        );
         assert_eq!(state.expired_questions, 1);
         assert_eq!(state.failed_queue_items, 1);
         let resumable_queue: String =

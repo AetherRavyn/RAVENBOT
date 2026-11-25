@@ -97,6 +97,16 @@ const toolEntry = {
   cost: null,
 };
 
+const approvalEntry = {
+  ...toolEntry,
+  id: "a5",
+  kind: "ApprovalDecision",
+  timestamp: "2026-11-09T07:59:30.000+00:00",
+  tool_name: "shell_exec",
+  permission: "denied",
+  reason: "desktop: too risky",
+};
+
 function page(entries: unknown[], total = entries.length) {
   return { entries, total, limit: 50, offset: 0 };
 }
@@ -113,7 +123,7 @@ beforeEach(() => {
   invokeMock.mockImplementation(async (command: string) => {
     if (command === "list_audit_entries")
       return page(
-        [modelEntry, toolEntry, memoryEntry, embeddingsEntry],
+        [modelEntry, toolEntry, approvalEntry, memoryEntry, embeddingsEntry],
         120,
       );
     if (command === "export_audit_log") {
@@ -146,6 +156,9 @@ describe("AuditLogPanel", () => {
     expect(text).toContain("120 in");
     expect(text).toContain("$0.0040");
     expect(getByText("read_file")).toBeTruthy();
+    expect(getByText("shell_exec")).toBeTruthy();
+    expect(getByText("denied")).toBeTruthy();
+    expect(getByText("desktop: too risky")).toBeTruthy();
     expect(getByText("Release review")).toBeTruthy();
     expect(getAllByText("Memory change")).toHaveLength(2);
     expect(getByText("Office memory")).toBeTruthy();

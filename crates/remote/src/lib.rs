@@ -1341,12 +1341,21 @@ async fn decide_approval(
     Path(approval_id): Path<Uuid>,
     Json(body): Json<DecideBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let request = ApprovalQueries::get(&state.pool, approval_id)
+        .await
+        .map_err(|error| ApiError::internal("load approval", error))?;
     let decided =
         ApprovalQueries::decide(&state.pool, approval_id, body.allow, body.note.as_deref())
             .await
             .map_err(|error| ApiError::internal("decide approval", error))?;
     if !decided {
         return Err(ApiError::conflict("That approval is no longer pending."));
+    }
+    if let Some(request) = request {
+        state
+            .runtime
+            .audit_approval_decision(&request, body.allow, "remote", body.note.as_deref())
+            .await;
     }
     Ok(Json(json!({ "ok": true, "allowed": body.allow })))
 }

@@ -60,8 +60,10 @@ built like an operating layer:
   memory, and a thread. A DAG-style plan runs independent nodes in parallel and
   writes the result back to the office board.
 - **Nothing is a black box.** Every turn has a trace. Every tool call is in the
-  audit ledger. Approvals, budgets, sandboxes, and the kill switch are enforced
-  by the runtime, not by a system prompt.
+  audit ledger, and every high-risk approval records both the request and the
+  decision that allowed or denied it — including headless, timeout, cancel and
+  kill-switch exits. Approvals, budgets, sandboxes, and the kill switch are
+  enforced by the runtime, not by a system prompt.
 - **It keeps going.** A per-user service owns routines, scheduled workflows,
   offices, credential refresh, attention alerts, and remote access when the
   desktop window is gone.

@@ -43,9 +43,11 @@ export const AUDIT_KINDS = [
   "FileWrite",
   "PermissionGranted",
   "PermissionDenied",
+  "ApprovalDecision",
   "BotStarted",
   "BotPaused",
   "BotStopped",
   "MemoryChanged",
   "MemoryEmbeddingsUpdated",
+  "WorkspaceAccess",
 ] as const;

@@ -225,6 +225,9 @@ const SEARCH_FIELDS: &[&str] = &[
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.PermissionGranted.permission') END, '')",
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.PermissionDenied.permission') END, '')",
     "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.PermissionDenied.reason') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.ApprovalDecision.tool_name') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.ApprovalDecision.source') END, '')",
+    "COALESCE(CASE WHEN json_valid(a.event) = 1 THEN json_extract(a.event, '$.ApprovalDecision.note') END, '')",
 ];
 
 fn push_clause<'a>(qb: &mut QueryBuilder<'a, Sqlite>, first: &mut bool, clause: &str) {
@@ -626,6 +629,21 @@ impl AuditLogger {
                             AuditEventType::PermissionDenied { permission, reason } => {
                                 row.permission = Some(permission);
                                 row.reason = Some(reason);
+                            }
+                            AuditEventType::ApprovalDecision {
+                                tool_name,
+                                allowed,
+                                source,
+                                note,
+                                ..
+                            } => {
+                                row.tool_name = Some(tool_name);
+                                row.permission =
+                                    Some(if allowed { "approved" } else { "denied" }.to_string());
+                                row.reason = Some(match note.filter(|v| !v.trim().is_empty()) {
+                                    Some(note) => format!("{source}: {note}"),
+                                    None => source,
+                                });
                             }
                             AuditEventType::BotStarted
                             | AuditEventType::BotPaused
@@ -1102,5 +1120,42 @@ mod query_tests {
             .await
             .unwrap_err()
             .contains("after the end"));
+    }
+
+    #[tokio::test]
+    async fn approval_decisions_project_the_tool_outcome_and_source() {
+        let test = TestDb::new().await;
+        let bot = Bot::new("Approver", "audit approval test");
+        BotQueries::insert(test.pool(), &bot).await.unwrap();
+        let logger = AuditLogger::new(test.pool().clone());
+        logger
+            .log(&entry(
+                bot.id,
+                None,
+                AuditEventType::ApprovalDecision {
+                    approval_id: Uuid::new_v4().to_string(),
+                    tool_name: "shell_exec".into(),
+                    allowed: false,
+                    source: "desktop".into(),
+                    note: Some("too risky".into()),
+                },
+                Duration::minutes(1),
+            ))
+            .await
+            .unwrap();
+
+        let page = logger
+            .query(&AuditQuery {
+                search: Some("shell_exec".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("approval decision is searchable by tool");
+        assert_eq!(page.total, 1);
+        let row = &page.entries[0];
+        assert_eq!(row.kind, "ApprovalDecision");
+        assert_eq!(row.tool_name.as_deref(), Some("shell_exec"));
+        assert_eq!(row.permission.as_deref(), Some("denied"));
+        assert_eq!(row.reason.as_deref(), Some("desktop: too risky"));
     }
 }

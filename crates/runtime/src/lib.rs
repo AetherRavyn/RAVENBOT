@@ -375,10 +375,13 @@ pub enum RunApprovalPolicy {
 
 fn approval_mode_for(
     policy: Option<RunApprovalPolicy>,
-    global_allow: bool,
     bot_mode: ravenbot_core::ApprovalMode,
 ) -> ravenbot_core::ApprovalMode {
-    if global_allow || policy == Some(RunApprovalPolicy::AllowAll) {
+    // AllowAll is the explicit bypass: no card and no decision row. A global
+    // headless auto-allow is different — it keeps the gate, and
+    // `request_approval` records "auto-allowed: headless run" in the ledger, so
+    // a CLI run still says which high-risk calls it waved through.
+    if policy == Some(RunApprovalPolicy::AllowAll) {
         return ravenbot_core::ApprovalMode::Full;
     }
     match policy {
@@ -2795,6 +2798,37 @@ impl Runtime {
         });
     }
 
+    /// Record the decision on a parked approval.
+    ///
+    /// Every surface that can decide — desktop, remote, in-thread chat — calls
+    /// this, and so do the runtime's own fail-closed exits (timeout, cancel,
+    /// pause, kill switch, headless auto-allow). The audit ledger can then
+    /// answer "was a person allowed to let this run?" without joining a mutable
+    /// approvals table that a retention policy may prune.
+    pub async fn audit_approval_decision(
+        &self,
+        request: &ravenbot_core::ApprovalRequest,
+        allowed: bool,
+        source: &str,
+        note: Option<&str>,
+    ) {
+        let entry = ravenbot_core::AuditEntry::new(
+            request.bot_id,
+            ravenbot_core::AuditEventType::ApprovalDecision {
+                approval_id: request.id.to_string(),
+                tool_name: request.tool_name.clone(),
+                allowed,
+                source: source.to_string(),
+                note: note.map(str::to_string),
+            },
+        )
+        .with_run_id(request.run_id)
+        .with_thread_id(request.thread_id);
+        if let Err(error) = self.audit_logger.log(&entry).await {
+            tracing::warn!(error = %error, "Could not audit an approval decision");
+        }
+    }
+
     /// Record a tool call the agent's own grant refused.
     ///
     /// A refusal that leaves no trace is indistinguishable from a tool that was
@@ -3327,6 +3361,16 @@ impl Runtime {
         ravenbot_db::queries::ApprovalQueries::create(self.db.pool(), &req)
             .await
             .map_err(RuntimeError::Sql)?;
+        let _ = self
+            .audit_logger
+            .log_tool_call(
+                bot.id,
+                Some(run.id),
+                Some(run.thread_id),
+                &format!("approval_requested:{}", tool_name),
+                arguments.clone(),
+            )
+            .await;
 
         // Headless (CLI / graph node / routine): nobody can answer, so
         // auto-allow with a clear audit trail instead of parking forever.
@@ -3343,6 +3387,13 @@ impl Runtime {
                 approval_id: req.id,
                 allowed: true,
             });
+            self.audit_approval_decision(
+                &req,
+                true,
+                "headless",
+                Some("auto-allowed: headless run"),
+            )
+            .await;
             return Ok(true);
         }
 
@@ -3358,16 +3409,6 @@ impl Runtime {
             thread_id: run.thread_id,
             approval: req.clone(),
         });
-        let _ = self
-            .audit_logger
-            .log_tool_call(
-                bot.id,
-                Some(run.id),
-                Some(run.thread_id),
-                &format!("approval_requested:{}", tool_name),
-                arguments.clone(),
-            )
-            .await;
 
         // Poll the row: short interval, bounded wait (10 min). The UI decides
         // via decide_approval; expiry denies. The lease keeps the run visibly
@@ -3389,6 +3430,13 @@ impl Runtime {
                     approval_id: req.id,
                     allowed: false,
                 });
+                self.audit_approval_decision(
+                    &req,
+                    false,
+                    "kill_switch",
+                    Some("Kill switch triggered while waiting on approval"),
+                )
+                .await;
                 return Err(RuntimeError::KillSwitchActive(
                     "Kill switch triggered while waiting on approval".to_string(),
                 ));
@@ -3406,6 +3454,8 @@ impl Runtime {
                     approval_id: req.id,
                     allowed: false,
                 });
+                self.audit_approval_decision(&req, false, "cancelled", Some("User cancelled"))
+                    .await;
                 return Err(RuntimeError::Cancelled("User cancelled".to_string()));
             }
             if self.is_pause_requested(run.id) {
@@ -3425,6 +3475,13 @@ impl Runtime {
                     approval_id: req.id,
                     allowed: false,
                 });
+                self.audit_approval_decision(
+                    &req,
+                    false,
+                    "paused",
+                    Some("Run paused while waiting on approval"),
+                )
+                .await;
                 return Err(RuntimeError::Paused(
                     "Run paused while waiting on approval".to_string(),
                 ));
@@ -3432,8 +3489,9 @@ impl Runtime {
             let current = ravenbot_db::queries::ApprovalQueries::get(self.db.pool(), req.id)
                 .await
                 .map_err(RuntimeError::Sql)?;
-            match current.map(|r| r.status) {
+            match current.as_ref().map(|r| r.status.clone()) {
                 Some(ravenbot_core::ApprovalStatus::Allowed) => {
+                    // The deciding surface logged the ApprovalDecision row.
                     self.emit(StreamEvent::ApprovalDecided {
                         thread_id: run.thread_id,
                         approval_id: req.id,
@@ -3448,9 +3506,33 @@ impl Runtime {
                         .await;
                     return Ok(true);
                 }
-                Some(ravenbot_core::ApprovalStatus::Denied)
-                | Some(ravenbot_core::ApprovalStatus::Expired)
-                | None => {
+                Some(ravenbot_core::ApprovalStatus::Denied) => {
+                    // The deciding surface logged the ApprovalDecision row.
+                    self.emit(StreamEvent::ApprovalDecided {
+                        thread_id: run.thread_id,
+                        approval_id: req.id,
+                        allowed: false,
+                    });
+                    return Ok(false);
+                }
+                Some(ravenbot_core::ApprovalStatus::Expired) => {
+                    self.audit_approval_decision(&req, false, "expired", Some("approval expired"))
+                        .await;
+                    self.emit(StreamEvent::ApprovalDecided {
+                        thread_id: run.thread_id,
+                        approval_id: req.id,
+                        allowed: false,
+                    });
+                    return Ok(false);
+                }
+                None => {
+                    self.audit_approval_decision(
+                        &req,
+                        false,
+                        "missing",
+                        Some("approval row disappeared"),
+                    )
+                    .await;
                     self.emit(StreamEvent::ApprovalDecided {
                         thread_id: run.thread_id,
                         approval_id: req.id,
@@ -3468,6 +3550,8 @@ impl Runtime {
                     Some("approval timed out"),
                 )
                 .await;
+                self.audit_approval_decision(&req, false, "timeout", Some("approval timed out"))
+                    .await;
                 self.emit(StreamEvent::ApprovalDecided {
                     thread_id: run.thread_id,
                     approval_id: req.id,
@@ -6349,11 +6433,8 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
                 let tool_risk = self
                     .resolve_tool_risk(&tool_call.name, &tool_call.arguments, &tool_skills)
                     .await;
-                let effective_mode = approval_mode_for(
-                    self.approval_policy_for(run.id),
-                    self.auto_allow(),
-                    bot.approval_mode.clone(),
-                );
+                let effective_mode =
+                    approval_mode_for(self.approval_policy_for(run.id), bot.approval_mode.clone());
                 let needs_approval =
                     tool_needs_approval(&effective_mode, tool_risk, &tool_call.name);
 
@@ -12912,6 +12993,79 @@ mod parity_tests {
             .await
             .unwrap();
         assert_eq!(saved.0, 0, "the paused tool must not run");
+
+        let (decision,): (String,) = sqlx::query_as(
+            "SELECT event FROM audit_log WHERE run_id = ? AND event_kind = 'ApprovalDecision'",
+        )
+        .bind(run_id.to_string())
+        .fetch_one(db.pool())
+        .await
+        .expect("a paused approval must leave a decision in the audit log");
+        assert!(decision.contains("\"source\":\"paused\""), "{decision}");
+        assert!(decision.contains("\"allowed\":false"), "{decision}");
+    }
+
+    #[tokio::test]
+    async fn a_headless_auto_allow_audits_the_decision_and_runs_the_tool() {
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+        let mut bot = Bot::new("Headless Approver", "headless approval test");
+        bot.approval_mode = ravenbot_core::ApprovalMode::Ask;
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (_thread, mut run) = seed_run(&db, &bot).await;
+        let run_id = run.id;
+        runtime.set_auto_allow_approvals(true);
+
+        let provider = Arc::new(ScriptProvider::new(vec![
+            ModelResponse {
+                content: None,
+                tool_calls: vec![tool_call(
+                    "memory_save",
+                    serde_json::json!({ "content": "headless fact" }),
+                    "headless-approval",
+                )],
+                usage: Usage {
+                    input_tokens: 2,
+                    output_tokens: 1,
+                },
+                reasoning: None,
+            },
+            ModelResponse {
+                content: Some("saved".to_string()),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 3,
+                    output_tokens: 1,
+                },
+                reasoning: None,
+            },
+        ]));
+        runtime
+            .set_provider_override(Some(provider as Arc<dyn ModelProviderTrait>))
+            .await;
+        runtime
+            .execute_run(&mut run)
+            .await
+            .expect("the headless run completes");
+
+        let saved: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM memory_facts WHERE bot_id = ?")
+            .bind(bot.id.to_string())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+        assert_eq!(saved.0, 1, "the auto-allowed tool must run");
+
+        let (decision,): (String,) = sqlx::query_as(
+            "SELECT event FROM audit_log WHERE run_id = ? AND event_kind = 'ApprovalDecision'",
+        )
+        .bind(run_id.to_string())
+        .fetch_one(db.pool())
+        .await
+        .expect("a headless auto-allow must be in the audit log");
+        assert!(decision.contains("\"source\":\"headless\""), "{decision}");
+        assert!(decision.contains("\"allowed\":true"), "{decision}");
     }
 
     #[tokio::test]
@@ -13053,6 +13207,16 @@ mod parity_tests {
             .expect("run task");
         result.expect("a cancelled run is a normal incomplete exit");
         assert_eq!(run.state, ravenbot_core::RunState::Cancelled);
+
+        let (decision,): (String,) = sqlx::query_as(
+            "SELECT event FROM audit_log WHERE run_id = ? AND event_kind = 'ApprovalDecision'",
+        )
+        .bind(run_id.to_string())
+        .fetch_one(db.pool())
+        .await
+        .expect("a cancelled approval must leave a decision in the audit log");
+        assert!(decision.contains("\"source\":\"cancelled\""), "{decision}");
+        assert!(decision.contains("\"allowed\":false"), "{decision}");
     }
 
     #[tokio::test]
@@ -14177,7 +14341,7 @@ mod approval_ladder_tests {
 
     #[test]
     fn unattended_review_parks_high_risk_but_not_low_risk() {
-        let mode = approval_mode_for(Some(RunApprovalPolicy::Review), false, ApprovalMode::Full);
+        let mode = approval_mode_for(Some(RunApprovalPolicy::Review), ApprovalMode::Full);
         assert_eq!(mode, ApprovalMode::Auto);
         assert!(tool_needs_approval(&mode, SkillRisk::High, "shell_exec"));
         assert!(!tool_needs_approval(&mode, SkillRisk::Low, "browser_open"));
@@ -14191,25 +14355,31 @@ mod approval_ladder_tests {
     #[test]
     fn an_explicit_allow_all_policy_still_bypasses_gates() {
         assert_eq!(
-            approval_mode_for(Some(RunApprovalPolicy::AllowAll), false, ApprovalMode::Ask),
+            approval_mode_for(Some(RunApprovalPolicy::AllowAll), ApprovalMode::Ask),
             ApprovalMode::Full
         );
+    }
+
+    #[test]
+    fn headless_auto_allow_keeps_the_gate_visible() {
+        // The decision is allow, but it is a decision: `request_approval`
+        // creates the row, sees the auto-allow flag, and audits the outcome.
         assert_eq!(
-            approval_mode_for(Some(RunApprovalPolicy::Review), true, ApprovalMode::Full),
-            ApprovalMode::Full
+            approval_mode_for(Some(RunApprovalPolicy::Review), ApprovalMode::Full),
+            ApprovalMode::Auto
         );
     }
 
     #[test]
     fn interactive_bot_modes_are_preserved_without_a_policy() {
         assert_eq!(ApprovalMode::default(), ApprovalMode::Full);
-        let ask = approval_mode_for(None, false, ApprovalMode::Ask);
+        let ask = approval_mode_for(None, ApprovalMode::Ask);
         assert_eq!(ask, ApprovalMode::Ask);
         assert!(tool_needs_approval(&ask, SkillRisk::Low, "memory_save"));
         assert!(!tool_needs_approval(&ask, SkillRisk::ReadOnly, "file_read"));
         assert!(tool_needs_approval(&ask, SkillRisk::Low, "delegate"));
 
-        let auto = approval_mode_for(None, false, ApprovalMode::Auto);
+        let auto = approval_mode_for(None, ApprovalMode::Auto);
         assert_eq!(auto, ApprovalMode::Auto);
         assert!(tool_needs_approval(&auto, SkillRisk::High, "http_request"));
         assert!(!tool_needs_approval(&auto, SkillRisk::Low, "memory_save"));
