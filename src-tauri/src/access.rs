@@ -97,6 +97,11 @@ const OPERATOR_EXTRA: &[&str] = &[
     "browser_dock_takeover",
     "browser_dock_set_takeover",
     "browser_dock_focus",
+    "browser_dock_record_start",
+    "browser_dock_record_status",
+    "browser_dock_record_stop",
+    "browser_dock_record_cancel",
+    "replay_demonstration",
     "propose_skill_from_run",
     "save_learned_skill",
 ];
@@ -194,6 +199,21 @@ mod tests {
         // viewer must not reach either command.
         assert!(!role_allows("viewer", "propose_skill_from_run"));
         assert!(!role_allows("viewer", "save_learned_skill"));
+    }
+
+    #[test]
+    fn recording_and_replay_are_operator_actions() {
+        for command in [
+            "browser_dock_record_start",
+            "browser_dock_record_status",
+            "browser_dock_record_stop",
+            "browser_dock_record_cancel",
+            "replay_demonstration",
+        ] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
     }
 
     #[test]

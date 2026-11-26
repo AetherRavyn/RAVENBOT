@@ -21,6 +21,7 @@ const summary = {
   ],
   installed_version: "1.0.0",
   installed_modified: false,
+  has_demonstration: true,
 };
 
 const view = {
@@ -34,7 +35,30 @@ const view = {
   installed_version: "1.0.0",
   installed_modified: false,
   content: "---\nname: Weekly Review\n---\n# Weekly Review\n\n1. Read the notes.",
-  files: ["scripts/check.sh"],
+  files: ["scripts/check.sh", "demo.json"],
+  has_demonstration: true,
+};
+
+const replayReport = {
+  ok: true,
+  completed: 3,
+  total: 3,
+  repaired: 1,
+  failed_index: null,
+  page_url: "https://example.com/app",
+  attempted: [],
+  error: null,
+  repair_hint: null,
+  repairs: [
+    {
+      index: 1,
+      selector: "#submit",
+      used: ".primary",
+      matched_by: "fallback",
+    },
+  ],
+  warnings: [],
+  needs_input: false,
 };
 
 describe("LocalSkillsPanel", () => {
@@ -57,6 +81,7 @@ describe("LocalSkillsPanel", () => {
           },
         ];
       if (command === "local_skills_marketplace_install") return { skill: view };
+      if (command === "replay_demonstration") return structuredClone(replayReport);
       throw new Error(`unexpected command ${command}`);
     });
   });
@@ -151,6 +176,101 @@ describe("LocalSkillsPanel", () => {
     );
     expect(container.querySelector(".local-skills__install-error button")?.textContent).toContain(
       "Replace",
+    );
+  });
+
+  it("shows Replay only for skills with a demonstration and confirms before acting", async () => {
+    const { container, getByRole, getByText } = render(LocalSkillsPanel);
+    await waitFor(() => expect(container.querySelector(".local-skills__replay")).not.toBeNull());
+    const replay = getByRole("button", { name: "Replay" });
+    await fireEvent.click(replay);
+    expect(getByText(/Replay will click and fill/)).toBeTruthy();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "replay_demonstration",
+      expect.anything(),
+    );
+
+    await fireEvent.click(getByRole("button", { name: "Start replay" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("replay_demonstration", {
+        skillId: "weekly-review",
+      }),
+    );
+    await waitFor(() => expect(getByText("Replayed 3 of 3 steps.")).toBeTruthy());
+    expect(getByText("1 selector(s) repaired by a fallback.")).toBeTruthy();
+    expect(container.querySelector(".local-skills__replay-report")?.getAttribute("data-ok")).toBe(
+      "true",
+    );
+  });
+
+  it("renders a failed replay with its page and repair hint", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "local_skills_list") return { skills: [summary] };
+      if (command === "local_skills_read") return view;
+      if (command === "replay_demonstration") {
+        return {
+          ...replayReport,
+          ok: false,
+          completed: 1,
+          failed_index: 1,
+          error: "No element matched the recorded selector.",
+          repair_hint:
+            "Open https://example.com/app and find the control labelled \"Search\". RAVENBOT did not change the skill.",
+          repaired: 0,
+          repairs: [],
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    const { container, getByRole, getByText } = render(LocalSkillsPanel);
+    await waitFor(() => expect(container.querySelector(".local-skills__replay")).not.toBeNull());
+    await fireEvent.click(getByRole("button", { name: "Replay" }));
+    await fireEvent.click(getByRole("button", { name: "Start replay" }));
+    await waitFor(() =>
+      expect(getByText("Replay stopped at step 2 of 3.")).toBeTruthy(),
+    );
+    expect(getByText(/No element matched the recorded selector/)).toBeTruthy();
+    expect(getByText(/did not change the skill/)).toBeTruthy();
+    expect(container.querySelector(".local-skills__replay-report")?.getAttribute("data-ok")).toBe(
+      "false",
+    );
+  });
+
+  it("does not offer Replay for a skill without demo.json", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "local_skills_list") {
+        return { skills: [{ ...summary, has_demonstration: false }] };
+      }
+      if (command === "local_skills_read") {
+        return { ...view, has_demonstration: false, files: ["scripts/check.sh"] };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    const { container, queryByRole } = render(LocalSkillsPanel);
+    await waitFor(() =>
+      expect(container.querySelector(".local-skills__preview-head")).not.toBeNull(),
+    );
+    expect(queryByRole("button", { name: "Replay" })).toBeNull();
+    expect(container.querySelector(".local-skills__replay")).toBeNull();
+  });
+
+  it("shows the explicit dock-closed error from replay", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "local_skills_list") return { skills: [summary] };
+      if (command === "local_skills_read") return view;
+      if (command === "replay_demonstration") {
+        throw "Open the browser dock first, then replay the demonstration.";
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    const { getByRole, container } = render(LocalSkillsPanel);
+    await waitFor(() => expect(container.querySelector(".local-skills__replay")).not.toBeNull());
+    await fireEvent.click(getByRole("button", { name: "Replay" }));
+    await fireEvent.click(getByRole("button", { name: "Start replay" }));
+    await waitFor(() =>
+      expect(container.querySelector(".local-skills__error")?.textContent).toContain(
+        "Open the browser dock first",
+      ),
     );
   });
 });

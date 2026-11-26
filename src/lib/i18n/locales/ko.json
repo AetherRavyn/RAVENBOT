@@ -2785,7 +2785,8 @@
     "close": "닫기",
     "emptySteps": "이 실행에는 배울 성공한 단계가 없습니다.",
     "sourceRun": "원본 실행 {{run}}",
-    "editHint": "자유롭게 편집하세요. 저장한 문서만 라이브러리에 기록됩니다."
+    "editHint": "자유롭게 편집하세요. 저장한 문서만 라이브러리에 기록됩니다.",
+    "teachTitle": "이 워크플로 가르치기"
   },
   "island": {
     "title": "확인 필요",
@@ -2988,5 +2989,38 @@
     "removed": "{{name}}님을 이 워크스페이스에서 제거했어요.",
     "usernameRequired": "사용자 이름을 입력하세요.",
     "launcherNote": "새 계정은 런처에서 로그인해요. 비밀번호는 안전하게 전달하세요. RAVENBOT은 비밀번호를 다시 보여주지 않아요."
+  },
+  "demo": {
+    "chip": "데모",
+    "teach": "가르치기",
+    "teachHint": "브라우저 작업을 한 번 수행해 기록합니다",
+    "recordingTitle": "데모 기록 중",
+    "status": "기록 중: {{count}}개, {{time}}",
+    "actionCount": "{{count}}개 기록",
+    "elapsed": "{{time}} 경과",
+    "stop": "기록 중지",
+    "reviewRecording": "기록 검토",
+    "cancel": "기록 취소",
+    "started": "기록을 시작했습니다. 작업을 수행한 뒤 중지를 누르세요.",
+    "autoStopped": "기록이 자동으로 중지되었습니다. 검토하려면 중지를 누르세요.",
+    "startFailed": "기록을 시작하지 못했습니다.",
+    "stopFailed": "기록을 중지하지 못했습니다.",
+    "noTab": "기록하기 전에 브라우저 독에서 페이지를 여세요.",
+    "recordedOn": "{{host}}에서 시연함",
+    "replay": "재생",
+    "replayTitle": "데모 재생",
+    "replayHintText": "확인 후 기록된 클릭과 입력을 실제 페이지에서 실행합니다.",
+    "replayInstallFirst": "재생하기 전에 이 버전을 설치하세요.",
+    "replayConfirm": "재생은 브라우저 독에 열린 실제 페이지를 클릭하고 입력합니다. 해당 페이지에서 작업해도 안전한지 확인하세요.",
+    "replayStart": "재생 시작",
+    "replaying": "재생 중…",
+    "replayProgress": "{{total}}단계 중 {{index}}단계: {{action}}",
+    "replaySuccess": "{{total}}단계 중 {{completed}}단계를 재생했습니다.",
+    "replayRepaired": "대체 선택자로 {{count}}개를 복구했습니다.",
+    "replayFailed": "{{total}}단계 중 {{index}}단계에서 재생이 중지되었습니다.",
+    "replayNeedsInput": "이 단계에는 직접 입력이 필요합니다. RAVENBOT은 이 민감한 값을 기록하지 않았습니다.",
+    "replayRepairHint": "복구 힌트",
+    "replayRepairItem": "{{index}}단계가 {{by}}로 일치함",
+    "recordingLost": "탭이 닫혀 기록이 중지되었습니다."
   }
 }

@@ -2785,7 +2785,8 @@
     "close": "Fechar",
     "emptySteps": "Esta execução não deixou passos bem-sucedidos para aprender.",
     "sourceRun": "Execução de origem {{run}}",
-    "editHint": "Edite à vontade. Só o documento que guardar é escrito na biblioteca."
+    "editHint": "Edite à vontade. Só o documento que guardar é escrito na biblioteca.",
+    "teachTitle": "Ensinar este fluxo"
   },
   "island": {
     "title": "Atenção",
@@ -2988,5 +2989,38 @@
     "removed": "{{name}} foi removido deste espaço de trabalho.",
     "usernameRequired": "Insira um nome de usuário.",
     "launcherNote": "Novas contas entram pelo seletor de contas. Compartilhe a senha com segurança; o RAVENBOT não a mostra novamente."
+  },
+  "demo": {
+    "chip": "Demo",
+    "teach": "Ensinar",
+    "teachHint": "Grave um fluxo do navegador fazendo-o uma vez",
+    "recordingTitle": "Gravando uma demonstração",
+    "status": "Gravando: {{count}} registradas, {{time}}",
+    "actionCount": "{{count}} registradas",
+    "elapsed": "{{time}} decorrido",
+    "stop": "Parar gravação",
+    "reviewRecording": "Revisar gravação",
+    "cancel": "Cancelar gravação",
+    "started": "Gravação iniciada. Execute a tarefa e pressione Parar.",
+    "autoStopped": "A gravação parou automaticamente. Pressione Parar para revisá-la.",
+    "startFailed": "Não foi possível iniciar a gravação.",
+    "stopFailed": "Não foi possível parar a gravação.",
+    "noTab": "Abra uma página no painel do navegador antes de gravar.",
+    "recordedOn": "Demonstrado em {{host}}",
+    "replay": "Reproduzir",
+    "replayTitle": "Reproduzir demonstração",
+    "replayHintText": "Executa os cliques e preenchimentos gravados na página real após confirmação.",
+    "replayInstallFirst": "Instale esta versão antes de reproduzi-la.",
+    "replayConfirm": "A reprodução vai clicar e preencher a página real aberta no painel do navegador. Confirme que é seguro agir nela.",
+    "replayStart": "Iniciar reprodução",
+    "replaying": "Reproduzindo…",
+    "replayProgress": "Passo {{index}} de {{total}}: {{action}}",
+    "replaySuccess": "{{completed}} de {{total}} passos reproduzidos.",
+    "replayRepaired": "{{count}} seletor(es) reparado(s) por um substituto.",
+    "replayFailed": "A reprodução parou no passo {{index}} de {{total}}.",
+    "replayNeedsInput": "Este passo precisa da sua entrada. RAVENBOT não gravou este valor sensível.",
+    "replayRepairHint": "Dica de reparo",
+    "replayRepairItem": "Passo {{index}} encontrado por {{by}}",
+    "recordingLost": "A gravação parou porque a aba foi fechada."
   }
 }

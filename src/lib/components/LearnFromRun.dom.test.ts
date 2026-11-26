@@ -191,4 +191,43 @@ describe("LearnFromRun", () => {
     await fireEvent.keyDown(getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
   });
+
+  it("renders a Teach draft directly without proposing from a run", async () => {
+    const onClose = vi.fn();
+    const demoDraft = {
+      ...structuredClone(draft),
+      id: "demo-example-com-20261126t100000",
+      name: "Demonstrated example.com workflow",
+      source_run_id: "demo:2026-11-26T10:00:00Z",
+      demonstration: {
+        version: 1,
+        start_url: "https://example.com/login",
+        recorded_at: "2026-11-26T10:00:00Z",
+        actions: [{ kind: "click" }],
+      },
+    };
+    const { getByText, getByRole, queryByText } = render(LearnFromRun, {
+      initialDraft: demoDraft,
+      titleKey: "learning.teachTitle",
+      onClose,
+    });
+
+    await waitFor(() => expect(getByText("Teach this workflow")).toBeTruthy());
+    expect(getByText("Demonstrated on example.com")).toBeTruthy();
+    expect(queryByText(/Source run/)).toBeNull();
+    expect(invokeMock).not.toHaveBeenCalledWith("propose_skill_from_run", expect.anything());
+
+    await fireEvent.click(getByRole("button", { name: "Save & install" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("save_learned_skill", {
+        draft: expect.objectContaining({
+          id: demoDraft.id,
+          demonstration: expect.objectContaining({
+            start_url: "https://example.com/login",
+          }),
+        }),
+        install: true,
+      }),
+    );
+  });
 });

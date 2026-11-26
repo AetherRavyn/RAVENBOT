@@ -8,6 +8,7 @@
    * replaces it.
    */
   import { invoke } from "@tauri-apps/api/core";
+  import { listen } from "@tauri-apps/api/event";
   import { onMount } from "svelte";
   import MarkdownRenderer from "$lib/components/MarkdownRenderer.svelte";
   import { Button } from "$lib/components/ui/button";
@@ -18,6 +19,7 @@
     Download,
     FileText,
     Loader2,
+    Play,
     RefreshCw,
     Search,
     Sparkles,
@@ -40,6 +42,7 @@
     versions: Version[];
     installed_version?: string | null;
     installed_modified: boolean;
+    has_demonstration?: boolean;
   }
 
   interface SkillView {
@@ -54,6 +57,37 @@
     installed_modified: boolean;
     content: string;
     files: string[];
+    has_demonstration?: boolean;
+  }
+
+  interface ReplayRepair {
+    index: number;
+    selector?: string | null;
+    used?: string | null;
+    matched_by: string;
+  }
+
+  interface ReplayReport {
+    ok: boolean;
+    completed: number;
+    total: number;
+    repaired: number;
+    failed_index?: number | null;
+    page_url: string;
+    attempted: string[];
+    error?: string | null;
+    repair_hint?: string | null;
+    repairs: ReplayRepair[];
+    warnings: string[];
+    needs_input: boolean;
+  }
+
+  interface ReplayProgress {
+    skill_id: string;
+    index: number;
+    total: number;
+    action: string;
+    page_url: string;
   }
 
   interface MarketplaceSkill {
@@ -86,8 +120,17 @@
   let marketplaceError = $state<string | null>(null);
   let installingMarketplace = $state<string | null>(null);
   let marketplaceConflictId = $state<string | null>(null);
+  let replayConfirm = $state(false);
+  let replayBusy = $state(false);
+  let replayError = $state<string | null>(null);
+  let replayReport = $state<ReplayReport | null>(null);
+  let replayProgress = $state<ReplayProgress | null>(null);
 
   const selected = $derived(skills.find((skill) => skill.id === selectedId) ?? null);
+
+  function isTauri(): boolean {
+    return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  }
 
   async function load() {
     loading = true;
@@ -113,6 +156,10 @@
     selectedId = id;
     viewLoading = true;
     installError = null;
+    replayConfirm = false;
+    replayError = null;
+    replayReport = null;
+    replayProgress = null;
     try {
       view = await invoke<SkillView>("local_skills_read", {
         id,
@@ -136,6 +183,9 @@
         version,
         force,
       });
+      replayConfirm = false;
+      replayReport = null;
+      replayError = null;
       const result = await invoke<{ skills: Summary[] }>("local_skills_list");
       skills = result.skills ?? [];
     } catch (cause) {
@@ -232,8 +282,52 @@
     }
   }
 
+  function requestReplay() {
+    if (!view || replayBusy) return;
+    replayConfirm = true;
+    replayError = null;
+    replayReport = null;
+    replayProgress = null;
+  }
+
+  async function runReplay() {
+    if (!view || replayBusy) return;
+    const targetId = view.id;
+    replayConfirm = false;
+    replayBusy = true;
+    replayError = null;
+    replayReport = null;
+    replayProgress = null;
+    try {
+      const report = await invoke<ReplayReport>("replay_demonstration", {
+        skillId: targetId,
+      });
+      if (selectedId === targetId) replayReport = report;
+    } catch (cause) {
+      if (selectedId === targetId) replayError = String(cause);
+    } finally {
+      replayBusy = false;
+      replayProgress = null;
+    }
+  }
+
   onMount(() => {
     void load();
+    if (!isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    void listen<ReplayProgress>("browser-dock:replay-progress", (event) => {
+      if (!event.payload || event.payload.skill_id !== selectedId) return;
+      replayProgress = event.payload;
+    })
+      .then((stop) => {
+        unlisten = stop;
+      })
+      .catch(() => {
+        /* progress is optional; the final report still renders */
+      });
+    return () => {
+      if (unlisten) unlisten();
+    };
   });
 </script>
 
@@ -386,6 +480,11 @@
                   {t("localSkills.modified")}
                 </span>
               {/if}
+              {#if skill.has_demonstration}
+                <span class="local-skills__chip local-skills__chip--demo">
+                  {t("demo.chip")}
+                </span>
+              {/if}
             </span>
           </button>
         {/each}
@@ -438,6 +537,127 @@
                 {t("localSkills.try")}
               </Button>
             </div>
+          {/if}
+
+          {#if view.has_demonstration}
+            <section class="local-skills__replay" aria-label={t("demo.replayTitle")}>
+              <div class="local-skills__replay-head">
+                <div>
+                  <strong>{t("demo.replayTitle")}</strong>
+                  <p>{t("demo.replayHintText")}</p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={replayBusy || view.source !== "installed"}
+                  onclick={requestReplay}
+                >
+                  {#if replayBusy}
+                    <Loader2 class="size-3.5 animate-spin" />
+                  {:else}
+                    <Play class="size-3.5" />
+                  {/if}
+                  {t("demo.replay")}
+                </Button>
+              </div>
+              {#if view.source !== "installed"}
+                <p class="local-skills__replay-note">{t("demo.replayInstallFirst")}</p>
+              {/if}
+
+              {#if replayConfirm}
+                <div
+                  class="local-skills__replay-confirm"
+                  role="alertdialog"
+                  aria-labelledby="replay-confirm-title"
+                >
+                  <p id="replay-confirm-title">{t("demo.replayConfirm")}</p>
+                  <div class="local-skills__replay-actions">
+                    <Button size="sm" variant="outline" onclick={() => (replayConfirm = false)}>
+                      {t("ui.cancel")}
+                    </Button>
+                    <Button size="sm" onclick={() => void runReplay()}>
+                      <Play class="size-3.5" />
+                      {t("demo.replayStart")}
+                    </Button>
+                  </div>
+                </div>
+              {/if}
+
+              {#if replayBusy}
+                <p class="local-skills__replay-progress" role="status" aria-live="polite">
+                  <Loader2 class="size-3.5 animate-spin" />
+                  {#if replayProgress}
+                    {t("demo.replayProgress", {
+                      index: Math.min(replayProgress.index + 1, replayProgress.total),
+                      total: replayProgress.total,
+                      action: replayProgress.action,
+                    })}
+                  {:else}
+                    {t("demo.replaying")}
+                  {/if}
+                </p>
+              {/if}
+
+              {#if replayError}
+                <p class="local-skills__error" role="alert">{replayError}</p>
+              {/if}
+
+              {#if replayReport}
+                <div
+                  class="local-skills__replay-report"
+                  data-ok={replayReport.ok}
+                  role="status"
+                >
+                  {#if replayReport.ok}
+                    <p>
+                      <Check class="size-3.5" />
+                      {t("demo.replaySuccess", {
+                        completed: replayReport.completed,
+                        total: replayReport.total,
+                      })}
+                    </p>
+                    {#if replayReport.repaired > 0}
+                      <p>{t("demo.replayRepaired", { count: replayReport.repaired })}</p>
+                    {/if}
+                  {:else}
+                    <p class="local-skills__replay-failure">
+                      <AlertTriangle class="size-3.5" />
+                      {t("demo.replayFailed", {
+                        index: (replayReport.failed_index ?? 0) + 1,
+                        total: replayReport.total,
+                      })}
+                    </p>
+                    {#if replayReport.needs_input}
+                      <p>{t("demo.replayNeedsInput")}</p>
+                    {/if}
+                    {#if replayReport.error}<p>{replayReport.error}</p>{/if}
+                    {#if replayReport.page_url}<code>{replayReport.page_url}</code>{/if}
+                    {#if replayReport.repair_hint}
+                      <p class="local-skills__replay-hint">
+                        <strong>{t("demo.replayRepairHint")}</strong>
+                        {replayReport.repair_hint}
+                      </p>
+                    {/if}
+                  {/if}
+                  {#each replayReport.warnings as warning}
+                    <p class="local-skills__replay-warning">{warning}</p>
+                  {/each}
+                  {#if replayReport.repairs.length > 0}
+                    <ul class="local-skills__replay-repairs">
+                      {#each replayReport.repairs as repair}
+                        <li>
+                          {t("demo.replayRepairItem", {
+                            index: repair.index + 1,
+                            by: repair.matched_by,
+                          })}
+                          {#if repair.used}<code>{repair.used}</code>{/if}
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                </div>
+              {/if}
+            </section>
           {/if}
 
           {#if view.files.length > 0}

@@ -1,16 +1,17 @@
 # Learning from a run
 
 RAVENBOT can turn a completed run's **tool trace** into a reviewed, versioned
-skill. This is the first learning loop, and it is deliberately small:
+skill. This is one of two learning loops, and it is deliberately small:
 
 - the synthesis is deterministic, not a model call;
 - the result is a draft, never a silently installed skill;
 - a person reviews and edits the document before it is written;
 - secrets are redacted and raw tool output is never read.
 
-The explicit limit: **v1 learns from agent runs, not from human demonstration.**
-Watching a person use the browser or desktop, capturing that sequence, replaying
-it, and repairing it when the UI changes remain open work. There is no
+The other loop is a **browser demonstration**: press **Teach** in the dock,
+perform the task, press **Stop**, review the draft, and save it. That half is
+documented in [`DEMONSTRATIONS.md`](DEMONSTRATIONS.md). Desktop demonstration
+capture and automatic DOM repair remain open in both loops. There is no
 autonomous self-modification: saving a skill requires the same explicit action
 as writing one by hand.
 
@@ -43,8 +44,9 @@ an empty skill.
 - **No reasoning.** The model's private reasoning is not part of the tool trace
   and is not used.
 - **No failed path.** Failed calls appear only as warnings, never as steps.
-- **No human demonstration.** There is no screen recording, click capture,
-  replay or DOM-repair loop in v1.
+- **No desktop demonstration.** Browser demonstration capture and replay are a
+  separate loop ([`DEMONSTRATIONS.md`](DEMONSTRATIONS.md)); there is no desktop
+  recording or automatic DOM repair in either loop.
 - **No autonomy.** The draft is inert until the person saves it.
 
 A generated skill is therefore a **reproducible outline**, not proof that the
@@ -106,6 +108,11 @@ by writing files directly. Its index record uses the source string
 agent. The library list and view expose that provenance. Versions remain
 immutable, as they are for every locally authored skill.
 
+A browser demonstration uses the same library path but a different source,
+`demonstrated:<recorded-at>`, and writes `demo.json` beside `SKILL.md`. Its note
+names the start URL and the demonstration time. Replay requires that installed
+copy; see [`DEMONSTRATIONS.md`](DEMONSTRATIONS.md).
+
 v1 refuses a duplicate skill id with a clear message. It does not try to decide
 whether a second draft was meant to revise an existing learned skill; edit the
 id (or use the existing skill's revision flow) and save again.
@@ -137,4 +144,6 @@ through the approval policy in force at that time.
   success-rate estimate and no replay validation.
 - A `PartialSuccess` run is eligible, but its warnings may describe incomplete
   work.
-- Human demonstration capture, replay, and repair are not implemented.
+- Human desktop demonstration capture, automatic DOM repair across a changed
+  page, and replay validation are not implemented. Browser replay reports a
+  repair hint instead of rewriting a skill.

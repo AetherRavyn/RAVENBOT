@@ -2785,7 +2785,8 @@
     "close": "关闭",
     "emptySteps": "本次运行没有留下可供学习的成功步骤。",
     "sourceRun": "来源运行 {{run}}",
-    "editHint": "可随意编辑。只有你保存的文档才会写入技能库。"
+    "editHint": "可随意编辑。只有你保存的文档才会写入技能库。",
+    "teachTitle": "教授此工作流"
   },
   "island": {
     "title": "关注",
@@ -2988,5 +2989,38 @@
     "removed": "{{name}} 已从此工作区移除。",
     "usernameRequired": "请输入用户名。",
     "launcherNote": "新账户从启动器登录。请安全地分享密码；RAVENBOT 不会再次显示它。"
+  },
+  "demo": {
+    "chip": "演示",
+    "teach": "教学",
+    "teachHint": "演示一次即可录制浏览器工作流",
+    "recordingTitle": "正在录制演示",
+    "status": "录制中：已记录 {{count}} 项，{{time}}",
+    "actionCount": "已记录 {{count}} 项",
+    "elapsed": "已用 {{time}}",
+    "stop": "停止录制",
+    "reviewRecording": "查看录制",
+    "cancel": "取消录制",
+    "started": "录制已开始。请完成任务，然后按停止。",
+    "autoStopped": "录制已自动停止。按停止即可查看。",
+    "startFailed": "无法开始录制。",
+    "stopFailed": "无法停止录制。",
+    "noTab": "录制前请先在浏览器停靠栏打开页面。",
+    "recordedOn": "在 {{host}} 上演示",
+    "replay": "重放",
+    "replayTitle": "重放演示",
+    "replayHintText": "确认后在真实页面上执行录制的点击和输入。",
+    "replayInstallFirst": "请先安装此版本再重放。",
+    "replayConfirm": "重放会点击并填写浏览器停靠栏中打开的真实页面。请确认在该页面上操作是安全的。",
+    "replayStart": "开始重放",
+    "replaying": "正在重放…",
+    "replayProgress": "第 {{index}} 步，共 {{total}} 步：{{action}}",
+    "replaySuccess": "已重放 {{completed}} / {{total}} 步。",
+    "replayRepaired": "{{count}} 个选择器通过备用方式修复。",
+    "replayFailed": "重放在第 {{index}} 步（共 {{total}} 步）停止。",
+    "replayNeedsInput": "此步骤需要你的输入。RAVENBOT 未录制这个敏感值。",
+    "replayRepairHint": "修复提示",
+    "replayRepairItem": "第 {{index}} 步通过 {{by}} 匹配",
+    "recordingLost": "标签页已关闭，录制已停止。"
   }
 }

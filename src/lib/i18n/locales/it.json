@@ -2785,7 +2785,8 @@
     "close": "Chiudi",
     "emptySteps": "Questa esecuzione non ha lasciato passaggi riusciti da imparare.",
     "sourceRun": "Esecuzione di origine {{run}}",
-    "editHint": "Modifica liberamente. Solo il documento salvato viene scritto nella libreria."
+    "editHint": "Modifica liberamente. Solo il documento salvato viene scritto nella libreria.",
+    "teachTitle": "Insegna questo flusso"
   },
   "island": {
     "title": "Attenzione",
@@ -2988,5 +2989,38 @@
     "removed": "{{name}} è stato rimosso da questa area di lavoro.",
     "usernameRequired": "Inserisci un nome utente.",
     "launcherNote": "I nuovi account accedono dalla schermata di accesso. Condividi la password in modo sicuro; RAVENBOT non la mostrerà più."
+  },
+  "demo": {
+    "chip": "Demo",
+    "teach": "Insegna",
+    "teachHint": "Registra un flusso del browser eseguendolo una volta",
+    "recordingTitle": "Registrazione di una dimostrazione",
+    "status": "Registrazione: {{count}} registrate, {{time}}",
+    "actionCount": "{{count}} registrate",
+    "elapsed": "{{time}} trascorso",
+    "stop": "Interrompi registrazione",
+    "reviewRecording": "Rivedi registrazione",
+    "cancel": "Annulla registrazione",
+    "started": "Registrazione avviata. Esegui l’attività, poi premi Interrompi.",
+    "autoStopped": "La registrazione si è fermata automaticamente. Premi Interrompi per rivederla.",
+    "startFailed": "Impossibile avviare la registrazione.",
+    "stopFailed": "Impossibile interrompere la registrazione.",
+    "noTab": "Apri una pagina nel pannello del browser prima di registrare.",
+    "recordedOn": "Dimostrato su {{host}}",
+    "replay": "Riproduci",
+    "replayTitle": "Riproduci dimostrazione",
+    "replayHintText": "Esegue i clic e i riempimenti registrati sulla pagina reale dopo la conferma.",
+    "replayInstallFirst": "Installa questa versione prima di riprodurla.",
+    "replayConfirm": "La riproduzione farà clic e compilerà la pagina reale aperta nel pannello del browser. Verifica che sia sicuro agire su quella pagina.",
+    "replayStart": "Avvia riproduzione",
+    "replaying": "Riproduzione…",
+    "replayProgress": "Passo {{index}} di {{total}}: {{action}}",
+    "replaySuccess": "Riprodotti {{completed}} passi su {{total}}.",
+    "replayRepaired": "{{count}} selettore/i riparato/i con un ripiego.",
+    "replayFailed": "La riproduzione si è fermata al passo {{index}} di {{total}}.",
+    "replayNeedsInput": "Questo passo richiede il tuo intervento. RAVENBOT non ha registrato questo valore sensibile.",
+    "replayRepairHint": "Suggerimento di riparazione",
+    "replayRepairItem": "Passo {{index}} trovato tramite {{by}}",
+    "recordingLost": "La registrazione si è fermata perché la scheda è stata chiusa."
   }
 }

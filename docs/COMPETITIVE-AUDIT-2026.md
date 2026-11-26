@@ -213,7 +213,7 @@ competitor materially ahead · **A** = RAVENBOT absent.
 | Channels | Internal channel timeline + task board; native Telegram (long polling), Slack (Socket Mode), Discord (gateway), WhatsApp (signed Cloud API webhook) and Microsoft Teams (Bot Framework) with pairing and approval routing | **B** | **P** | **B** |
 | Workflows / jobs | Reusable office DAG templates with versions, conditional branches, explicit input ports, per-task retries, per-task JSON Schema outputs, bounded per-task loops, multi-task loop groups, explicit trigger/agent/LLM/approval/output node types, four built-in editable templates, one-click, scheduled and loopback webhook-triggered runs, live run history, cron routines, office queue, 30-job installable library; no GitHub triggers or agent-template marketplace | **B** | **B** | **B** |
 | Delegation | Real `delegate`, depth guard, DAG planning, parallel nodes, shared status file | **L** | **P** | **L** |
-| Demonstration learning | Completed-run tool traces synthesize a reviewed, redacted, versioned skill with `learned:run:<id>` provenance; human demonstration capture, replay and DOM repair remain open | **B** | **B** | **P** |
+| Demonstration learning | Completed-run tool traces and browser-dock demonstrations both synthesize a reviewed, redacted, versioned skill (`learned:run:<id>` / `demonstrated:<timestamp>` + `demo.json`); replay tries selector fallbacks and returns a repair hint; desktop demonstration capture and automatic DOM rewrite remain open | **B** | **B** | **P** |
 | Goals / proactivity | Office goal + heartbeat; no personal goals tab, no proactive suggestions | **P** | **B** | **B** |
 | Memory | Per-bot/per-office memory, RAG, self-review, editable/deletable in the UI with `MemoryChanged` audit events; source/thread/run provenance; FTS5 BM25 candidate retrieval reranked by word/bigram/character-gram vectors (migration 75), so a query normally scores only the lexical candidates instead of every stored vector and a memory without an embedding is still findable; opt-in Ollama/OpenAI semantic embeddings with atomic reindexing and `MemoryEmbeddingsUpdated` audit events; fixed 50-fact hybrid Recall@5/MRR benchmark (local backend 1.00/1.00; old byte hash 0.10/0.10) with a vector-only baseline shown in the UI; near-duplicate detection with previewed removal; LLM summarization with an editable preview and atomic replacement; default remains lexical, not neural | **P** | **B** | **P** |
 | Artifacts | Charts, Mermaid, KaTeX, slides, visuals, DOCX/PDF/PPTX/HTML, designed image decks | **P** | **L** | **P** |
@@ -470,10 +470,11 @@ in “recommended”; 90% install success; zero credential leaks.
    one autonomous destructive action ends the “sovereign” story. Fix: signed
    releases, a real Windows backend, external review.
 4. **Retention.** The job library, paused installs, personal goals and trigger
-   paths shipped. Run-trace learning now ships: a completed run can propose a
-   reviewed, versioned skill. Demonstration capture/replay is the remaining
-   gap: a toolkit still asks the user to choose the work, while an assistant
-   learns it by watching. Fix: the capture/replay half of E14, then semantic
+   paths shipped. Run-trace learning and browser demonstration capture/replay
+   now ship: a completed run or a taught browser workflow becomes a reviewed,
+   versioned skill. Desktop demonstration capture and automatic DOM rewrite are
+   the remaining gap: a toolkit still asks the user to choose the work, while an
+   assistant learns it by watching. Fix: the desktop half of E14, then semantic
    embeddings.
 5. **Team.** A team product with one human. No accounts, roles, shared host, or
    per-user audit. Fix after vault/API: accounts + roles + relay + per-user
@@ -517,7 +518,7 @@ Those are not the bottleneck.
 |---|---|---|
 | **E12 Multiplayer/team** — shipped: isolated local accounts with Argon2id passwords and sessions, workspace grants, owner/operator/viewer roles enforced in the Tauri IPC gate, a launcher workspace picker, and a Settings → Team panel that adds/creates/changes/removes members. Membership changes write `WorkspaceMembershipChanged` audit rows, and every run records the acting account (`run_actors`) so the Runs panel shows **by alice (operator)** and the audit log joins the same table, displays the account on every run-backed row, and matches it in search. Work items also carry an explicit human claim (`owner_account` + `claimed_at`): owners and operators claim or release from the task drawer, a conditional database update settles races, and every transition lands in the task timeline. Remote devices now also sign in with a local account: the effective remote role is the lower of the paired device role and the account's workspace grant, every remote audit row carries the account name, and a disabled, deleted or grant-revoked account loses remote access within 60 seconds. Remaining: a shared-host relay | G5 | Two accounts can share one workspace on the local host; roles are enforced server-side; membership changes are audited; runs and remote actions carry the acting account; remote roles are capped by the account grant; a task has at most one human owner; the zero-cross-tenant-leak audit is executable with `cargo test -p ravenbot --test tenant_isolation` and documented in `docs/TENANT-ISOLATION.md`. The shared-host relay remains open |
 | **E13 Hosted/VPS option** — one-command deploy, EU region, encrypted relay, backup/restore, managed updates | G1, G5 | Deploy <10 min; EU region; encryption at rest/in transit; restore works; 99.5% SLA |
-| **E14 Demonstration learning** — **run-trace learning shipped**: a completed successful run's tool trace can be synthesized into a versioned skill draft, redacted, reviewed/edited, and saved/installed by the user with `learned:run:<id>` provenance. Deterministic synthesis covers browser/desktop interaction grouping, failed-call exclusion, a 50-step cap and high-risk warnings; see [`LEARNING.md`](LEARNING.md). **Demonstration capture, replay and DOM-change repair remain open**, as does learning from a human demonstration rather than an agent run. | G4 | Run-trace half: a completed run with a trace produces a reviewed, versioned skill; secrets never enter the draft; 0 autonomous installs. Capture half still open: record a 5-step browser task; replay 3/3; repair on DOM change; zero secrets recorded |
+| **E14 Demonstration learning** — **run-trace learning and browser demonstration capture/replay shipped**. A completed successful run's tool trace can be synthesized into a versioned skill draft, redacted, reviewed/edited, and saved/installed by the user with `learned:run:<id>` provenance. The browser dock also has **Teach**: a person performs a web task once, reviews the synthesized `SKILL.md`, and saves it with `demonstrated:<timestamp>` provenance and a `demo.json` recording. **Replay** navigates, clicks, fills and presses one action at a time, tries recorded selector fallbacks and human labels, counts a fallback match as `repaired`, stops on a sensitive field with a manual-input report, and returns a concrete repair hint on failure instead of rewriting the skill. Deterministic synthesis covers failed-call exclusion, a 50-step cap, redaction, sensitive-field exclusion and high-risk warnings; see [`LEARNING.md`](LEARNING.md) and [`DEMONSTRATIONS.md`](DEMONSTRATIONS.md). **Desktop demonstration capture and automatic DOM repair/rewrite remain open**, as does a verified replay outcome. | G4 | Run-trace half: a completed run with a trace produces a reviewed, versioned skill; secrets never enter the draft; 0 autonomous installs. Browser half: record a 5-step browser task; review/save; replay with fallback repair; a changed selector stops with a hint; zero secrets recorded. Desktop capture and automatic DOM rewrite remain open. |
 | **E15 Subscription bridge** — optional sandboxed Claude Code/Codex/Gemini/ACP adapters with health checks and fallback, or official OAuth where permitted | G2 | One job runs via a subscription; fallback to API; no core dependency; zero crashes; per-adapter health report |
 | **E16 Marketplace trust** — verified connectors, signed skill manifests, per-operation scopes, sandboxed MCP, rollback | G3, G4 | Top 50 connectors live-tested; zero unverified in “recommended”; signed manifests; rollback works |
 | **E17 Mobile PWA/native** — approvals, notifications, read/write, offline queue | G1 | Push approvals; read/write; offline queue; one device pair; <2 s load on 4G |
@@ -549,9 +550,10 @@ Those are not the bottleneck.
 5. **Keeping the API-key wall.** OpenBot's “use your existing subscription” is
    the better activation story for most of the market.
 6. **Proactivity that still needs a trigger.** The job library and scheduled,
-   webhook and MCP triggers ship, and a completed run can now teach a reviewed
-   skill, but the agent cannot yet learn a workflow by watching the user. Fix:
-   demonstration capture/replay (the remaining half of E14).
+   webhook and MCP triggers ship, and a completed run or a taught browser
+   demonstration can now become a reviewed skill, but the agent cannot yet
+   learn a workflow by watching the desktop. Fix: desktop demonstration capture
+   and automatic DOM rewrite (the remaining half of E14).
 7. **Fake learning.** Promoting whole answers as memories makes the agent
    noisier, not smarter.
 8. **No human multiplayer/roles.** Offices remain a solo demo; OpenBot sells

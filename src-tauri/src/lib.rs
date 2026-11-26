@@ -1003,6 +1003,7 @@ fn create_browser_tab(
                 "tab_id": load_tab.clone(),
             }),
         );
+        demo_page_load(&load_app, &load_tab, &page_url, event);
     })
     .on_download(move |_view, event| {
         use tauri::webview::DownloadEvent;
@@ -1217,6 +1218,7 @@ async fn browser_dock_open(
     // A profile switch or a missing active view invalidates every old tab.
     if !tab_ids.is_empty() {
         persist_current_browser_tabs();
+        cancel_demo_recording_for_tab(&app, None);
     }
     {
         let mut meta = browser_dock_meta()
@@ -1368,6 +1370,7 @@ fn browser_dock_close_tab(
             .ok_or_else(|| "That browser tab no longer exists.".to_string())?;
         (meta.active_tab.as_deref() == Some(tab_id.as_str()), index)
     };
+    cancel_demo_recording_for_tab(&app, Some(&tab_id));
     if let Some(view) = browser_tab_view(&app, &tab_id) {
         let _ = view.close();
     }
@@ -1462,13 +1465,14 @@ fn browser_dock_set_bounds(app: tauri::AppHandle, bounds: BrowserDockBounds) -> 
     Ok(())
 }
 
-#[tauri::command]
-fn browser_dock_navigate(app: tauri::AppHandle, url: String) -> Result<serde_json::Value, String> {
-    let parsed = parse_browser_dock_url(&url)?;
-    let tab_id =
-        browser_active_tab_id().ok_or_else(|| "The browser dock is not open.".to_string())?;
-    let view = browser_tab_view(&app, &tab_id)
-        .ok_or_else(|| "The browser dock is not open.".to_string())?;
+fn browser_dock_navigate_tab(
+    app: &tauri::AppHandle,
+    tab_id: &str,
+    url: &str,
+) -> Result<serde_json::Value, String> {
+    let parsed = parse_browser_dock_url(url)?;
+    let view =
+        browser_tab_view(app, tab_id).ok_or_else(|| "The browser dock is not open.".to_string())?;
     view.navigate(parsed.clone()).map_err(|e| e.to_string())?;
     view.show().map_err(|e| e.to_string())?;
     {
@@ -1488,7 +1492,14 @@ fn browser_dock_navigate(app: tauri::AppHandle, url: String) -> Result<serde_jso
             "tab_id": tab_id,
         }),
     );
-    Ok(browser_dock_status(&app))
+    Ok(browser_dock_status(app))
+}
+
+#[tauri::command]
+fn browser_dock_navigate(app: tauri::AppHandle, url: String) -> Result<serde_json::Value, String> {
+    let tab_id =
+        browser_active_tab_id().ok_or_else(|| "The browser dock is not open.".to_string())?;
+    browser_dock_navigate_tab(&app, &tab_id, &url)
 }
 
 #[tauri::command]
@@ -1540,6 +1551,7 @@ fn browser_dock_hide(app: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn browser_dock_destroy(app: tauri::AppHandle) -> Result<(), String> {
+    cancel_demo_recording_for_tab(&app, None);
     let tab_ids = {
         let meta = browser_dock_meta()
             .lock()
@@ -1719,6 +1731,17 @@ fn save_learned_skill(
     draft: ravenbot_skills::learn::SkillDraft,
     install: bool,
 ) -> Result<ravenbot_skills::local::SkillView, String> {
+    let library = ravenbot_skills::local::LocalSkillLibrary::default();
+    save_learned_skill_to(&library, draft, install)
+}
+
+fn save_learned_skill_to(
+    library: &ravenbot_skills::local::LocalSkillLibrary,
+    draft: ravenbot_skills::learn::SkillDraft,
+    install: bool,
+) -> Result<ravenbot_skills::local::SkillView, String> {
+    use ravenbot_skills::local::SkillFileInput;
+
     let id = draft.id.trim();
     if id.is_empty() {
         return Err("A learned skill needs an id.".to_string());
@@ -1729,31 +1752,66 @@ fn save_learned_skill(
     if draft.content.trim().is_empty() {
         return Err("SKILL.md cannot be empty.".to_string());
     }
-    let source_run = draft.source_run_id.trim();
-    if source_run.is_empty() || source_run.len() > 200 {
-        return Err(
-            "The draft has no usable source run, so it cannot be saved with provenance."
-                .to_string(),
-        );
-    }
 
-    let library = ravenbot_skills::local::LocalSkillLibrary::default();
-    let note = format!(
-        "Learned from run {source_run} by {}.",
-        if draft.source_bot_name.trim().is_empty() {
-            "an agent"
-        } else {
-            draft.source_bot_name.trim()
+    let demonstration = draft
+        .demonstration
+        .as_ref()
+        .map(ravenbot_skills::demonstration::sanitize_demonstration);
+    let (source, note, files) = if let Some(demo) = demonstration {
+        if draft
+            .demonstration
+            .as_ref()
+            .map(|raw| raw.version != ravenbot_skills::demonstration::DEMO_VERSION)
+            .unwrap_or(false)
+        {
+            return Err(
+                "This demonstration uses a format version this build cannot save.".to_string(),
+            );
         }
-    );
-    let created = library
-        .create_with_source(
-            id,
-            &draft.content,
-            &[],
-            Some(note),
-            &format!("learned:run:{source_run}"),
+        if demo.actions.is_empty() {
+            return Err("The demonstration has no actions to save.".to_string());
+        }
+        if demo.start_url.is_empty() || demo.recorded_at.is_empty() {
+            return Err("The demonstration has no usable start URL or recording time.".to_string());
+        }
+        let body = serde_json::to_string_pretty(&demo)
+            .map_err(|error| format!("Could not serialize demo.json: {error}"))?;
+        let provenance = format!("demonstrated:{}", demo.recorded_at);
+        (
+            provenance.clone(),
+            format!(
+                "Learned from a browser demonstration ({provenance}) on {}.",
+                demo.start_url
+            ),
+            vec![SkillFileInput {
+                path: ravenbot_skills::demonstration::DEMO_FILE.to_string(),
+                content: body,
+            }],
         )
+    } else {
+        let source_run = draft.source_run_id.trim();
+        if source_run.is_empty() || source_run.len() > 200 {
+            return Err(
+                "The draft has no usable source run, so it cannot be saved with provenance."
+                    .to_string(),
+            );
+        }
+        (
+            format!("learned:run:{source_run}"),
+            format!(
+                "Learned from run {source_run} by {}.",
+                if draft.source_bot_name.trim().is_empty() {
+                    "an agent"
+                } else {
+                    draft.source_bot_name.trim()
+                }
+            ),
+            Vec::new(),
+        )
+    };
+
+    let created = library
+        .create_with_source(id, &draft.content, &files, Some(note), &source)
         .map_err(|error| {
             if error.contains("already exists") {
                 format!("A skill with id '{id}' already exists. Edit the id and save again.")
@@ -1926,6 +1984,966 @@ async fn browser_dock_user_eval(
     })
     .await
     .map_err(|error| format!("The browser evaluation task failed: {error}"))?
+}
+
+// ── Browser demonstration recording ───────────────────────────────────────
+//
+// The recorder lives in the remote page, so navigation destroys its JavaScript
+// context. Rust keeps the authoritative event log: a 200 ms harvester copies
+// status() into this process, and every finished page load re-injects the
+// recorder. A click that submits a form is usually caught by one of those
+// paths, but an event fired in the last few milliseconds before the page goes
+// away can still be lost; that is a documented limit, not a success claim.
+
+const DEMO_POLL_MS: u64 = 200;
+const DEMO_MAX_RAW_EVENTS: usize = 500;
+
+struct DemoRecordingSession {
+    token: u64,
+    tab_id: String,
+    start_url: String,
+    recorded_at: String,
+    started_at_ms: i64,
+    started: std::time::Instant,
+    events: Vec<ravenbot_skills::demonstration::RawDemoEvent>,
+    seen: std::collections::HashSet<String>,
+    warnings: Vec<String>,
+    last_count: usize,
+    auto_stopped: bool,
+}
+
+static DEMO_RECORDING: std::sync::OnceLock<std::sync::Mutex<Option<DemoRecordingSession>>> =
+    std::sync::OnceLock::new();
+static DEMO_RECORDING_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn demo_recording_slot() -> &'static std::sync::Mutex<Option<DemoRecordingSession>> {
+    DEMO_RECORDING.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn demo_elapsed_ms(session: &DemoRecordingSession) -> u64 {
+    session.started.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
+fn demo_status_json(session: Option<&DemoRecordingSession>) -> serde_json::Value {
+    let Some(session) = session else {
+        return serde_json::json!({
+            "recording": false,
+            "count": 0,
+            "tab_id": null,
+            "elapsed_ms": 0,
+            "auto_stopped": false,
+        });
+    };
+    let elapsed = demo_elapsed_ms(session);
+    let built = ravenbot_skills::demonstration::build_demonstration(
+        &session.events,
+        &session.start_url,
+        &session.recorded_at,
+    );
+    let recording = !session.auto_stopped && elapsed < ravenbot_skills::demonstration::MAX_DEMO_MS;
+    serde_json::json!({
+        "recording": recording,
+        "count": built.demonstration.actions.len(),
+        "tab_id": session.tab_id,
+        "elapsed_ms": elapsed,
+        "auto_stopped": session.auto_stopped || !recording,
+    })
+}
+
+fn demo_push_warning(session: &mut DemoRecordingSession, warning: impl Into<String>) {
+    let warning = warning.into();
+    let warning = warning.trim().to_string();
+    if !warning.is_empty() && !session.warnings.contains(&warning) {
+        session.warnings.push(warning);
+    }
+}
+
+/// Copy one status/stop answer from the page into the session. Events are
+/// deduplicated by their page-assigned id, so re-injection after navigation and
+/// a final stop() can both return the same buffer without duplicating steps.
+fn ingest_demo_value(token: u64, value: &serde_json::Value) {
+    let events = value
+        .get("events")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    serde_json::from_value::<ravenbot_skills::demonstration::RawDemoEvent>(
+                        item.clone(),
+                    )
+                    .ok()
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let count = value
+        .get("count")
+        .and_then(serde_json::Value::as_u64)
+        .map(|count| count as usize);
+    let stopped = value
+        .get("stopped")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let reason = value
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let warnings = value
+        .get("warnings")
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    let mut slot = demo_recording_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(session) = slot.as_mut() else {
+        return;
+    };
+    if session.token != token {
+        return;
+    }
+    if let Some(count) = count {
+        session.last_count = count;
+    }
+    for event in events {
+        if let Some(id) = event
+            .id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        {
+            if !session.seen.insert(id.to_string()) {
+                continue;
+            }
+        }
+        if session.events.len() >= DEMO_MAX_RAW_EVENTS {
+            session.auto_stopped = true;
+            demo_push_warning(
+                session,
+                "The recording reached the browser event buffer limit; later actions were not captured.",
+            );
+            break;
+        }
+        session.events.push(event);
+    }
+    for warning in warnings {
+        demo_push_warning(session, warning);
+    }
+    if stopped {
+        session.auto_stopped = true;
+        if reason == "time" {
+            demo_push_warning(
+                session,
+                "Recording reached the 10-minute limit; later actions were not captured.",
+            );
+        } else if reason == "actions" {
+            demo_push_warning(
+                session,
+                "Recording stopped after 200 actions; later actions were not captured.",
+            );
+        }
+    }
+}
+
+fn harvest_demo_tab(app: &tauri::AppHandle, token: u64, tab_id: &str) {
+    let after = {
+        let slot = demo_recording_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match slot.as_ref() {
+            Some(session) if session.token == token && !session.auto_stopped => session.last_count,
+            _ => return,
+        }
+    };
+    let script = ravenbot_skills::demonstration::build_recorder_status_script(after);
+    match browser_dock_eval_blocking(app, &script, Some(tab_id)) {
+        Ok(value) => ingest_demo_value(token, &value),
+        Err(error) => {
+            // A navigation or a busy page can make one poll fail. The next
+            // poll, or the re-injection at page load, tries again.
+            tracing::debug!(error = %error, tab = %tab_id, "demonstration status poll missed");
+        }
+    }
+}
+
+fn spawn_demo_harvester(app: tauri::AppHandle, token: u64) {
+    std::thread::spawn(move || loop {
+        let (active, session_tab) = {
+            let slot = demo_recording_slot()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            match slot.as_ref() {
+                Some(session) if session.token == token && !session.auto_stopped => {
+                    (true, session.tab_id.clone())
+                }
+                _ => (false, String::new()),
+            }
+        };
+        if !active {
+            break;
+        }
+        harvest_demo_tab(&app, token, &session_tab);
+        std::thread::sleep(std::time::Duration::from_millis(DEMO_POLL_MS));
+    });
+}
+
+/// Add a navigation boundary to the Rust-side event log. The recorder infers
+/// URL changes between its own events; this covers the load events it cannot
+/// observe because navigation replaced its context.
+fn demo_record_navigation(token: u64, url: &str) {
+    let Some(url) = tauri::Url::parse(url)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .map(|url| url.to_string())
+    else {
+        return;
+    };
+    let mut slot = demo_recording_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let Some(session) = slot.as_mut() else {
+        return;
+    };
+    if session.token != token || session.auto_stopped {
+        return;
+    }
+    let id = format!("rust-nav-{}-{}", session.token, session.events.len() + 1);
+    session
+        .events
+        .push(ravenbot_skills::demonstration::RawDemoEvent {
+            id: Some(id),
+            kind: "navigate".to_string(),
+            at: chrono::Utc::now().timestamp_millis(),
+            url: Some(url),
+            ..Default::default()
+        });
+}
+
+fn demo_page_load(app: &tauri::AppHandle, tab_id: &str, url: &str, phase: &str) {
+    let session = {
+        let slot = demo_recording_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        slot.as_ref()
+            .filter(|session| session.tab_id == tab_id && !session.auto_stopped)
+            .map(|session| (session.token, session.started_at_ms))
+    };
+    let Some((token, started_at_ms)) = session else {
+        return;
+    };
+    demo_record_navigation(token, url);
+    if phase != "finished" {
+        return;
+    }
+
+    let app = app.clone();
+    let tab_id = tab_id.to_string();
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        {
+            let mut slot = demo_recording_slot()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(session) = slot.as_mut() {
+                if session.token == token {
+                    // A new page means a new recorder buffer index.
+                    session.last_count = 0;
+                }
+            }
+        }
+        // Re-inject first so the new page starts a fresh buffer with the same
+        // recording clock. The old page's context is gone; whatever the 200 ms
+        // poll captured is already in the process.
+        let script =
+            ravenbot_skills::demonstration::build_recorder_resume_script(&url, started_at_ms);
+        match browser_dock_eval_blocking(&app, &script, Some(&tab_id)) {
+            Ok(value) => ingest_demo_value(token, &value),
+            Err(error) => {
+                tracing::debug!(error = %error, tab = %tab_id, "demonstration recorder re-injection missed");
+            }
+        }
+        harvest_demo_tab(&app, token, &tab_id);
+        demo_record_navigation(token, &url);
+    });
+}
+
+fn cancel_demo_recording_for_tab(app: &tauri::AppHandle, tab_id: Option<&str>) {
+    let session = {
+        let mut slot = demo_recording_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let matches = slot
+            .as_ref()
+            .map(|session| tab_id.map(|id| id == session.tab_id).unwrap_or(true))
+            .unwrap_or(false);
+        if matches {
+            slot.take()
+        } else {
+            None
+        }
+    };
+    let Some(session) = session else {
+        return;
+    };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let script = ravenbot_skills::demonstration::build_recorder_stop_script(true);
+        let _ = browser_dock_eval_blocking(&app, &script, Some(&session.tab_id));
+    });
+}
+
+#[tauri::command]
+async fn browser_dock_record_start(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let tab_id = browser_active_tab_id().ok_or_else(|| {
+        "Open the browser dock on the page you want to demonstrate first.".to_string()
+    })?;
+    let visible = browser_dock_meta()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .visible;
+    if !visible {
+        return Err("Open the browser dock on the page you want to demonstrate first.".to_string());
+    }
+    let view = browser_tab_view(&app, &tab_id)
+        .ok_or_else(|| "The browser tab is not open.".to_string())?;
+    let start_url = view.url().map(|url| url.to_string()).unwrap_or_default();
+    if !start_url.starts_with("http://") && !start_url.starts_with("https://") {
+        return Err("The active tab has no web page to record.".to_string());
+    }
+
+    let token = DEMO_RECORDING_SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let recorded_at = chrono::Utc::now().to_rfc3339();
+    let started_at_ms = chrono::Utc::now().timestamp_millis();
+    {
+        let mut slot = demo_recording_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if slot.is_some() {
+            return Err(
+                "A demonstration is already being recorded. Stop or cancel it first.".to_string(),
+            );
+        }
+        *slot = Some(DemoRecordingSession {
+            token,
+            tab_id: tab_id.clone(),
+            start_url: start_url.clone(),
+            recorded_at,
+            started_at_ms,
+            started: std::time::Instant::now(),
+            events: Vec::new(),
+            seen: std::collections::HashSet::new(),
+            warnings: Vec::new(),
+            last_count: 0,
+            auto_stopped: false,
+        });
+    }
+
+    let script = ravenbot_skills::demonstration::build_recorder_start_script(
+        &start_url,
+        started_at_ms,
+        true,
+    );
+    let eval_app = app.clone();
+    let eval_tab = tab_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        browser_dock_eval_blocking(&eval_app, &script, Some(&eval_tab))
+    })
+    .await
+    .map_err(|error| format!("The browser evaluation task failed: {error}"))?;
+
+    match result {
+        Ok(value) => {
+            if value.get("ok").and_then(serde_json::Value::as_bool) == Some(false) {
+                let message = value
+                    .get("error")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("The page recorder could not start.")
+                    .to_string();
+                let mut slot = demo_recording_slot()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                *slot = None;
+                return Err(message);
+            }
+            if value.get("recording").and_then(serde_json::Value::as_bool) != Some(true) {
+                let mut slot = demo_recording_slot()
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                *slot = None;
+                return Err(
+                    "The page recorder did not start; reload the page and try again.".to_string(),
+                );
+            }
+            ingest_demo_value(token, &value);
+        }
+        Err(error) => {
+            let mut slot = demo_recording_slot()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            *slot = None;
+            return Err(error);
+        }
+    }
+
+    spawn_demo_harvester(app, token);
+    let slot = demo_recording_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    Ok(demo_status_json(slot.as_ref()))
+}
+
+#[tauri::command]
+fn browser_dock_record_status() -> serde_json::Value {
+    let mut slot = demo_recording_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if let Some(session) = slot.as_mut() {
+        if !session.auto_stopped
+            && demo_elapsed_ms(session) >= ravenbot_skills::demonstration::MAX_DEMO_MS
+        {
+            session.auto_stopped = true;
+            demo_push_warning(
+                session,
+                "Recording reached the 10-minute limit; later actions were not captured.",
+            );
+        }
+        if !session.auto_stopped {
+            let built = ravenbot_skills::demonstration::build_demonstration(
+                &session.events,
+                &session.start_url,
+                &session.recorded_at,
+            );
+            if built.truncated
+                || built.demonstration.actions.len()
+                    >= ravenbot_skills::demonstration::MAX_DEMO_ACTIONS
+            {
+                session.auto_stopped = true;
+                demo_push_warning(
+                    session,
+                    "Recording stopped after 200 actions; later actions were not captured.",
+                );
+            }
+        }
+    }
+    demo_status_json(slot.as_ref())
+}
+
+#[tauri::command]
+async fn browser_dock_record_stop(
+    app: tauri::AppHandle,
+) -> Result<ravenbot_skills::learn::SkillDraft, String> {
+    let (token, tab_id, elapsed_at_start) = {
+        let slot = demo_recording_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match slot.as_ref() {
+            Some(session) => (
+                session.token,
+                session.tab_id.clone(),
+                demo_elapsed_ms(session),
+            ),
+            None => {
+                return Err("No demonstration is being recorded.".to_string());
+            }
+        }
+    };
+
+    harvest_demo_tab(&app, token, &tab_id);
+    {
+        // Stop page-load re-injection before asking the page to stop. The
+        // final stop() answer below still carries every event in the buffer.
+        let mut slot = demo_recording_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if let Some(session) = slot.as_mut() {
+            if session.token == token {
+                session.auto_stopped = true;
+            }
+        }
+    }
+    let script = ravenbot_skills::demonstration::build_recorder_stop_script(false);
+    let eval_app = app.clone();
+    let eval_tab = tab_id.clone();
+    let stop_result = tauri::async_runtime::spawn_blocking(move || {
+        browser_dock_eval_blocking(&eval_app, &script, Some(&eval_tab))
+    })
+    .await
+    .map_err(|error| format!("The browser evaluation task failed: {error}"))?;
+    match stop_result {
+        Ok(value) => ingest_demo_value(token, &value),
+        Err(error) => {
+            let mut slot = demo_recording_slot()
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(session) = slot.as_mut() {
+                if session.token == token {
+                    demo_push_warning(
+                        session,
+                        format!(
+                            "The page did not answer the stop request; the draft uses every event harvested before it stopped ({error})."
+                        ),
+                    );
+                }
+            }
+        }
+    }
+
+    let mut session = {
+        let mut slot = demo_recording_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let matches = slot
+            .as_ref()
+            .map(|session| session.token == token)
+            .unwrap_or(false);
+        if matches {
+            slot.take()
+        } else {
+            None
+        }
+    }
+    .ok_or_else(|| "The demonstration ended before it could be saved.".to_string())?;
+
+    let elapsed = demo_elapsed_ms(&session).max(elapsed_at_start);
+    if elapsed >= ravenbot_skills::demonstration::MAX_DEMO_MS {
+        demo_push_warning(
+            &mut session,
+            "Recording reached the 10-minute limit; later actions were not captured.",
+        );
+    }
+
+    let built = ravenbot_skills::demonstration::build_demonstration(
+        &session.events,
+        &session.start_url,
+        &session.recorded_at,
+    );
+    if built.demonstration.actions.is_empty() {
+        return Err(
+            "The demonstration recorded no browser actions, so there is nothing to save."
+                .to_string(),
+        );
+    }
+    let mut draft = ravenbot_skills::demonstration::propose_skill_from_demonstration(
+        &built.demonstration,
+        "you",
+    )?;
+    for warning in session.warnings.iter().chain(built.warnings.iter()) {
+        append_draft_warning(&mut draft, warning);
+    }
+    Ok(draft)
+}
+
+#[tauri::command]
+async fn browser_dock_record_cancel(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let session = {
+        let mut slot = demo_recording_slot()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        slot.take()
+    };
+    let Some(session) = session else {
+        return Ok(serde_json::json!({ "cancelled": false }));
+    };
+    let script = ravenbot_skills::demonstration::build_recorder_stop_script(true);
+    let eval_app = app.clone();
+    let eval_tab = session.tab_id.clone();
+    let _ = tauri::async_runtime::spawn_blocking(move || {
+        browser_dock_eval_blocking(&eval_app, &script, Some(&eval_tab))
+    })
+    .await;
+    Ok(serde_json::json!({ "cancelled": true }))
+}
+
+// ── Browser demonstration replay ─────────────────────────────────────────
+
+fn browser_tab_url(app: &tauri::AppHandle, tab_id: &str) -> String {
+    browser_tab_view(app, tab_id)
+        .and_then(|view| view.url().ok())
+        .map(|url| url.to_string())
+        .unwrap_or_default()
+}
+
+fn replay_failure(
+    report: &mut ravenbot_skills::demonstration::ReplayReport,
+    index: usize,
+    action: &ravenbot_skills::demonstration::DemoAction,
+    page_url: String,
+    attempted: Vec<String>,
+    error: String,
+    needs_input: bool,
+) {
+    let hint = if needs_input {
+        ravenbot_skills::demonstration::sensitive_repair_hint(action, &page_url)
+    } else {
+        ravenbot_skills::demonstration::replay_repair_hint(action, &page_url, &attempted, &error)
+    };
+    report.ok = false;
+    report.failed_index = Some(index);
+    report.action = Some(action.clone());
+    report.page_url = page_url;
+    report.attempted = attempted;
+    report.error = Some(error);
+    report.repair_hint = Some(hint);
+    report.needs_input = needs_input;
+}
+
+/// Replay one installed demonstration in the active browser tab.
+///
+/// This is a user-initiated action, but it still refuses to run while the
+/// person has taken over the dock: the takeover control means "do not act on
+/// this page until I release it". A failed step is returned as a report, not an
+/// `Err`, so the UI can show the page, the attempted selectors and a repair
+/// hint. Input errors (no dock, no demo, wrong platform) are `Err` because
+/// there is no replay to report.
+#[tauri::command]
+async fn replay_demonstration(
+    app: tauri::AppHandle,
+    skill_id: String,
+) -> Result<ravenbot_skills::demonstration::ReplayReport, String> {
+    use ravenbot_skills::demonstration as demo;
+
+    if !cfg!(target_os = "linux") {
+        return Err("Browser DOM actions are not available on this platform yet.".to_string());
+    }
+    if browser_dock_takeover_enabled() {
+        return Err(
+            "You have taken over the browser dock. Release control before replaying a demonstration."
+                .to_string(),
+        );
+    }
+    if demo_recording_slot()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .is_some()
+    {
+        return Err(
+            "A demonstration is being recorded. Stop or cancel it before replaying a skill."
+                .to_string(),
+        );
+    }
+    let tab_id = browser_active_tab_id()
+        .ok_or_else(|| "Open the browser dock first, then replay the demonstration.".to_string())?;
+    let visible = browser_dock_meta()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .visible;
+    if !visible || browser_tab_view(&app, &tab_id).is_none() {
+        return Err("Open the browser dock first, then replay the demonstration.".to_string());
+    }
+
+    let library = ravenbot_skills::local::LocalSkillLibrary::default();
+    let skill = library.read(&skill_id, None)?;
+    if skill.source != "installed" {
+        return Err(format!(
+            "Install version {} of '{skill_id}' before replaying it.",
+            skill.version
+        ));
+    }
+    if !skill.has_demonstration {
+        return Err(format!(
+            "'{skill_id}' has no demo.json recording, so there is nothing to replay."
+        ));
+    }
+    let raw = library.read_file(&skill_id, None, demo::DEMO_FILE)?;
+    let parsed: demo::Demonstration = serde_json::from_str(&raw)
+        .map_err(|error| format!("demo.json is not a valid demonstration: {error}"))?;
+    if parsed.version != demo::DEMO_VERSION {
+        return Err(format!(
+            "This demonstration uses format version {}, but this build understands version {}.",
+            parsed.version,
+            demo::DEMO_VERSION
+        ));
+    }
+    let demonstration = demo::sanitize_demonstration(&parsed);
+    if demonstration.actions.is_empty() {
+        return Err("The demonstration has no actions to replay.".to_string());
+    }
+    if demonstration.start_url.is_empty() {
+        return Err("The demonstration has no usable start URL.".to_string());
+    }
+
+    let total = demonstration.actions.len();
+    let mut report = demo::ReplayReport {
+        total,
+        ..demo::ReplayReport::default()
+    };
+    if let Err(error) = browser_dock_navigate_tab(&app, &tab_id, &demonstration.start_url) {
+        return Err(format!(
+            "Could not open the demonstration start URL: {error}"
+        ));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    report.page_url = browser_tab_url(&app, &tab_id);
+    if report.page_url.is_empty() {
+        report.page_url = demonstration.start_url.clone();
+    }
+
+    for (index, action) in demonstration.actions.iter().enumerate() {
+        let dock_open = browser_dock_meta()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .visible;
+        if !dock_open {
+            let page = report.page_url.clone();
+            replay_failure(
+                &mut report,
+                index,
+                action,
+                page,
+                Vec::new(),
+                "The browser dock was closed while the replay was running, so the remaining steps were not attempted."
+                    .to_string(),
+                false,
+            );
+            return Ok(report);
+        }
+        if browser_active_tab_id().as_deref() != Some(tab_id.as_str()) {
+            let page = report.page_url.clone();
+            replay_failure(
+                &mut report,
+                index,
+                action,
+                page,
+                Vec::new(),
+                "The active browser tab changed while the replay was running, so the remaining steps were not attempted."
+                    .to_string(),
+                false,
+            );
+            return Ok(report);
+        }
+        if browser_dock_takeover_enabled() {
+            let page = report.page_url.clone();
+            replay_failure(
+                &mut report,
+                index,
+                action,
+                page,
+                Vec::new(),
+                "The browser dock was taken over while the replay was running, so the remaining steps were not attempted."
+                    .to_string(),
+                false,
+            );
+            return Ok(report);
+        }
+        let _ = app.emit(
+            "browser-dock:replay-progress",
+            serde_json::json!({
+                "skill_id": skill_id,
+                "index": index,
+                "total": total,
+                "action": demo::summarize_action(action),
+                "page_url": report.page_url,
+            }),
+        );
+
+        if action.kind == "navigate" {
+            let Some(url) = action
+                .url
+                .as_deref()
+                .map(str::trim)
+                .filter(|url| !url.is_empty())
+            else {
+                let page = report.page_url.clone();
+                replay_failure(
+                    &mut report,
+                    index,
+                    action,
+                    page,
+                    Vec::new(),
+                    "The demonstration has a navigate step without a URL.".to_string(),
+                    false,
+                );
+                return Ok(report);
+            };
+            if url != report.page_url || index > 0 {
+                if let Err(error) = browser_dock_navigate_tab(&app, &tab_id, url) {
+                    let page = report.page_url.clone();
+                    replay_failure(
+                        &mut report,
+                        index,
+                        action,
+                        page,
+                        vec![url.to_string()],
+                        format!("The page could not be opened: {error}"),
+                        false,
+                    );
+                    return Ok(report);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                report.page_url = browser_tab_url(&app, &tab_id);
+            }
+            report.completed += 1;
+            continue;
+        }
+
+        // A sensitive field is a manual step. Do not send an empty value and
+        // do not claim the step ran.
+        if action.kind == "fill" && action.sensitive {
+            let page = report.page_url.clone();
+            replay_failure(
+                &mut report,
+                index,
+                action,
+                page,
+                demo::attempted_selectors(action),
+                "This step needs your input: the demonstration intentionally did not record the value for this sensitive field."
+                    .to_string(),
+                true,
+            );
+            return Ok(report);
+        }
+
+        let script = match demo::build_replay_script(action) {
+            Ok(script) => script,
+            Err(error) => {
+                let page = report.page_url.clone();
+                replay_failure(
+                    &mut report,
+                    index,
+                    action,
+                    page,
+                    demo::attempted_selectors(action),
+                    error,
+                    false,
+                );
+                return Ok(report);
+            }
+        };
+        let before_url = report.page_url.clone();
+        let eval_app = app.clone();
+        let eval_tab = tab_id.clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            browser_dock_eval_blocking(&eval_app, &script, Some(&eval_tab))
+        })
+        .await
+        .map_err(|error| format!("The browser evaluation task failed: {error}"))?;
+
+        match result {
+            Ok(value) => {
+                let step = demo::parse_replay_step(&value);
+                if !step.ok {
+                    let attempted = if step.attempted.is_empty() {
+                        demo::attempted_selectors(action)
+                    } else {
+                        step.attempted
+                    };
+                    let needs_input = step.needs_input;
+                    let error = step.error.unwrap_or_else(|| {
+                        if needs_input {
+                            "This sensitive field needs your input.".to_string()
+                        } else {
+                            "The page action failed without an error message.".to_string()
+                        }
+                    });
+                    let page = step.page_url.unwrap_or_else(|| report.page_url.clone());
+                    replay_failure(
+                        &mut report,
+                        index,
+                        action,
+                        page,
+                        attempted,
+                        error,
+                        needs_input,
+                    );
+                    return Ok(report);
+                }
+
+                if let Some(url) = step.page_url.filter(|url| !url.is_empty()) {
+                    report.page_url = url;
+                }
+                let matched_by = step
+                    .matched_by
+                    .clone()
+                    .unwrap_or_else(|| "selector".to_string());
+                if matched_by != "selector" {
+                    report.repaired += 1;
+                    report.repairs.push(demo::ReplayRepair {
+                        index,
+                        selector: action.selector.clone(),
+                        used: step.selector.clone(),
+                        matched_by,
+                    });
+                }
+                if step.synthetic {
+                    let warning = if step.submitted_form {
+                        "A press step dispatched synthetic key events and submitted the enclosing form."
+                            .to_string()
+                    } else {
+                        "A press step dispatched synthetic key events; the page must handle them for Escape or Tab to act."
+                            .to_string()
+                    };
+                    if !report.warnings.contains(&warning) {
+                        report.warnings.push(warning);
+                    }
+                }
+                if action.kind == "click" || action.kind == "press" {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    report.page_url = browser_tab_url(&app, &tab_id);
+                } else {
+                    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                }
+                report.completed += 1;
+            }
+            Err(error) => {
+                // A click that starts a navigation can destroy the JavaScript
+                // context before WebKit returns the callback. A URL change is
+                // evidence that the action did happen; without one, this is a
+                // real failure and is reported as such.
+                tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                let after_url = browser_tab_url(&app, &tab_id);
+                if after_url != before_url && (action.kind == "click" || action.kind == "press") {
+                    report.page_url = after_url;
+                    report.completed += 1;
+                    let warning = "The page navigated before it returned the replay result; the step was counted only because the URL changed."
+                        .to_string();
+                    if !report.warnings.contains(&warning) {
+                        report.warnings.push(warning);
+                    }
+                } else {
+                    replay_failure(
+                        &mut report,
+                        index,
+                        action,
+                        after_url,
+                        demo::attempted_selectors(action),
+                        format!("The page did not answer the replay action: {error}"),
+                        false,
+                    );
+                    return Ok(report);
+                }
+            }
+        }
+    }
+
+    report.ok = report.completed == total;
+    if !report.ok && report.error.is_none() {
+        report.error = Some("The replay stopped before every step completed.".to_string());
+    }
+    Ok(report)
+}
+
+fn append_draft_warning(draft: &mut ravenbot_skills::learn::SkillDraft, warning: &str) {
+    let warning = warning.trim();
+    if warning.is_empty() || draft.warnings.iter().any(|entry| entry == warning) {
+        return;
+    }
+    draft.warnings.push(warning.to_string());
+    let line = warning.replace('`', "'");
+    if !draft.content.contains(&line) {
+        if !draft.content.contains("### Draft warnings") {
+            draft.content.push_str("\n### Draft warnings\n\n");
+        }
+        draft.content.push_str(&format!("- {line}\n"));
+    }
 }
 
 fn browser_named_profile_name(raw: &str) -> Result<String, String> {
@@ -22544,6 +23562,11 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         browser_dock_takeover,
         browser_dock_set_takeover,
         browser_dock_focus,
+        browser_dock_record_start,
+        browser_dock_record_status,
+        browser_dock_record_stop,
+        browser_dock_record_cancel,
+        replay_demonstration,
         get_browser_cookie_policy,
         set_browser_cookie_policy,
         get_effective_browser_cookie_policy,
@@ -27991,4 +29014,144 @@ fn dock_close_navigation_is_recognised() {
     assert!(!is_browser_dock_close_url(
         &tauri::Url::parse("https://example.com/").expect("http url")
     ));
+}
+
+#[cfg(test)]
+mod demonstration_save_tests {
+    use super::*;
+    use ravenbot_skills::demonstration::{DemoAction, Demonstration};
+    use ravenbot_skills::learn::{LearnedStep, SkillDraft};
+    use ravenbot_skills::local::LocalSkillLibrary;
+
+    fn draft(id: &str, demonstration: Option<Demonstration>) -> SkillDraft {
+        SkillDraft {
+            id: id.to_string(),
+            name: "Demonstrated example workflow".to_string(),
+            description: "A reviewed browser workflow.".to_string(),
+            example_prompt: "Replay the browser workflow.".to_string(),
+            content: format!(
+                "---\nname: Demonstrated example workflow\ndescription: Reviewed\n---\n\n# {id}\n"
+            ),
+            steps: vec![LearnedStep {
+                tool: "browser_dom".to_string(),
+                action: Some("click".to_string()),
+                summary: "Click Search".to_string(),
+                arguments: serde_json::json!({ "action": "click", "selector": "#go" }),
+            }],
+            tools: vec!["browser_dom".to_string()],
+            warnings: Vec::new(),
+            source_run_id: if demonstration.is_some() {
+                "demo:2026-11-26T10:00:00Z".to_string()
+            } else {
+                "run-123".to_string()
+            },
+            source_bot_name: "you".to_string(),
+            demonstration,
+        }
+    }
+
+    fn demo() -> Demonstration {
+        Demonstration {
+            version: 1,
+            start_url: "https://example.com/app".to_string(),
+            recorded_at: "2026-11-26T10:00:00Z".to_string(),
+            actions: vec![DemoAction {
+                kind: "click".to_string(),
+                url: Some("https://example.com/app".to_string()),
+                selector: Some("#go".to_string()),
+                fallbacks: vec![".primary".to_string()],
+                label: Some("Search".to_string()),
+                text: None,
+                key: None,
+                sensitive: false,
+                checked: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn demo_json_is_written_only_when_a_demonstration_is_present() {
+        let root = std::env::temp_dir().join(format!("rb-demo-save-{}", Uuid::new_v4()));
+        let library = LocalSkillLibrary::at(root.clone());
+
+        let saved = save_learned_skill_to(&library, draft("demo-saved", Some(demo())), true)
+            .expect("save demonstration");
+        assert!(saved.has_demonstration);
+        assert_eq!(
+            saved.provenance.as_deref(),
+            Some("demonstrated:2026-11-26T10:00:00Z")
+        );
+        let raw = library
+            .read_file("demo-saved", None, "demo.json")
+            .expect("read demo.json");
+        let parsed: Demonstration = serde_json::from_str(&raw).expect("valid demo.json");
+        assert_eq!(parsed.actions.len(), 1);
+        let summary = library
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.id == "demo-saved")
+            .expect("summary");
+        assert!(summary.has_demonstration);
+        assert!(summary.versions[0]
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("browser demonstration"));
+        assert!(summary.versions[0]
+            .note
+            .as_deref()
+            .unwrap_or_default()
+            .contains("demonstrated:2026-11-26T10:00:00Z"));
+
+        let run = save_learned_skill_to(&library, draft("run-saved", None), true)
+            .expect("save run draft");
+        assert!(!run.has_demonstration);
+        assert_eq!(run.provenance.as_deref(), Some("learned:run:run-123"));
+        assert!(library.read_file("run-saved", None, "demo.json").is_err());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_demonstration_without_actions_is_refused_before_anything_is_written() {
+        let root = std::env::temp_dir().join(format!("rb-demo-empty-{}", Uuid::new_v4()));
+        let library = LocalSkillLibrary::at(root.clone());
+        let empty = Demonstration {
+            actions: Vec::new(),
+            ..demo()
+        };
+        let error = save_learned_skill_to(&library, draft("demo-empty", Some(empty)), false)
+            .expect_err("empty demonstration");
+        assert!(error.contains("no actions"), "{error}");
+        assert!(library.list().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn save_scrubs_a_sensitive_value_from_demo_json() {
+        let root = std::env::temp_dir().join(format!("rb-demo-secret-{}", Uuid::new_v4()));
+        let library = LocalSkillLibrary::at(root.clone());
+        let mut demonstration = demo();
+        demonstration.actions.push(DemoAction {
+            kind: "fill".to_string(),
+            url: Some("https://example.com/login".to_string()),
+            selector: Some("#password".to_string()),
+            fallbacks: Vec::new(),
+            label: Some("Password".to_string()),
+            text: Some("hunter2-save-secret".to_string()),
+            key: None,
+            sensitive: true,
+            checked: None,
+        });
+        let saved =
+            save_learned_skill_to(&library, draft("demo-secret", Some(demonstration)), false)
+                .expect("save");
+        let raw = library
+            .read_file(&saved.id, None, "demo.json")
+            .expect("read demo");
+        assert!(!raw.contains("hunter2-save-secret"));
+        assert!(raw.contains("\"sensitive\": true"));
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

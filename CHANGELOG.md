@@ -4,9 +4,45 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Teach a browser workflow
+
+- **"Show it once" now works in the browser dock.** A **Teach** button records
+  the active tab: clicks on the nearest interactive control, fills for text,
+  textarea, select and contenteditable, checkbox/radio state, address-bar-level
+  navigation, and Enter/Escape/Tab presses. Stop opens a prefilled **Teach this
+  workflow** review dialog; nothing is written until the person saves it.
+- **The recording survives navigation as far as it honestly can.** Rust
+  harvests the page buffer every 200 ms and re-injects the recorder on every
+  finished page load for the recording tab, so a click that submits a form is
+  usually caught before the DOM goes away. The recorder writes nothing to page
+  storage, and a last-millisecond event can still be lost; the docs say so
+  instead of claiming perfect capture.
+- **Secrets never enter the recording.** Password, file, `current-password`,
+  `new-password`, `one-time-code`, `cc-*`, token/secret/OTP-named fields and
+  password-manager cards keep their selector and label but not their value.
+  Sensitive fills become manual steps.
+- **Reviewed, versioned skills.** A demo draft is deterministic, says
+  "Demonstrated on …", warns about sensitive fields, synthetic keys, fallbacks
+  and the 200-action/10-minute caps, and saves `demo.json` beside `SKILL.md`
+  with `demonstrated:<timestamp>` provenance. Installation stays explicit.
+- **Replay with fallbacks and honest failure.** Replay requires the installed
+  skill and an open dock, refuses during browser takeover, navigates then
+  executes one action at a time, tries recorded fallbacks and the human label,
+  counts a fallback match as repaired, stops on a sensitive field with a
+  manual-input report, and returns `{ok, completed, total, failed_index, action,
+  page_url, attempted, error, repair_hint}` on failure. It never rewrites the
+  skill and never fills an unrecorded secret.
+- **Browser-only, Linux-only evaluator.** Desktop demonstration capture and
+  automatic DOM rewrite remain open; other platforms return the existing
+  explicit unavailable error. See [`docs/DEMONSTRATIONS.md`](docs/DEMONSTRATIONS.md).
+- Covered by deterministic normalization/proposal/library tests, save/no-save
+  `demo.json` tests, jsdom suites that run the shipped recorder and replay
+  assets, the BrowserDock/LearnFromRun/LocalSkillsPanel DOM suites, and all
+  twelve locale dictionaries.
+
 ### Learn from a run
 
-- **"Learn from this run" is the first learning loop.** A completed
+- **"Learn from this run" is the run-trace learning loop.** A completed
   successful or partially successful run exposes its tool trace in the Runs
   panel. RAVENBOT deterministically synthesizes a complete `SKILL.md` draft —
   browser and desktop actions grouped into readable steps, consecutive duplicate
@@ -22,9 +58,9 @@ All notable changes to RAVENBOT are documented here.
   request bodies, scripts and raw tool results are never copied. High-risk
   tools are named in the warnings.
 - **Not autonomous.** The UI and commands are owner/operator only; a viewer
-  cannot propose or save a learned skill. v1 learns from agent runs only —
-  human demonstration capture, replay and repair remain open, and no skill is
-  ever installed without explicit user approval.
+  cannot propose or save a learned skill. Desktop demonstration capture and
+  automatic DOM repair/rewrite remain open, and no skill is ever installed
+  without explicit user approval.
 - Covered by deterministic synthesis/redaction tests, library-provenance tests,
   access-role tests, a review-dialog DOM suite, the Runs-panel visibility test,
   and all twelve locale dictionaries. See

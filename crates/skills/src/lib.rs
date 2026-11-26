@@ -9,6 +9,7 @@
 
 pub mod awesome;
 pub mod builtin;
+pub mod demonstration;
 pub mod diff;
 pub mod exec;
 pub mod http;

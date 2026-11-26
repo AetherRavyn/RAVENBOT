@@ -2785,7 +2785,8 @@
     "close": "Fermer",
     "emptySteps": "Cette exécution n’a laissé aucune étape réussie à apprendre.",
     "sourceRun": "Exécution source {{run}}",
-    "editHint": "Modifiez librement. Seul le document enregistré est écrit dans la bibliothèque."
+    "editHint": "Modifiez librement. Seul le document enregistré est écrit dans la bibliothèque.",
+    "teachTitle": "Enseigner ce parcours"
   },
   "island": {
     "title": "Attention",
@@ -2988,5 +2989,38 @@
     "removed": "{{name}} a été retiré de cet espace de travail.",
     "usernameRequired": "Saisissez un nom d'utilisateur.",
     "launcherNote": "Les nouveaux comptes se connectent depuis le launcher. Partagez le mot de passe en sécurité ; RAVENBOT ne le réaffiche pas."
+  },
+  "demo": {
+    "chip": "Démo",
+    "teach": "Enseigner",
+    "teachHint": "Enregistrez un parcours web en le faisant une fois",
+    "recordingTitle": "Enregistrement d’une démonstration",
+    "status": "Enregistrement : {{count}} enregistrées, {{time}}",
+    "actionCount": "{{count}} enregistrées",
+    "elapsed": "{{time}} écoulé",
+    "stop": "Arrêter l’enregistrement",
+    "reviewRecording": "Revoir l’enregistrement",
+    "cancel": "Annuler l’enregistrement",
+    "started": "Enregistrement lancé. Faites la tâche, puis appuyez sur Arrêter.",
+    "autoStopped": "L’enregistrement s’est arrêté automatiquement. Appuyez sur Arrêter pour le revoir.",
+    "startFailed": "Impossible de lancer l’enregistrement.",
+    "stopFailed": "Impossible d’arrêter l’enregistrement.",
+    "noTab": "Ouvrez une page dans le dock du navigateur avant d’enregistrer.",
+    "recordedOn": "Démontré sur {{host}}",
+    "replay": "Rejouer",
+    "replayTitle": "Rejouer la démonstration",
+    "replayHintText": "Exécute les clics et saisies enregistrés sur la vraie page après confirmation.",
+    "replayInstallFirst": "Installez cette version avant de la rejouer.",
+    "replayConfirm": "Le rejeu va cliquer et remplir la vraie page ouverte dans le dock du navigateur. Vérifiez que cette page peut être manipulée sans risque.",
+    "replayStart": "Lancer le rejeu",
+    "replaying": "Rejeu en cours…",
+    "replayProgress": "Étape {{index}} sur {{total}} : {{action}}",
+    "replaySuccess": "{{completed}} étapes sur {{total}} rejouées.",
+    "replayRepaired": "{{count}} sélecteur(s) réparé(s) par un repli.",
+    "replayFailed": "Le rejeu s’est arrêté à l’étape {{index}} sur {{total}}.",
+    "replayNeedsInput": "Cette étape attend votre saisie. RAVENBOT n’a pas enregistré cette valeur sensible.",
+    "replayRepairHint": "Piste de réparation",
+    "replayRepairItem": "Étape {{index}} trouvée par {{by}}",
+    "recordingLost": "L’enregistrement s’est arrêté parce que son onglet a été fermé."
   }
 }

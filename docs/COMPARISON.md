@@ -172,7 +172,7 @@ Baseline at `7911753`: `svelte-check` 0 errors/0 warnings, `vitest` 250 tests pa
 | Job library with cadence + oversight | 56, grouped, filterable | 25 skills, no cadence/oversight metadata | **High** |
 | Oversight ladder surfaced in UI | Hand over / Review / Approve | approval mode + per-tool approvals | **High** |
 | Shared logged-in computer | one machine, all helpers | per-agent sandbox | Structural |
-| "You show it once" | demonstration capture | memory + RAG + self-review | High |
+| "You show it once" | demonstration capture | browser demonstration capture with reviewed replay; desktop capture and automatic DOM repair open | Medium |
 | Content-triggered jobs | "when a certain kind of email lands" | cron + webhook only | Medium |
 | Interrupt-vs-carry-on quietly | explicit | implicit | Medium |
 

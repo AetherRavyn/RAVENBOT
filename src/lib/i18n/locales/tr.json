@@ -2785,7 +2785,8 @@
     "close": "Kapat",
     "emptySteps": "Bu çalıştırmadan öğrenilecek başarılı adım kalmadı.",
     "sourceRun": "Kaynak çalıştırma {{run}}",
-    "editHint": "Serbestçe düzenleyin. Kitaplığa yalnızca kaydettiğiniz belge yazılır."
+    "editHint": "Serbestçe düzenleyin. Kitaplığa yalnızca kaydettiğiniz belge yazılır.",
+    "teachTitle": "Bu iş akışını öğret"
   },
   "island": {
     "title": "Dikkat",
@@ -2988,5 +2989,38 @@
     "removed": "{{name}} bu çalışma alanından kaldırıldı.",
     "usernameRequired": "Bir kullanıcı adı gir.",
     "launcherNote": "Yeni hesaplar başlatıcıdan giriş yapar. Parolayı güvenli bir yolla paylaş; RAVENBOT parolayı bir daha göstermez."
+  },
+  "demo": {
+    "chip": "Demo",
+    "teach": "Öğret",
+    "teachHint": "Bir tarayıcı iş akışını bir kez yaparak kaydet",
+    "recordingTitle": "Gösterim kaydediliyor",
+    "status": "Kayıt: {{count}} kayıt, {{time}}",
+    "actionCount": "{{count}} kayıt",
+    "elapsed": "{{time}} geçti",
+    "stop": "Kaydı durdur",
+    "reviewRecording": "Kaydı incele",
+    "cancel": "Kaydı iptal et",
+    "started": "Kayıt başladı. Görevi yapın, sonra Durdur’a basın.",
+    "autoStopped": "Kayıt otomatik durdu. İncelemek için Durdur’a basın.",
+    "startFailed": "Kayıt başlatılamadı.",
+    "stopFailed": "Kayıt durdurulamadı.",
+    "noTab": "Kayıttan önce tarayıcı panelinde bir sayfa açın.",
+    "recordedOn": "{{host}} üzerinde gösterildi",
+    "replay": "Yeniden oynat",
+    "replayTitle": "Gösterimi yeniden oynat",
+    "replayHintText": "Onaydan sonra kaydedilen tıklamaları ve doldurmaları gerçek sayfada çalıştırır.",
+    "replayInstallFirst": "Yeniden oynatmadan önce bu sürümü yükleyin.",
+    "replayConfirm": "Yeniden oynatma, tarayıcı panelinde açık olan gerçek sayfaya tıklayıp dolduracak. Bu sayfada işlem yapmanın güvenli olduğundan emin olun.",
+    "replayStart": "Oynatmayı başlat",
+    "replaying": "Yeniden oynatılıyor…",
+    "replayProgress": "Adım {{index}} / {{total}}: {{action}}",
+    "replaySuccess": "{{total}} adımın {{completed}} tanesi yeniden oynatıldı.",
+    "replayRepaired": "{{count}} seçici yedekle onarıldı.",
+    "replayFailed": "Yeniden oynatma {{index}} / {{total}} adımında durdu.",
+    "replayNeedsInput": "Bu adım sizin girişinizi gerektiriyor. RAVENBOT bu hassas değeri kaydetmedi.",
+    "replayRepairHint": "Onarım ipucu",
+    "replayRepairItem": "Adım {{index}} {{by}} ile bulundu",
+    "recordingLost": "Kayıt, sekmesi kapatıldığı için durdu."
   }
 }

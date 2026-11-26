@@ -171,6 +171,13 @@ voice, and computer control. It also supports:
   omitted, failed calls are excluded, and high-risk tools are flagged; nothing
   is saved or installed until you edit and approve it. See
   [`docs/LEARNING.md`](docs/LEARNING.md).
+- **Teach a browser workflow.** Press **Teach** in the browser dock, do the task
+  once, and press **Stop**. RAVENBOT synthesizes a reviewed skill from the
+  recorded clicks, fills, presses and navigation, writes `demo.json` only after
+  you save it, and later **Replay** tries recorded selector fallbacks before it
+  stops with a concrete repair hint. Sensitive fields are never recorded and
+  are left as manual steps. Browser-only; desktop capture and automatic DOM
+  rewrite remain open. See [`docs/DEMONSTRATIONS.md`](docs/DEMONSTRATIONS.md).
 - **Native chat channels.** Telegram, Slack, Discord, WhatsApp, and Microsoft
   Teams, with pairing codes, thread routing, attachments, and approval cards.
 - **A browser dock and desktop control.** A real webview beside the conversation,
@@ -453,6 +460,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
 | [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |
 | [`docs/LEARNING.md`](docs/LEARNING.md) | Learning from a run: synthesis, redaction, review, provenance, and limits |
+| [`docs/DEMONSTRATIONS.md`](docs/DEMONSTRATIONS.md) | Teach and replay a browser demonstration: capture, selectors, secrets, `demo.json`, repair reports, limits |
 | [`docs/MARKET-COMPARISON-2026-11.md`](docs/MARKET-COMPARISON-2026-11.md) | OpenClaw, Grok Bot, Hermes, Muse and RAVENBOT, with the path to best in market |
 | [`docs/LIVE-CHECKS.md`](docs/LIVE-CHECKS.md) | Opt-in provider and platform checks |
 | [`docs/OPENCODE-PARITY.md`](docs/OPENCODE-PARITY.md) | Harness and rendering parity audit |

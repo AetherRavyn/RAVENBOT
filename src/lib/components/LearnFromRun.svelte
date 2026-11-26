@@ -9,7 +9,7 @@
    */
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
-  import { t } from "$lib/i18n";
+  import { t, type TranslationKey } from "$lib/i18n";
   import { notify } from "$lib/toast";
   import { rememberFocus, trapFocus } from "$lib/a11y";
   import {
@@ -27,6 +27,13 @@
     arguments: Record<string, unknown>;
   }
 
+  interface Demonstration {
+    version: number;
+    start_url: string;
+    recorded_at: string;
+    actions: unknown[];
+  }
+
   interface SkillDraft {
     id: string;
     name: string;
@@ -38,6 +45,7 @@
     warnings: string[];
     source_run_id: string;
     source_bot_name: string;
+    demonstration?: Demonstration | null;
   }
 
   interface SkillView {
@@ -48,17 +56,31 @@
   }
 
   interface Props {
-    runId: string;
+    runId?: string;
+    /** Render this draft directly (Teach flow) instead of proposing one. */
+    initialDraft?: SkillDraft | null;
+    titleKey?: TranslationKey;
     onClose: () => void;
   }
 
-  let { runId, onClose }: Props = $props();
+  let {
+    runId = "",
+    initialDraft = null,
+    titleKey = "learning.title",
+    onClose,
+  }: Props = $props();
 
-  let loading = $state(true);
+  // The Teach flow passes one finished draft. Capturing its initial value is
+  // the contract; the dialog never receives a second draft in the same mount.
+  // svelte-ignore state_referenced_locally
+  let loading = $state(!initialDraft);
   let error = $state("");
-  let draft = $state<SkillDraft | null>(null);
-  let draftId = $state("");
-  let content = $state("");
+  // svelte-ignore state_referenced_locally
+  let draft = $state<SkillDraft | null>(initialDraft);
+  // svelte-ignore state_referenced_locally
+  let draftId = $state(initialDraft?.id ?? "");
+  // svelte-ignore state_referenced_locally
+  let content = $state(initialDraft?.content ?? "");
   let saving = $state<"install" | "save" | null>(null);
   let installAfterSave = $state(true);
   let dialogEl = $state<HTMLElement | null>(null);
@@ -66,11 +88,19 @@
 
   onMount(() => {
     restoreFocus = rememberFocus();
-    void load();
+    if (!initialDraft) void load();
     return () => {
       if (restoreFocus) restoreFocus();
     };
   });
+
+  function hostOf(url: string): string {
+    try {
+      return new URL(url).hostname.replace(/^www\./u, "");
+    } catch {
+      return url;
+    }
+  }
 
   $effect(() => {
     const element = dialogEl;
@@ -146,7 +176,7 @@
     <div class="flex items-center gap-2 border-b border-[var(--hairline)] px-5 py-3">
       <GraduationCap class="size-4 text-[var(--brand-text)]" />
       <h2 id="learn-from-run-title" class="text-sm font-semibold text-[var(--text-primary)]">
-        {t("learning.title")}
+        {t(titleKey)}
       </h2>
       <button
         type="button"
@@ -187,7 +217,11 @@
           <h3 class="text-sm font-semibold text-[var(--text-primary)]">{draft.name}</h3>
           <p class="text-xs text-[var(--text-secondary)]">{draft.description}</p>
           <p class="text-[11px] font-mono text-[var(--text-faint)]">
-            {t("learning.sourceRun", { run: draft.source_run_id.slice(0, 8) })}
+            {#if draft.demonstration}
+              {t("demo.recordedOn", { host: hostOf(draft.demonstration.start_url) })}
+            {:else}
+              {t("learning.sourceRun", { run: draft.source_run_id.slice(0, 8) })}
+            {/if}
           </p>
           <label for="learned-skill-id" class="block pt-1 text-[11px] font-semibold text-[var(--text-tertiary)]">
             {t("learning.id")}

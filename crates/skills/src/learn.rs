@@ -1,6 +1,6 @@
 //! Turn a completed run's tool trace into a reviewed, versioned skill draft.
 //!
-//! This is the first learning loop in RAVENBOT, and it is deliberately narrow:
+//! This is one of RAVENBOT's two learning loops, and it is deliberately narrow:
 //!
 //! - It learns from **tool calls**, not from prose, reasoning, or tool output.
 //! - It runs deterministically. There is no model call, so the same trace
@@ -12,8 +12,9 @@
 //!
 //! What a run is allowed to teach is intentionally modest: "these tools were
 //! called, in this order, to make progress on this goal". It does not claim the
-//! steps were verified, minimal, or sufficient. Human demonstration capture and
-//! replay are separate, later increments.
+//! steps were verified, minimal, or sufficient. Human browser demonstrations
+//! are synthesised by [`crate::demonstration`]; desktop capture and automatic
+//! DOM repair remain separate, later increments.
 
 use ravenbot_core::ToolTrace;
 use regex::Regex;
@@ -68,6 +69,10 @@ pub struct SkillDraft {
     pub source_run_id: String,
     /// The agent that produced the run, for the evidence section.
     pub source_bot_name: String,
+    /// The browser demonstration this draft came from, when it came from the
+    /// Teach flow rather than a run trace. Saved as `demo.json`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub demonstration: Option<crate::demonstration::Demonstration>,
 }
 
 /// Synthesize a skill draft from the tool traces of one successful run.
@@ -250,6 +255,7 @@ pub fn propose_skill_from_traces(
         warnings,
         source_run_id: run_id,
         source_bot_name: bot_name,
+        demonstration: None,
     })
 }
 

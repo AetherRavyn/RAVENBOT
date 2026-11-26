@@ -18,6 +18,7 @@
   import { browserDock, type BrowserProfile } from "$lib/browserDock.svelte";
   import { COOKIE_REJECT_SCRIPT } from "$lib/browserCookies";
   import BrowserVaultSave from "./BrowserVaultSave.svelte";
+  import LearnFromRun from "$lib/components/LearnFromRun.svelte";
   import { agentActivity } from "$lib/agentActivity.svelte";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/toast";
@@ -29,12 +30,14 @@
     Download,
     FolderOpen,
     Globe,
+    GraduationCap,
     Hand,
     Loader2,
     Lock,
     Plus,
     RotateCw,
     ShieldCheck,
+    Square,
     X,
     ZoomIn,
     ZoomOut,
@@ -67,6 +70,14 @@
     tabs?: DockTabStatus[];
   }
 
+  interface RecordStatus {
+    recording: boolean;
+    count: number;
+    tab_id?: string | null;
+    elapsed_ms: number;
+    auto_stopped?: boolean;
+  }
+
   let viewport = $state<HTMLDivElement | null>(null);
   let body = $state<HTMLDivElement | null>(null);
   let address = $state("");
@@ -96,6 +107,15 @@
   >();
   const autoRejectSeen = new Set<string>();
   let zoom = $state(0.8);
+  let recording = $state(false);
+  let recordPending = $state(false);
+  let recordBusy = $state(false);
+  let recordCount = $state(0);
+  let recordElapsed = $state(0);
+  let recordPoll: ReturnType<typeof setInterval> | null = null;
+  let recordPollBusy = false;
+  let teachDraft = $state<any>(null);
+  let teachOpen = $state(false);
   let selectedProfile = $derived(
     browserDock.profileOverrides[browserDock.scope] ?? "__auto__",
   );
@@ -370,6 +390,10 @@
   }
 
   function close() {
+    if ((recording || recordPending) && isTauri()) {
+      void invoke("browser_dock_record_cancel").catch(() => undefined);
+      stopRecordPoll();
+    }
     if (onClose) onClose();
     else browserDock.hide();
   }
@@ -680,6 +704,129 @@
     }
   }
 
+  function elapsedText(ms: number): string {
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}:${String(seconds % 60).padStart(2, "0")}`;
+  }
+
+  function stopRecordPoll() {
+    if (recordPoll) {
+      clearInterval(recordPoll);
+      recordPoll = null;
+    }
+  }
+
+  async function pollRecordStatus() {
+    if (!isTauri() || recordPollBusy) return;
+    recordPollBusy = true;
+    try {
+      const status = await invoke<RecordStatus>("browser_dock_record_status");
+      recordCount = status.count ?? 0;
+      recordElapsed = status.elapsed_ms ?? 0;
+      if (!status.recording && recording) {
+        recording = false;
+        stopRecordPoll();
+        if (!status.tab_id) {
+          recordPending = false;
+          recordCount = 0;
+          recordElapsed = 0;
+          notify(t("demo.recordingLost"), "error");
+        } else {
+          recordPending = true;
+          notify(t("demo.autoStopped"), "info");
+        }
+      }
+    } catch {
+      /* a poll can lose a navigation; the next tick retries */
+    } finally {
+      recordPollBusy = false;
+    }
+  }
+
+  function startRecordPoll() {
+    stopRecordPoll();
+    recordPoll = setInterval(() => {
+      void pollRecordStatus();
+    }, 500);
+  }
+
+  async function startRecording() {
+    if (!isTauri() || recordBusy || recording || recordPending) return;
+    if (!browserDock.activeTabId) {
+      notify(t("demo.noTab"), "error");
+      return;
+    }
+    recordBusy = true;
+    browserDock.error = null;
+    try {
+      const status = await invoke<RecordStatus>("browser_dock_record_start");
+      recording = status.recording !== false;
+      recordPending = status.recording === false;
+      recordCount = status.count ?? 0;
+      recordElapsed = status.elapsed_ms ?? 0;
+      startRecordPoll();
+      notify(t("demo.started"), "info");
+    } catch (cause) {
+      browserDock.error = String(cause);
+      notify(t("demo.startFailed"), "error");
+    } finally {
+      recordBusy = false;
+    }
+  }
+
+  async function stopRecording() {
+    if (!isTauri() || recordBusy) return;
+    recordBusy = true;
+    stopRecordPoll();
+    try {
+      const draft = await invoke<any>("browser_dock_record_stop");
+      // The native page is painted above the app webview; hide it before the
+      // review dialog is shown, then reopen on close.
+      await invoke("browser_dock_hide").catch(() => undefined);
+      recording = false;
+      recordPending = false;
+      recordCount = 0;
+      recordElapsed = 0;
+      teachDraft = draft;
+      teachOpen = true;
+    } catch (cause) {
+      browserDock.error = String(cause);
+      notify(t("demo.stopFailed"), "error");
+      recording = false;
+      recordPending = false;
+      recordCount = 0;
+      recordElapsed = 0;
+    } finally {
+      recordBusy = false;
+    }
+  }
+
+  async function cancelRecording() {
+    if (!isTauri() || recordBusy) return;
+    recordBusy = true;
+    stopRecordPoll();
+    try {
+      await invoke("browser_dock_record_cancel");
+    } catch (cause) {
+      browserDock.error = String(cause);
+    } finally {
+      recording = false;
+      recordPending = false;
+      recordCount = 0;
+      recordElapsed = 0;
+      recordBusy = false;
+    }
+  }
+
+  function closeTeach() {
+    teachOpen = false;
+    teachDraft = null;
+    if (browserDock.open && isTauri()) {
+      void openDock(browserDock.currentUrl || browserDock.url);
+    }
+  }
+
   $effect(() => {
     const nonce = browserDock.nonce;
     const open = browserDock.open;
@@ -842,6 +989,10 @@
       );
     }
     if (frame) cancelAnimationFrame(frame);
+    stopRecordPoll();
+    if ((recording || recordPending) && isTauri()) {
+      void invoke("browser_dock_record_cancel").catch(() => undefined);
+    }
     if (cookiePolicyListener) {
       window.removeEventListener(
         "ravenbot:browser-cookie-policy-changed",
@@ -932,6 +1083,65 @@
           <ZoomIn class="size-3.5" />
         </button>
       </div>
+
+      <button
+        type="button"
+        class="browser-dock__button browser-dock__teach"
+        class:is-recording={recording || recordPending}
+        title={t("demo.teachHint")}
+        aria-label={t("demo.teach")}
+        aria-pressed={recording || recordPending}
+        aria-busy={recordBusy}
+        disabled={recording || recordPending || recordBusy || !browserDock.activeTabId}
+        onclick={startRecording}
+      >
+        {#if recordBusy && !recording && !recordPending}
+          <Loader2 class="size-4 animate-spin" />
+        {:else}
+          <GraduationCap class="size-4" />
+        {/if}
+      </button>
+
+      {#if recording || recordPending}
+        <div class="browser-dock__record" role="group" aria-label={t("demo.recordingTitle")}>
+          <span
+            class="browser-dock__record-dot"
+            class:is-stopped={!recording}
+            aria-hidden="true"
+          ></span>
+          <span class="browser-dock__record-time" title={t("demo.elapsed", { time: elapsedText(recordElapsed) })}>
+            {elapsedText(recordElapsed)}
+          </span>
+          <span class="browser-dock__record-count" aria-label={t("demo.status", { count: recordCount, time: elapsedText(recordElapsed) })}>
+            {t("demo.actionCount", { count: recordCount })}
+          </span>
+          <button
+            type="button"
+            class="browser-dock__button browser-dock__record-stop"
+            title={recording ? t("demo.stop") : t("demo.reviewRecording")}
+            aria-label={recording ? t("demo.stop") : t("demo.reviewRecording")}
+            aria-busy={recordBusy}
+            disabled={recordBusy}
+            onclick={stopRecording}
+          >
+            {#if recordBusy}
+              <Loader2 class="size-3.5 animate-spin" />
+            {:else}
+              <Square class="size-3.5" />
+            {/if}
+          </button>
+          <button
+            type="button"
+            class="browser-dock__button"
+            title={t("demo.cancel")}
+            aria-label={t("demo.cancel")}
+            disabled={recordBusy}
+            onclick={cancelRecording}
+          >
+            <X class="size-3.5" />
+          </button>
+        </div>
+      {/if}
 
       <button
         type="button"
@@ -1241,5 +1451,13 @@
         {/if}
       </div>
     </div>
+  {/if}
+
+  {#if teachOpen && teachDraft}
+    <LearnFromRun
+      initialDraft={teachDraft}
+      titleKey="learning.teachTitle"
+      onClose={closeTeach}
+    />
   {/if}
 {/if}

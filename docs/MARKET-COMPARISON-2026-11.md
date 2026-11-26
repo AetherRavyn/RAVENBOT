@@ -37,7 +37,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Chat channels** | 5: Slack, Discord, Telegram, WhatsApp, Teams | 20+ (29 listed), DMs and groups | Slack, Teams, X, email; no Telegram/Discord/Signal | 20+, DMs and groups | WhatsApp + own apps |
 | **Model choice** | ● BYO OpenAI-compatible, Anthropic, Ollama, custom | ● hosted, subscription-backed, local | ○ managed mix, no model picker | ● hundreds + local | ○ Meta models |
 | **Persistent memory** | ● memory, provenance, FTS + optional embeddings | ● memory, provenance, forgetting | ● memory across chats | ● memory, user model, session search | ● memory, editable |
-| **Learning from use** | ◐ reviewed skills from completed run traces; no human demonstration or autonomous self-modification | ● learned skills | ● “show it once” routines/skills | ● autonomous skill creation and self-improvement | ● learns, builds its own tools |
+| **Learning from use** | ◐ reviewed skills from completed run traces and browser-dock demonstrations; replay with selector fallbacks and repair hints, no desktop capture or automatic DOM rewrite | ● learned skills | ● “show it once” routines/skills | ● autonomous skill creation and self-improvement | ● learns, builds its own tools |
 | **Multi-agent / teams** | ● offices with roles, DAG, review gates, task ledger and claims | ● shared multiplayer gateway, roles, shared sessions, subagents | ● team of bots, group chats, handoffs | ● subagents, Bot Mode/group chats, profiles | ○ one agent per user |
 | **Computer use** | ◐ real mouse/keyboard/window control, drag, app launch and clipboard on Linux; app launch and clipboard on macOS/Windows, no synthetic input there | ● host, browser, nodes | ● cloud computer + optional local macOS/Windows execution | ◐ terminal/browser; Linux desktop-control MCP | ● cloud VM + macOS app control |
 | **Approval / oversight** | ● Review→Auto, per-tool approvals, kill switch, budgets, signed audit, tenant isolation | ● policy-as-code, approvals, sandbox optional | ● Auto Review model + approvals, network policy, inference hooks | ● smart/manual/off approvals, hardline blocklist, deny rules, fail-closed | ◐ approvals + read/write permissions; privacy incidents |
@@ -188,9 +188,11 @@ testable acceptance bar.
 ### P1 — differentiation (90–180 days)
 
 6. **Learning loop and demonstration capture.**
-   Turn successful runs into reviewed skills; record a browser/desktop task and
-   draft a routine; replay, repair on UI change. Acceptance: record a five-step
-   browser task, replay 3/3, review before enable, zero secrets recorded.
+   Turn successful runs into reviewed skills; record a browser task, review the
+   synthesized skill, replay it with recorded selector fallbacks, and stop with
+   a repair hint when the page changed. Acceptance: record a five-step browser
+   task, replay 3/3, review before enable, zero secrets recorded. Desktop
+   capture and automatic DOM rewrite remain open.
 7. **Independent action reviewer + policy as code.**
    A second model checks risky actions against the request; deterministic
    denylist, path/network policy and fail-closed timeouts underneath.

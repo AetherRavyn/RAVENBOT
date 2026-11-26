@@ -72,9 +72,13 @@ pub struct SkillSummary {
     #[serde(default)]
     pub installed_version: Option<String>,
     pub installed_modified: bool,
-    /// Where the skill came from (`local`, `voltagent`, `learned:run:<id>`).
+    /// Where the skill came from (`local`, `voltagent`, `learned:run:<id>`,
+    /// `demonstrated:<timestamp>`).
     #[serde(default)]
     pub provenance: Option<String>,
+    /// The latest/installed version carries a `demo.json` recording.
+    #[serde(default)]
+    pub has_demonstration: bool,
 }
 
 /// A full skill document plus its metadata.
@@ -92,12 +96,16 @@ pub struct SkillView {
     #[serde(default)]
     pub installed_version: Option<String>,
     pub installed_modified: bool,
-    /// Where the skill came from (`local`, `voltagent`, `learned:run:<id>`).
+    /// Where the skill came from (`local`, `voltagent`, `learned:run:<id>`,
+    /// `demonstrated:<timestamp>`).
     #[serde(default)]
     pub provenance: Option<String>,
     pub content: String,
     #[serde(default)]
     pub files: Vec<String>,
+    /// This view carries a `demo.json` recording that replay understands.
+    #[serde(default)]
+    pub has_demonstration: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -182,6 +190,14 @@ impl LocalSkillLibrary {
                 installed_version: installed.map(|value| value.version.clone()),
                 installed_modified: self.installed_modified(id, record),
                 provenance: record.source.clone(),
+                has_demonstration: match installed {
+                    Some(installed) => has_demo_file(&installed.files),
+                    None => record
+                        .versions
+                        .first()
+                        .map(|version| has_demo_file(&version.files))
+                        .unwrap_or(false),
+                },
             });
         }
         Ok(out)
@@ -235,6 +251,7 @@ impl LocalSkillLibrary {
         })?;
         let files = self.list_files(&dir);
         let hash = dir_hash(&dir)?;
+        let has_demonstration = has_demo_file(&files);
 
         Ok(SkillView {
             id: id.to_string(),
@@ -249,7 +266,77 @@ impl LocalSkillLibrary {
             provenance: record.source.clone(),
             content,
             files,
+            has_demonstration,
         })
+    }
+
+    /// Read one supporting file from a version without escaping its folder.
+    ///
+    /// With no version, the installed copy is preferred exactly like
+    /// [`Self::read`]. Symlinks, absolute paths and `..` are refused so a
+    /// crafted skill cannot turn a `demo.json` read into an arbitrary file read.
+    pub fn read_file(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        relative: &str,
+    ) -> Result<String, String> {
+        validate_id(id)?;
+        if let Some(version) = version {
+            validate_version(version)?;
+        }
+        let relative = relative.trim();
+        if relative.is_empty() {
+            return Err("A supporting file path is required.".to_string());
+        }
+        let index = self.read_index()?;
+        let record = index
+            .skills
+            .get(id)
+            .ok_or_else(|| format!("Unknown local skill '{id}'."))?;
+
+        let (source, selected) = match version {
+            Some(version) => ("library", version.to_string()),
+            None => match &record.installed {
+                Some(installed) => ("installed", installed.version.clone()),
+                None => (
+                    "library",
+                    record
+                        .versions
+                        .first()
+                        .map(|value| value.version.clone())
+                        .ok_or_else(|| format!("Local skill '{id}' has no versions."))?,
+                ),
+            },
+        };
+        let dir = if source == "installed" {
+            self.installed_dir(id)
+        } else {
+            self.version_dir(id, &selected)
+        };
+        if !dir.is_dir() {
+            return Err(format!(
+                "The {source} copy of '{id}' at version {selected} is missing from disk."
+            ));
+        }
+
+        let target = safe_relative_path(&dir, relative)?;
+        let metadata = std::fs::symlink_metadata(&target)
+            .map_err(|error| format!("Could not read '{relative}': {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!("'{relative}' is not a regular file in this skill."));
+        }
+        let canonical_dir = dir
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve the skill folder: {error}"))?;
+        let canonical_target = target
+            .canonicalize()
+            .map_err(|error| format!("Could not resolve '{relative}': {error}"))?;
+        if !canonical_target.starts_with(&canonical_dir) {
+            return Err(format!("'{relative}' must stay inside the skill folder."));
+        }
+        std::fs::read_to_string(&target)
+            .map_err(|error| format!("Could not read '{relative}': {error}"))
     }
 
     /// Publish the first version of a new skill. Creation does not install it.
@@ -705,6 +792,12 @@ fn display_name(record: &Record, id: &str) -> String {
     } else {
         record.name.clone()
     }
+}
+
+fn has_demo_file(files: &[String]) -> bool {
+    files
+        .iter()
+        .any(|file| file == crate::demonstration::DEMO_FILE)
 }
 
 fn validate_id(id: &str) -> Result<(), String> {
@@ -1195,5 +1288,80 @@ mod tests {
             "owner-name-skill"
         );
         assert_eq!(local_id_from_catalog("***"), "skill");
+    }
+
+    #[test]
+    fn demo_files_are_listed_read_and_flagged() {
+        let (library, root) = library();
+        let demo =
+            r#"{"version":1,"start_url":"https://example.com","recorded_at":"now","actions":[]}"#;
+        let created = library
+            .create(
+                "demo-skill",
+                &skill("Demo", "body"),
+                &[SkillFileInput {
+                    path: "demo.json".to_string(),
+                    content: demo.to_string(),
+                }],
+                None,
+            )
+            .expect("create");
+        assert!(created.has_demonstration);
+        assert_eq!(
+            library
+                .read_file("demo-skill", None, "demo.json")
+                .expect("read demo"),
+            demo
+        );
+        let summary = library.list().unwrap().remove(0);
+        assert!(summary.has_demonstration);
+
+        library
+            .create("plain-skill", &skill("Plain", "body"), &[], None)
+            .expect("plain");
+        let plain = library.read("plain-skill", None).expect("read plain");
+        assert!(!plain.has_demonstration);
+        assert!(library.read_file("plain-skill", None, "demo.json").is_err());
+
+        let installed = library
+            .install("demo-skill", "0.1.0", false)
+            .expect("install");
+        assert!(installed.has_demonstration);
+        assert!(library
+            .read_file("demo-skill", Some("0.1.0"), "demo.json")
+            .is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn read_file_refuses_traversal_absolute_paths_and_symlinks() {
+        let (library, root) = library();
+        library
+            .create(
+                "demo-skill",
+                &skill("Demo", "body"),
+                &[SkillFileInput {
+                    path: "demo.json".to_string(),
+                    content: "{}".to_string(),
+                }],
+                None,
+            )
+            .expect("create");
+        for path in ["../index.json", "/etc/passwd", "a/../../index.json", ""] {
+            assert!(
+                library.read_file("demo-skill", None, path).is_err(),
+                "{path} must be refused"
+            );
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let dir = library.version_dir("demo-skill", "0.1.0");
+            symlink("/etc/passwd", dir.join("link")).unwrap();
+            assert!(library
+                .read_file("demo-skill", Some("0.1.0"), "link")
+                .is_err());
+        }
+        let _ = std::fs::remove_dir_all(root);
     }
 }

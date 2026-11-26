@@ -2785,7 +2785,8 @@
     "close": "Schließen",
     "emptySteps": "Dieser Lauf hat keine erfolgreichen Schritte zum Lernen hinterlassen.",
     "sourceRun": "Quelllauf {{run}}",
-    "editHint": "Frei bearbeiten. Nur das gespeicherte Dokument wird in die Bibliothek geschrieben."
+    "editHint": "Frei bearbeiten. Nur das gespeicherte Dokument wird in die Bibliothek geschrieben.",
+    "teachTitle": "Diesen Ablauf beibringen"
   },
   "island": {
     "title": "Aufmerksamkeit",
@@ -2988,5 +2989,38 @@
     "removed": "{{name}} wurde aus diesem Arbeitsbereich entfernt.",
     "usernameRequired": "Gib einen Benutzernamen ein.",
     "launcherNote": "Neue Konten melden sich über den Launcher an. Teile das Passwort sicher; RAVENBOT zeigt es nicht erneut."
+  },
+  "demo": {
+    "chip": "Demo",
+    "teach": "Beibringen",
+    "teachHint": "Zeichne einen Browser-Ablauf auf, indem du ihn einmal ausführst",
+    "recordingTitle": "Demonstration wird aufgezeichnet",
+    "status": "Aufzeichnung: {{count}} aufgezeichnet, {{time}}",
+    "actionCount": "{{count}} aufgezeichnet",
+    "elapsed": "{{time}} vergangen",
+    "stop": "Aufzeichnung stoppen",
+    "reviewRecording": "Aufzeichnung prüfen",
+    "cancel": "Aufzeichnung abbrechen",
+    "started": "Aufzeichnung gestartet. Führe die Aufgabe aus und drücke dann Stopp.",
+    "autoStopped": "Die Aufzeichnung wurde automatisch beendet. Drücke Stopp, um sie zu prüfen.",
+    "startFailed": "Die Aufzeichnung konnte nicht gestartet werden.",
+    "stopFailed": "Die Aufzeichnung konnte nicht beendet werden.",
+    "noTab": "Öffne zuerst eine Seite im Browser-Dock.",
+    "recordedOn": "Vorgeführt auf {{host}}",
+    "replay": "Wiedergeben",
+    "replayTitle": "Demonstration wiedergeben",
+    "replayHintText": "Führt die aufgezeichneten Klicks und Eingaben nach Bestätigung auf der echten Seite aus.",
+    "replayInstallFirst": "Installiere diese Version, bevor du sie wiedergibst.",
+    "replayConfirm": "Die Wiedergabe klickt und füllt die echte Seite im Browser-Dock. Stelle sicher, dass Aktionen auf dieser Seite sicher sind.",
+    "replayStart": "Wiedergabe starten",
+    "replaying": "Wiedergabe läuft…",
+    "replayProgress": "Schritt {{index}} von {{total}}: {{action}}",
+    "replaySuccess": "{{completed}} von {{total}} Schritten wiedergegeben.",
+    "replayRepaired": "{{count}} Selektor(en) durch einen Ersatz gefunden.",
+    "replayFailed": "Die Wiedergabe stoppte bei Schritt {{index}} von {{total}}.",
+    "replayNeedsInput": "Dieser Schritt braucht deine Eingabe. RAVENBOT hat diesen sensiblen Wert nicht aufgezeichnet.",
+    "replayRepairHint": "Reparaturhinweis",
+    "replayRepairItem": "Schritt {{index}} gefunden über {{by}}",
+    "recordingLost": "Die Aufzeichnung wurde beendet, weil ihr Tab geschlossen wurde."
   }
 }

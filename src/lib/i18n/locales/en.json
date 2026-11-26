@@ -2785,7 +2785,8 @@
     "close": "Close",
     "emptySteps": "This run left no successful steps to learn from.",
     "sourceRun": "Source run {{run}}",
-    "editHint": "Edit freely. Only the document you save is written to the library."
+    "editHint": "Edit freely. Only the document you save is written to the library.",
+    "teachTitle": "Teach this workflow"
   },
   "island": {
     "title": "Attention",
@@ -2988,5 +2989,38 @@
     "removed": "{{name}} was removed from this workspace.",
     "usernameRequired": "Enter a username.",
     "launcherNote": "New accounts sign in from the launcher. Share the password securely; RAVENBOT does not show it again."
+  },
+  "demo": {
+    "chip": "Demo",
+    "teach": "Teach",
+    "teachHint": "Record a browser workflow by doing it once",
+    "recordingTitle": "Recording a demonstration",
+    "status": "Recording: {{count}} recorded, {{time}}",
+    "actionCount": "{{count}} recorded",
+    "elapsed": "{{time}} elapsed",
+    "stop": "Stop recording",
+    "reviewRecording": "Review recording",
+    "cancel": "Cancel recording",
+    "started": "Recording started. Perform the task, then press Stop.",
+    "autoStopped": "Recording stopped automatically. Press Stop to review it.",
+    "startFailed": "Could not start recording.",
+    "stopFailed": "Could not stop recording.",
+    "noTab": "Open a page in the browser dock before recording.",
+    "recordedOn": "Demonstrated on {{host}}",
+    "replay": "Replay",
+    "replayTitle": "Replay demonstration",
+    "replayHintText": "Runs the recorded clicks and fills on the real page after confirmation.",
+    "replayInstallFirst": "Install this version before replaying it.",
+    "replayConfirm": "Replay will click and fill the real page open in the browser dock. Make sure that page is safe to act on.",
+    "replayStart": "Start replay",
+    "replaying": "Replaying…",
+    "replayProgress": "Step {{index}} of {{total}}: {{action}}",
+    "replaySuccess": "Replayed {{completed}} of {{total}} steps.",
+    "replayRepaired": "{{count}} selector(s) repaired by a fallback.",
+    "replayFailed": "Replay stopped at step {{index}} of {{total}}.",
+    "replayNeedsInput": "This step needs your input. RAVENBOT did not record this sensitive value.",
+    "replayRepairHint": "Repair hint",
+    "replayRepairItem": "Step {{index}} matched by {{by}}",
+    "recordingLost": "The recording stopped because its tab was closed."
   }
 }

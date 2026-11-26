@@ -2785,7 +2785,8 @@
     "close": "閉じる",
     "emptySteps": "この実行には学習できる成功した手順がありません。",
     "sourceRun": "元の実行 {{run}}",
-    "editHint": "自由に編集できます。保存した文書だけがライブラリに書き込まれます。"
+    "editHint": "自由に編集できます。保存した文書だけがライブラリに書き込まれます。",
+    "teachTitle": "このワークフローを教える"
   },
   "island": {
     "title": "アテンション",
@@ -2988,5 +2989,38 @@
     "removed": "{{name}} をこのワークスペースから削除しました。",
     "usernameRequired": "ユーザー名を入力してください。",
     "launcherNote": "新しいアカウントはランチャーからサインインします。パスワードは安全に共有してください。RAVENBOT は再表示しません。"
+  },
+  "demo": {
+    "chip": "デモ",
+    "teach": "教える",
+    "teachHint": "一度実行してブラウザ作業を記録します",
+    "recordingTitle": "デモを記録中",
+    "status": "記録中: {{count}} 件、{{time}}",
+    "actionCount": "{{count}} 件記録",
+    "elapsed": "経過 {{time}}",
+    "stop": "記録を停止",
+    "reviewRecording": "記録を確認",
+    "cancel": "記録をキャンセル",
+    "started": "記録を開始しました。作業を実行してから停止を押してください。",
+    "autoStopped": "記録は自動的に停止しました。確認するには停止を押してください。",
+    "startFailed": "記録を開始できませんでした。",
+    "stopFailed": "記録を停止できませんでした。",
+    "noTab": "記録する前にブラウザドックでページを開いてください。",
+    "recordedOn": "{{host}} で実演",
+    "replay": "再生",
+    "replayTitle": "デモを再生",
+    "replayHintText": "確認後、記録したクリックと入力を実際のページで実行します。",
+    "replayInstallFirst": "再生する前にこのバージョンをインストールしてください。",
+    "replayConfirm": "再生はブラウザドックで開いている実際のページをクリックし入力します。そのページで操作して安全か確認してください。",
+    "replayStart": "再生を開始",
+    "replaying": "再生中…",
+    "replayProgress": "ステップ {{index}} / {{total}}: {{action}}",
+    "replaySuccess": "{{total}} ステップ中 {{completed}} を再生しました。",
+    "replayRepaired": "{{count}} 個のセレクターを代替で修復しました。",
+    "replayFailed": "再生はステップ {{index}} / {{total}} で停止しました。",
+    "replayNeedsInput": "このステップには入力が必要です。RAVENBOT はこの機密値を記録していません。",
+    "replayRepairHint": "修復のヒント",
+    "replayRepairItem": "ステップ {{index}} は {{by}} で一致",
+    "recordingLost": "タブが閉じられたため記録が停止しました。"
   }
 }
