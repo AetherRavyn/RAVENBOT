@@ -67,6 +67,11 @@ built like an operating layer:
 - **It keeps going.** A per-user service owns routines, scheduled workflows,
   offices, credential refresh, attention alerts, and remote access when the
   desktop window is gone.
+- **It speaks your language.** Twelve interface locales — English, Spanish,
+  French, German, Portuguese, Italian, Russian, Hindi, Turkish, Japanese,
+  Korean, and Chinese — with full key and placeholder parity. The six newer
+  locales are machine-assisted with a language-model review pass; native-speaker
+  corrections are welcome, and RTL is deliberately not claimed yet.
 
 ## Screenshots
 
@@ -377,7 +382,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
   plus 7 cross-tenant isolation tests, 246 runtime tests, 170 skill tests, 110
   database tests, 74 core tests, 35 memory tests, 33 MCP tests, and 20
   remote-access tests.
-- **835 frontend tests** across 127 files. A gate rejects literal English
+- **837 frontend tests** across 127 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
@@ -434,6 +439,7 @@ analysis, including the remaining trust and product gaps, is in
 | [`docs/RELEASE.md`](docs/RELEASE.md) | Signing, notarization, updater, checksums and SBOM |
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
+| [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |
 | [`docs/LIVE-CHECKS.md`](docs/LIVE-CHECKS.md) | Opt-in provider and platform checks |
 | [`docs/OPENCODE-PARITY.md`](docs/OPENCODE-PARITY.md) | Harness and rendering parity audit |
 | [`ROADMAP.md`](ROADMAP.md) | Milestones and remaining work |

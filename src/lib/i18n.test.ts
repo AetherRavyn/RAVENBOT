@@ -14,7 +14,13 @@ import en from "./i18n/locales/en.json";
 import de from "./i18n/locales/de.json";
 import es from "./i18n/locales/es.json";
 import fr from "./i18n/locales/fr.json";
+import pt from "./i18n/locales/pt.json";
+import itLocale from "./i18n/locales/it.json";
+import ru from "./i18n/locales/ru.json";
+import hi from "./i18n/locales/hi.json";
+import tr from "./i18n/locales/tr.json";
 import ja from "./i18n/locales/ja.json";
+import ko from "./i18n/locales/ko.json";
 import zh from "./i18n/locales/zh.json";
 
 /**
@@ -35,14 +41,27 @@ import zh from "./i18n/locales/zh.json";
  *  2. no locale carries a key English does not;
  *  3. no string uses a single-brace placeholder `t()` will never fill, and
  *     every `{{x}}` in every locale actually resolves;
- *  4. a key's placeholders are the same names in all six locales, and every
+ *  4. a key's placeholders are the same names in all twelve locales, and every
  *     call site passes the ones its string asks for.
  *
  * (3) and (4) are invisible to (1): the key is present, non-empty, and still
  * renders `{{count}}` to the user.
  */
 
-const dictionaries: Record<string, unknown> = { en, de, es, fr, ja, zh };
+const dictionaries: Record<string, unknown> = {
+  en,
+  es,
+  fr,
+  de,
+  pt,
+  it: itLocale,
+  ru,
+  hi,
+  tr,
+  ja,
+  ko,
+  zh,
+};
 
 type Flat = Record<string, string>;
 
@@ -78,8 +97,8 @@ describe("t()", () => {
 });
 
 describe("locale switching", () => {
-  it("all 6 locales carry every English key in their own dictionary", () => {
-    expect(getAvailableLocales()).toHaveLength(6);
+  it("all 12 locales carry every English key in their own dictionary", () => {
+    expect(getAvailableLocales()).toHaveLength(12);
 
     const gaps: string[] = [];
     for (const [code, entries] of flat) {
@@ -90,6 +109,25 @@ describe("locale switching", () => {
       }
     }
     expect(gaps).toEqual([]);
+  });
+
+  it("publishes twelve unique locale codes with native names", () => {
+    const available = getAvailableLocales();
+    expect(available).toHaveLength(12);
+    expect(new Set(available.map((locale) => locale.code)).size).toBe(12);
+    for (const locale of available) {
+      expect(locale.name.trim()).not.toBe("");
+      expect(locale.nativeName.trim()).not.toBe("");
+    }
+  });
+
+  it("renders a parameterized string in a newly added locale", () => {
+    setLocale("pt");
+    try {
+      expect(t("sidebar.unread", { n: 3 })).toContain("3");
+    } finally {
+      setLocale("en");
+    }
   });
 
   it("has no keys that only exist in a translation", () => {
@@ -115,9 +153,9 @@ describe("locale switching", () => {
 /**
  * `t()` fills `{{name}}`, so a string written with one brace is not a
  * placeholder at all — it is text, shown to the user, braces and all, in
- * every locale. Four of those shipped: the avatar cadence tooltip in all six,
- * the reasoning step count, the workspace count, and a German office button
- * that was a single `}}` short of working.
+ * every locale. Four of those shipped in the original six locales: the avatar
+ * cadence tooltip, the reasoning step count, the workspace count, and a German
+ * office button that was a single `}}` short of working.
  *
  * `${VAR}` is exempt: those are shell syntax inside a connectors string and
  * must reach the shell untouched.

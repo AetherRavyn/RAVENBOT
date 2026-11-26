@@ -5,12 +5,18 @@
  * Strings are externalized from day one for easy localization.
  */
 
-// Translation dictionaries (all 6 locales fully translated)
+// Translation dictionaries (all 12 locales complete; parity is tested)
 import en from './locales/en.json';
 import es from './locales/es.json';
 import fr from './locales/fr.json';
 import de from './locales/de.json';
+import pt from './locales/pt.json';
+import it from './locales/it.json';
+import ru from './locales/ru.json';
+import hi from './locales/hi.json';
+import tr from './locales/tr.json';
 import ja from './locales/ja.json';
+import ko from './locales/ko.json';
 import zh from './locales/zh.json';
 import { localeState, type Locale } from './state.svelte';
 
@@ -31,7 +37,13 @@ const locales: Record<Locale, Record<string, any>> = {
   es,
   fr,
   de,
+  pt,
+  it,
+  ru,
+  hi,
+  tr,
   ja,
+  ko,
   zh,
 };
 
@@ -122,7 +134,13 @@ export function getAvailableLocales(): { code: Locale; name: string; nativeName:
     { code: 'es', name: 'Spanish', nativeName: 'Español' },
     { code: 'fr', name: 'French', nativeName: 'Français' },
     { code: 'de', name: 'German', nativeName: 'Deutsch' },
+    { code: 'pt', name: 'Portuguese', nativeName: 'Português' },
+    { code: 'it', name: 'Italian', nativeName: 'Italiano' },
+    { code: 'ru', name: 'Russian', nativeName: 'Русский' },
+    { code: 'hi', name: 'Hindi', nativeName: 'हिन्दी' },
+    { code: 'tr', name: 'Turkish', nativeName: 'Türkçe' },
     { code: 'ja', name: 'Japanese', nativeName: '日本語' },
+    { code: 'ko', name: 'Korean', nativeName: '한국어' },
     { code: 'zh', name: 'Chinese', nativeName: '中文' },
   ];
 }

@@ -160,8 +160,8 @@
 
 ## Phase 18 - Engineering Quality ✅
 - [x] Integration tests for the runtime execution path (4 tokio tests: kill switch blocks run, bot-not-found, unknown provider → model error, ephemeral path runs clean)
-- [x] Frontend test suite: vitest + 17 tests (artifact detection/thresholds + i18n coverage across all 6 locales) + `npm test` + CI frontend job
-- [x] i18n: all 6 locale files complete (en/es/fr/de/ja/zh), full key coverage asserted per locale
+- [x] Frontend test suite: vitest + artifact detection/thresholds + i18n coverage across all 12 locales + `npm test` + CI frontend job
+- [x] i18n: all 12 locale files complete (en/es/fr/de/pt/it/ru/hi/tr/ja/ko/zh), full key and placeholder coverage asserted per locale
 - [x] Kill hardcoded default model: new bots default to **local Ollama** (sovereign), overridable via `RAVENBOT_DEFAULT_PROVIDER`/`RAVENBOT_DEFAULT_MODEL`
 - [x] Model plumbing fix: `BotConfig.model_id` was silently ignored — now applied via `create_provider_from_str_with_model` + trait-level `with_model`
 - [x] Error surfaces: actionable `error_hint()` per failure class (auth/rate-limit/network/config) on send + regenerate
@@ -261,7 +261,7 @@
   a bot's brain.**
 - Removed with it: `BotConfig.engine` / `engine_model`, the `list_engines` /
   `set_bot_engine` IPC commands, the BotSettings execution-engine picker, the engine
-  branch in `Runtime::execute_run`, and the engine strings in all six locales.
+  branch in `Runtime::execute_run`, and the engine strings in all twelve locales.
 
 ## Phase 26 - Resilience: Fallback, Compaction, Resumable Runs ✅
 

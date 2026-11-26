@@ -55,7 +55,7 @@ leaves no orphan prompt.
   running/failed state, remove.
 - `get_office_queue`, `get_office_queue_paused`, `set_office_queue_paused`,
   `cancel_office_queue_item`, `dismiss_office_queue_item`.
-- i18n in all six locales.
+- i18n in all twelve locales.
 
 ### Acceptance
 - `office_queue_is_fifo_and_pausable` (Rust): ordering, claim, finish, cancel,

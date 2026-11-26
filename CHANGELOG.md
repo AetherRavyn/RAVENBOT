@@ -4,6 +4,21 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Twelve interface locales
+
+- **Portuguese, Italian, Russian, Hindi, Turkish and Korean** join English,
+  Spanish, French, German, Japanese and Chinese. Every dictionary carries all
+  2,720 keys and the same placeholder names; the Settings picker and browser
+  detection cover the new codes.
+- The six added locales started from a machine-assisted draft and received a
+  language-model review pass in the target language. They are complete and
+  parity-tested, not professional human translations; corrections are welcome.
+  `docs/LOCALIZATION.md` records the provenance, rules and tooling, and
+  explicitly does not claim RTL support.
+- The imported locale set, native names and parameterized rendering are covered
+  by the i18n suite. The existing gate already rejects missing keys, empty
+  values, placeholder drift and literal English `aria-label` values.
+
 ### Team identity and ownership
 
 - **Remote sign-in is account-bound** — a paired phone must sign in with a

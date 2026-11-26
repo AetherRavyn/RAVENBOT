@@ -582,11 +582,11 @@ OpenBot materially ahead · **A** = RAVENBOT absent.
 | Cookie refusal | Manual action plus opt-in automatic refusal scoped to consent dialogs; global default with per-named-profile overrides | Automatic reject on `dom-ready`, persisted per profile | **P** | P1 |
 | Secure input | User password/OTP fill card, origin display, origin-checked save-to-vault | Password/OTP card, save-to-vault, origin display | **P** | P1 |
 | Vault | Local Vault tab + `ask_user` vault request card; Bitwarden JSON/CSV + 1Password/generic CSV import with metadata-only preview; secrets in OS keychain, metadata only in SQLite, browser fill returns no secret to the model | OS-encrypted vault, native 1Password/Bitwarden integration, request cards | **P/B** | P0 trust |
-| Remote/mobile | None | Web + iOS/Android + WebRTC + private network | **A** | P1 (after API) |
-| Multiplayer/roles | One human | Roles, per-user audit, shared host | **B** | P2 |
-| Chat apps | MCP connector cards | Slack/Discord/Telegram/WhatsApp apps | **B** | P2 |
-| Packaging | Linux/macOS/Windows, unsigned | Signed desktop builds, updates, hosted option | **B** | P0 trust |
-| i18n/a11y | 6 locales, good focus/reduced motion, axe checks on core components | 15 locales, a11y checks, Storybook | **B** | P1 |
+| Remote/mobile | Paired web client with account sign-in, role cap and audit; no native iOS/Android, relay or offline queue | Web + iOS/Android + WebRTC + private network | **P** | P1 (after API) |
+| Multiplayer/roles | Local accounts, workspace grants, per-user audit and task claims; no shared-host relay | Roles, per-user audit, shared host | **B** | P2 |
+| Chat apps | Slack/Discord/Telegram/WhatsApp/Microsoft Teams pairing with approval cards | Slack/Discord/Telegram/WhatsApp apps | **B** | P2 |
+| Packaging | Linux/macOS/Windows, LICENSE/SBOM present; unsigned, updater empty | Signed desktop builds, updates, hosted option | **B** | P0 trust |
+| i18n/a11y | 12 locales, good focus/reduced motion, axe checks on 20+ components | 15 locales, a11y checks, Storybook | **B** | P1 |
 | UI foundation gate | Type-scale test plus a Svelte-aware token/native-select gate with a checked-in baseline | Token/native/ARIA/unreachable-CSS gate | **P** | P1 |
 
 ---

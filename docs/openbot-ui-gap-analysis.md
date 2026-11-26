@@ -19,7 +19,7 @@ provider-native sessions stay in [openbot-gap-analysis.md](openbot-gap-analysis.
 | Workspace | Projects, team channels, browser dock with take-over, runs, routines |
 | Navigation | Rail + sidebar, pinned/hidden agents, waiting-on-you filter, unread counts, drag reorder |
 | Safety | Kill switch, budgets, approval cards, sandbox tiers, audit log |
-| Accessibility | Focus handling, reduced motion, six locales, type-scale and component-style gates |
+| Accessibility | Focus handling, reduced motion, twelve locales, type-scale and component-style gates |
 
 ## Implemented in this pass
 

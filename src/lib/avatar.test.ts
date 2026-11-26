@@ -324,7 +324,7 @@ describe("initials", () => {
 /* ── Grok Bot's avatar specification ───────────────────────────────────────
  * The eight shapes, sixteen expressions, twelve colours and fifteen animation
  * states are the contract with the rest of the product — the studio renders
- * them, the roster plays a subset, and a label in six locales names them. These
+ * them, the roster plays a subset, and a label in twelve locales names them. These
  * tests pin the size and the shape of that contract, because every one of the
  * four axes is duplicated in a translation file and a list that quietly shrinks
  * is invisible until a chip row comes back with a gap in it.
