@@ -4,6 +4,32 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Learn from a run
+
+- **"Learn from this run" is the first learning loop.** A completed
+  successful or partially successful run exposes its tool trace in the Runs
+  panel. RAVENBOT deterministically synthesizes a complete `SKILL.md` draft —
+  browser and desktop actions grouped into readable steps, consecutive duplicate
+  calls collapsed, failed calls excluded, and a 50-step cap with a warning.
+- **The review gate is mandatory.** The draft opens in an accessible dialog
+  with steps, tool chips, warnings and an editable document. Nothing is written
+  until the user presses **Save & install** or **Save without installing**.
+  Saving goes through the versioned `LocalSkillLibrary`, records
+  `learned:run:<run-id>` provenance, and refuses a duplicate id in v1.
+- **Secrets and payloads stay out.** Sensitive JSON keys, credential-shaped
+  strings, `Bearer` values, cloud/provider tokens and sensitive `KEY=value`
+  assignments are redacted recursively. Typed text, file contents, patches,
+  request bodies, scripts and raw tool results are never copied. High-risk
+  tools are named in the warnings.
+- **Not autonomous.** The UI and commands are owner/operator only; a viewer
+  cannot propose or save a learned skill. v1 learns from agent runs only —
+  human demonstration capture, replay and repair remain open, and no skill is
+  ever installed without explicit user approval.
+- Covered by deterministic synthesis/redaction tests, library-provenance tests,
+  access-role tests, a review-dialog DOM suite, the Runs-panel visibility test,
+  and all twelve locale dictionaries. See
+  [`docs/LEARNING.md`](docs/LEARNING.md).
+
 ### Twelve interface locales
 
 - **Portuguese, Italian, Russian, Hindi, Turkish and Korean** join English,

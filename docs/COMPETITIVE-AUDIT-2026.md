@@ -470,9 +470,11 @@ in “recommended”; 90% install success; zero credential leaks.
    one autonomous destructive action ends the “sovereign” story. Fix: signed
    releases, a real Windows backend, external review.
 4. **Retention.** The job library, paused installs, personal goals and trigger
-   paths shipped. Demonstration learning is the remaining gap: a toolkit still
-   asks the user to choose the work, while an assistant learns it by watching.
-   Fix: E14 demonstration learning, then semantic embeddings.
+   paths shipped. Run-trace learning now ships: a completed run can propose a
+   reviewed, versioned skill. Demonstration capture/replay is the remaining
+   gap: a toolkit still asks the user to choose the work, while an assistant
+   learns it by watching. Fix: the capture/replay half of E14, then semantic
+   embeddings.
 5. **Team.** A team product with one human. No accounts, roles, shared host, or
    per-user audit. Fix after vault/API: accounts + roles + relay + per-user
    audit.
@@ -515,7 +517,7 @@ Those are not the bottleneck.
 |---|---|---|
 | **E12 Multiplayer/team** — shipped: isolated local accounts with Argon2id passwords and sessions, workspace grants, owner/operator/viewer roles enforced in the Tauri IPC gate, a launcher workspace picker, and a Settings → Team panel that adds/creates/changes/removes members. Membership changes write `WorkspaceMembershipChanged` audit rows, and every run records the acting account (`run_actors`) so the Runs panel shows **by alice (operator)** and the audit log joins the same table, displays the account on every run-backed row, and matches it in search. Work items also carry an explicit human claim (`owner_account` + `claimed_at`): owners and operators claim or release from the task drawer, a conditional database update settles races, and every transition lands in the task timeline. Remote devices now also sign in with a local account: the effective remote role is the lower of the paired device role and the account's workspace grant, every remote audit row carries the account name, and a disabled, deleted or grant-revoked account loses remote access within 60 seconds. Remaining: a shared-host relay | G5 | Two accounts can share one workspace on the local host; roles are enforced server-side; membership changes are audited; runs and remote actions carry the acting account; remote roles are capped by the account grant; a task has at most one human owner; the zero-cross-tenant-leak audit is executable with `cargo test -p ravenbot --test tenant_isolation` and documented in `docs/TENANT-ISOLATION.md`. The shared-host relay remains open |
 | **E13 Hosted/VPS option** — one-command deploy, EU region, encrypted relay, backup/restore, managed updates | G1, G5 | Deploy <10 min; EU region; encryption at rest/in transit; restore works; 99.5% SLA |
-| **E14 Demonstration learning** — capture browser/desktop actions, synthesize skill/routine, review, replay, repair | G4 | Record a 5-step browser task; replay 3/3; user review; repair on DOM change; zero secrets recorded |
+| **E14 Demonstration learning** — **run-trace learning shipped**: a completed successful run's tool trace can be synthesized into a versioned skill draft, redacted, reviewed/edited, and saved/installed by the user with `learned:run:<id>` provenance. Deterministic synthesis covers browser/desktop interaction grouping, failed-call exclusion, a 50-step cap and high-risk warnings; see [`LEARNING.md`](LEARNING.md). **Demonstration capture, replay and DOM-change repair remain open**, as does learning from a human demonstration rather than an agent run. | G4 | Run-trace half: a completed run with a trace produces a reviewed, versioned skill; secrets never enter the draft; 0 autonomous installs. Capture half still open: record a 5-step browser task; replay 3/3; repair on DOM change; zero secrets recorded |
 | **E15 Subscription bridge** — optional sandboxed Claude Code/Codex/Gemini/ACP adapters with health checks and fallback, or official OAuth where permitted | G2 | One job runs via a subscription; fallback to API; no core dependency; zero crashes; per-adapter health report |
 | **E16 Marketplace trust** — verified connectors, signed skill manifests, per-operation scopes, sandboxed MCP, rollback | G3, G4 | Top 50 connectors live-tested; zero unverified in “recommended”; signed manifests; rollback works |
 | **E17 Mobile PWA/native** — approvals, notifications, read/write, offline queue | G1 | Push approvals; read/write; offline queue; one device pair; <2 s load on 4G |
@@ -547,8 +549,9 @@ Those are not the bottleneck.
 5. **Keeping the API-key wall.** OpenBot's “use your existing subscription” is
    the better activation story for most of the market.
 6. **Proactivity that still needs a trigger.** The job library and scheduled,
-   webhook and MCP triggers ship, but the agent cannot yet learn a workflow by
-   watching the user. Fix: demonstration learning (E14).
+   webhook and MCP triggers ship, and a completed run can now teach a reviewed
+   skill, but the agent cannot yet learn a workflow by watching the user. Fix:
+   demonstration capture/replay (the remaining half of E14).
 7. **Fake learning.** Promoting whole answers as memories makes the agent
    noisier, not smarter.
 8. **No human multiplayer/roles.** Offices remain a solo demo; OpenBot sells

@@ -19,7 +19,8 @@
   import { tick } from "svelte";
   import { t } from "$lib/i18n";
   import { notify } from "$lib/toast";
-  import { Loader2, AlertTriangle, CheckCircle2, XCircle, Clock, Play, RefreshCw, RotateCcw } from "@lucide/svelte";
+  import LearnFromRun from "$lib/components/LearnFromRun.svelte";
+  import { Loader2, AlertTriangle, CheckCircle2, XCircle, Clock, GraduationCap, Play, RefreshCw, RotateCcw } from "@lucide/svelte";
 
   interface Run {
     id: string;
@@ -34,6 +35,7 @@
     outcome: string | null;
     actor_name?: string | null;
     actor_role?: string | null;
+    has_trace?: boolean;
   }
 
   interface RevertConflict {
@@ -56,6 +58,7 @@
   let revertingId = $state<string | null>(null);
   let revertPending = $state<{ run: Run; report: RevertReport } | null>(null);
   let revertDialogEl = $state<HTMLElement | null>(null);
+  let learningRun = $state<Run | null>(null);
 
   async function load() {
     isLoading = true;
@@ -240,6 +243,18 @@
                 {t("runs.revert")}
               </button>
             {/if}
+            {#if run.state === "completed" && run.has_trace}
+              <button
+                type="button"
+                class="shrink-0 inline-flex items-center gap-1 h-6 px-2 rounded-md border border-[var(--brand)]/40 bg-[var(--brand-soft)] text-[11px] text-[var(--brand-text)] hover:bg-[var(--brand-soft)] cursor-pointer"
+                onclick={() => (learningRun = run)}
+                aria-label={t("learning.action")}
+                title={t("learning.action")}
+              >
+                <GraduationCap class="size-3" />
+                {t("learning.action")}
+              </button>
+            {/if}
             <span class="ml-auto text-[11px] text-[var(--text-faint)] tabular-nums shrink-0">{fmtTime(run.created_at)}</span>
           </div>
           <div class="flex items-center gap-3 text-[11px] font-mono text-[var(--text-muted)]">
@@ -264,6 +279,10 @@
     </div>
   {/if}
 </div>
+
+{#if learningRun}
+  <LearnFromRun runId={learningRun.id} onClose={() => (learningRun = null)} />
+{/if}
 
 {#if revertPending}
   {@const pending = revertPending}

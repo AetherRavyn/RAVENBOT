@@ -1606,6 +1606,176 @@ fn local_skills_install(
     serde_json::to_value(view).map_err(|error| error.to_string())
 }
 
+/// Pick the assistant message whose tool trace belongs to this run.
+///
+/// The answer is written just before the run is marked complete, so the window
+/// allows a small clock skew rather than requiring exact containment. When a
+/// thread contains several candidates, the one with the most tool calls wins;
+/// ties keep the earliest message.
+fn assistant_trace_index(messages: &[Message], run: &Run) -> Option<usize> {
+    let skew = chrono::Duration::seconds(10);
+    let window_start = run.created_at - skew;
+    let window_end = run.completed_at.unwrap_or(run.updated_at) + skew;
+
+    let mut chosen: Option<(usize, usize)> = None;
+    for (index, message) in messages.iter().enumerate() {
+        if message.role != MessageRole::Assistant {
+            continue;
+        }
+        if message.created_at < window_start || message.created_at > window_end {
+            continue;
+        }
+        if let MessageContent::Text { tools, .. } = &message.content {
+            if tools.is_empty() {
+                continue;
+            }
+            match chosen {
+                Some((_, best_count)) if best_count >= tools.len() => {}
+                _ => chosen = Some((index, tools.len())),
+            }
+        }
+    }
+    chosen.map(|(index, _)| index)
+}
+
+/// Learn a reviewed skill from a completed run's tool trace.
+///
+/// This is a read of existing run/message rows: it writes nothing. The draft
+/// is returned to the UI, where the user edits it and explicitly calls
+/// `save_learned_skill`. Only a completed Success/PartialSuccess run is
+/// eligible; a failed run has no happy path worth teaching.
+#[tauri::command]
+async fn propose_skill_from_run(
+    state: State<'_, AppState>,
+    run_id: String,
+) -> Result<ravenbot_skills::learn::SkillDraft, String> {
+    let id =
+        Uuid::parse_str(run_id.trim()).map_err(|_| format!("'{run_id}' is not a valid run id."))?;
+    let run = ravenbot_db::queries::RunQueries::get(state.db.pool(), id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("Unknown run '{run_id}'."))?;
+
+    if run.state != ravenbot_core::RunState::Completed {
+        return Err(
+            "This run is not completed, so there is no finished workflow to learn from."
+                .to_string(),
+        );
+    }
+    match &run.outcome {
+        Some(ravenbot_core::RunOutcome::Success { .. })
+        | Some(ravenbot_core::RunOutcome::PartialSuccess { .. }) => {}
+        _ => {
+            return Err(
+                "This run did not finish successfully, so its steps are not a happy path to learn from."
+                    .to_string(),
+            )
+        }
+    }
+
+    let messages =
+        ravenbot_db::queries::MessageQueries::list_by_thread(state.db.pool(), run.thread_id)
+            .await
+            .map_err(|error| error.to_string())?;
+
+    let index = assistant_trace_index(&messages, &run).ok_or_else(|| {
+        "This run has no assistant message with a tool trace to learn from.".to_string()
+    })?;
+    let traces = match &messages[index].content {
+        MessageContent::Text { tools, .. } => tools.clone(),
+        _ => Vec::new(),
+    };
+
+    let goal = messages[..=index]
+        .iter()
+        .rev()
+        .find_map(|message| match (&message.role, &message.content) {
+            (MessageRole::User, MessageContent::Text { text, .. }) if !text.trim().is_empty() => {
+                Some(text.trim().to_string())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| format!("Repeat the workflow from run {}.", run.id));
+
+    let bot_name = ravenbot_db::queries::BotQueries::get(state.db.pool(), run.bot_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|bot| bot.name)
+        .unwrap_or_else(|| "agent".to_string());
+
+    ravenbot_skills::learn::propose_skill_from_traces(
+        &goal,
+        &bot_name,
+        &run.id.to_string(),
+        &traces,
+    )
+}
+
+/// Save a reviewed learned-skill draft. v1 refuses a duplicate id rather than
+/// guessing whether the user meant to revise an existing learned skill.
+#[tauri::command]
+fn save_learned_skill(
+    draft: ravenbot_skills::learn::SkillDraft,
+    install: bool,
+) -> Result<ravenbot_skills::local::SkillView, String> {
+    let id = draft.id.trim();
+    if id.is_empty() {
+        return Err("A learned skill needs an id.".to_string());
+    }
+    if draft.name.trim().is_empty() {
+        return Err("A learned skill needs a name.".to_string());
+    }
+    if draft.content.trim().is_empty() {
+        return Err("SKILL.md cannot be empty.".to_string());
+    }
+    let source_run = draft.source_run_id.trim();
+    if source_run.is_empty() || source_run.len() > 200 {
+        return Err(
+            "The draft has no usable source run, so it cannot be saved with provenance."
+                .to_string(),
+        );
+    }
+
+    let library = ravenbot_skills::local::LocalSkillLibrary::default();
+    let note = format!(
+        "Learned from run {source_run} by {}.",
+        if draft.source_bot_name.trim().is_empty() {
+            "an agent"
+        } else {
+            draft.source_bot_name.trim()
+        }
+    );
+    let created = library
+        .create_with_source(
+            id,
+            &draft.content,
+            &[],
+            Some(note),
+            &format!("learned:run:{source_run}"),
+        )
+        .map_err(|error| {
+            if error.contains("already exists") {
+                format!("A skill with id '{id}' already exists. Edit the id and save again.")
+            } else {
+                error
+            }
+        })?;
+
+    if install {
+        library
+            .install(&created.id, &created.version, false)
+            .map_err(|error| {
+                format!(
+                    "The skill was saved as version {}, but it could not be installed: {error}",
+                    created.version
+                )
+            })
+    } else {
+        Ok(created)
+    }
+}
+
 #[tauri::command]
 async fn local_skills_marketplace_search(
     query: Option<String>,
@@ -3857,13 +4027,9 @@ async fn set_audit_retention(
     Ok(serde_json::json!({ "days": days, "deleted": deleted }))
 }
 
-/// List recent runs for diagnostics, newest first.
-#[tauri::command]
-async fn list_runs(
-    state: State<'_, AppState>,
-    limit: Option<u32>,
-) -> Result<serde_json::Value, String> {
-    let limit = limit.unwrap_or(50).min(200) as i64;
+/// Shape the run list, including whether the thread has a tool trace worth
+/// learning from. Split from the command so the SQL is exercised by a test.
+async fn list_runs_view(pool: &sqlx::SqlitePool, limit: i64) -> Result<serde_json::Value, String> {
     let rows: Vec<(
         String,
         String,
@@ -3877,16 +4043,24 @@ async fn list_runs(
         Option<String>,
         Option<String>,
         Option<String>,
+        i64,
     )> = sqlx::query_as(
         "SELECT r.id, r.bot_id, r.thread_id, r.state, r.tokens_consumed, r.cost_estimate,
                 r.created_at, r.updated_at, r.completed_at, r.outcome,
-                ra.actor_name, ra.role
+                ra.actor_name, ra.role,
+                EXISTS(
+                    SELECT 1 FROM messages m
+                    WHERE m.thread_id = r.thread_id
+                      AND m.role = 'assistant'
+                      AND json_valid(m.content) = 1
+                      AND json_array_length(json_extract(m.content, '$.tools')) > 0
+                ) AS has_trace
          FROM runs r
          LEFT JOIN run_actors ra ON ra.run_id = r.id
          ORDER BY r.created_at DESC LIMIT ?",
     )
     .bind(limit)
-    .fetch_all(state.db.pool())
+    .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
 
@@ -3904,6 +4078,7 @@ async fn list_runs(
         outcome,
         actor_name,
         actor_role,
+        has_trace,
     ) in rows
     {
         out.push(serde_json::json!({
@@ -3919,9 +4094,20 @@ async fn list_runs(
             "outcome": outcome,
             "actor_name": actor_name,
             "actor_role": actor_role,
+            "has_trace": has_trace != 0,
         }));
     }
     Ok(serde_json::Value::Array(out))
+}
+
+/// List recent runs for diagnostics, newest first.
+#[tauri::command]
+async fn list_runs(
+    state: State<'_, AppState>,
+    limit: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    let limit = limit.unwrap_or(50).min(200) as i64;
+    list_runs_view(state.db.pool(), limit).await
 }
 
 /// Fleet usage over a window. `days = 0` means all recorded runs.
@@ -22375,6 +22561,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         local_skills_list,
         local_skills_read,
         local_skills_install,
+        propose_skill_from_run,
+        save_learned_skill,
         local_skills_marketplace_search,
         local_skills_marketplace_install,
         open_workspace_in_file_manager,
@@ -23101,6 +23289,95 @@ mod tier4_tests {
         let rows = BotContactQueries::list(&pool).await.unwrap();
         let (_, pinned, hidden, _) = rows.iter().find(|(id, ..)| *id == bot.id).unwrap();
         assert!(*pinned && *hidden);
+    }
+
+    #[tokio::test]
+    async fn list_runs_reports_whether_a_thread_has_a_tool_trace() {
+        use ravenbot_db::queries::{BotQueries, MessageQueries, RunQueries, ThreadQueries};
+
+        let pool = temp_pool().await;
+        let bot = Bot::new("Trace Owner", "run trace listing");
+        BotQueries::insert(&pool, &bot).await.unwrap();
+
+        let traced_thread = Thread::new(bot.id, "traced");
+        ThreadQueries::create(&pool, &traced_thread).await.unwrap();
+        let mut traced_run = Run::new(bot.id, traced_thread.id);
+        traced_run.state = RunState::Completed;
+        traced_run.outcome = Some(RunOutcome::Success {
+            result: "done".to_string(),
+        });
+        traced_run.completed_at = Some(chrono::Utc::now());
+        RunQueries::insert(&pool, &traced_run).await.unwrap();
+        let mut answer = Message::assistant(traced_thread.id, "done");
+        if let MessageContent::Text { tools, .. } = &mut answer.content {
+            tools.push(ravenbot_core::ToolTrace::new(
+                "shell_exec",
+                serde_json::json!({ "command": "true" }),
+            ));
+        }
+        MessageQueries::insert(&pool, &answer).await.unwrap();
+
+        let plain_thread = Thread::new(bot.id, "plain");
+        ThreadQueries::create(&pool, &plain_thread).await.unwrap();
+        let mut plain_run = Run::new(bot.id, plain_thread.id);
+        plain_run.state = RunState::Completed;
+        plain_run.outcome = Some(RunOutcome::Success {
+            result: "done".to_string(),
+        });
+        plain_run.completed_at = Some(chrono::Utc::now());
+        RunQueries::insert(&pool, &plain_run).await.unwrap();
+        MessageQueries::insert(&pool, &Message::assistant(plain_thread.id, "done"))
+            .await
+            .unwrap();
+
+        let rows = list_runs_view(&pool, 10).await.unwrap();
+        let rows = rows.as_array().expect("run list");
+        let find = |id: Uuid| {
+            rows.iter()
+                .find(|row| row["id"] == id.to_string())
+                .expect("run row")
+        };
+        assert_eq!(find(traced_run.id)["has_trace"], true);
+        assert_eq!(find(plain_run.id)["has_trace"], false);
+    }
+
+    #[test]
+    fn learning_selects_the_trace_inside_the_run_window() {
+        let bot_id = Uuid::new_v4();
+        let thread_id = Uuid::new_v4();
+        let completed_at = chrono::Utc::now();
+        let mut run = Run::new(bot_id, thread_id);
+        run.state = RunState::Completed;
+        run.created_at = completed_at - chrono::Duration::seconds(60);
+        run.updated_at = run.created_at;
+        run.completed_at = Some(completed_at);
+
+        let traced = |created_at, count: usize| {
+            let mut message = Message::assistant(thread_id, "answer");
+            message.created_at = created_at;
+            if let MessageContent::Text { tools, .. } = &mut message.content {
+                for index in 0..count {
+                    tools.push(ravenbot_core::ToolTrace::new(
+                        "shell_exec",
+                        serde_json::json!({ "command": format!("echo {index}") }),
+                    ));
+                }
+            }
+            message
+        };
+
+        let messages = vec![
+            // A previous run in the same thread: more calls, but outside the
+            // window for this run.
+            traced(completed_at - chrono::Duration::seconds(3600), 6),
+            traced(completed_at - chrono::Duration::seconds(5), 2),
+            Message::assistant(thread_id, "no tools here"),
+            traced(completed_at - chrono::Duration::seconds(30), 3),
+        ];
+        assert_eq!(assistant_trace_index(&messages, &run), Some(3));
+
+        let without_trace = vec![Message::assistant(thread_id, "no tools")];
+        assert_eq!(assistant_trace_index(&without_trace, &run), None);
     }
 
     #[tokio::test]

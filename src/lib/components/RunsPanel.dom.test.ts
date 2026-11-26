@@ -23,6 +23,7 @@ const completedRun = {
   outcome: null,
   actor_name: "swadhin",
   actor_role: "operator",
+  has_trace: true,
 };
 
 const emptyConflicts = { skipped: [], conflicts: [] };
@@ -38,6 +39,7 @@ const pausedRun = {
   updated_at: "2026-11-17T10:01:00Z",
   completed_at: null,
   outcome: null,
+  has_trace: false,
 };
 
 describe("RunsPanel", () => {
@@ -51,7 +53,9 @@ describe("RunsPanel", () => {
     invokeMock.mockImplementation(async (command: string) => {
       if (command === "list_runs") {
         listCalls += 1;
-        return listCalls === 1 ? [pausedRun] : [{ ...pausedRun, state: "completed" }];
+        return listCalls === 1
+          ? [pausedRun]
+          : [{ ...pausedRun, state: "completed", has_trace: true }];
       }
       if (command === "resume_run") return null;
       throw new Error(`unexpected command ${command}`);
@@ -150,6 +154,60 @@ describe("RunsPanel", () => {
     );
     await waitFor(() => expect(getByText("completed")).toBeTruthy());
     expect(listCalls).toBe(2);
+  });
+
+  it("offers learning only on completed runs", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "list_runs") return [completedRun, pausedRun];
+      throw new Error(`unexpected command ${command}`);
+    });
+    const { getAllByLabelText, getByText } = render(RunsPanel);
+    await waitFor(() => expect(getByText("paused")).toBeTruthy());
+
+    expect(getAllByLabelText("Learn from this run")).toHaveLength(1);
+  });
+
+  it("hides learning for a completed run with no tool trace", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "list_runs") return [{ ...completedRun, has_trace: false }];
+      throw new Error(`unexpected command ${command}`);
+    });
+    const { getByText, queryAllByLabelText } = render(RunsPanel);
+    await waitFor(() => expect(getByText("completed")).toBeTruthy());
+
+    expect(queryAllByLabelText("Learn from this run")).toHaveLength(0);
+  });
+
+  it("opens the learning draft for a completed run", async () => {
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "list_runs") return [completedRun];
+      if (command === "propose_skill_from_run") {
+        return {
+          id: "learned-demo",
+          name: "Learned demo",
+          description: "A draft",
+          example_prompt: "demo",
+          content: "---\nname: Learned demo\n---\n\n1. Step.\n",
+          steps: [],
+          tools: [],
+          warnings: [],
+          source_run_id: completedRun.id,
+          source_bot_name: "Atlas",
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    const { getByLabelText, getByRole } = render(RunsPanel);
+    await waitFor(() => expect(getByLabelText("Learn from this run")).toBeTruthy());
+
+    await fireEvent.click(getByLabelText("Learn from this run"));
+
+    await waitFor(() => expect(getByRole("dialog")).toBeTruthy());
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("propose_skill_from_run", {
+        runId: completedRun.id,
+      }),
+    );
   });
 
   it("shows which account started a run", async () => {

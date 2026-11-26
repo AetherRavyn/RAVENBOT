@@ -12,6 +12,7 @@ pub mod builtin;
 pub mod diff;
 pub mod exec;
 pub mod http;
+pub mod learn;
 pub mod local;
 pub mod patch;
 pub mod processes;

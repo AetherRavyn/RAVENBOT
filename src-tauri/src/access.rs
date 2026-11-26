@@ -97,6 +97,8 @@ const OPERATOR_EXTRA: &[&str] = &[
     "browser_dock_takeover",
     "browser_dock_set_takeover",
     "browser_dock_focus",
+    "propose_skill_from_run",
+    "save_learned_skill",
 ];
 
 fn is_read_command(command: &str) -> bool {
@@ -180,6 +182,18 @@ mod tests {
         assert!(role_allows("owner", "release_work_item"));
         assert!(!role_allows("viewer", "claim_work_item"));
         assert!(!role_allows("viewer", "release_work_item"));
+    }
+
+    #[test]
+    fn only_owners_and_operators_can_learn_or_save_skills() {
+        assert!(role_allows("owner", "propose_skill_from_run"));
+        assert!(role_allows("owner", "save_learned_skill"));
+        assert!(role_allows("operator", "propose_skill_from_run"));
+        assert!(role_allows("operator", "save_learned_skill"));
+        // A draft is derived from workspace data and saving writes a file, so a
+        // viewer must not reach either command.
+        assert!(!role_allows("viewer", "propose_skill_from_run"));
+        assert!(!role_allows("viewer", "save_learned_skill"));
     }
 
     #[test]

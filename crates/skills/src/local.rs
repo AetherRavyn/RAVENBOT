@@ -72,6 +72,9 @@ pub struct SkillSummary {
     #[serde(default)]
     pub installed_version: Option<String>,
     pub installed_modified: bool,
+    /// Where the skill came from (`local`, `voltagent`, `learned:run:<id>`).
+    #[serde(default)]
+    pub provenance: Option<String>,
 }
 
 /// A full skill document plus its metadata.
@@ -89,6 +92,9 @@ pub struct SkillView {
     #[serde(default)]
     pub installed_version: Option<String>,
     pub installed_modified: bool,
+    /// Where the skill came from (`local`, `voltagent`, `learned:run:<id>`).
+    #[serde(default)]
+    pub provenance: Option<String>,
     pub content: String,
     #[serde(default)]
     pub files: Vec<String>,
@@ -175,6 +181,7 @@ impl LocalSkillLibrary {
                 versions: record.versions.clone(),
                 installed_version: installed.map(|value| value.version.clone()),
                 installed_modified: self.installed_modified(id, record),
+                provenance: record.source.clone(),
             });
         }
         Ok(out)
@@ -239,6 +246,7 @@ impl LocalSkillLibrary {
             source: source.to_string(),
             installed_version: record.installed.as_ref().map(|value| value.version.clone()),
             installed_modified: self.installed_modified(id, record),
+            provenance: record.source.clone(),
             content,
             files,
         })
@@ -251,6 +259,24 @@ impl LocalSkillLibrary {
         content: &str,
         files: &[SkillFileInput],
         note: Option<String>,
+    ) -> Result<SkillView, String> {
+        self.create_with_source(id, content, files, note, "local")
+    }
+
+    /// Publish the first version of a new skill with an explicit provenance
+    /// string, such as `learned:run:<id>`. The source is stored in the index
+    /// and surfaced by [`SkillSummary::provenance`] and [`SkillView::provenance`].
+    ///
+    /// The same library, validation and file-writing path as [`Self::create`]
+    /// is used, so a learned skill cannot end up outside the library or with a
+    /// shape the agent tools would refuse.
+    pub fn create_with_source(
+        &self,
+        id: &str,
+        content: &str,
+        files: &[SkillFileInput],
+        note: Option<String>,
+        source: &str,
     ) -> Result<SkillView, String> {
         validate_id(id)?;
         validate_content(content)?;
@@ -265,11 +291,16 @@ impl LocalSkillLibrary {
         let (meta, _) = parse_document(content);
         let version = "0.1.0".to_string();
         let hash = self.write_version(id, &version, content, files)?;
+        let source = source.trim();
         let record = Record {
             name: meta.name.unwrap_or_else(|| id.to_string()),
             description: meta.description.unwrap_or_default(),
             example_prompt: meta.example_prompt,
-            source: Some("local".to_string()),
+            source: Some(if source.is_empty() {
+                "local".to_string()
+            } else {
+                source.to_string()
+            }),
             versions: vec![SkillVersion {
                 version: version.clone(),
                 hash,
@@ -1110,6 +1141,49 @@ mod tests {
             .expect("unchanged update");
         assert_eq!(unchanged.version, "1.0.1");
         assert_eq!(library.list().unwrap().remove(0).versions.len(), 2);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_with_source_records_provenance_and_leaves_create_local() {
+        let (library, root) = library();
+        let learned = library
+            .create_with_source(
+                "learned-demo",
+                &skill("Learned", "learned body"),
+                &[],
+                Some("Learned from run abc".into()),
+                "learned:run:abc",
+            )
+            .expect("create with source");
+        assert_eq!(learned.provenance.as_deref(), Some("learned:run:abc"));
+
+        let summary = library
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.id == "learned-demo")
+            .expect("summary");
+        assert_eq!(summary.provenance.as_deref(), Some("learned:run:abc"));
+
+        library
+            .create("plain-demo", &skill("Plain", "plain body"), &[], None)
+            .expect("plain create");
+        let plain = library.read("plain-demo", None).expect("read plain");
+        assert_eq!(plain.provenance.as_deref(), Some("local"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn create_with_source_refuses_a_duplicate_id() {
+        let (library, root) = library();
+        library
+            .create_with_source("demo", &skill("Demo", "one"), &[], None, "learned:run:1")
+            .expect("first");
+        let error = library
+            .create_with_source("demo", &skill("Demo", "two"), &[], None, "learned:run:2")
+            .expect_err("duplicate");
+        assert!(error.contains("already exists"), "{error}");
         let _ = std::fs::remove_dir_all(root);
     }
 

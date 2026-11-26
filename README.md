@@ -166,6 +166,11 @@ voice, and computer control. It also supports:
 - **OpenAPI plugins.** Import an OpenAPI document as a local toolkit.
 - **Community skills.** Search and install versioned skills from the VoltAgent
   marketplace, or write your own with the built-in skill authoring tools.
+- **Learn from a run.** After a completed run, inspect its tool trace and get a
+  deterministic draft of a versioned skill. Secrets are redacted, payloads are
+  omitted, failed calls are excluded, and high-risk tools are flagged; nothing
+  is saved or installed until you edit and approve it. See
+  [`docs/LEARNING.md`](docs/LEARNING.md).
 - **Native chat channels.** Telegram, Slack, Discord, WhatsApp, and Microsoft
   Teams, with pairing codes, thread routing, attachments, and approval cards.
 - **A browser dock and desktop control.** A real webview beside the conversation,
@@ -442,6 +447,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
 | [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |
+| [`docs/LEARNING.md`](docs/LEARNING.md) | Learning from a run: synthesis, redaction, review, provenance, and limits |
 | [`docs/MARKET-COMPARISON-2026-11.md`](docs/MARKET-COMPARISON-2026-11.md) | OpenClaw, Grok Bot, Hermes, Muse and RAVENBOT, with the path to best in market |
 | [`docs/LIVE-CHECKS.md`](docs/LIVE-CHECKS.md) | Opt-in provider and platform checks |
 | [`docs/OPENCODE-PARITY.md`](docs/OPENCODE-PARITY.md) | Harness and rendering parity audit |
