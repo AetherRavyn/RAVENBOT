@@ -385,11 +385,11 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,035 Rust tests** across the workspace, including 222 Tauri library tests
-  plus 7 cross-tenant isolation tests, 246 runtime tests, 170 skill tests, 110
-  database tests, 74 core tests, 35 memory tests, 33 MCP tests, and 20
-  remote-access tests.
-- **837 frontend tests** across 127 files. A gate rejects literal English
+- **1,082 Rust tests** across the workspace, including 225 Tauri library tests
+  plus 7 cross-tenant isolation tests, 246 runtime tests, 191 skill tests, 110
+  database tests, 74 core tests, 39 vision tests, 35 memory tests, 33 MCP
+  tests, and 20 remote-access tests.
+- **846 frontend tests** across 128 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

@@ -207,17 +207,17 @@ competitor materially ahead · **A** = RAVENBOT absent.
 | Onboarding | Provider key or detected local Ollama + The Raven default agent; missing setup reopens after login; no setup checklist | **B** | **B** | **B** |
 | Activation | User must connect a key, name an architect, create an office, invent a mission | **B** | **B** | **B** |
 | Provider / subscription access | 20 API providers, custom endpoints, Ollama; **no ChatGPT/Claude/Cursor subscription bridge** | **B** | **L** | **L** |
-| Always-on / cloud | Routines, offices, schedules, webhooks, and the queue run inside the app process; closing the window hides to the tray, and Settings → Local can launch the app at login. Quit still stops them; no OS service yet | **B** | **B** | **B** |
-| Remote / mobile | No HTTP control API, no auth, no mobile/web client | **A** | **A** | **A** |
-| Team / multiplayer | Offices and internal channels, isolated locals accounts with Argon2id and expiring sessions, shared workspaces with owner/operator/viewer grants and a server-side IPC gate; per-run actor attribution and concurrent windows remain future | **B** | **P** | **L** |
+| Always-on / cloud | A headless daemon and per-user systemd/launchd/Windows-logon service own routines, offices, schedules, webhooks, approvals and remote access; closing the window does not stop them. No hosted/VPS deployment or remote upgrade is shipped | **B** | **B** | **B** |
+| Remote / mobile | Authenticated remote listener with one-time pairing, local-account sign-in, role capping, audit, and a responsive web client; no native iOS/Android app and no shared-host relay | **B** | **B** | **B** |
+| Team / multiplayer | Local accounts with Argon2id passwords and sessions, workspace grants, owner/operator/viewer roles enforced in the IPC gate, per-run actor attribution, audited membership changes, task claims and a cross-tenant isolation suite; shared-host relay remains open | **B** | **B** | **B** |
 | Channels | Internal channel timeline + task board; native Telegram (long polling), Slack (Socket Mode), Discord (gateway), WhatsApp (signed Cloud API webhook) and Microsoft Teams (Bot Framework) with pairing and approval routing | **B** | **P** | **B** |
-| Workflows / jobs | Reusable office DAG templates with versions, conditional branches, explicit input ports, per-task retries, per-task JSON Schema outputs, bounded per-task loops, multi-task loop groups, explicit trigger/agent/LLM/approval/output node types, four built-in editable templates, one-click, scheduled and loopback webhook-triggered runs, live run history, cron routines, office queue; no GitHub triggers or agent/job marketplace | **B** | **B** | **B** |
+| Workflows / jobs | Reusable office DAG templates with versions, conditional branches, explicit input ports, per-task retries, per-task JSON Schema outputs, bounded per-task loops, multi-task loop groups, explicit trigger/agent/LLM/approval/output node types, four built-in editable templates, one-click, scheduled and loopback webhook-triggered runs, live run history, cron routines, office queue, 30-job installable library; no GitHub triggers or agent-template marketplace | **B** | **B** | **B** |
 | Delegation | Real `delegate`, depth guard, DAG planning, parallel nodes, shared status file | **L** | **P** | **L** |
-| Demonstration learning | Nothing; no capture/replay | **P** | **B** | **P** |
+| Demonstration learning | Completed-run tool traces synthesize a reviewed, redacted, versioned skill with `learned:run:<id>` provenance; human demonstration capture, replay and DOM repair remain open | **B** | **B** | **P** |
 | Goals / proactivity | Office goal + heartbeat; no personal goals tab, no proactive suggestions | **P** | **B** | **B** |
 | Memory | Per-bot/per-office memory, RAG, self-review, editable/deletable in the UI with `MemoryChanged` audit events; source/thread/run provenance; FTS5 BM25 candidate retrieval reranked by word/bigram/character-gram vectors (migration 75), so a query normally scores only the lexical candidates instead of every stored vector and a memory without an embedding is still findable; opt-in Ollama/OpenAI semantic embeddings with atomic reindexing and `MemoryEmbeddingsUpdated` audit events; fixed 50-fact hybrid Recall@5/MRR benchmark (local backend 1.00/1.00; old byte hash 0.10/0.10) with a vector-only baseline shown in the UI; near-duplicate detection with previewed removal; LLM summarization with an editable preview and atomic replacement; default remains lexical, not neural | **P** | **B** | **P** |
 | Artifacts | Charts, Mermaid, KaTeX, slides, visuals, DOCX/PDF/PPTX/HTML, designed image decks | **P** | **L** | **P** |
-| Chat apps | None native; MCP connector cards only | **B** | **P** | **B** |
+| Chat apps | Native Telegram, Slack, Discord, WhatsApp and Microsoft Teams pairing with approval routing; no iMessage, Signal, Matrix or Google Chat | **B** | **P** | **B** |
 | Marketplace / plugins | 135 MCP connectors, 2,530-app OpenAPI directory, 1,497 skills, versioned local skills, own MCP server | **L** | **L** | **L** |
 
 ### 3.2 Platform and trust
@@ -232,7 +232,7 @@ competitor materially ahead · **A** = RAVENBOT absent.
 | Safety / oversight | Good primitives (bubblewrap/Seatbelt/Docker, kill switch, budgets, audit, denylist, capability narrowing, per-run Review policy); Review maps to `Auto` so unattended high-risk tools park instead of silently running, agent commands fail closed without a backend, trusted renderers use limits-only fallback; Docker tier now works on macOS too; Windows backend still absent and macOS Seatbelt awaits real-machine validation | **B** | **B** | **B** |
 | Permissions / roles | Workspace owner/operator/viewer grants enforced in the IPC gate, local account sessions, per-user run attribution, audited membership changes and database-arbitrated task claims; per-agent capability narrowing still applies and office ranks remain labels | **B** | **B** | **B** |
 | Observability | Turn trace, waterfall, run ledger, activity feed, global filtered audit viewer with signed Ed25519 export, in-app verification, explicit retention, per-office cost and budget attribution, configurable budget alerts, opt-in desktop notifications, HTTPS webhook alerts, SMTP email alerts, automatic retention, and scheduled signed backups | **P** | **B** | **B** |
-| Reliability | 1,035 Rust tests and 837 frontend tests, provider governor, connect/idle-read timeouts, terminal-stream detection with partial preservation, deterministic agent-eval suite, fallback, compaction, resumable runs; no auto-update, desktop-bound, Windows shell gap | **B** | **B** | **B** |
+| Reliability | 1,082 Rust tests and 846 frontend tests, provider governor, connect/idle-read timeouts, terminal-stream detection with partial preservation, deterministic agent-eval suite, fallback, compaction, resumable runs; no auto-update, desktop-bound, Windows shell gap | **B** | **B** | **B** |
 | Packaging / distribution | Linux AppImage/deb/rpm, macOS DMG, Windows NSIS/MSI; MIT `LICENSE` and SBOM ship, installers remain unsigned and the updater is not configured | **B** | **B** | **B** |
 | Pricing / licensing | MIT, free, bring-your-own keys, no telemetry; no hosted/support revenue | **L** | **L** | **L** |
 | i18n / accessibility | 12 locales with full key and placeholder parity, no literal English `aria-label` values, focus/reduced-motion utilities, and axe checks on 20+ surfaces; six added locales are machine-assisted with a language-model review pass and still benefit from native-speaker correction, and there is no Storybook | **B** | **B** | **P** |
@@ -563,7 +563,7 @@ Those are not the bottleneck.
     machine-assisted until native reviewers correct them.
 11. **Cross-platform breakage.** Windows `shell_exec` through `/bin/sh`, macOS
     without a real sandbox. “Three platforms” is a build matrix, not a product.
-12. **Agent evals are still shallow.** 1,035 Rust and 837 frontend tests prove
+12. **Agent evals are still shallow.** 1,082 Rust and 846 frontend tests prove
     plumbing; the 80%-on-20-office-tasks benchmark remains open.
 13. **No business model.** MIT/free is a wedge, but with no hosted/support
     revenue the trust work cannot be funded; adding pricing later antagonizes
