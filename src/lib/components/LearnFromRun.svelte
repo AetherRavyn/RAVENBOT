@@ -57,6 +57,7 @@
   let loading = $state(true);
   let error = $state("");
   let draft = $state<SkillDraft | null>(null);
+  let draftId = $state("");
   let content = $state("");
   let saving = $state<"install" | "save" | null>(null);
   let installAfterSave = $state(true);
@@ -73,7 +74,9 @@
 
   $effect(() => {
     const element = dialogEl;
-    if (!element) return;
+    // Wait for the draft so the trap sees the Save/Install controls, not only
+    // the close button that exists during loading.
+    if (!element || !draft) return;
     return trapFocus(element);
   });
 
@@ -82,6 +85,7 @@
     error = "";
     try {
       draft = await invoke<SkillDraft>("propose_skill_from_run", { runId });
+      draftId = draft.id;
       content = draft.content;
     } catch (e) {
       error = String(e);
@@ -103,7 +107,7 @@
     saving = install ? "install" : "save";
     error = "";
     try {
-      const edited: SkillDraft = { ...draft, content };
+      const edited: SkillDraft = { ...draft, id: draftId.trim(), content };
       const view = await invoke<SkillView>("save_learned_skill", {
         draft: edited,
         install,
@@ -183,10 +187,20 @@
           <h3 class="text-sm font-semibold text-[var(--text-primary)]">{draft.name}</h3>
           <p class="text-xs text-[var(--text-secondary)]">{draft.description}</p>
           <p class="text-[11px] font-mono text-[var(--text-faint)]">
-            {draft.id} · {t("learning.sourceRun", {
-              run: draft.source_run_id.slice(0, 8),
-            })}
+            {t("learning.sourceRun", { run: draft.source_run_id.slice(0, 8) })}
           </p>
+          <label for="learned-skill-id" class="block pt-1 text-[11px] font-semibold text-[var(--text-tertiary)]">
+            {t("learning.id")}
+          </label>
+          <input
+            id="learned-skill-id"
+            bind:value={draftId}
+            class="h-8 w-full rounded-lg border border-[var(--hairline)] bg-[var(--surface-2)] px-2 font-mono text-[11px] text-[var(--text-primary)]"
+            spellcheck="false"
+            autocapitalize="none"
+            autocomplete="off"
+          />
+          <p class="text-[11px] text-[var(--text-faint)]">{t("learning.idHint")}</p>
         </div>
 
         {#if draft.warnings.length}

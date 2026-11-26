@@ -2763,6 +2763,8 @@
     "byActorRole": "by {{name}} ({{role}})"
   },
   "learning": {
+    "id": "Skill id",
+    "idHint": "Lowercase letters, numbers and hyphens. Must be unique.",
     "action": "Learn from this run",
     "title": "Learn from this run",
     "description": "RAVENBOT proposes a versioned skill from this run's tool trace. Review and edit it before anything is saved.",

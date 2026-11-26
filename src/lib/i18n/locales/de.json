@@ -2763,6 +2763,8 @@
     "byActorRole": "von {{name}} ({{role}})"
   },
   "learning": {
+    "id": "Skill-ID",
+    "idHint": "Kleinbuchstaben, Zahlen und Bindestriche. Muss eindeutig sein.",
     "action": "Aus diesem Lauf lernen",
     "title": "Aus diesem Lauf lernen",
     "description": "RAVENBOT schlägt aus der Werkzeugspur dieses Laufs eine versionierte Fähigkeit vor. Prüfe und bearbeite sie, bevor etwas gespeichert wird.",

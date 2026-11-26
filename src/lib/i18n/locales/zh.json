@@ -2763,6 +2763,8 @@
     "byActorRole": "由 {{name}}（{{role}}）"
   },
   "learning": {
+    "id": "技能 ID",
+    "idHint": "小写字母、数字和连字符。必须唯一。",
     "action": "从本次运行中学习",
     "title": "从本次运行中学习",
     "description": "RAVENBOT 会根据本次运行的工具轨迹提出一个带版本的技能。保存前请审阅并编辑。",

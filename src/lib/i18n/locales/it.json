@@ -2763,6 +2763,8 @@
     "byActorRole": "da {{name}} ({{role}})"
   },
   "learning": {
+    "id": "ID della competenza",
+    "idHint": "Minuscole, numeri e trattini. Deve essere univoco.",
     "action": "Impara da questa esecuzione",
     "title": "Impara da questa esecuzione",
     "description": "RAVENBOT propone una competenza con versione dalla traccia degli strumenti di questa esecuzione. Rivedila e modificala prima di salvare.",

@@ -2763,6 +2763,8 @@
     "byActorRole": "{{name}}님({{role}})에 의해"
   },
   "learning": {
+    "id": "스킬 ID",
+    "idHint": "소문자, 숫자, 하이픈. 고유해야 합니다.",
     "action": "이 실행에서 배우기",
     "title": "이 실행에서 배우기",
     "description": "RAVENBOT이 이 실행의 도구 추적에서 버전이 지정된 스킬을 제안합니다. 저장하기 전에 검토하고 편집하세요.",

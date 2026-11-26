@@ -2763,6 +2763,8 @@
     "byActorRole": "{{name}} ({{role}}) tarafından"
   },
   "learning": {
+    "id": "Beceri kimliği",
+    "idHint": "Küçük harfler, sayılar ve tireler. Benzersiz olmalı.",
     "action": "Bu çalıştırmadan öğren",
     "title": "Bu çalıştırmadan öğren",
     "description": "RAVENBOT bu çalıştırmanın araç izinden sürümlü bir beceri önerir. Kaydetmeden önce inceleyin ve düzenleyin.",

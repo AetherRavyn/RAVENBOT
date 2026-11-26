@@ -91,6 +91,8 @@ describe("LearnFromRun", () => {
     });
 
     await waitFor(() => expect(getByRole("button", { name: "Save & install" })).toBeTruthy());
+    const idField = getByLabelText("Skill id") as HTMLInputElement;
+    await fireEvent.input(idField, { target: { value: "learned-fix-the-build-retry" } });
     const editor = getByLabelText(/SKILL\.md/) as HTMLTextAreaElement;
     await fireEvent.input(editor, {
       target: { value: `${draft.content}\n3. Edited by the reviewer.\n` },
@@ -100,7 +102,7 @@ describe("LearnFromRun", () => {
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("save_learned_skill", {
         draft: expect.objectContaining({
-          id: draft.id,
+          id: "learned-fix-the-build-retry",
           content: expect.stringContaining("Edited by the reviewer."),
         }),
         install: true,

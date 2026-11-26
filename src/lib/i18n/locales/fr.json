@@ -2763,6 +2763,8 @@
     "byActorRole": "par {{name}} ({{role}})"
   },
   "learning": {
+    "id": "ID de la compétence",
+    "idHint": "Minuscules, chiffres et traits d'union. Doit être unique.",
     "action": "Apprendre de cette exécution",
     "title": "Apprendre de cette exécution",
     "description": "RAVENBOT propose une compétence versionnée à partir de la trace d’outils de cette exécution. Relisez et modifiez-la avant tout enregistrement.",

@@ -2763,6 +2763,8 @@
     "byActorRole": "por {{name}} ({{role}})"
   },
   "learning": {
+    "id": "ID de la habilidad",
+    "idHint": "Minúsculas, números y guiones. Debe ser único.",
     "action": "Aprender de esta ejecución",
     "title": "Aprender de esta ejecución",
     "description": "RAVENBOT propone una habilidad versionada a partir del rastro de herramientas de esta ejecución. Revísala y edítala antes de guardar.",
