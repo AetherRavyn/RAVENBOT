@@ -266,3 +266,10 @@ A replay never reports success for an action it could not perform:
   fallback, failure reporting and sensitive replay refusal.
 - The BrowserDock, LearnFromRun and LocalSkillsPanel DOM suites cover the Teach
   flow, prefilled review, Replay confirmation, success and failure rendering.
+
+A **live** end-to-end run in a real WebKit dock is not part of the headless
+suite: the DOM evaluator is Linux-only and CI has no desktop session. The
+shipped JavaScript is executed in jsdom and the command/UI contracts are
+tested, but a five-step recording on a real display remains the manual
+acceptance check. Do not describe the feature as live-verified until that run
+is recorded.
