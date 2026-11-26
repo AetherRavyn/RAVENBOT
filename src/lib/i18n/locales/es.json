@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "Control del ordenador",
-        "desc": "Controla el escritorio real: ratón, clics, escritura, teclas, scroll, captura"
+        "desc": "Controla el escritorio real: ratón, arrastre, clics, escritura, teclas, desplazamiento, apertura de apps, portapapeles y captura"
       },
       "db_query": {
         "name": "Consulta de base de datos",
@@ -1760,6 +1760,11 @@
     "noBackend1": "Sin backend de entrada. Instala ",
     "noBackend2": " (X11) o ",
     "noBackend3": " (Wayland).",
+    "clipboardAvailable": "Portapapeles: {{backend}}",
+    "clipboardMissing": "Portapapeles no disponible",
+    "clipboardPartial": "Portapapeles parcial: {{backend}}",
+    "appLaunchAvailable": "Inicio de aplicaciones: {{backend}}",
+    "appLaunchMissing": "Inicio de aplicaciones no disponible",
     "dockerMissing": "Docker no está instalado — escritorios aislados no disponibles",
     "captureUnavailable": "Captura de pantalla no disponible",
     "capturing": "Capturando pantalla…",

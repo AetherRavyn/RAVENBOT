@@ -65,12 +65,19 @@ Actions:
 | `screenshot_window` | Capture one window by id |
 | `screenshot` | Capture the full screen |
 | `click`, `double_click`, `right_click`, `move` | Pointer actions at screen coordinates |
+| `drag` | Hold the left button and drag between two screen coordinates (max 10 s) |
 | `type`, `key` | Text and key input |
 | `scroll` | Scroll at a screen point |
 | `wait` | Pause without touching the machine |
+| `app_launch` | Launch an app, `.desktop` id, executable, file, or URL without a shell |
+| `clipboard_read` | Read current clipboard text (capped at 64 KiB) |
+| `clipboard_write` | Replace clipboard text (capped at 64 KiB) |
 
 Window focus uses `xdotool`. Strict Wayland compositors may refuse it; the tool
 reports the window manager's error rather than pretending the focus happened.
+Pointer, keyboard, and drag input are Linux-only today. App launch and
+clipboard use native helpers on macOS and Windows; [`COMPUTER-USE.md`](COMPUTER-USE.md)
+records the exact matrix, backend detection, and the limits that are not faked.
 
 ### The Computer panel
 
@@ -95,11 +102,14 @@ The panel opens from an agent's chat header and shows:
 - Read-only inspection (`snapshot`, `text`, `html`, `scroll`, `highlight`,
   `back`, `forward`, `wait`; computer `windows`, `screenshot`,
   `screenshot_window`, `wait`) never needs a card. With Full (the default),
-  `click`, `fill`, `press`, `reload`, `eval`, `focus_window`, and pointer/keyboard
-  actions also run without a card; Ask/Auto can gate them. Reload remains
-  high-risk because it can resubmit a form.
-- Activity events contain action, selector/coordinates, and result, **never
-  typed text, single-character key presses, or page contents**.
+  `click`, `fill`, `press`, `reload`, `eval`, `focus_window`, pointer/keyboard
+  actions, `drag`, `app_launch`, and clipboard reads/writes also run without a
+  card; Ask/Auto can gate them. Clipboard reads are High because the clipboard
+  can hold credentials, and app launch is High because it can start arbitrary
+  local code. Reload remains high-risk because it can resubmit a form.
+- Activity events contain action, selector/coordinates, a truncated launch
+  target, and result, **never typed text, single-character key presses,
+  clipboard contents, or page contents**.
 - The remote page cannot reach the app IPC bridge.
 - The isolated Docker desktop remains available when host control is blocked.
 
@@ -128,6 +138,7 @@ Desktop app task:
 - Per-action browser leases, so an in-flight action is cancelled when the user
   takes over.
 - Native DOM bridges on macOS and Windows.
+- Native pointer, keyboard, and drag backends on macOS and Windows.
 - Wayland-native window activation.
 - Multi-monitor scaling for the click marker when the app is not on the primary
   monitor.

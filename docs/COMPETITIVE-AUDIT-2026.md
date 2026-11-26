@@ -224,7 +224,7 @@ competitor materially ahead · **A** = RAVENBOT absent.
 
 | Axis | RAVENBOT today | vs OpenBot | vs Grok | vs Muse |
 |---|---|---|---|---|
-| Computer use | Real local mouse/keyboard/window control on Linux only; macOS/Windows have no input backend | **B** | **B** | **B** |
+| Computer use | Real local mouse/keyboard/window control plus drag, app launch and clipboard read/write on Linux; app launch and clipboard use native helpers on macOS/Windows, but synthetic input has no macOS/Windows backend | **B** | **B** | **B** |
 | Browser | Native tabs with per-tab webviews/history, tab restore/reorder, automatic per-agent/office profiles plus named shared profiles, DOM actions, take-over, opt-in automatic cookie refusal with per-named-profile overrides; Linux-only DOM, no proxies | **B** | **B** | **B** |
 | Credentials / vault | Local Vault with OS-keychain secrets, Bitwarden/1Password/CSV import, agent vault-request cards, browser fill and browser save-to-vault without exposing the secret to the model; provider/MCP/plugin keys and signing seed also keychain-backed | **P** | **B** | **B** |
 | Payments | No native payments, spending authorization, or virtual cards | **B** | **B** | **B** |

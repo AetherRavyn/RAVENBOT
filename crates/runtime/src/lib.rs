@@ -3107,11 +3107,17 @@ impl Runtime {
     }
 
     /// Listing windows and taking screenshots are observation. Focusing a
-    /// window, clicking, typing, and scrolling change the machine.
+    /// window, clicking, typing, scrolling, launching, dragging, and clipboard
+    /// access change the machine or move secrets across a trust boundary, so
+    /// they are High. Clipboard reads are High even though they are read-only
+    /// locally: the clipboard can contain credentials.
     fn computer_control_risk(action: &str) -> ravenbot_skills::SkillRisk {
         match action {
             "windows" | "screenshot" | "screenshot_window" | "wait" => {
                 ravenbot_skills::SkillRisk::ReadOnly
+            }
+            "app_launch" | "clipboard_read" | "clipboard_write" | "drag" => {
+                ravenbot_skills::SkillRisk::High
             }
             _ => ravenbot_skills::SkillRisk::High,
         }
@@ -14326,7 +14332,17 @@ mod tool_risk_tests {
                 "{action}"
             );
         }
-        for action in ["click", "type", "key", "scroll", "focus_window"] {
+        for action in [
+            "click",
+            "type",
+            "key",
+            "scroll",
+            "focus_window",
+            "app_launch",
+            "clipboard_read",
+            "clipboard_write",
+            "drag",
+        ] {
             assert_eq!(
                 Runtime::computer_control_risk(action),
                 SkillRisk::High,

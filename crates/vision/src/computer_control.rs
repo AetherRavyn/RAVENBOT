@@ -1,5 +1,7 @@
 //! Computer control through vision-guided actions
 
+use crate::app_launch::AppLauncher;
+use crate::clipboard::Clipboard;
 use crate::image_analysis::{AnalysisResult, ImageAnalyzer};
 use crate::input::{Button, InputInjector};
 use crate::screenshot::{Screenshot, ScreenshotCapture};
@@ -39,6 +41,22 @@ pub enum ComputerAction {
     },
     /// Move mouse to coordinates
     MoveMouse { x: f32, y: f32 },
+    /// Drag with the left button held from one point to another
+    Drag {
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        /// Optional hold duration; the input layer caps it at 10 seconds.
+        #[serde(default)]
+        duration_ms: Option<u64>,
+    },
+    /// Launch an application, document, or URL
+    AppLaunch { target: String },
+    /// Read the system clipboard as text (capped)
+    ClipboardRead,
+    /// Replace the system clipboard with text
+    ClipboardWrite { text: String },
     /// Wait for a duration
     Wait { milliseconds: u64 },
 }
@@ -56,6 +74,10 @@ pub struct ActionResult {
     pub success: bool,
     pub message: String,
     pub screenshot_after: Option<Screenshot>,
+    /// Action-specific data (for example clipboard text or a PID). The
+    /// activity log never carries clipboard contents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
 }
 
 /// Vision-guided computer controller
@@ -63,6 +85,8 @@ pub struct ComputerController {
     screenshot_capture: ScreenshotCapture,
     image_analyzer: ImageAnalyzer,
     input: InputInjector,
+    app_launcher: AppLauncher,
+    clipboard: Clipboard,
     /// Whether to capture screenshot after each action
     capture_after_action: bool,
     /// Maximum actions per task
@@ -75,6 +99,8 @@ impl ComputerController {
             screenshot_capture: ScreenshotCapture::new(),
             image_analyzer: ImageAnalyzer::new(),
             input: InputInjector::detect(),
+            app_launcher: AppLauncher::detect(),
+            clipboard: Clipboard::detect(),
             capture_after_action: true,
             max_actions: 50,
         }
@@ -90,9 +116,39 @@ impl ComputerController {
         self.input.backend_summary()
     }
 
+    /// Human-readable summary of the detected app-launch backend.
+    pub fn app_launch_backend(&self) -> String {
+        self.app_launcher.backend_summary()
+    }
+
+    /// Human-readable summary of the detected clipboard backends.
+    pub fn clipboard_backend(&self) -> String {
+        self.clipboard.backend_summary()
+    }
+
     /// The argv plan this action would run, without running it.
     pub fn input_plan(&self, action: &ComputerAction) -> Option<String> {
         self.input.describe_plan(action)
+    }
+
+    /// The argv plan for any action, including launch and clipboard actions.
+    pub fn action_plan(&self, action: &ComputerAction) -> Option<String> {
+        match action {
+            ComputerAction::AppLaunch { target } => self
+                .app_launcher
+                .plan(target)
+                .ok()
+                .map(|plan| plan.describe()),
+            ComputerAction::ClipboardRead => {
+                self.clipboard.read_plan().ok().map(|plan| plan.describe())
+            }
+            ComputerAction::ClipboardWrite { text } => self
+                .clipboard
+                .write_plan(text)
+                .ok()
+                .map(|plan| plan.describe()),
+            _ => self.input.describe_plan(action),
+        }
     }
 
     /// Capture a screenshot after a mutating action, if enabled and possible.
@@ -112,7 +168,7 @@ impl ComputerController {
 
     /// Execute a computer action
     pub async fn execute(&self, action: &ComputerAction) -> Result<ActionResult, ControlError> {
-        tracing::info!(action = ?action, "Executing computer action");
+        tracing::info!(action = action_kind(action), "Executing computer action");
 
         match action {
             ComputerAction::Click { x, y, button } => self.perform_click(*x, *y, button).await,
@@ -132,12 +188,26 @@ impl ComputerController {
                 delta_y,
             } => self.perform_scroll(*x, *y, *delta_x, *delta_y).await,
             ComputerAction::MoveMouse { x, y } => self.perform_move_mouse(*x, *y).await,
+            ComputerAction::Drag {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                duration_ms,
+            } => {
+                self.perform_drag(*from_x, *from_y, *to_x, *to_y, *duration_ms)
+                    .await
+            }
+            ComputerAction::AppLaunch { target } => self.perform_app_launch(target).await,
+            ComputerAction::ClipboardRead => self.perform_clipboard_read().await,
+            ComputerAction::ClipboardWrite { text } => self.perform_clipboard_write(text).await,
             ComputerAction::Wait { milliseconds } => {
                 tokio::time::sleep(tokio::time::Duration::from_millis(*milliseconds)).await;
                 Ok(ActionResult {
                     success: true,
                     message: format!("Waited {}ms", milliseconds),
                     screenshot_after: None,
+                    payload: None,
                 })
             }
         }
@@ -167,6 +237,7 @@ impl ComputerController {
             success: true,
             message: format!("Clicked at ({}, {}) with {:?}", x, y, button),
             screenshot_after: self.after_shot().await,
+            payload: None,
         })
     }
 
@@ -181,6 +252,7 @@ impl ComputerController {
             success: true,
             message: format!("Typed {} character(s)", text.chars().count()),
             screenshot_after: self.after_shot().await,
+            payload: None,
         })
     }
 
@@ -195,6 +267,7 @@ impl ComputerController {
             success: true,
             message: format!("Pressed key: {}", key),
             screenshot_after: self.after_shot().await,
+            payload: None,
         })
     }
 
@@ -215,6 +288,7 @@ impl ComputerController {
             success: true,
             message: format!("Scrolled at ({}, {}) by ({}, {})", x, y, delta_x, delta_y),
             screenshot_after: self.after_shot().await,
+            payload: None,
         })
     }
 
@@ -229,6 +303,115 @@ impl ComputerController {
             success: true,
             message: format!("Moved mouse to ({}, {})", x, y),
             screenshot_after: self.after_shot().await,
+            payload: None,
+        })
+    }
+
+    /// Perform a left-button drag between two screen points.
+    async fn perform_drag(
+        &self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        duration_ms: Option<u64>,
+    ) -> Result<ActionResult, ControlError> {
+        self.input
+            .drag(from_x, from_y, to_x, to_y, duration_ms)
+            .await
+            .map_err(ControlError::ActionFailed)?;
+        tracing::info!(from_x, from_y, to_x, to_y, ?duration_ms, "Dragged");
+        Ok(ActionResult {
+            success: true,
+            message: format!(
+                "Dragged from ({}, {}) to ({}, {}) in {}ms",
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                duration_ms.unwrap_or(500)
+            ),
+            screenshot_after: self.after_shot().await,
+            payload: None,
+        })
+    }
+
+    /// Launch an application, document, or URL. Success means the process was
+    /// spawned, not that the application finished starting.
+    async fn perform_app_launch(&self, target: &str) -> Result<ActionResult, ControlError> {
+        let outcome = self
+            .app_launcher
+            .launch(target)
+            .map_err(ControlError::ActionFailed)?;
+        tracing::info!(
+            pid = outcome.pid,
+            strategy = %outcome.strategy,
+            "Launched application"
+        );
+        Ok(ActionResult {
+            success: true,
+            message: format!(
+                "Launched {} via {} (pid {})",
+                target, outcome.strategy, outcome.pid
+            ),
+            screenshot_after: None,
+            payload: Some(serde_json::json!({
+                "pid": outcome.pid,
+                "strategy": outcome.strategy,
+                "program": outcome.program,
+                "args": outcome.args,
+            })),
+        })
+    }
+
+    /// Read the clipboard without logging its contents.
+    async fn perform_clipboard_read(&self) -> Result<ActionResult, ControlError> {
+        let read = self
+            .clipboard
+            .read_text()
+            .await
+            .map_err(ControlError::ActionFailed)?;
+        let characters = read.text.chars().count();
+        tracing::info!(
+            bytes = read.bytes,
+            truncated = read.truncated,
+            "Read clipboard"
+        );
+        Ok(ActionResult {
+            success: true,
+            message: format!(
+                "Read {characters} character(s) from the clipboard{}",
+                if read.truncated { " (truncated)" } else { "" }
+            ),
+            screenshot_after: None,
+            payload: Some(serde_json::json!({
+                "text": read.text,
+                "bytes": read.bytes,
+                "truncated": read.truncated,
+                "backend": read.backend,
+            })),
+        })
+    }
+
+    /// Replace the clipboard without logging its contents.
+    async fn perform_clipboard_write(&self, text: &str) -> Result<ActionResult, ControlError> {
+        let write = self
+            .clipboard
+            .write_text(text)
+            .await
+            .map_err(ControlError::ActionFailed)?;
+        tracing::info!(bytes = write.bytes, "Wrote clipboard");
+        Ok(ActionResult {
+            success: true,
+            message: format!(
+                "Wrote {} character(s) to the clipboard",
+                text.chars().count()
+            ),
+            screenshot_after: None,
+            payload: Some(serde_json::json!({
+                "bytes": write.bytes,
+                "backend": write.backend,
+            })),
         })
     }
 
@@ -266,6 +449,23 @@ impl ComputerController {
         }
 
         Ok(results)
+    }
+}
+
+fn action_kind(action: &ComputerAction) -> &'static str {
+    match action {
+        ComputerAction::Click { .. } => "click",
+        ComputerAction::DoubleClick { .. } => "double_click",
+        ComputerAction::RightClick { .. } => "right_click",
+        ComputerAction::TypeText { .. } => "type_text",
+        ComputerAction::PressKey { .. } => "press_key",
+        ComputerAction::Scroll { .. } => "scroll",
+        ComputerAction::MoveMouse { .. } => "move_mouse",
+        ComputerAction::Drag { .. } => "drag",
+        ComputerAction::AppLaunch { .. } => "app_launch",
+        ComputerAction::ClipboardRead => "clipboard_read",
+        ComputerAction::ClipboardWrite { .. } => "clipboard_write",
+        ComputerAction::Wait { .. } => "wait",
     }
 }
 

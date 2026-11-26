@@ -174,8 +174,10 @@ voice, and computer control. It also supports:
 - **Native chat channels.** Telegram, Slack, Discord, WhatsApp, and Microsoft
   Teams, with pairing codes, thread routing, attachments, and approval cards.
 - **A browser dock and desktop control.** A real webview beside the conversation,
-  DOM snapshots and actions for the agent, plus opt-in window/screen control on
-  Linux.
+  DOM snapshots and actions for the agent, plus opt-in window/screen control,
+  app launch, clipboard read/write, and drag on Linux. App launch and clipboard
+  use native helpers on macOS and Windows; synthetic pointer/keyboard input is
+  still Linux-only.
 
 ### Output people can open
 
@@ -406,7 +408,9 @@ This is a working product, not a mock-up, but some edges are still honest
 limitations rather than finished features:
 
 - **Linux is the primary target.** Desktop, sandbox, daemon, Docker isolation,
-  and desktop control are exercised here.
+  and desktop control are exercised here. Synthetic pointer, keyboard, and drag
+  input is Linux-only; app launch and clipboard use native helpers on macOS and
+  Windows. See [`docs/COMPUTER-USE.md`](docs/COMPUTER-USE.md).
 - **macOS** builds and ships a default-deny Seatbelt profile, and can use Docker
   Desktop as a real container backend. The Seatbelt path still needs
   real-machine validation before it should be treated as equal to Linux.
@@ -440,6 +444,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | Document | What it covers |
 |---|---|
 | [`docs/agent-harness.md`](docs/agent-harness.md) | Tool discipline, budgets, guards, handoff, and verification |
+| [`docs/COMPUTER-USE.md`](docs/COMPUTER-USE.md) | Desktop actions, platform matrix, approvals and honest limits |
 | [`docs/ACCOUNTS.md`](docs/ACCOUNTS.md) | Local accounts, sessions, and workspace roles |
 | [`docs/REMOTE-ACCESS.md`](docs/REMOTE-ACCESS.md) | Pairing, RBAC, and the remote listener |
 | [`docs/SERVICE.md`](docs/SERVICE.md) | systemd, launchd, and Windows logon service |

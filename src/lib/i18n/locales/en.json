@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "Computer Control",
-        "desc": "Control the real desktop: mouse, clicks, typing, keys, scroll, screenshot"
+        "desc": "Control the real desktop: mouse, drag, clicks, typing, keys, scroll, app launch, clipboard, screenshot"
       },
       "db_query": {
         "name": "Database Query",
@@ -1857,6 +1857,11 @@
     "noBackend1": "No input backend. Install ",
     "noBackend2": " (X11) or ",
     "noBackend3": " (Wayland).",
+    "clipboardAvailable": "Clipboard: {{backend}}",
+    "clipboardMissing": "Clipboard unavailable",
+    "clipboardPartial": "Clipboard partial: {{backend}}",
+    "appLaunchAvailable": "App launch: {{backend}}",
+    "appLaunchMissing": "App launch unavailable",
     "dockerMissing": "Docker not installed — isolated desktops unavailable",
     "captureUnavailable": "Screen capture unavailable",
     "capturing": "Capturing screen…",

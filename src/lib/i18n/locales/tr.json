@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "Bilgisayar kontrolü",
-        "desc": "Gerçek masaüstünü kontrol et: fare, tıklamalar, yazma, tuşlar, kaydırma, ekran görüntüsü"
+        "desc": "Gerçek masaüstünü kontrol et: fare, sürükleme, tıklama, yazma, tuşlar, kaydırma, uygulama başlatma, pano ve ekran görüntüsü"
       },
       "db_query": {
         "name": "Veritabanı sorgusu",
@@ -1857,6 +1857,11 @@
     "noBackend1": "Girdi arka ucu yok. ",
     "noBackend2": " (X11) veya ",
     "noBackend3": " (Wayland) kur.",
+    "clipboardAvailable": "Pano: {{backend}}",
+    "clipboardMissing": "Pano kullanılamıyor",
+    "clipboardPartial": "Pano kısmen kullanılabilir: {{backend}}",
+    "appLaunchAvailable": "Uygulama başlatma: {{backend}}",
+    "appLaunchMissing": "Uygulama başlatma kullanılamıyor",
     "dockerMissing": "Docker kurulu değil — izole masaüstleri kullanılamıyor",
     "captureUnavailable": "Ekran yakalama kullanılamıyor",
     "capturing": "Ekran yakalanıyor…",

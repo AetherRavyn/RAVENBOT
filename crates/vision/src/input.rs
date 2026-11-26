@@ -22,6 +22,16 @@ pub enum Button {
     Right,
 }
 
+/// A drag is one gesture, but a stuck button changes the user's desktop. The
+/// caller must keep it under ten seconds; the input layer also rejects negative
+/// or non-finite coordinates.
+pub const MAX_DRAG_DURATION_MS: u64 = 10_000;
+const DEFAULT_DRAG_DURATION_MS: u64 = 500;
+
+// ydotool click masks: 0x00 is a no-op, so a drag needs explicit down/up.
+const YDOTOOL_DRAG_DOWN: &str = "0x40";
+const YDOTOOL_DRAG_UP: &str = "0x80";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Tool {
     Xdotool,
@@ -224,6 +234,60 @@ impl InputInjector {
         }
     }
 
+    fn plan_drag(
+        &self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        duration_ms: Option<u64>,
+    ) -> Result<(Tool, Vec<String>), String> {
+        let from_x = validate_drag_coordinate("from_x", from_x)?;
+        let from_y = validate_drag_coordinate("from_y", from_y)?;
+        let to_x = validate_drag_coordinate("to_x", to_x)?;
+        let to_y = validate_drag_coordinate("to_y", to_y)?;
+        let duration_ms = validate_drag_duration(duration_ms)?;
+
+        let p = self.pointer.as_ref().ok_or("pointer control unavailable")?;
+        match p.tool {
+            Tool::Xdotool => {
+                let mut args = vec![
+                    "mousemove".into(),
+                    from_x.to_string(),
+                    from_y.to_string(),
+                    "mousedown".into(),
+                    "1".into(),
+                ];
+                if duration_ms > 0 {
+                    args.push("sleep".into());
+                    args.push(format!("{:.3}", duration_ms as f64 / 1000.0));
+                }
+                args.extend([
+                    "mousemove".into(),
+                    to_x.to_string(),
+                    to_y.to_string(),
+                    "mouseup".into(),
+                    "1".into(),
+                ]);
+                Ok((p.tool, args))
+            }
+            Tool::Ydotool => Ok((
+                p.tool,
+                vec![
+                    "__ydotool_drag__".into(),
+                    from_x.to_string(),
+                    from_y.to_string(),
+                    to_x.to_string(),
+                    to_y.to_string(),
+                    duration_ms.to_string(),
+                    YDOTOOL_DRAG_DOWN.into(),
+                    YDOTOOL_DRAG_UP.into(),
+                ],
+            )),
+            Tool::Wtype => Err("pointer control unavailable".to_string()),
+        }
+    }
+
     fn plan_scroll(
         &self,
         x: f32,
@@ -392,6 +456,37 @@ impl InputInjector {
                             )
                             .await;
                     }
+                    "__ydotool_drag__" => {
+                        let to_x = args
+                            .get(3)
+                            .and_then(|value| value.parse::<i64>().ok())
+                            .ok_or("ydotool drag is missing a target x coordinate")?;
+                        let to_y = args
+                            .get(4)
+                            .and_then(|value| value.parse::<i64>().ok())
+                            .ok_or("ydotool drag is missing a target y coordinate")?;
+                        let duration_ms = args
+                            .get(5)
+                            .and_then(|value| value.parse::<u64>().ok())
+                            .ok_or("ydotool drag is missing a duration")?;
+                        let down = args
+                            .get(6)
+                            .map(String::as_str)
+                            .unwrap_or(YDOTOOL_DRAG_DOWN)
+                            .to_string();
+                        let up = args
+                            .get(7)
+                            .map(String::as_str)
+                            .unwrap_or(YDOTOOL_DRAG_UP)
+                            .to_string();
+                        self.exec_path(&path, &["click".into(), down]).await?;
+                        if duration_ms > 0 {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(duration_ms))
+                                .await;
+                        }
+                        self.move_pointer_to(&path, to_x, to_y).await?;
+                        return self.exec_path(&path, &["click".into(), up]).await;
+                    }
                     // "__ydotool_move__" (and any future move action) has
                     // already been satisfied by move_pointer_to.
                     _ => return Ok(()),
@@ -462,6 +557,20 @@ impl InputInjector {
         .await
     }
 
+    /// Drag with the left button held. Coordinates are desktop layout points,
+    /// already translated from screenshot pixels by the caller.
+    pub async fn drag(
+        &self,
+        from_x: f32,
+        from_y: f32,
+        to_x: f32,
+        to_y: f32,
+        duration_ms: Option<u64>,
+    ) -> Result<(), String> {
+        self.run(self.plan_drag(from_x, from_y, to_x, to_y, duration_ms)?)
+            .await
+    }
+
     pub async fn type_text(&self, text: &str) -> Result<(), String> {
         self.run(
             self.plan_type(text)
@@ -495,9 +604,19 @@ impl InputInjector {
                 delta_x,
                 delta_y,
             } => self.plan_scroll(*x, *y, *delta_x, *delta_y),
+            A::Drag {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                duration_ms,
+            } => self
+                .plan_drag(*from_x, *from_y, *to_x, *to_y, *duration_ms)
+                .ok(),
             A::TypeText { text } => self.plan_type(text),
             A::PressKey { key } => self.plan_key(key),
             A::Wait { .. } => return Some("wait".to_string()),
+            A::AppLaunch { .. } | A::ClipboardRead | A::ClipboardWrite { .. } => return None,
         }?;
         Some(format!("{} {}", plan.0.binary(), plan.1.join(" ")))
     }
@@ -509,6 +628,25 @@ fn map_button(button: &crate::computer_control::MouseButton) -> Button {
         crate::computer_control::MouseButton::Middle => Button::Middle,
         crate::computer_control::MouseButton::Right => Button::Right,
     }
+}
+
+fn validate_drag_coordinate(name: &str, value: f32) -> Result<i64, String> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(format!(
+            "drag {name} must be a finite, non-negative screen coordinate"
+        ));
+    }
+    Ok(value.round() as i64)
+}
+
+fn validate_drag_duration(duration_ms: Option<u64>) -> Result<u64, String> {
+    let duration_ms = duration_ms.unwrap_or(DEFAULT_DRAG_DURATION_MS);
+    if duration_ms > MAX_DRAG_DURATION_MS {
+        return Err(format!(
+            "drag duration must be at most {MAX_DRAG_DURATION_MS}ms"
+        ));
+    }
+    Ok(duration_ms)
 }
 
 fn find(name: &str) -> Option<PathBuf> {
@@ -638,6 +776,109 @@ mod tests {
         );
         assert_eq!(injector.plan_key("Return").unwrap().1, vec!["key", "28"]);
         assert!(injector.plan_key("ctrl+c").is_none());
+    }
+
+    fn fake_x11_injector() -> InputInjector {
+        let tool = Program {
+            tool: Tool::Xdotool,
+            path: PathBuf::from("xdotool"),
+        };
+        InputInjector {
+            pointer: Some(tool.clone()),
+            typer: Some(tool.clone()),
+            keys: Some(tool),
+        }
+    }
+
+    #[test]
+    fn xdotool_drag_plans_move_down_move_up() {
+        let injector = fake_x11_injector();
+        let plan = injector
+            .plan_drag(10.0, 20.0, 30.0, 40.0, Some(500))
+            .unwrap();
+        assert_eq!(plan.0, Tool::Xdotool);
+        assert_eq!(
+            plan.1,
+            vec![
+                "mousemove",
+                "10",
+                "20",
+                "mousedown",
+                "1",
+                "sleep",
+                "0.500",
+                "mousemove",
+                "30",
+                "40",
+                "mouseup",
+                "1"
+            ]
+        );
+        // A zero duration is valid and simply omits the pacing step.
+        let instant = injector.plan_drag(1.0, 2.0, 3.0, 4.0, Some(0)).unwrap();
+        assert!(!instant.1.contains(&"sleep".to_string()));
+        assert!(instant.1.windows(2).any(|pair| pair == ["mousedown", "1"]));
+        assert!(instant.1.windows(2).any(|pair| pair == ["mouseup", "1"]));
+    }
+
+    #[test]
+    fn ydotool_drag_uses_down_and_up_masks() {
+        let injector = ydotool_injector();
+        let plan = injector.plan_drag(10.0, 20.0, 30.0, 40.0, None).unwrap();
+        assert_eq!(plan.0, Tool::Ydotool);
+        assert_eq!(
+            plan.1,
+            vec![
+                "__ydotool_drag__",
+                "10",
+                "20",
+                "30",
+                "40",
+                "500",
+                "0x40",
+                "0x80"
+            ]
+        );
+        // 0x00 would be a no-op; the down and up masks must be distinct.
+        assert_ne!(plan.1[6], plan.1[7]);
+    }
+
+    #[test]
+    fn drag_coordinate_and_duration_validation_is_explicit() {
+        let injector = fake_x11_injector();
+        for (from_x, from_y, to_x, to_y) in [
+            (f32::NAN, 0.0, 1.0, 1.0),
+            (0.0, f32::INFINITY, 1.0, 1.0),
+            (-1.0, 0.0, 1.0, 1.0),
+            (0.0, 0.0, 1.0, -1.0),
+        ] {
+            let error = injector
+                .plan_drag(from_x, from_y, to_x, to_y, None)
+                .unwrap_err();
+            assert!(error.contains("drag"), "{error}");
+        }
+        assert!(injector
+            .plan_drag(0.0, 0.0, 1.0, 1.0, Some(MAX_DRAG_DURATION_MS + 1))
+            .is_err());
+        assert!(injector
+            .plan_drag(0.0, 0.0, 1.0, 1.0, Some(MAX_DRAG_DURATION_MS))
+            .is_ok());
+    }
+
+    #[test]
+    fn describe_plan_covers_drag() {
+        let injector = fake_x11_injector();
+        let description = injector
+            .describe_plan(&ComputerAction::Drag {
+                from_x: 5.0,
+                from_y: 6.0,
+                to_x: 7.0,
+                to_y: 8.0,
+                duration_ms: Some(100),
+            })
+            .unwrap();
+        assert!(description.contains("mousedown 1"));
+        assert!(description.contains("mouseup 1"));
     }
 
     #[test]

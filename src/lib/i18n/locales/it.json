@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "Controllo computer",
-        "desc": "Controlla il desktop reale: mouse, clic, digitazione, tasti, scorrimento, schermata"
+        "desc": "Controlla il desktop reale: mouse, trascinamento, clic, digitazione, tasti, scorrimento, avvio app, appunti e cattura"
       },
       "db_query": {
         "name": "Query database",
@@ -1857,6 +1857,11 @@
     "noBackend1": "Nessun backend di input. Installa ",
     "noBackend2": " (X11) o ",
     "noBackend3": " (Wayland).",
+    "clipboardAvailable": "Appunti: {{backend}}",
+    "clipboardMissing": "Appunti non disponibili",
+    "clipboardPartial": "Appunti parziali: {{backend}}",
+    "appLaunchAvailable": "Avvio app: {{backend}}",
+    "appLaunchMissing": "Avvio app non disponibile",
     "dockerMissing": "Docker non installato — desktop isolati non disponibili",
     "captureUnavailable": "Cattura schermo non disponibile",
     "capturing": "Cattura dello schermo…",

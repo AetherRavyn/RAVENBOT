@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "Contrôle de l'ordinateur",
-        "desc": "Contrôle le vrai bureau : souris, clics, frappe, touches, défilement, capture"
+        "desc": "Contrôlez le bureau réel : souris, glisser, clics, saisie, touches, défilement, lancement d'applications, presse-papiers, capture"
       },
       "db_query": {
         "name": "Requête en base de données",
@@ -1760,6 +1760,11 @@
     "noBackend1": "Aucun backend d'entrée. Installez ",
     "noBackend2": " (X11) ou ",
     "noBackend3": " (Wayland).",
+    "clipboardAvailable": "Presse-papiers : {{backend}}",
+    "clipboardMissing": "Presse-papiers indisponible",
+    "clipboardPartial": "Presse-papiers partiel : {{backend}}",
+    "appLaunchAvailable": "Lancement d'applications : {{backend}}",
+    "appLaunchMissing": "Lancement d'applications indisponible",
     "dockerMissing": "Docker non installé — bureaux isolés indisponibles",
     "captureUnavailable": "Capture d'écran indisponible",
     "capturing": "Capture de l'écran…",

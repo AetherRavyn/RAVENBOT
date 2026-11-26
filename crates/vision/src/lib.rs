@@ -3,17 +3,25 @@
 //! This crate provides screenshot capture, image analysis,
 //! and computer control through vision models.
 
+pub mod app_launch;
 pub mod audio;
+pub mod clipboard;
 pub mod computer_control;
 pub mod image_analysis;
 pub mod input;
+pub mod platform;
 pub mod screenshot;
 pub mod window_control;
 
+pub use app_launch::{AppLauncher, LaunchOutcome, LaunchPlan, LaunchStrategy};
 pub use audio::{AudioTranscriber, TextToSpeech};
+pub use clipboard::{
+    Clipboard, ClipboardEnvironment, ClipboardRead, ClipboardWrite, MAX_CLIPBOARD_BYTES,
+};
 pub use computer_control::{ActionResult, ComputerAction, ComputerController, MouseButton};
 pub use image_analysis::ImageAnalyzer;
 pub use input::InputInjector;
+pub use platform::Platform;
 pub use screenshot::ScreenshotCapture;
 pub use window_control::{focus_window, list_windows, DesktopWindow};
 

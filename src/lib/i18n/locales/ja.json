@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "コンピュータ操作",
-        "desc": "実際のデスクトップを操作：マウス、クリック、入力、キー、スクロール、スクショ"
+        "desc": "実際のデスクトップを操作: マウス、ドラッグ、クリック、入力、キー、スクロール、アプリ起動、クリップボード、スクリーンショット"
       },
       "db_query": {
         "name": "データベースクエリ",
@@ -1760,6 +1760,11 @@
     "noBackend1": "入力バックエンドがありません。次をインストール: ",
     "noBackend2": "（X11）または ",
     "noBackend3": "（Wayland）。",
+    "clipboardAvailable": "クリップボード: {{backend}}",
+    "clipboardMissing": "クリップボードは利用できません",
+    "clipboardPartial": "クリップボードは一部利用可能: {{backend}}",
+    "appLaunchAvailable": "アプリ起動: {{backend}}",
+    "appLaunchMissing": "アプリ起動は利用できません",
     "dockerMissing": "Docker未インストール — 隔離デスクトップは利用不可",
     "captureUnavailable": "画面キャプチャを利用できません",
     "capturing": "画面をキャプチャ中…",

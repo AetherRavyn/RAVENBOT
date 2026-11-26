@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "电脑控制",
-        "desc": "控制真实桌面：鼠标、点击、输入、按键、滚动、截图"
+        "desc": "控制真实桌面：鼠标、拖动、点击、输入、按键、滚动、应用启动、剪贴板和截图"
       },
       "db_query": {
         "name": "数据库查询",
@@ -1760,6 +1760,11 @@
     "noBackend1": "没有输入后端。请安装 ",
     "noBackend2": "（X11）或 ",
     "noBackend3": "（Wayland）。",
+    "clipboardAvailable": "剪贴板：{{backend}}",
+    "clipboardMissing": "剪贴板不可用",
+    "clipboardPartial": "剪贴板部分可用：{{backend}}",
+    "appLaunchAvailable": "应用启动：{{backend}}",
+    "appLaunchMissing": "应用启动不可用",
     "dockerMissing": "未安装 Docker——隔离桌面不可用",
     "captureUnavailable": "无法捕获屏幕",
     "capturing": "正在捕获屏幕…",

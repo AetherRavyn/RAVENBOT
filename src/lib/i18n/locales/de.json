@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "Rechnersteuerung",
-        "desc": "Echten Desktop steuern: Maus, Klicks, Tippen, Tasten, Scrollen, Screenshot"
+        "desc": "Den echten Desktop steuern: Maus, Ziehen, Klicks, Tippen, Tasten, Scrollen, App-Start, Zwischenablage, Screenshot"
       },
       "db_query": {
         "name": "Datenbankabfrage",
@@ -1760,6 +1760,11 @@
     "noBackend1": "Kein Eingabe-Backend. Installieren Sie ",
     "noBackend2": " (X11) oder ",
     "noBackend3": " (Wayland).",
+    "clipboardAvailable": "Zwischenablage: {{backend}}",
+    "clipboardMissing": "Zwischenablage nicht verfügbar",
+    "clipboardPartial": "Zwischenablage teilweise verfügbar: {{backend}}",
+    "appLaunchAvailable": "App-Start: {{backend}}",
+    "appLaunchMissing": "App-Start nicht verfügbar",
     "dockerMissing": "Docker nicht installiert — isolierte Desktops nicht verfügbar",
     "captureUnavailable": "Bildschirmaufnahme nicht verfügbar",
     "capturing": "Bildschirm wird erfasst…",

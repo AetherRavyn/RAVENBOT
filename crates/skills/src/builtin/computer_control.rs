@@ -82,6 +82,19 @@ fn activity(context: &SkillContext, action: &str, detail: impl Into<String>, ok:
     ravenbot_core::emit_agent_activity("computer", context.bot_id, action, detail, ok);
 }
 
+/// Keep the activity feed readable and avoid dumping a very long URL/path.
+fn activity_target(target: &str) -> String {
+    const MAX_CHARS: usize = 80;
+    let count = target.chars().count();
+    if count <= MAX_CHARS {
+        target.to_string()
+    } else {
+        let mut shortened: String = target.chars().take(MAX_CHARS).collect();
+        shortened.push('…');
+        shortened
+    }
+}
+
 fn activity_at(
     context: &SkillContext,
     action: &str,
@@ -103,6 +116,7 @@ fn action_point(action: &ComputerAction) -> Option<(f32, f32)> {
         | ComputerAction::RightClick { x, y }
         | ComputerAction::MoveMouse { x, y }
         | ComputerAction::Scroll { x, y, .. } => Some((*x, *y)),
+        ComputerAction::Drag { from_x, from_y, .. } => Some((*from_x, *from_y)),
         _ => None,
     }
 }
@@ -137,15 +151,16 @@ impl Skill for ComputerControlSkill {
     }
 
     fn description(&self) -> &str {
-        "Control the real desktop: list and focus windows, move the mouse, click, \
-         type text, press keys, scroll, wait, or capture the screen or one window. \
-         Use for GUI tasks that no CLI tool covers. Pointer coordinates are pixels \
-         in the most recent screenshot; the screenshot reports the desktop origin \
-         when its top-left pixel is not (0, 0)."
+        "Control the real desktop: list and focus windows, launch an application, \
+         read or write the clipboard, move the mouse, click, drag, type text, press \
+         keys, scroll, wait, or capture the screen or one window. Use for GUI tasks \
+         that no CLI tool covers. Pointer coordinates are pixels in the most recent \
+         screenshot; the screenshot reports the desktop origin when its top-left \
+         pixel is not (0, 0)."
     }
 
     fn version(&self) -> &str {
-        "1.1.0"
+        "1.2.0"
     }
 
     fn required_permissions(&self) -> Vec<Permission> {
@@ -159,19 +174,25 @@ impl Skill for ComputerControlSkill {
                 "action": {
                     "type": "string",
                     "enum": [
-                        "click", "double_click", "right_click", "move", "type", "key",
-                        "scroll", "wait", "screenshot", "screenshot_window", "windows",
-                        "focus_window"
+                        "click", "double_click", "right_click", "move", "drag", "type", "key",
+                        "scroll", "wait", "app_launch", "clipboard_read", "clipboard_write",
+                        "screenshot", "screenshot_window", "windows", "focus_window"
                     ],
                     "description": "The action to perform"
                 },
                 "x": { "type": "number", "description": "X pixel in the most recent screenshot (pointer actions)" },
                 "y": { "type": "number", "description": "Y pixel in the most recent screenshot (pointer actions)" },
-                "text": { "type": "string", "description": "Text to type (action=type)" },
+                "from_x": { "type": "number", "description": "Drag start X pixel in the most recent screenshot (action=drag)" },
+                "from_y": { "type": "number", "description": "Drag start Y pixel in the most recent screenshot (action=drag)" },
+                "to_x": { "type": "number", "description": "Drag end X pixel in the most recent screenshot (action=drag)" },
+                "to_y": { "type": "number", "description": "Drag end Y pixel in the most recent screenshot (action=drag)" },
+                "duration_ms": { "type": "integer", "minimum": 0, "maximum": 10000, "description": "Drag hold duration in milliseconds, max 10000 (action=drag, default 500)" },
+                "text": { "type": "string", "description": "Text to type (action=type) or write to the clipboard (action=clipboard_write, max 64 KiB)" },
                 "key": { "type": "string", "description": "Key name, e.g. Return, ctrl+c, Tab (action=key)" },
                 "delta_x": { "type": "integer", "description": "Horizontal scroll amount (action=scroll)" },
                 "delta_y": { "type": "integer", "description": "Vertical scroll amount; positive scrolls down (action=scroll)" },
                 "milliseconds": { "type": "integer", "description": "Wait duration in milliseconds, max 30000 (action=wait)" },
+                "target": { "type": "string", "maxLength": 4096, "description": "Application name, .desktop id, executable path, file path or URL (action=app_launch)" },
                 "window_id": { "type": "integer", "description": "Window id from action=windows (focus_window / screenshot_window)" }
             },
             "required": ["action"]
@@ -348,6 +369,34 @@ impl Skill for ComputerControlSkill {
                 let (x, y) = point(action)?;
                 ComputerAction::MoveMouse { x, y }
             }
+            "drag" => {
+                let (from_x, from_y) = translate_point(
+                    context.bot_id,
+                    required_f32(&arguments, "from_x", action)?,
+                    required_f32(&arguments, "from_y", action)?,
+                );
+                let (to_x, to_y) = translate_point(
+                    context.bot_id,
+                    required_f32(&arguments, "to_x", action)?,
+                    required_f32(&arguments, "to_y", action)?,
+                );
+                let duration_ms = match arguments.get("duration_ms") {
+                    None | Some(serde_json::Value::Null) => None,
+                    Some(value) => Some(value.as_u64().ok_or_else(|| {
+                        SkillError::InvalidArguments(
+                            "action=drag requires 'duration_ms' to be a non-negative integer"
+                                .to_string(),
+                        )
+                    })?),
+                };
+                ComputerAction::Drag {
+                    from_x,
+                    from_y,
+                    to_x,
+                    to_y,
+                    duration_ms,
+                }
+            }
             "type" => ComputerAction::TypeText {
                 text: arguments
                     .get("text")
@@ -388,9 +437,34 @@ impl Skill for ComputerControlSkill {
                     .unwrap_or(1000)
                     .min(30_000),
             },
+            "app_launch" => ComputerAction::AppLaunch {
+                target: arguments
+                    .get("target")
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| {
+                        SkillError::InvalidArguments(
+                            "action=app_launch requires a non-empty 'target'".to_string(),
+                        )
+                    })?
+                    .to_string(),
+            },
+            "clipboard_read" => ComputerAction::ClipboardRead,
+            "clipboard_write" => ComputerAction::ClipboardWrite {
+                text: arguments
+                    .get("text")
+                    .and_then(|value| value.as_str())
+                    .ok_or_else(|| {
+                        SkillError::InvalidArguments(
+                            "action=clipboard_write requires 'text'".to_string(),
+                        )
+                    })?
+                    .to_string(),
+            },
             other => {
                 return Ok(SkillResult::failure(format!(
-                    "Unknown action '{other}'. Valid: click, double_click, right_click, move, type, key, scroll, wait, screenshot, screenshot_window, windows, focus_window."
+                    "Unknown action '{other}'. Valid: click, double_click, right_click, move, drag, type, key, scroll, wait, app_launch, clipboard_read, clipboard_write, screenshot, screenshot_window, windows, focus_window."
                 )))
             }
         };
@@ -402,7 +476,18 @@ impl Skill for ComputerControlSkill {
             ));
         }
 
-        if !controller.input_available() && action != "wait" {
+        let needs_input = matches!(
+            computer_action,
+            ComputerAction::Click { .. }
+                | ComputerAction::DoubleClick { .. }
+                | ComputerAction::RightClick { .. }
+                | ComputerAction::MoveMouse { .. }
+                | ComputerAction::Drag { .. }
+                | ComputerAction::Scroll { .. }
+                | ComputerAction::TypeText { .. }
+                | ComputerAction::PressKey { .. }
+        );
+        if needs_input && !controller.input_available() {
             activity(context, action, "no desktop input backend", false);
             return Ok(SkillResult::failure(
                 "No desktop input backend is available on this machine. Install `xdotool` (X11) or `ydotool`/`wtype` (Wayland).",
@@ -410,13 +495,20 @@ impl Skill for ComputerControlSkill {
         }
 
         let plan = controller
-            .input_plan(&computer_action)
+            .action_plan(&computer_action)
             .unwrap_or_else(|| "unavailable".to_string());
         let detail = match &computer_action {
             ComputerAction::Click { x, y, .. }
             | ComputerAction::DoubleClick { x, y }
             | ComputerAction::RightClick { x, y }
             | ComputerAction::MoveMouse { x, y } => format!("{action} ({x}, {y})"),
+            ComputerAction::Drag {
+                from_x,
+                from_y,
+                to_x,
+                to_y,
+                ..
+            } => format!("drag ({from_x}, {from_y}) → ({to_x}, {to_y})"),
             ComputerAction::TypeText { text } => {
                 format!("typed {} characters", text.chars().count())
             }
@@ -435,6 +527,13 @@ impl Skill for ComputerControlSkill {
                 delta_x,
                 delta_y,
             } => format!("scroll ({x}, {y}) by ({delta_x}, {delta_y})"),
+            ComputerAction::AppLaunch { target } => {
+                format!("launch {}", activity_target(target))
+            }
+            ComputerAction::ClipboardRead => "read the clipboard".to_string(),
+            ComputerAction::ClipboardWrite { text } => {
+                format!("wrote {} characters to the clipboard", text.chars().count())
+            }
             ComputerAction::Wait { milliseconds } => format!("wait {milliseconds}ms"),
         };
 
@@ -448,13 +547,30 @@ impl Skill for ComputerControlSkill {
         };
 
         activity_at(context, action, detail.clone(), result.success, point);
+        let backend = match &computer_action {
+            ComputerAction::AppLaunch { .. } => controller.app_launch_backend(),
+            ComputerAction::ClipboardRead | ComputerAction::ClipboardWrite { .. } => {
+                controller.clipboard_backend()
+            }
+            _ => controller.input_backend(),
+        };
         let mut output = serde_json::json!({
             "action": action,
             "success": result.success,
             "message": result.message,
-            "backend": controller.input_backend(),
+            "backend": backend,
             "plan": plan,
         });
+        if let Some(payload) = result.payload {
+            match payload {
+                serde_json::Value::Object(fields) => {
+                    for (key, value) in fields {
+                        output[key] = value;
+                    }
+                }
+                other => output["result"] = other,
+            }
+        }
         if let Some(shot) = result.screenshot_after {
             output["screenshot_after"] = serde_json::json!(shot.to_data_url());
         }
@@ -503,6 +619,57 @@ mod tests {
         let skill = ComputerControlSkill::new();
         let err = skill
             .execute(&ctx(), serde_json::json!({"action": "click"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SkillError::InvalidArguments(_)));
+    }
+
+    #[test]
+    fn schema_lists_the_new_actions_and_stays_high_risk() {
+        let skill = ComputerControlSkill::new();
+        let schema = skill.input_schema();
+        let actions = schema["properties"]["action"]["enum"]
+            .as_array()
+            .expect("action enum");
+        for action in ["app_launch", "clipboard_read", "clipboard_write", "drag"] {
+            assert!(
+                actions.iter().any(|value| value == action),
+                "schema is missing {action}"
+            );
+        }
+        assert_eq!(skill.risk(), crate::traits::SkillRisk::High);
+    }
+
+    #[tokio::test]
+    async fn drag_requires_both_endpoints() {
+        let skill = ComputerControlSkill::new();
+        let err = skill
+            .execute(
+                &ctx(),
+                serde_json::json!({"action": "drag", "from_x": 1, "from_y": 2}),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SkillError::InvalidArguments(_)));
+    }
+
+    #[tokio::test]
+    async fn app_launch_requires_a_non_empty_target() {
+        let skill = ComputerControlSkill::new();
+        for arguments in [
+            serde_json::json!({"action": "app_launch"}),
+            serde_json::json!({"action": "app_launch", "target": "   "}),
+        ] {
+            let err = skill.execute(&ctx(), arguments).await.unwrap_err();
+            assert!(matches!(err, SkillError::InvalidArguments(_)));
+        }
+    }
+
+    #[tokio::test]
+    async fn clipboard_write_requires_text() {
+        let skill = ComputerControlSkill::new();
+        let err = skill
+            .execute(&ctx(), serde_json::json!({"action": "clipboard_write"}))
             .await
             .unwrap_err();
         assert!(matches!(err, SkillError::InvalidArguments(_)));

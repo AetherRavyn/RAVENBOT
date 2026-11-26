@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "Controle do computador",
-        "desc": "Controle a área de trabalho real: mouse, cliques, digitação, teclas, rolagem e captura de tela"
+        "desc": "Controle a área de trabalho real: rato, arrastar, cliques, escrita, teclas, deslocamento, abrir apps, área de transferência e captura"
       },
       "db_query": {
         "name": "Consulta ao banco de dados",
@@ -1857,6 +1857,11 @@
     "noBackend1": "Nenhum backend de entrada. Instale ",
     "noBackend2": " (X11) ou ",
     "noBackend3": " (Wayland).",
+    "clipboardAvailable": "Área de transferência: {{backend}}",
+    "clipboardMissing": "Área de transferência indisponível",
+    "clipboardPartial": "Área de transferência parcial: {{backend}}",
+    "appLaunchAvailable": "Início de aplicações: {{backend}}",
+    "appLaunchMissing": "Início de aplicações indisponível",
     "dockerMissing": "Docker não instalado — áreas de trabalho isoladas indisponíveis",
     "captureUnavailable": "Captura de tela indisponível",
     "capturing": "Capturando tela…",

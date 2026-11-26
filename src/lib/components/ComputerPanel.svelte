@@ -19,7 +19,9 @@
     Hand,
     AppWindow,
     Bot,
+    Clipboard,
     Focus,
+    Rocket,
   } from "@lucide/svelte";
 
   interface Props {
@@ -48,6 +50,16 @@
     host_control: boolean;
     host_control_backend: string;
     host_control_policy: "opt_in_required" | "blocked";
+    clipboard: {
+      available: boolean;
+      read_available: boolean;
+      write_available: boolean;
+      backend: string;
+    };
+    app_launch: {
+      available: boolean;
+      backend: string;
+    };
     docker: {
       available: boolean;
       version: string | null;
@@ -442,6 +454,24 @@
               <span>Docker {capabilities.docker.version}</span>
             {:else}
               <span>{t("computer.dockerMissing")}</span>
+            {/if}
+          </span>
+          <span class="flex items-center gap-1.5 {capabilities.clipboard.available ? 'text-[var(--text-tertiary)]' : 'text-[var(--text-muted)]'}">
+            <Clipboard class="size-3.5 shrink-0" />
+            {#if capabilities.clipboard.available}
+              <span>{t("computer.clipboardAvailable", { backend: capabilities.clipboard.backend })}</span>
+            {:else if capabilities.clipboard.read_available || capabilities.clipboard.write_available}
+              <span>{t("computer.clipboardPartial", { backend: capabilities.clipboard.backend })}</span>
+            {:else}
+              <span>{t("computer.clipboardMissing")}</span>
+            {/if}
+          </span>
+          <span class="flex items-center gap-1.5 {capabilities.app_launch.available ? 'text-[var(--text-tertiary)]' : 'text-[var(--text-muted)]'}">
+            <Rocket class="size-3.5 shrink-0" />
+            {#if capabilities.app_launch.available}
+              <span>{t("computer.appLaunchAvailable", { backend: capabilities.app_launch.backend })}</span>
+            {:else}
+              <span>{t("computer.appLaunchMissing")}</span>
             {/if}
           </span>
         </div>

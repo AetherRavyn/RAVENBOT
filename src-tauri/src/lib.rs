@@ -7734,6 +7734,8 @@ async fn list_tts_voices(state: State<'_, AppState>) -> Result<serde_json::Value
 #[tauri::command]
 async fn computer_capabilities() -> Result<serde_json::Value, String> {
     let injector = ravenbot_vision::InputInjector::detect();
+    let clipboard = ravenbot_vision::Clipboard::detect();
+    let app_launcher = ravenbot_vision::AppLauncher::detect();
     let session = if cfg!(target_os = "linux") {
         std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".to_string())
     } else if cfg!(target_os = "macos") {
@@ -7775,6 +7777,16 @@ async fn computer_capabilities() -> Result<serde_json::Value, String> {
         "host_control": injector.is_available(),
         "host_control_backend": injector.backend_summary(),
         "host_control_policy": host_control_policy,
+        "clipboard": {
+            "available": clipboard.is_available(),
+            "read_available": clipboard.read_available(),
+            "write_available": clipboard.write_available(),
+            "backend": clipboard.backend_summary(),
+        },
+        "app_launch": {
+            "available": app_launcher.is_supported(),
+            "backend": app_launcher.backend_summary(),
+        },
         "docker": {
             "available": docker_version.is_some(),
             "version": docker_version,

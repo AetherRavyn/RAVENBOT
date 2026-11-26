@@ -655,7 +655,7 @@
       },
       "computer_control": {
         "name": "컴퓨터 제어",
-        "desc": "실제 데스크톱을 제어해요: 마우스, 클릭, 타이핑, 키, 스크롤, 스크린샷"
+        "desc": "실제 데스크톱 제어: 마우스, 드래그, 클릭, 입력, 키, 스크롤, 앱 실행, 클립보드, 스크린샷"
       },
       "db_query": {
         "name": "데이터베이스 쿼리",
@@ -1857,6 +1857,11 @@
     "noBackend1": "입력 백엔드가 없어요. 설치하세요: ",
     "noBackend2": " (X11) 또는 ",
     "noBackend3": " (Wayland).",
+    "clipboardAvailable": "클립보드: {{backend}}",
+    "clipboardMissing": "클립보드를 사용할 수 없음",
+    "clipboardPartial": "클립보드 일부 사용 가능: {{backend}}",
+    "appLaunchAvailable": "앱 실행: {{backend}}",
+    "appLaunchMissing": "앱 실행을 사용할 수 없음",
     "dockerMissing": "Docker가 설치되지 않음 — 격리된 데스크톱을 사용할 수 없어요",
     "captureUnavailable": "화면 캡처를 사용할 수 없어요",
     "capturing": "화면 캡처 중...",

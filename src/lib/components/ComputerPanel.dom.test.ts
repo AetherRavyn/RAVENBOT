@@ -44,6 +44,16 @@ function mockCommands() {
           host_control: true,
           host_control_backend: "pointer=xdotool typing=xdotool keys=xdotool",
           host_control_policy: "opt_in_required",
+          clipboard: {
+            available: true,
+            read_available: true,
+            write_available: true,
+            backend: "read=xclip write=xclip",
+          },
+          app_launch: {
+            available: true,
+            backend: "gtk-launch",
+          },
           docker: {
             available: true,
             version: "27.0",
@@ -94,6 +104,10 @@ describe("ComputerPanel", () => {
       props: { botName: "Billing Agent", botId: "bot-1", onClose: () => {} },
     });
     await waitFor(() => expect(document.querySelector("img")).not.toBeNull());
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Clipboard: read=xclip write=xclip"),
+    );
+    expect(document.body.textContent).toContain("App launch: gtk-launch");
 
     await fireEvent.click(button("Take over")!);
     await waitFor(() =>
