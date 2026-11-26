@@ -424,9 +424,11 @@ limitations rather than finished features:
   alerts are the only outbound traffic the app initiates, and only when you
   configure them.
 
-The roadmap is tracked in [`ROADMAP.md`](ROADMAP.md). The current competitive
-analysis, including the remaining trust and product gaps, is in
-[`docs/COMPETITIVE-AUDIT-2026.md`](docs/COMPETITIVE-AUDIT-2026.md).
+The roadmap is tracked in [`ROADMAP.md`](ROADMAP.md). The code-level audit and
+remaining trust gaps are in
+[`docs/COMPETITIVE-AUDIT-2026.md`](docs/COMPETITIVE-AUDIT-2026.md); the current
+market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
+[`docs/MARKET-COMPARISON-2026-11.md`](docs/MARKET-COMPARISON-2026-11.md).
 
 ## Documentation
 
@@ -440,6 +442,7 @@ analysis, including the remaining trust and product gaps, is in
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
 | [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |
+| [`docs/MARKET-COMPARISON-2026-11.md`](docs/MARKET-COMPARISON-2026-11.md) | OpenClaw, Grok Bot, Hermes, Muse and RAVENBOT, with the path to best in market |
 | [`docs/LIVE-CHECKS.md`](docs/LIVE-CHECKS.md) | Opt-in provider and platform checks |
 | [`docs/OPENCODE-PARITY.md`](docs/OPENCODE-PARITY.md) | Harness and rendering parity audit |
 | [`ROADMAP.md`](ROADMAP.md) | Milestones and remaining work |

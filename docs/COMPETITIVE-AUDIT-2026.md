@@ -1,8 +1,10 @@
 # RAVENBOT competitive and code audit — 2026
 
-> **Status:** current as of 8 November 2026. This document supersedes
-> [`COMPARISON.md`](COMPARISON.md) for competitive positioning; `COMPARISON.md`
-> remains the historical analysis of the first OpenBot rebuild.
+> **Status:** code audit current as of 8 November 2026; the market view is
+> refreshed in [`MARKET-COMPARISON-2026-11.md`](MARKET-COMPARISON-2026-11.md)
+> (26 November 2026), which adds OpenClaw and Hermes Agent to the comparison.
+> This document remains the code-level audit and epic roadmap;
+> [`COMPARISON.md`](COMPARISON.md) is the historical first-OpenBot analysis.
 >
 > **Scope:** live product research on OpenBot (openbot.run, Synthetify Labs),
 > Grok Bot (xAI/Cursor) and Muse (Meta), plus a code-level audit of RAVENBOT at
