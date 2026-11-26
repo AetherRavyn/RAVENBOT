@@ -125,3 +125,31 @@ runner; those remain manual checks:
 
 Record the OS build, the command output and whether the daemon survived a
 crash/restart in the release notes.
+
+## Browser Teach and Replay
+
+The recorder and replay assets run in jsdom in CI, but the WebKit dock needs a
+real display. This is the manual acceptance pass for a release:
+
+1. Serve a local fixture with a text field, a checkbox, a select and a submit
+   button over `http://127.0.0.1:<port>` (the dock accepts http/https only).
+2. Open the fixture in the browser dock and press **Teach**. Fill the text
+   field, choose a select option, tick the checkbox, submit, and press **Stop**.
+3. Confirm the review dialog lists those steps, the values are present for
+   non-sensitive fields, and **Save & install** writes a skill with a
+   `demo.json` companion.
+4. Press **Replay** from Skills. Confirm the form is filled and submitted, the
+   report says `ok`, and the page URL is the post-submit URL.
+5. Change the fixture's selector (keep the label), replay again, and confirm
+   the report counts a repaired step instead of claiming the old selector.
+6. Remove the control entirely, replay, and confirm the report names the page,
+   the attempted selectors and a repair hint, and the skill was not modified.
+7. Add an `input[type=password]` to the fixture, record a fill, and confirm
+   `demo.json` has no value. Replay must stop with `needs_input` and must not
+   type an empty value.
+8. Record a task that navigates to a second page. Confirm the replay includes
+   the `navigate` step and stops honestly if an event in the last 200 ms was
+   lost. Re-record if the review shows a missing step.
+
+Record the app build, page URLs and replay report in the release notes. Do not
+call the feature live-verified until this pass succeeds on a real display.
