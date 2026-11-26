@@ -947,8 +947,8 @@ pub fn build_recorder_status_script(after: usize) -> String {
     )
 }
 
-/// Stop the recorder and return every event. `clear` also removes the
-/// sessionStorage mirror for the cancel path.
+/// Stop the recorder and return every event. `clear` discards the in-page
+/// buffer for the cancel path; nothing is written to page storage.
 pub fn build_recorder_stop_script(clear: bool) -> String {
     format!(
         "{DEMO_RECORDER_JS}\n(() => {{ const recorder = window.__ravenbotDemo; return recorder ? recorder.stop({{ clear: {clear} }}) : {{ ok: false, recording: false, stopped: false, count: 0, events: [] }}; }})()"
