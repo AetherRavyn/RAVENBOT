@@ -9386,6 +9386,32 @@ async fn get_input_backend() -> Result<InputBackendInfo, String> {
     })
 }
 
+/// Run the owner's configured STT engine over audio bytes.
+///
+/// The saved OpenAI key wins over `OPENAI_API_KEY`; the transcriber then tries
+/// Whisper and falls back to local faster-whisper. Both microphone input and
+/// recording import go through here so their key preference and errors are
+/// identical.
+async fn transcribe_owner_audio(
+    pool: &sqlx::SqlitePool,
+    bytes: &[u8],
+    format: &str,
+) -> Result<ravenbot_vision::audio::transcription::TranscriptionResult, String> {
+    // Prefer the owner's saved OpenAI key, like TTS already does. The env
+    // fallback remains for headless/development runs.
+    let openai_key = ravenbot_db::queries::ProviderKeyQueries::get(pool, "openai")
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
+        .filter(|key| !key.trim().is_empty());
+    ravenbot_vision::AudioTranscriber::new()
+        .with_openai_key(openai_key)
+        .transcribe(bytes, format)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Transcribe recorded audio (base64) to text using the real STT engine
 /// (OpenAI Whisper API, or local faster-whisper). Honest errors when neither
 /// is configured — this is what powers microphone input on Linux + macOS,
@@ -9405,25 +9431,151 @@ async fn transcribe_audio(
         .map(str::trim)
         .filter(|f| !f.is_empty())
         .unwrap_or("webm");
-    // Prefer the owner's saved OpenAI key, like TTS already does. The env
-    // fallback remains for headless/development runs.
-    let openai_key = ravenbot_db::queries::ProviderKeyQueries::get(state.db.pool(), "openai")
-        .await
-        .ok()
-        .flatten()
-        .or_else(|| std::env::var("OPENAI_API_KEY").ok())
-        .filter(|key| !key.trim().is_empty());
-    let result = ravenbot_vision::AudioTranscriber::new()
-        .with_openai_key(openai_key)
-        .transcribe(&bytes, fmt)
-        .await
-        .map_err(|e| e.to_string())?;
+    let result = transcribe_owner_audio(state.db.pool(), &bytes, fmt).await?;
     Ok(serde_json::json!({
         "text": result.text,
         "language": result.language,
         "confidence": result.confidence,
         "duration_secs": result.duration_secs,
     }))
+}
+
+/// Recording-import limits. These match what the STT engines accept and keep
+/// one user-initiated call bounded; they are not a meeting-length promise.
+const MEETING_AUDIO_MIN_BYTES: u64 = 100;
+const MEETING_AUDIO_MAX_BYTES: u64 = 25 * 1024 * 1024;
+const MEETING_TRANSCRIPT_LIMIT: usize = 60_000;
+const MEETING_AUDIO_FORMATS: &[&str] = &["wav", "mp3", "ogg", "m4a", "webm", "flac"];
+
+/// Metadata for a validated recording-import path. No audio is read here, so
+/// the size and type checks can fail before a large file is touched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MeetingAudioMeta {
+    path: std::path::PathBuf,
+    file_name: String,
+    format: String,
+    size_bytes: u64,
+}
+
+fn meeting_audio_meta(path: &str) -> Result<MeetingAudioMeta, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return Err("Choose a recording file to import.".to_string());
+    }
+    let path = std::path::PathBuf::from(trimmed);
+    let metadata = std::fs::metadata(&path).map_err(|error| match error.kind() {
+        std::io::ErrorKind::NotFound => "The recording file does not exist.".to_string(),
+        std::io::ErrorKind::PermissionDenied => {
+            "The recording file cannot be read (permission denied).".to_string()
+        }
+        _ => format!("The recording file cannot be read: {}", error),
+    })?;
+    if !metadata.is_file() {
+        return Err("That path is not a regular file. Choose an audio recording.".to_string());
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| "The recording file name is not valid.".to_string())?
+        .to_string();
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty());
+    let Some(extension) = extension else {
+        return Err(
+            "Unsupported recording type. Import WAV, MP3, OGG, M4A, WebM or FLAC audio only."
+                .to_string(),
+        );
+    };
+    let Some(format) = MEETING_AUDIO_FORMATS
+        .iter()
+        .find(|format| **format == extension)
+        .map(|format| (*format).to_string())
+    else {
+        return Err(format!(
+            "Unsupported recording type \"{}\". Import WAV, MP3, OGG, M4A, WebM or FLAC audio only; video files such as MP4 are not supported.",
+            extension
+        ));
+    };
+    let size_bytes = metadata.len();
+    if size_bytes < MEETING_AUDIO_MIN_BYTES {
+        return Err("The recording is too short to transcribe (minimum 100 bytes).".to_string());
+    }
+    if size_bytes > MEETING_AUDIO_MAX_BYTES {
+        return Err(
+            "The recording is larger than the 25 MiB limit. Split it into shorter recordings and try again."
+                .to_string(),
+        );
+    }
+    Ok(MeetingAudioMeta {
+        path,
+        file_name,
+        format,
+        size_bytes,
+    })
+}
+
+/// Read a validated recording in Rust (never over base64 IPC) and re-check the
+/// size, because the file can change between the metadata call and the read.
+fn read_meeting_audio(meta: &MeetingAudioMeta) -> Result<Vec<u8>, String> {
+    let bytes = std::fs::read(&meta.path)
+        .map_err(|error| format!("Could not read the recording: {}", error))?;
+    let size = bytes.len() as u64;
+    if size < MEETING_AUDIO_MIN_BYTES {
+        return Err("The recording is too short to transcribe (minimum 100 bytes).".to_string());
+    }
+    if size > MEETING_AUDIO_MAX_BYTES {
+        return Err(
+            "The recording is larger than the 25 MiB limit. Split it into shorter recordings and try again."
+                .to_string(),
+        );
+    }
+    Ok(bytes)
+}
+
+/// Clip a transcript to the 60,000-character IPC/prompt budget. `truncated` is
+/// true only when characters were actually dropped, so the caller can warn the
+/// user and the agent instead of silently narrowing the notes.
+fn cap_meeting_transcript(text: String) -> (String, bool) {
+    let mut characters = text.chars();
+    let clipped: String = characters.by_ref().take(MEETING_TRANSCRIPT_LIMIT).collect();
+    (clipped, characters.next().is_some())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct MeetingTranscript {
+    text: String,
+    language: Option<String>,
+    duration_secs: f32,
+    truncated: bool,
+    file_name: String,
+}
+
+/// Import an existing audio recording and transcribe it with the owner's
+/// configured STT engine. This is recording import, not a live meeting join:
+/// the file is read locally, audio only, and the result is returned to the
+/// caller for the meeting-notes prompt. Nothing is uploaded except the audio
+/// the configured engine already needs, and nothing is sent to a meeting.
+#[tauri::command]
+async fn transcribe_meeting_file(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<MeetingTranscript, String> {
+    let meta = meeting_audio_meta(&path)?;
+    let bytes = read_meeting_audio(&meta)?;
+    let result = transcribe_owner_audio(state.db.pool(), &bytes, &meta.format).await?;
+    let (text, truncated) = cap_meeting_transcript(result.text);
+    Ok(MeetingTranscript {
+        text,
+        language: result.language,
+        duration_secs: result.duration_secs,
+        truncated,
+        file_name: meta.file_name,
+    })
 }
 
 /// Synthesize text to speech and return base64 WAV for the UI to play. Uses
@@ -24776,6 +24928,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         capture_desktop_window,
         get_input_backend,
         transcribe_audio,
+        transcribe_meeting_file,
         synthesize_speech,
         list_tts_voices,
         create_bot,
@@ -30785,5 +30938,126 @@ mod demonstration_save_tests {
         assert!(!raw.contains("hunter2-save-secret"));
         assert!(raw.contains("\"sensitive\": true"));
         let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[cfg(test)]
+mod meeting_transcription_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("ravenbot-meeting-{}-{}", Uuid::new_v4(), name))
+    }
+
+    fn write_bytes(path: &std::path::Path, len: usize) {
+        let mut file = std::fs::File::create(path).expect("create test recording");
+        file.write_all(&vec![b'a'; len])
+            .expect("write test recording");
+        file.flush().expect("flush test recording");
+    }
+
+    #[test]
+    fn a_missing_recording_is_refused() {
+        let path = temp_path("missing.wav");
+        let error = meeting_audio_meta(path.to_str().expect("utf-8 path"))
+            .expect_err("a missing file must be refused");
+        assert!(error.contains("does not exist"), "{error}");
+    }
+
+    #[test]
+    fn a_directory_is_not_a_recording() {
+        let path = temp_path("folder.wav");
+        std::fs::create_dir_all(&path).expect("create directory");
+        let error = meeting_audio_meta(path.to_str().expect("utf-8 path"))
+            .expect_err("a directory must be refused");
+        assert!(error.contains("not a regular file"), "{error}");
+        let _ = std::fs::remove_dir_all(&path);
+    }
+
+    #[test]
+    fn an_unsupported_recording_type_is_refused() {
+        let path = temp_path("meeting.mp4");
+        write_bytes(&path, 256);
+        let error = meeting_audio_meta(path.to_str().expect("utf-8 path"))
+            .expect_err("MP4 must be refused");
+        assert!(error.contains("Unsupported recording type"), "{error}");
+        assert!(error.contains("mp4"), "{error}");
+        assert!(error.contains("MP4"), "{error}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_recording_under_one_hundred_bytes_is_refused() {
+        let path = temp_path("short.WAV");
+        write_bytes(&path, (MEETING_AUDIO_MIN_BYTES - 1) as usize);
+        let error = meeting_audio_meta(path.to_str().expect("utf-8 path"))
+            .expect_err("a too-short recording must be refused");
+        assert!(error.contains("too short"), "{error}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_recording_over_twenty_five_mib_is_refused_before_it_is_read() {
+        let path = temp_path("long.mp3");
+        let file = std::fs::File::create(&path).expect("create sparse recording");
+        file.set_len(MEETING_AUDIO_MAX_BYTES + 1)
+            .expect("extend sparse recording");
+        drop(file);
+        let error = meeting_audio_meta(path.to_str().expect("utf-8 path"))
+            .expect_err("an oversized recording must be refused");
+        assert!(error.contains("25 MiB"), "{error}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_valid_recording_reports_its_basename_format_and_size() {
+        let directory = temp_path("valid");
+        std::fs::create_dir_all(&directory).expect("create test directory");
+        let path = directory.join("Weekly Sync.M4A");
+        write_bytes(&path, 256);
+        let meta = meeting_audio_meta(path.to_str().expect("utf-8 path"))
+            .expect("a valid recording metadata");
+        assert_eq!(meta.file_name, "Weekly Sync.M4A");
+        assert_eq!(meta.format, "m4a");
+        assert_eq!(meta.size_bytes, 256);
+        let bytes = read_meeting_audio(&meta).expect("read valid recording");
+        assert_eq!(bytes.len(), 256);
+        // The basename is only the file name, never its directory.
+        assert!(!meta.file_name.contains('/'));
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn the_post_read_size_check_catches_a_file_that_changed() {
+        let path = temp_path("shrinking.flac");
+        write_bytes(&path, 256);
+        let meta =
+            meeting_audio_meta(path.to_str().expect("utf-8 path")).expect("initial metadata");
+        // Simulate a file replaced after the metadata check.
+        write_bytes(&path, (MEETING_AUDIO_MIN_BYTES - 1) as usize);
+        let error = read_meeting_audio(&meta).expect_err("the read must re-check size");
+        assert!(error.contains("too short"), "{error}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_transcript_cap_clips_at_sixty_thousand_characters() {
+        let exact = "a".repeat(MEETING_TRANSCRIPT_LIMIT);
+        let (text, truncated) = cap_meeting_transcript(exact.clone());
+        assert_eq!(text, exact);
+        assert!(!truncated);
+
+        let over = "a".repeat(MEETING_TRANSCRIPT_LIMIT + 1);
+        let (text, truncated) = cap_meeting_transcript(over);
+        assert_eq!(text.chars().count(), MEETING_TRANSCRIPT_LIMIT);
+        assert!(truncated);
+
+        // The limit is characters, not bytes, so a non-ASCII transcript is not
+        // clipped early or split mid-character.
+        let multibyte = "é".repeat(MEETING_TRANSCRIPT_LIMIT + 10);
+        let (text, truncated) = cap_meeting_transcript(multibyte);
+        assert_eq!(text.chars().count(), MEETING_TRANSCRIPT_LIMIT);
+        assert!(truncated);
     }
 }

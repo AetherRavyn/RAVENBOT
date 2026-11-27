@@ -4,6 +4,35 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Meeting recording import
+
+- **Import an existing recording, not a live meeting.** The new
+  `transcribe_meeting_file(path)` command accepts WAV, MP3, OGG, M4A, WebM and
+  FLAC audio (case-insensitive extensions), rejects video such as MP4, requires
+  a regular file of 100 bytes–25 MiB, and re-checks the size after reading. The
+  path is validated before transcription, the bytes are read in Rust rather than
+  over base64 IPC, and the result is
+  `{ text, language, duration_secs, truncated, file_name }` with a basename-only
+  file name and a 60,000-character transcript cap. The command is owner/operator
+  only; viewers are denied because it starts a paid STT call.
+- **One STT path for voice and import.** `transcribe_audio` and
+  `transcribe_meeting_file` now share `transcribe_owner_audio`, which prefers the
+  OpenAI key saved in Settings, falls back to `OPENAI_API_KEY`, and then lets
+  `AudioTranscriber` try Whisper or local faster-whisper. Missing engines and
+  failed calls return the engine's error instead of a fake transcript, and keys
+  are not echoed back.
+- **Transcript-backed meeting notes prompt.** `src/lib/meeting.ts` adds
+  `MEETING_TRANSCRIPT_LIMIT`, `meetingFileName` for POSIX/Windows paths, and
+  `buildMeetingPrompt`. The prompt labels the transcript untrusted data rather
+  than instructions, asks for a summary, explicitly stated decisions, action
+  items and open questions, uses `unassigned`/`no date` unless the recording
+  states otherwise, forbids inventing attendees/decisions/owners/dates, and adds
+  a truncation note with clear begin/end delimiters.
+- **Honest scope.** No live meeting join, platform/calendar integration,
+  diarization, video import, phone calls or automatic sending of notes. Whisper
+  is a paid provider call; local faster-whisper remains the offline path. See
+  [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md).
+
 ### Agent email drafts and Mail panel
 
 - **The agent can only draft.** `email_draft` (risk `Low`, no permissions)

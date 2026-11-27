@@ -111,6 +111,9 @@ const OPERATOR_EXTRA: &[&str] = &[
     "export_otel_now",
     "test_otel_export",
     "get_otel_export_status",
+    // Recording import spends the workspace's STT budget, so it is work an
+    // operator may start; a viewer stays read-only.
+    "transcribe_meeting_file",
 ];
 
 fn is_read_command(command: &str) -> bool {
@@ -288,6 +291,13 @@ mod tests {
             assert!(!role_allows("operator", command), "{command}");
             assert!(!role_allows("viewer", command), "{command}");
         }
+    }
+
+    #[test]
+    fn meeting_recording_import_is_an_operator_action() {
+        assert!(role_allows("owner", "transcribe_meeting_file"));
+        assert!(role_allows("operator", "transcribe_meeting_file"));
+        assert!(!role_allows("viewer", "transcribe_meeting_file"));
     }
 
     #[test]

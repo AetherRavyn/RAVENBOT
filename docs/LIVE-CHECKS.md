@@ -79,6 +79,46 @@ Whisper calls are paid; use a short recording and a test key. Set
 `RAVENBOT_OPENAI_AUDIO_URL` to a compatible transcription endpoint when routing
 through a gateway or proxy.
 
+## Manual hands-free voice-mode check
+
+This needs a real microphone and a graphical session:
+
+1. Open a thread, grant microphone permission, and enable voice mode.
+2. Say a short phrase and stop speaking. Confirm the recorder stops after about
+   1.5 s of silence (or at the 25 s cap) and the phrase appears as your message.
+3. Confirm the agent replies and the reply is spoken, then confirm listening
+   resumes without another click.
+4. Turn voice mode off with the composer control; confirm the active recording
+   stops, any playback stops, and the microphone indicator goes away.
+5. Deny microphone permission and try again; confirm the app reports that voice
+   mode needs microphone access rather than showing a fake listener.
+
+This is a chat voice loop. It does not join a meeting or record a call.
+
+## Manual meeting-recording import check
+
+Use a short, non-sensitive recording because OpenAI Whisper is paid:
+
+1. Prepare a 5–30 s audio file in each format you intend to claim: WAV, MP3,
+   OGG, M4A, WebM and FLAC. Include one `.WAV` uppercase extension.
+2. Import the file through the recording-import dialog (when the dialog lands)
+   or call `transcribe_meeting_file` from a development build. Confirm the
+   returned `file_name` is only the basename, `duration_secs` is plausible, and
+   a short recording returns `truncated: false`.
+3. Build the note with `buildMeetingPrompt` and confirm it contains a summary,
+   decisions, action items with `owner`/`due`, open questions, the untrusted-data
+   warning, the file name, and the begin/end delimiters.
+4. Try a directory, a missing path, an MP4, a `.txt` file, a file under 100
+   bytes, and a file over 25 MiB. Confirm each is refused with its specific
+   error and that no transcription call is made.
+5. With a saved OpenAI key and `OPENAI_API_KEY` unset, confirm Whisper uses the
+   saved key; remove both keys and confirm the error names Settings,
+   `OPENAI_API_KEY`, or local faster-whisper. Confirm the key never appears in
+   the UI, logs or returned error.
+6. Confirm the command is denied for a viewer and allowed for an operator.
+7. Do not record a pass for live meeting join, diarization, video import, phone
+   calls or automatic sending: those are not implemented.
+
 ## Manual Teams outbound-file check
 
 Teams file delivery needs a real user click and an app manifest with

@@ -177,6 +177,11 @@ voice, and computer control. It also supports:
   Notion, Figma, Kubernetes, cloud providers, databases, and more. Run
   `ravenbot mcp-serve` to expose every RAVENBOT skill to Claude Code or any other
   MCP client.
+- **Voice and recording import.** Hands-free STT→send→TTS in a thread, plus
+  import of an existing WAV, MP3, OGG, M4A, WebM or FLAC recording (audio only,
+  25 MiB cap) into a transcript-backed meeting-notes prompt. This is not a live
+  meeting join: RAVENBOT does not sit in calls, record calls, or label speakers.
+  See [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md).
 - **OpenAPI plugins.** Import an OpenAPI document as a local toolkit.
 - **Community skills.** Search and install versioned skills from the VoltAgent
   marketplace, or write your own with the built-in skill authoring tools.
@@ -416,11 +421,11 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 252 Tauri library tests
+- **1,100+ Rust tests** across the workspace, including 261 Tauri library tests
   plus 7 cross-tenant isolation tests, 246 runtime tests, 215 skill tests, 117
   database tests, 79 core tests, 39 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **955 frontend tests** across 138 files. A gate rejects literal English
+- **965 frontend tests** across 139 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
@@ -483,6 +488,14 @@ limitations rather than finished features:
   recipient count. An invalid saved allowlist still loads in Mail for repair;
   sending stays blocked until it is fixed. See
   [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md).
+- **Voice is not a meeting bot.** Hands-free voice mode transcribes microphone
+  speech, sends it to the agent, and speaks the reply. Recording import accepts
+  an existing audio file (WAV, MP3, OGG, M4A, WebM or FLAC, 100 bytes–25 MiB) and
+  returns a transcript capped at 60,000 characters for a meeting-notes prompt.
+  There is no live meeting join, calendar/platform integration, diarization,
+  video import, phone-call support, or automatic sending of notes. OpenAI
+  Whisper is a paid provider call; local faster-whisper is the offline path. See
+  [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md).
 - **No first-party telemetry.** Provider calls, an optional OIDC IdP, configured
   MCP servers, optional remote alerts, an optional SCIM IdP, an optional agent
   SMTP account, and the opt-in enterprise export are the only outbound traffic
@@ -510,6 +523,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/RELEASE.md`](docs/RELEASE.md) | Signing, notarization, updater, checksums and SBOM |
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
 | [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md) | Draft-only agent email: Mail panel, config, allowlist, storage, audit, limits |
+| [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md) | Hands-free voice mode, recording import, formats/limits, STT cost, honest limits |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
 | [`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md) | The bundled OpenBot gallery, URL scheme, six work states, materials and fallbacks |
 | [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |

@@ -44,8 +44,8 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Enterprise admin** | ◐ local accounts/roles/audit, optional OIDC SSO for the remote surface, optional SCIM 2.0 Users provisioning with a workspace-scoped token, opt-in OTLP/HTTP log export of redacted metadata; no SCIM Groups/group mapping/metrics/traces/data-residency controls | ● roles, proxy SSO, OTel/Prometheus, signed releases; self-managed | ● SSO/SCIM, network/egress, inference hooks, action recording, OTel, retention, ISO 27001/42001 | ◐ business/enterprise portal, approvals | ◐ business offering, consumer trust issues |
 | **Ecosystem** | 135 MCP connectors, 2,530-app OpenAPI directory, 1,497 skills, 30 jobs | ClawHub skills/plugins with scans; MCP, A2A, ACP | Bot marketplace, app connectors, MCP/API | 1,000+ plugins, Skills Hub, MCP | App connectors, can build tools |
 | **Public task-success evidence** | ○ no public benchmark | ● ShellBench | ◐ vendor examples, no public benchmark | ◐ trajectory research, no public success suite | ◐ vendor examples |
-| **Voice** | ◐ STT→send→TTS via provider key | ● voice nodes, Talk mode, realtime | ● voice notes and calls | ◐ voice memo transcription | ● voice mode |
-| **Meetings / email / commerce** | ◐ draft-only agent email with a human send and owner-only Mail panel; no meeting join, agent inbox or payments | ◐ channels, no native meeting/commerce product | ● meetings, agent email, cards/wallets, purchases | ○ no meeting/commerce product | ● meetings-adjacent, email identity, commerce partners |
+| **Voice** | ◐ STT→send→TTS via provider key; recording-import notes from local audio (WAV/MP3/OGG/M4A/WebM/FLAC, 25 MiB cap); no realtime voice | ● voice nodes, Talk mode, realtime | ● voice notes and calls | ◐ voice memo transcription | ● voice mode |
+| **Meetings / email / commerce** | ◐ recording-import notes and draft-only agent email with a human send and owner-only Mail panel; no live meeting join, agent inbox or payments | ◐ channels, no native meeting/commerce product | ● meetings, agent email, cards/wallets, purchases | ○ no meeting/commerce product | ● meetings-adjacent, email identity, commerce partners |
 | **Localization / a11y** | ● 12 locales, axe gates, keyboard audit | ◐ English-first | ◐ English-first | ◐ English-first | ◐ English-first |
 | **Release trust** | ◐ checksums + SBOM; unsigned installers; no updater | ● signed releases, update channels | ● managed app distribution | ● desktop/MSIX installers, update ownership documented | ● managed app |
 | **Pricing** | MIT, free, BYO keys | MIT, free, no paid tier | Subscription (Grok/Cursor plans) | MIT; Cloud $20–$200/mo | Free / $20 / $100/mo |
@@ -135,7 +135,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Independent action reviewer** | Grok Auto Review | A second, independent model evaluates risky actions against the user's request, with deterministic policy underneath it. RAVENBOT's Review→Auto is deterministic and auditable, but not an independent reviewer. |
 | **Marketplace trust** | ClawHub scans, Grok marketplace, Hermes 1,000+ plugins | Signed manifests, per-operation scopes, sandboxed MCP, verified badges, rollback, and a live-tested “recommended” set. RAVENBOT has catalog breadth without the trust layer. |
 | **Enterprise controls** | Grok Bot | SSO/SCIM, egress allowlists, inference hooks, action recording/OTel, retention, data residency, admin API. RAVENBOT now has local roles/audit, optional OIDC SSO for the remote surface, SCIM 2.0 **Users** provisioning with an owner-only **Settings → Remote** card (workspace-scoped token shown once, default viewer/operator grant, soft deprovision, no owner or shared-account control), and an opt-in OTLP/HTTP **logs** export of redacted metadata, but still no SCIM Groups/group mapping, metrics/traces, data-residency controls or hosted relay. |
-| **Meetings, agent email, voice calls** | Grok Bot, Muse | Join a meeting and return notes/actions; own an email address; make/receive a call with approvals. RAVENBOT has STT/TTS and draft-only agent email with human send from an owner-only Mail panel (SMTP account, allowlist, plain text), but no meeting join, inbound mailbox, manual composer or calls. |
+| **Meetings, agent email, voice calls** | Grok Bot, Muse | Join a meeting and return notes/actions; own an email address; make/receive a call with approvals. RAVENBOT has STT/TTS, recording-import notes for local audio (WAV/MP3/OGG/M4A/WebM/FLAC, 25 MiB cap, 60,000-character transcript cap, audio only; no live join, diarization, video or calls) and draft-only agent email with human send from an owner-only Mail panel (SMTP account, allowlist, plain text), but no meeting join, inbound mailbox, manual composer or calls. |
 | **Consumer integrations and commerce** | Muse, Grok Bot | Shopping, cards/wallets, travel, health, relationships. High trust risk; only worth entering with spend controls and insurance. |
 | **Release governance** | OpenClaw Foundation, Grok ISO certifications | A neutral steward, signed artifacts, public advisories, independent security review. MIT alone is not a security story. |
 
@@ -232,14 +232,18 @@ testable acceptance bar.
     Acceptance: a 50-person pilot can be provisioned and audited without a
     shared local account.
 12. **Voice, meetings and agent email.**
-    Realtime voice, meeting join/transcribe, a dedicated agent inbox with
+    Realtime voice, live meeting join/transcribe, a dedicated agent inbox with
     approval-before-send. The outbound half now ships with the owner-only
     **Settings → Mail** panel: the agent can create a plain-text draft, a person
     reviews and sends it, and an owner configures one SMTP account with a
-    recipient allowlist. Inbound mail/IMAP, meeting join/transcription, voice
-    calls and a manual draft composer remain open. Acceptance: join a meeting,
-    return notes and actions; email always drafts unless explicitly approved
-    (shipped for outbound drafts).
+    recipient allowlist. Recording import also ships: a person picks a local
+    WAV/MP3/OGG/M4A/WebM/FLAC file (≤25 MiB, audio only), gets a transcript
+    capped at 60,000 characters, and builds a notes prompt with a summary,
+    decisions, action items and open questions. Inbound mail/IMAP, live meeting
+    join, diarization, video import, voice calls and a manual draft composer
+    remain open. Acceptance: import a recording and return notes and actions
+    (shipped); join a live meeting (open); email always drafts unless explicitly
+    approved (shipped for outbound drafts).
 13. **Subscription bridge.**
     Official/authorized adapters for Claude/ChatGPT/Grok subscriptions with
     health checks and fallback. Acceptance: one job runs through a subscription
