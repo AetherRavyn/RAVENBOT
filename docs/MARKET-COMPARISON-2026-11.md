@@ -236,11 +236,12 @@ testable acceptance bar.
     approval-before-send. The outbound half now ships with the owner-only
     **Settings → Mail** panel: the agent can create a plain-text draft, a person
     reviews and sends it, and an owner configures one SMTP account with a
-    recipient allowlist. Recording import also ships: a person picks a local
-    WAV/MP3/OGG/M4A/WebM/FLAC file (≤25 MiB, audio only), gets a transcript
-    capped at 60,000 characters, and builds a notes prompt with a summary,
-    decisions, action items and open questions. Inbound mail/IMAP, live meeting
-    join, diarization, video import, voice calls and a manual draft composer
+    recipient allowlist. Recording import also ships: a person opens the
+    composer's meeting-notes dialog, picks a local WAV/MP3/OGG/M4A/WebM/FLAC file
+    (≤25 MiB, audio only), gets a transcript capped at 60,000 characters, reviews
+    the preview, and inserts a notes prompt with a summary, decisions, action
+    items and open questions without sending it. Inbound mail/IMAP, live meeting
+    join, diarization, video import, voice calls and a manual email draft composer
     remain open. Acceptance: import a recording and return notes and actions
     (shipped); join a live meeting (open); email always drafts unless explicitly
     approved (shipped for outbound drafts).

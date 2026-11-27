@@ -1001,7 +1001,8 @@
     "visualView": "Vista visiva",
     "voiceMode": "Modalità vocale",
     "zoomIn": "Ingrandisci",
-    "zoomOut": "Riduci"
+    "zoomOut": "Riduci",
+    "meetingNotes": "Importa note da una registrazione"
   },
   "rail": {
     "home": "Home",
@@ -3191,5 +3192,29 @@
     "noInbound": "Non c’è una casella di posta. RAVENBOT non scarica, legge o risponde alle email in arrivo e non esiste una connessione IMAP.",
     "allowlistInvalid": "La lista salvata non è valida. Correggila e salva per ripararla.",
     "saveBeforeSend": "Salva le modifiche prima di inviare. Viene inviata la bozza salvata."
+  },
+  "meeting": {
+    "title": "Registrazione di riunione",
+    "description": "Trasforma una registrazione esistente in un prompt per le note di riunione. RAVENBOT non partecipa alle chiamate.",
+    "choose": "Scegli registrazione",
+    "chooseHint": "Seleziona un file audio. Non serve digitare un percorso.",
+    "transcribe": "Trascrivi",
+    "transcribing": "Trascrizione…",
+    "preview": "Anteprima della trascrizione",
+    "chars": "{{count}} caratteri",
+    "useInComposer": "Usa nel compositore",
+    "close": "Chiudi la finestra della registrazione di riunione",
+    "error": "Trascrizione non riuscita",
+    "noEngineHint": "Aggiungi una chiave OpenAI nelle impostazioni, imposta OPENAI_API_KEY o installa faster-whisper in locale.",
+    "audioOnly": "Solo audio: WAV, MP3, OGG, M4A, WebM o FLAC.",
+    "maxSize": "Dimensione massima del file: 25 MiB.",
+    "noLiveJoin": "Nessun accesso a riunioni dal vivo: viene importato un file scelto da te.",
+    "noDiarization": "Nessuna diarizzazione: le voci non vengono identificate.",
+    "costHint": "La trascrizione può essere una chiamata a pagamento al fornitore tramite la tua chiave OpenAI.",
+    "reviewHint": "L’agente scrive le note solo dopo che hai rivisto questo prompt e lo hai inviato.",
+    "file": "File selezionato",
+    "unsupported": "Questo tipo di file non è supportato. Scegli audio, non video.",
+    "tooLarge": "Questa registrazione supera il limite di 25 MiB. Suddividila prima.",
+    "truncated": "La trascrizione è stata tagliata a 60.000 caratteri. L’audio successivo non è incluso."
   }
 }

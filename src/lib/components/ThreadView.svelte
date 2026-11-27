@@ -6,6 +6,7 @@
   import { onMount, onDestroy, tick } from "svelte";
   import { Button } from "$lib/components/ui/button";
   import AgentIntelligence from "$lib/components/AgentIntelligence.svelte";
+  import MeetingNotesDialog from "$lib/components/MeetingNotesDialog.svelte";
   import ChatMessageRow from "$lib/components/chat/ChatMessageRow.svelte";
   import TranscriptRail from "$lib/components/chat/TranscriptRail.svelte";
   import VirtualTranscript from "$lib/components/chat/VirtualTranscript.svelte";
@@ -604,6 +605,7 @@
   let showComputer = $state(false);
   let showChannels = $state(false);
   let showTeamImport = $state(false);
+  let showMeetingNotes = $state(false);
   // Active channel (context) for new threads, plus the list for the picker.
   let activeChannelId = $state<string | null>(null);
   let channelOptions = $state<{ id: string; name: string }[]>([]);
@@ -2391,6 +2393,16 @@
 
   let voiceListening = false;
 
+  /** Put a meeting-notes prompt in the composer for review; never sends it. */
+  function useMeetingPrompt(prompt: string) {
+    newMessage = prompt;
+    if (bot?.id) {
+      drafts.saveNow(threadDraftKey(bot.id, selectedThreadId), prompt);
+    }
+    showMeetingNotes = false;
+    void tick().then(() => textareaRef?.focus());
+  }
+
   function toggleVoiceMode() {
     if (voiceMode) {
       stopVoiceMode();
@@ -3329,6 +3341,7 @@
         onToggleThink={() => (thinkActive = !thinkActive)}
         onOpenGoal={openGoalDialog}
         onAttachFile={attachFile}
+        onMeetingNotes={() => (showMeetingNotes = true)}
         onToggleVoice={toggleVoice}
         onToggleVoiceMode={toggleVoiceMode}
         onToggleAutoRead={toggleAutoRead}
@@ -3396,6 +3409,14 @@
   <TeamImport
     onClose={() => (showTeamImport = false)}
     onImported={() => { loadChannelOptions(); }}
+  />
+{/if}
+
+<!-- Meeting recording import -->
+{#if showMeetingNotes}
+  <MeetingNotesDialog
+    onClose={() => (showMeetingNotes = false)}
+    onUsePrompt={useMeetingPrompt}
   />
 {/if}
 

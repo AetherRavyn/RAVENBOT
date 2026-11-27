@@ -101,22 +101,27 @@ Use a short, non-sensitive recording because OpenAI Whisper is paid:
 
 1. Prepare a 5–30 s audio file in each format you intend to claim: WAV, MP3,
    OGG, M4A, WebM and FLAC. Include one `.WAV` uppercase extension.
-2. Import the file through the recording-import dialog (when the dialog lands)
-   or call `transcribe_meeting_file` from a development build. Confirm the
-   returned `file_name` is only the basename, `duration_secs` is plausible, and
-   a short recording returns `truncated: false`.
-3. Build the note with `buildMeetingPrompt` and confirm it contains a summary,
-   decisions, action items with `owner`/`due`, open questions, the untrusted-data
-   warning, the file name, and the begin/end delimiters.
-4. Try a directory, a missing path, an MP4, a `.txt` file, a file under 100
+2. Open a thread and click the meeting-notes button in the composer. Confirm the
+   dialog states the limits and that Transcribe and Use in composer are disabled
+   before a file is chosen. Choose a file in the picker and confirm only the
+   basename is shown.
+3. Transcribe. Confirm the returned preview is readable, the character count
+   matches the transcript, `duration_secs` is plausible, and a short recording
+   shows no truncation warning. Confirm the dialog does not send anything.
+4. Click Use in composer. Confirm the prompt appears in the composer, the thread
+   draft is saved, focus returns to the composer, and no message was sent. Check
+   the prompt contains a summary, decisions, action items with `owner`/`due`,
+   open questions, the untrusted-data warning, the file name, and the begin/end
+   delimiters.
+5. Try a directory, a missing path, an MP4, a `.txt` file, a file under 100
    bytes, and a file over 25 MiB. Confirm each is refused with its specific
    error and that no transcription call is made.
-5. With a saved OpenAI key and `OPENAI_API_KEY` unset, confirm Whisper uses the
-   saved key; remove both keys and confirm the error names Settings,
+6. With a saved OpenAI key and `OPENAI_API_KEY` unset, confirm Whisper uses the
+   saved key; remove both keys and confirm the dialog names Settings,
    `OPENAI_API_KEY`, or local faster-whisper. Confirm the key never appears in
    the UI, logs or returned error.
-6. Confirm the command is denied for a viewer and allowed for an operator.
-7. Do not record a pass for live meeting join, diarization, video import, phone
+7. Confirm the command is denied for a viewer and allowed for an operator.
+8. Do not record a pass for live meeting join, diarization, video import, phone
    calls or automatic sending: those are not implemented.
 
 ## Manual Teams outbound-file check

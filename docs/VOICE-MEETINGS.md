@@ -34,8 +34,27 @@ policy still applies to whatever the agent does next.
 
 ## Recording import
 
-The backend command is `transcribe_meeting_file(path)`. The dialog UI is a
-separate frontend slice; the command and prompt builder are usable without it.
+The backend command is `transcribe_meeting_file(path)`. The chat composer's
+meeting-notes button opens `MeetingNotesDialog.svelte`, which provides the whole
+import flow: choose a recording, transcribe it, review the preview and character
+count, then insert the built prompt into the composer. The dialog never sends the
+prompt; the user still has to review and press Send.
+
+### Using the dialog
+
+- The button is in the thread composer next to the attach control, labelled
+  “Import meeting notes from a recording”.
+- The file picker is filtered to WAV, MP3, OGG, M4A, WebM and FLAC. No path typing
+  is needed.
+- Transcribe stays disabled until a file is chosen. While it runs, the preview is
+  cleared and the button shows a busy state.
+- A successful result shows the first 420 characters, the full character count,
+  and a truncation warning when the transcript hit 60,000 characters. The full
+  transcript, not just the preview, goes into the prompt.
+- Engine, unsupported-format and over-25-MiB errors are shown in the dialog with
+  an actionable hint rather than a blank result.
+- “Use in composer” inserts the prompt, closes the dialog, saves the thread draft
+  and focuses the composer. It does not call `sendMessage`.
 
 ### What is accepted
 

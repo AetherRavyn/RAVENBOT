@@ -929,7 +929,8 @@
     "visualView": "ビジュアル表示",
     "voiceMode": "音声モード",
     "zoomIn": "ズームイン",
-    "zoomOut": "ズームアウト"
+    "zoomOut": "ズームアウト",
+    "meetingNotes": "録音から会議メモを読み込む"
   },
   "rail": {
     "home": "ホーム",
@@ -3191,5 +3192,29 @@
     "noInbound": "受信トレイはありません。RAVENBOT は受信メールの取得・閲覧・返信を行わず、IMAP 接続もありません。",
     "allowlistInvalid": "保存されたリストが無効です。修正して保存してください。",
     "saveBeforeSend": "送信する前に変更を保存してください。送信されるのは保存済みの下書きです。"
+  },
+  "meeting": {
+    "title": "会議の録音",
+    "description": "手持ちの録音を会議メモ用のプロンプトに変換します。RAVENBOT は通話に参加しません。",
+    "choose": "録音を選択",
+    "chooseHint": "音声ファイルを選択してください。パスの入力は不要です。",
+    "transcribe": "文字起こし",
+    "transcribing": "文字起こし中…",
+    "preview": "文字起こしのプレビュー",
+    "chars": "{{count}} 文字",
+    "useInComposer": "入力欄で使う",
+    "close": "会議の録音ダイアログを閉じる",
+    "error": "文字起こしに失敗しました",
+    "noEngineHint": "設定で OpenAI キーを追加するか、OPENAI_API_KEY を設定するか、ローカルの faster-whisper をインストールしてください。",
+    "audioOnly": "音声のみ：WAV、MP3、OGG、M4A、WebM、FLAC。",
+    "maxSize": "ファイルの最大サイズ：25 MiB。",
+    "noLiveJoin": "ライブ会議には参加しません。選択したファイルを読み込みます。",
+    "noDiarization": "話者分離はありません。声の識別は行いません。",
+    "costHint": "文字起こしは OpenAI キー経由の有料プロバイダー呼び出しになる場合があります。",
+    "reviewHint": "エージェントは、このプロンプトを確認して送信した後にのみメモを書きます。",
+    "file": "選択したファイル",
+    "unsupported": "このファイル形式には対応していません。動画ではなく音声を選択してください。",
+    "tooLarge": "この録音は 25 MiB の上限を超えています。先に分割してください。",
+    "truncated": "文字起こしは 60,000 文字で切り捨てられました。それ以降の音声は含まれません。"
   }
 }

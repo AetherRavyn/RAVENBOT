@@ -1001,7 +1001,8 @@
     "visualView": "Görsel görünüm",
     "voiceMode": "Ses modu",
     "zoomIn": "Yakınlaştır",
-    "zoomOut": "Uzaklaştır"
+    "zoomOut": "Uzaklaştır",
+    "meetingNotes": "Bir kayıttan toplantı notlarını içe aktar"
   },
   "rail": {
     "home": "Ana sayfa",
@@ -3191,5 +3192,29 @@
     "noInbound": "Gelen kutusu yoktur. RAVENBOT gelen postayı almaz, okumaz veya yanıtlamaz ve IMAP bağlantısı yoktur.",
     "allowlistInvalid": "Kayıtlı liste geçersiz. Düzeltip kaydedin.",
     "saveBeforeSend": "Göndermeden önce değişikliklerinizi kaydedin. Kayıtlı taslak gönderilir."
+  },
+  "meeting": {
+    "title": "Toplantı kaydı",
+    "description": "Var olan bir kaydı toplantı notu istemine dönüştürün. RAVENBOT aramalara katılmaz.",
+    "choose": "Kayıt seç",
+    "chooseHint": "Bir ses dosyası seçin. Yol yazmanız gerekmez.",
+    "transcribe": "Yazıya dök",
+    "transcribing": "Yazıya dökülüyor…",
+    "preview": "Deşifre önizlemesi",
+    "chars": "{{count}} karakter",
+    "useInComposer": "Oluşturucuda kullan",
+    "close": "Toplantı kaydı penceresini kapat",
+    "error": "Deşifre başarısız",
+    "noEngineHint": "Ayarlar'a bir OpenAI anahtarı ekleyin, OPENAI_API_KEY ayarlayın veya yerel faster-whisper kurun.",
+    "audioOnly": "Yalnızca ses: WAV, MP3, OGG, M4A, WebM veya FLAC.",
+    "maxSize": "En büyük dosya boyutu: 25 MiB.",
+    "noLiveJoin": "Canlı toplantıya katılma yok: seçtiğiniz dosya içe aktarılır.",
+    "noDiarization": "Konuşmacı ayrımı yok: sesler tanımlanmaz.",
+    "costHint": "Deşifre, OpenAI anahtarınız üzerinden ücretli bir sağlayıcı çağrısı olabilir.",
+    "reviewHint": "Aracı, bu istemi inceleyip gönderdikten sonra not yazar.",
+    "file": "Seçilen dosya",
+    "unsupported": "Bu dosya türü desteklenmiyor. Video değil ses seçin.",
+    "tooLarge": "Bu kayıt 25 MiB sınırını aşıyor. Önce bölün.",
+    "truncated": "Deşifre 60.000 karakterde kesildi. Sonraki ses dahil değil."
   }
 }

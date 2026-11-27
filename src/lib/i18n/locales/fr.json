@@ -929,7 +929,8 @@
     "visualView": "Vue visuelle",
     "voiceMode": "Mode vocal",
     "zoomIn": "Zoom avant",
-    "zoomOut": "Zoom arrière"
+    "zoomOut": "Zoom arrière",
+    "meetingNotes": "Importer les notes d’un enregistrement"
   },
   "rail": {
     "home": "Accueil",
@@ -3191,5 +3192,29 @@
     "noInbound": "Il n’y a pas de boîte de réception. RAVENBOT ne récupère, ne lit et ne répond pas aux courriels entrants, et il n’y a pas de connexion IMAP.",
     "allowlistInvalid": "La liste enregistrée n’est pas valide. Corrigez-la et enregistrez pour la réparer.",
     "saveBeforeSend": "Enregistrez vos modifications avant d’envoyer. C’est le brouillon enregistré qui est envoyé."
+  },
+  "meeting": {
+    "title": "Enregistrement de réunion",
+    "description": "Transformez un enregistrement existant en prompt de notes de réunion. RAVENBOT ne rejoint pas les appels.",
+    "choose": "Choisir un enregistrement",
+    "chooseHint": "Sélectionnez un fichier audio. Aucun chemin à saisir.",
+    "transcribe": "Transcrire",
+    "transcribing": "Transcription…",
+    "preview": "Aperçu de la transcription",
+    "chars": "{{count}} caractères",
+    "useInComposer": "Utiliser dans le compositeur",
+    "close": "Fermer la fenêtre d’enregistrement de réunion",
+    "error": "Échec de la transcription",
+    "noEngineHint": "Ajoutez une clé OpenAI dans les réglages, définissez OPENAI_API_KEY ou installez faster-whisper en local.",
+    "audioOnly": "Audio uniquement : WAV, MP3, OGG, M4A, WebM ou FLAC.",
+    "maxSize": "Taille maximale du fichier : 25 MiB.",
+    "noLiveJoin": "Pas de connexion à une réunion en direct : le fichier choisi est importé.",
+    "noDiarization": "Pas de diarisation : les voix ne sont pas identifiées.",
+    "costHint": "La transcription peut être un appel payant au fournisseur via votre clé OpenAI.",
+    "reviewHint": "L’agent ne rédige les notes qu’après votre relecture de ce prompt et son envoi.",
+    "file": "Fichier sélectionné",
+    "unsupported": "Ce type de fichier n’est pas pris en charge. Choisissez de l’audio, pas une vidéo.",
+    "tooLarge": "Cet enregistrement dépasse la limite de 25 MiB. Divisez-le d’abord.",
+    "truncated": "La transcription a été coupée à 60 000 caractères. La suite de l’audio n’est pas incluse."
   }
 }

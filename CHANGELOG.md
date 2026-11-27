@@ -28,6 +28,12 @@ All notable changes to RAVENBOT are documented here.
   items and open questions, uses `unassigned`/`no date` unless the recording
   states otherwise, forbids inventing attendees/decisions/owners/dates, and adds
   a truncation note with clear begin/end delimiters.
+- **Composer import dialog.** The thread composer has a meeting-notes button that
+  opens `MeetingNotesDialog.svelte`: it filters the file picker to supported
+  audio, transcribes through `transcribe_meeting_file`, shows the preview,
+  character count and truncation/engine errors, and inserts the built prompt into
+  the composer for review. It saves the thread draft and focuses the composer but
+  never sends; `sendMessage` is not called by the dialog.
 - **Honest scope.** No live meeting join, platform/calendar integration,
   diarization, video import, phone calls or automatic sending of notes. Whisper
   is a paid provider call; local faster-whisper remains the offline path. See

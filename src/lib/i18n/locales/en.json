@@ -1001,7 +1001,8 @@
     "visualView": "Visual view",
     "voiceMode": "Voice mode",
     "zoomIn": "Zoom in",
-    "zoomOut": "Zoom out"
+    "zoomOut": "Zoom out",
+    "meetingNotes": "Import meeting notes from a recording"
   },
   "rail": {
     "home": "Home",
@@ -3191,5 +3192,29 @@
     "noInbound": "There is no inbox. RAVENBOT does not fetch, read or reply to incoming mail, and there is no IMAP connection.",
     "allowlistInvalid": "The saved allowlist is invalid. Correct it and save to repair it.",
     "saveBeforeSend": "Save your changes before sending. The stored draft is what gets sent."
+  },
+  "meeting": {
+    "title": "Meeting recording",
+    "description": "Turn a recording you already have into a meeting-notes prompt. RAVENBOT does not join calls.",
+    "choose": "Choose recording",
+    "chooseHint": "Pick an audio file. No path typing is needed.",
+    "transcribe": "Transcribe",
+    "transcribing": "Transcribing…",
+    "preview": "Transcript preview",
+    "chars": "{{count}} characters",
+    "useInComposer": "Use in composer",
+    "close": "Close meeting recording dialog",
+    "error": "Transcription failed",
+    "noEngineHint": "Add an OpenAI key in Settings, set OPENAI_API_KEY, or install local faster-whisper.",
+    "audioOnly": "Audio only: WAV, MP3, OGG, M4A, WebM or FLAC.",
+    "maxSize": "Maximum file size: 25 MiB.",
+    "noLiveJoin": "No live meeting join: this imports a file you choose.",
+    "noDiarization": "No speaker diarization: voices are not identified.",
+    "costHint": "Transcription may be a paid provider call through your OpenAI key.",
+    "reviewHint": "The agent writes notes only after you review and send this prompt.",
+    "file": "Selected file",
+    "unsupported": "This file type is not supported. Choose audio, not video.",
+    "tooLarge": "This recording is over the 25 MiB limit. Split it first.",
+    "truncated": "The transcript was cut at 60,000 characters. Later audio is not included."
   }
 }

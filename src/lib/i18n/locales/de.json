@@ -929,7 +929,8 @@
     "visualView": "Visuelle Ansicht",
     "voiceMode": "Sprachmodus",
     "zoomIn": "Vergrößern",
-    "zoomOut": "Verkleinern"
+    "zoomOut": "Verkleinern",
+    "meetingNotes": "Besprechungsnotizen aus einer Aufnahme importieren"
   },
   "rail": {
     "home": "Start",
@@ -3191,5 +3192,29 @@
     "noInbound": "Es gibt keinen Posteingang. RAVENBOT ruft eingehende E-Mails nicht ab, liest sie nicht und antwortet nicht; es gibt keine IMAP-Verbindung.",
     "allowlistInvalid": "Die gespeicherte Liste ist ungültig. Korrigieren und speichern, um sie zu reparieren.",
     "saveBeforeSend": "Speichern Sie Ihre Änderungen vor dem Senden. Gesendet wird der gespeicherte Entwurf."
+  },
+  "meeting": {
+    "title": "Besprechungsaufnahme",
+    "description": "Wandelt eine vorhandene Aufnahme in einen Prompt für Besprechungsnotizen um. RAVENBOT nimmt nicht an Anrufen teil.",
+    "choose": "Aufnahme auswählen",
+    "chooseHint": "Wähle eine Audiodatei. Es muss kein Pfad eingegeben werden.",
+    "transcribe": "Transkribieren",
+    "transcribing": "Wird transkribiert…",
+    "preview": "Vorschau der Transkription",
+    "chars": "{{count}} Zeichen",
+    "useInComposer": "Im Eingabefeld verwenden",
+    "close": "Dialog für Besprechungsaufnahmen schließen",
+    "error": "Transkription fehlgeschlagen",
+    "noEngineHint": "Füge einen OpenAI-Schlüssel in den Einstellungen hinzu, setze OPENAI_API_KEY oder installiere faster-whisper lokal.",
+    "audioOnly": "Nur Audio: WAV, MP3, OGG, M4A, WebM oder FLAC.",
+    "maxSize": "Maximale Dateigröße: 25 MiB.",
+    "noLiveJoin": "Kein Beitritt zu Live-Besprechungen: Die gewählte Datei wird importiert.",
+    "noDiarization": "Keine Sprechertrennung: Stimmen werden nicht identifiziert.",
+    "costHint": "Die Transkription kann über deinen OpenAI-Schlüssel ein kostenpflichtiger Anbieteraufruf sein.",
+    "reviewHint": "Der Agent schreibt Notizen erst, nachdem du diesen Prompt geprüft und gesendet hast.",
+    "file": "Ausgewählte Datei",
+    "unsupported": "Dieser Dateityp wird nicht unterstützt. Wähle Audio, kein Video.",
+    "tooLarge": "Diese Aufnahme überschreitet das Limit von 25 MiB. Teile sie zuerst.",
+    "truncated": "Die Transkription wurde bei 60.000 Zeichen abgeschnitten. Der spätere Ton fehlt."
   }
 }

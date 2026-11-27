@@ -929,7 +929,8 @@
     "visualView": "Vista visual",
     "voiceMode": "Modo de voz",
     "zoomIn": "Acercar",
-    "zoomOut": "Alejar"
+    "zoomOut": "Alejar",
+    "meetingNotes": "Importar notas de una grabación"
   },
   "rail": {
     "home": "Inicio",
@@ -3191,5 +3192,29 @@
     "noInbound": "No hay bandeja de entrada. RAVENBOT no descarga, lee ni responde correo entrante, y no hay conexión IMAP.",
     "allowlistInvalid": "La lista guardada no es válida. Corrígela y guarda para repararla.",
     "saveBeforeSend": "Guarda los cambios antes de enviar. Se envía el borrador guardado."
+  },
+  "meeting": {
+    "title": "Grabación de reunión",
+    "description": "Convierte una grabación que ya tienes en un prompt de notas de reunión. RAVENBOT no se une a las llamadas.",
+    "choose": "Elegir grabación",
+    "chooseHint": "Selecciona un archivo de audio. No hace falta escribir una ruta.",
+    "transcribe": "Transcribir",
+    "transcribing": "Transcribiendo…",
+    "preview": "Vista previa de la transcripción",
+    "chars": "{{count}} caracteres",
+    "useInComposer": "Usar en el compositor",
+    "close": "Cerrar el diálogo de grabación de reunión",
+    "error": "Error al transcribir",
+    "noEngineHint": "Añade una clave de OpenAI en Ajustes, define OPENAI_API_KEY o instala faster-whisper local.",
+    "audioOnly": "Solo audio: WAV, MP3, OGG, M4A, WebM o FLAC.",
+    "maxSize": "Tamaño máximo del archivo: 25 MiB.",
+    "noLiveJoin": "Sin conexión a reuniones en vivo: se importa un archivo que elijas.",
+    "noDiarization": "Sin diarización de hablantes: no se identifican las voces.",
+    "costHint": "La transcripción puede ser una llamada de pago al proveedor mediante tu clave de OpenAI.",
+    "reviewHint": "El agente escribe notas solo después de que revises este prompt y lo envíes.",
+    "file": "Archivo seleccionado",
+    "unsupported": "Este tipo de archivo no es compatible. Elige audio, no vídeo.",
+    "tooLarge": "Esta grabación supera el límite de 25 MiB. Divídela primero.",
+    "truncated": "La transcripción se cortó a los 60.000 caracteres. El audio posterior no está incluido."
   }
 }

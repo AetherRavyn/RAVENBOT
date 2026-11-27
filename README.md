@@ -179,8 +179,10 @@ voice, and computer control. It also supports:
   MCP client.
 - **Voice and recording import.** Hands-free STT→send→TTS in a thread, plus
   import of an existing WAV, MP3, OGG, M4A, WebM or FLAC recording (audio only,
-  25 MiB cap) into a transcript-backed meeting-notes prompt. This is not a live
-  meeting join: RAVENBOT does not sit in calls, record calls, or label speakers.
+  25 MiB cap) into a transcript-backed meeting-notes prompt. The composer's
+  meeting-notes dialog shows the transcript preview and inserts a prompt you
+  still review and send. This is not a live meeting join: RAVENBOT does not sit
+  in calls, record calls, or label speakers.
   See [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md).
 - **OpenAPI plugins.** Import an OpenAPI document as a local toolkit.
 - **Community skills.** Search and install versioned skills from the VoltAgent
@@ -492,10 +494,11 @@ limitations rather than finished features:
   speech, sends it to the agent, and speaks the reply. Recording import accepts
   an existing audio file (WAV, MP3, OGG, M4A, WebM or FLAC, 100 bytes–25 MiB) and
   returns a transcript capped at 60,000 characters for a meeting-notes prompt.
-  There is no live meeting join, calendar/platform integration, diarization,
-  video import, phone-call support, or automatic sending of notes. OpenAI
-  Whisper is a paid provider call; local faster-whisper is the offline path. See
-  [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md).
+  The composer dialog previews the transcript and inserts the prompt without
+  sending it. There is no live meeting join, calendar/platform integration,
+  diarization, video import, phone-call support, or automatic sending of notes.
+  OpenAI Whisper is a paid provider call; local faster-whisper is the offline
+  path. See [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md).
 - **No first-party telemetry.** Provider calls, an optional OIDC IdP, configured
   MCP servers, optional remote alerts, an optional SCIM IdP, an optional agent
   SMTP account, and the opt-in enterprise export are the only outbound traffic

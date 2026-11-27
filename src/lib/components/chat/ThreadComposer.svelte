@@ -14,6 +14,7 @@
     Globe,
     Loader2,
     Mic,
+    NotebookPen,
     Paperclip,
     Pencil,
     Reply,
@@ -78,6 +79,8 @@
     onToggleThink: () => void;
     onOpenGoal: () => void;
     onAttachFile: () => void;
+    /** Optional: open the meeting-recording import dialog. */
+    onMeetingNotes?: () => void;
     onToggleVoice: () => void;
     onToggleVoiceMode: () => void;
     onToggleAutoRead: () => void;
@@ -125,6 +128,7 @@
     onToggleThink,
     onOpenGoal,
     onAttachFile,
+    onMeetingNotes,
     onToggleVoice,
     onToggleVoiceMode,
     onToggleAutoRead,
@@ -311,6 +315,18 @@
         >
           <Paperclip class="size-3.5" />
         </button>
+
+        {#if onMeetingNotes}
+          <button
+            type="button"
+            class="size-7 rounded-lg text-[var(--text-tertiary)] hover:text-[var(--text-primary)] hover:bg-[var(--surface-3)] flex items-center justify-center transition-colors cursor-pointer"
+            onclick={() => onMeetingNotes?.()}
+            aria-label={t("a11y.meetingNotes")}
+            title={t("meeting.title")}
+          >
+            <NotebookPen class="size-3.5" />
+          </button>
+        {/if}
 
         <button
           type="button"

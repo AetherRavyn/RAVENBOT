@@ -929,7 +929,8 @@
     "visualView": "可视化视图",
     "voiceMode": "语音模式",
     "zoomIn": "放大",
-    "zoomOut": "缩小"
+    "zoomOut": "缩小",
+    "meetingNotes": "从录音导入会议纪要"
   },
   "rail": {
     "home": "首页",
@@ -3191,5 +3192,29 @@
     "noInbound": "没有收件箱。RAVENBOT 不会收取、读取或回复收到的邮件，也没有 IMAP 连接。",
     "allowlistInvalid": "已保存的列表无效。请修正并保存以修复。",
     "saveBeforeSend": "发送前请保存更改。发送的是已保存的草稿。"
+  },
+  "meeting": {
+    "title": "会议录音",
+    "description": "把已有的录音变成会议纪要提示词。RAVENBOT 不会加入通话。",
+    "choose": "选择录音",
+    "chooseHint": "选择音频文件，无需输入路径。",
+    "transcribe": "转写",
+    "transcribing": "正在转写…",
+    "preview": "转写预览",
+    "chars": "{{count}} 个字符",
+    "useInComposer": "用于输入框",
+    "close": "关闭会议录音对话框",
+    "error": "转写失败",
+    "noEngineHint": "在设置中添加 OpenAI 密钥、设置 OPENAI_API_KEY，或安装本地 faster-whisper。",
+    "audioOnly": "仅支持音频：WAV、MP3、OGG、M4A、WebM 或 FLAC。",
+    "maxSize": "文件大小上限：25 MiB。",
+    "noLiveJoin": "不会加入实时会议：只导入你选择的文件。",
+    "noDiarization": "不做说话人分离：不会识别声音归属。",
+    "costHint": "转写可能通过你的 OpenAI 密钥产生付费的提供商调用。",
+    "reviewHint": "只有在你检查并发送此提示词后，智能体才会写纪要。",
+    "file": "已选文件",
+    "unsupported": "不支持此文件类型。请选择音频，而不是视频。",
+    "tooLarge": "该录音超过 25 MiB 上限。请先分割。",
+    "truncated": "转写已在 60,000 个字符处截断，后续音频未包含在内。"
   }
 }

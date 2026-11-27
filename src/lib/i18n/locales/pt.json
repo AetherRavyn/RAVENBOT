@@ -1001,7 +1001,8 @@
     "visualView": "Visualização interativa",
     "voiceMode": "Modo de voz",
     "zoomIn": "Aumentar zoom",
-    "zoomOut": "Diminuir zoom"
+    "zoomOut": "Diminuir zoom",
+    "meetingNotes": "Importar notas de uma gravação"
   },
   "rail": {
     "home": "Início",
@@ -3191,5 +3192,29 @@
     "noInbound": "Não há caixa de entrada. O RAVENBOT não busca, lê nem responde e-mails recebidos, e não há conexão IMAP.",
     "allowlistInvalid": "A lista salva é inválida. Corrija e salve para repará-la.",
     "saveBeforeSend": "Salve suas alterações antes de enviar. O rascunho salvo é o que será enviado."
+  },
+  "meeting": {
+    "title": "Gravação de reunião",
+    "description": "Transforme uma gravação existente num prompt de notas de reunião. O RAVENBOT não entra em chamadas.",
+    "choose": "Escolher gravação",
+    "chooseHint": "Selecione um ficheiro de áudio. Não é preciso escrever um caminho.",
+    "transcribe": "Transcrever",
+    "transcribing": "A transcrever…",
+    "preview": "Pré-visualização da transcrição",
+    "chars": "{{count}} caracteres",
+    "useInComposer": "Usar no compositor",
+    "close": "Fechar a janela de gravação de reunião",
+    "error": "Falha na transcrição",
+    "noEngineHint": "Adicione uma chave OpenAI nas definições, defina OPENAI_API_KEY ou instale o faster-whisper local.",
+    "audioOnly": "Apenas áudio: WAV, MP3, OGG, M4A, WebM ou FLAC.",
+    "maxSize": "Tamanho máximo do ficheiro: 25 MiB.",
+    "noLiveJoin": "Sem entrada em reuniões ao vivo: é importado um ficheiro à sua escolha.",
+    "noDiarization": "Sem diarização: as vozes não são identificadas.",
+    "costHint": "A transcrição pode ser uma chamada paga ao fornecedor através da sua chave OpenAI.",
+    "reviewHint": "O agente só escreve notas depois de rever este prompt e o enviar.",
+    "file": "Ficheiro selecionado",
+    "unsupported": "Este tipo de ficheiro não é suportado. Escolha áudio, não vídeo.",
+    "tooLarge": "Esta gravação excede o limite de 25 MiB. Divida-a primeiro.",
+    "truncated": "A transcrição foi cortada aos 60 000 caracteres. O áudio seguinte não está incluído."
   }
 }
