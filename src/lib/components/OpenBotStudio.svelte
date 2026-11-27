@@ -36,6 +36,8 @@
     colour?: string | null;
     /** The current stored URL, so the studio reopens on the saved render choices. */
     imageUrl?: string | null;
+    /** The picker's animation preference, used to seed the preview. */
+    animated?: boolean;
     onApply?: (url: string, style: string) => void;
     onClose?: () => void;
   }
@@ -45,6 +47,7 @@
     definitionId = null,
     colour = null,
     imageUrl = null,
+    animated = true,
     onApply,
     onClose,
   }: Props = $props();
@@ -80,7 +83,8 @@
   let followPointer = $state(saved?.followPointer ?? false);
   // svelte-ignore state_referenced_locally
   let finish = $state<Finish>(saved?.finish ?? "flat");
-  let animate = $state(true);
+  // svelte-ignore state_referenced_locally
+  let animate = $state(animated);
 
   function choose(id: string) {
     if (id === chosenId) return;

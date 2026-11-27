@@ -114,9 +114,9 @@ describe("AvatarPicker — OpenBot", () => {
     expect(onSelect).toHaveBeenCalledWith(stored, "openbot:ghost");
   });
 
-  it("leaves OpenBot mode when a DiceBear style is picked afterwards", () => {
+  it("leaves OpenBot mode and closes its studio when a DiceBear style is picked", async () => {
     const onSelect = vi.fn();
-    render(AvatarPicker, {
+    const { container } = render(AvatarPicker, {
       props: {
         seed: "Ada",
         style: "openbot:ghost",
@@ -124,7 +124,16 @@ describe("AvatarPicker — OpenBot", () => {
         onSelect,
       },
     });
+    fireEvent.click(container.querySelector('section[aria-label="OpenBot character"] button')!);
+    await tick();
+    expect(container.querySelector(".openbot-studio")).not.toBeNull();
+
     fireEvent.click(screen.getByRole("radio", { name: /Clay/i }));
+    await tick();
+    expect(
+      container.querySelector(".openbot-studio"),
+      "a second editor must not stay open over the first choice",
+    ).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: /Use Selected Avatar/i }));
     const [url, styleValue] = onSelect.mock.calls.at(-1)!;
     expect(styleValue).toBe("clay");

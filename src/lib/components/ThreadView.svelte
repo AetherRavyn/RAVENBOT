@@ -15,6 +15,7 @@
   import DiffView from "$lib/components/workspace/DiffView.svelte";
   import { matchingMessageIds, messageKey, stepMatchIndex } from "$lib/chat/search";
   import { agentActivity } from "$lib/agentActivity.svelte";
+  import { fleetActivity } from "$lib/fleetActivity.svelte";
   import {
     MESSAGE_FOCUS_EVENT,
     THREAD_FOCUS_EVENT,
@@ -2545,6 +2546,7 @@
     botName={bot.name}
     avatarUrl={bot.avatar_url}
     avatarStyle={bot.avatar_style}
+    mood={fleetActivity.mood(bot.id)}
     statusDot={botStatusTheme.dot}
     engine={bot?.config?.engine ?? null}
     paused={bot.status === "paused"}
@@ -3154,7 +3156,12 @@
                   {@render liveMarkers()}
                   <div class="agent-activity-row flex items-center gap-2.5 min-h-[44px]">
                     <div class="size-8 rounded-full overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] shrink-0">
-                      <RavenAvatar name={bot.name} imageUrl={bot.avatar_url} style={bot.avatar_style} />
+                      <RavenAvatar
+                        name={bot.name}
+                        mood={fleetActivity.mood(bot.id)}
+                        imageUrl={bot.avatar_url}
+                        style={bot.avatar_style}
+                      />
                     </div>
                     <span class="agent-activity-label">{t(activityLine)}</span>
                   </div>

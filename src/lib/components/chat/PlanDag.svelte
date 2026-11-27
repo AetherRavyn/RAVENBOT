@@ -4,6 +4,7 @@
   // dumb renderer.
   import { dagLayout, dagEdges, DAG_NODE_W, DAG_NODE_H, type DagTask } from "$lib/chat/dag";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
+  import type { AvatarMood } from "$lib/avatar";
 
   interface MemberLite {
     bot_id: string;
@@ -47,6 +48,26 @@
   function nameFor(botId: string): string {
     const m = memberFor(botId);
     return m?.bot?.name || m?.rank || "?";
+  }
+
+  /**
+   * The node's own run state, not the fleet-wide mood.
+   *
+   * A plan graph can show one agent's finished node beside another agent's
+   * running one; asking the fleet store would paint the same face on both.
+   * `pending` and `skipped` are idle here: neither is waiting on a person.
+   */
+  function moodForNode(index: number): AvatarMood {
+    switch (stateFor?.(index)) {
+      case "running":
+        return "working";
+      case "done":
+        return "responded";
+      case "failed":
+        return "failed";
+      default:
+        return "idle";
+    }
   }
 
 
@@ -100,8 +121,9 @@
           >
             <RavenAvatar
               name={nameFor(task.botId)}
+              mood={moodForNode(i)}
               imageUrl={memberFor(task.botId)?.bot?.avatar_url}
-               style={memberFor(task.botId)?.bot?.avatar_style}
+              style={memberFor(task.botId)?.bot?.avatar_style}
               decorative
               class="size-5 rounded-full shrink-0"
             />

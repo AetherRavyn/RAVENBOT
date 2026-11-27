@@ -117,17 +117,28 @@
     localStorage.setItem(ANIMATE_KEY, next ? "on" : "off");
   }
 
+  /**
+   * Follow a style change from the owner, not the value we already had.
+   *
+   * Comparing the prop with `selectedStyle` looks equivalent but is not: after a
+   * local pick, the parent's prop is still the old value until it saves and
+   * re-renders, so that comparison would quietly flip the selection back. Track
+   * the last prop we acted on instead.
+   */
+  // svelte-ignore state_referenced_locally
+  let lastStyleProp = style;
   $effect(() => {
     const nextStyle = style;
-    if (nextStyle && nextStyle !== selectedStyle && !useCustom) {
-      selectedStyle = nextStyle;
-      const id = parseOpenBotStyle(nextStyle);
-      if (id && openBotDefinition(id)) {
-        openBotId = id;
-        openBotMode = true;
-      } else {
-        openBotMode = false;
-      }
+    if (nextStyle === lastStyleProp) return;
+    lastStyleProp = nextStyle;
+    if (!nextStyle || useCustom) return;
+    selectedStyle = nextStyle;
+    const id = parseOpenBotStyle(nextStyle);
+    if (id && openBotDefinition(id)) {
+      openBotId = id;
+      openBotMode = true;
+    } else {
+      openBotMode = false;
     }
   });
 
@@ -194,6 +205,7 @@
       return;
     }
     openBotMode = false;
+    openBotOpen = false;
     selectedStyle = s;
     useCustom = false;
     // Picking the drawn face is a request to design it, so the studio opens.
@@ -425,6 +437,7 @@
       definitionId={openBotId}
       colour={openBotColour}
       imageUrl={openBotCurrentUrl}
+      animated={animate}
       onApply={applyOpenBot}
       onClose={() => (openBotOpen = false)}
     />

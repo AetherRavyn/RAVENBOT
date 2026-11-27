@@ -81,9 +81,13 @@ mapping is exhaustive and tested:
 | `failed` | `blocked` | It stopped and could not continue |
 | `responded` | `done` | It finished and nobody has read it |
 
-The live state comes from `fleetActivity.mood(bot.id)` wherever fleet activity
-is available, not from a hardcoded preview. The studio's selected state is a
-preview only; Apply stores the definition and colour, never the preview state.
+The live state comes from `fleetActivity.mood(bot.id)` on the surfaces that
+share fleet activity — the sidebar, office header, office board, chat rows,
+thread header and the pre-first-token row — not from a hardcoded preview. Plan
+nodes instead use their own run state (`running`, `done`, `failed`), so a
+finished node beside a failed one shows both truths. The studio's selected state
+is a preview only; Apply stores the definition and colour, never the preview
+state.
 
 `RavenAvatar` exposes `data-openbot-state` with the mapped live state, so a DOM
 test (or a stylesheet) can distinguish working from waiting from blocked from
@@ -109,7 +113,9 @@ done. It also reports the definition id in `data-shape`, the hex in
   follow-pointer, flat/fluffy/glass, an animation toggle, and the six-state
   strip in the reference order: Idle, Thinking, Working, Waiting, Blocked,
   Done. Apply stores the character, colour, volume, pointer-follow and finish
-  in `avatar_url`; reopening the studio reads them back.
+  in `avatar_url`; reopening the studio reads them back. The neutral/happy
+  toggle and the animation checkbox affect the preview only — the live tone
+  follows the run state, and the picker owns the global animation preference.
 
 ## Rendering and materials
 

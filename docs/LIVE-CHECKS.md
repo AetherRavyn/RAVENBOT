@@ -175,6 +175,33 @@ runner; those remain manual checks:
 Record the OS build, the command output and whether the daemon survived a
 crash/restart in the release notes.
 
+## Manual OpenBot avatar check
+
+CI renders the still fallback in jsdom. Canvas, materials and live transitions
+need a real display, so a release should check them by hand:
+
+1. Open an agent's avatar picker and choose **OpenBot character**. Confirm the
+   studio lists 23 characters and the strip shows Idle, Thinking, Working,
+   Waiting, Blocked and Done in that order.
+2. Choose a character and colour, set volume, pointer-follow and a finish, then
+   apply. Confirm the agent shows the character, and reopening the picker
+   restores the same options.
+3. Run a task in a thread. Confirm the face moves through thinking/working,
+   shows waiting while an approval is queued, blocked after a failed run and
+   done after a completed run. The sidebar, office header, chat gutter and
+   thread header should agree.
+4. Start a plan with one finished and one failed node. Confirm each node's face
+   reflects its own state rather than one fleet-wide mood.
+5. Turn on the OS reduced-motion setting. Confirm the character stops moving
+   while the pose still changes with the work state.
+6. Try flat, fluffy and glass. On a machine without WebGL2, confirm fluffy and
+   glass draw flat instead of showing a broken body.
+7. Reload the app. Confirm the character, colour, volume, pointer-follow and
+   finish all return.
+
+Record the display/WebKit version, the states observed, and whether reduced
+motion and the material fallback behaved.
+
 ## Browser Teach and Replay
 
 The recorder and replay assets run in jsdom in CI, but the WebKit dock needs a

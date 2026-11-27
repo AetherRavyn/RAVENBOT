@@ -7,6 +7,7 @@
    * all handlers. This component renders the header and forwards actions.
    */
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
+  import type { AvatarMood } from "$lib/avatar";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import ThreadSearch from "./ThreadSearch.svelte";
@@ -54,6 +55,8 @@
     botName: string;
     avatarUrl?: string | null;
     avatarStyle?: string | null;
+    /** The live fleet mood, so the header face matches the roster. */
+    mood?: AvatarMood;
     statusDot: string;
     engine?: string | null;
     paused?: boolean;
@@ -144,6 +147,7 @@
     botName,
     avatarUrl = null,
     avatarStyle = null,
+    mood = "idle",
     statusDot,
     engine = null,
     paused = false,
@@ -225,7 +229,7 @@
     <!-- Left: Bot Avatar & Info + Thread Switcher Dropdown -->
     <div class="flex items-center gap-3 min-w-0 flex-1">
       <div class="relative size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] p-0.5 shrink-0 shadow-sm">
-        <RavenAvatar name={botName} imageUrl={avatarUrl} style={avatarStyle} />
+        <RavenAvatar name={botName} mood={mood} imageUrl={avatarUrl} style={avatarStyle} />
         <span class="absolute bottom-0 right-0 size-2 rounded-full ring-1 ring-[var(--surface-0)] {statusDot}"></span>
       </div>
 
