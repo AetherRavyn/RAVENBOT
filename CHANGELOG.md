@@ -27,6 +27,21 @@ All notable changes to RAVENBOT are documented here.
   markers before send; the page still cannot send. `ThreadView` and
   `ChatRoomView` both handle it, and `visuals.md` documents the API.
 
+### Proactive chat messaging tools
+
+- **Agent tools for paired chats.** `messaging_list_places` lists the running
+  agent's paired Telegram chats, Slack channels, Discord channels and WhatsApp
+  numbers; `messaging_history` reads the local RAVENBOT conversation for one
+  place; `messaging_post` sends one plain-text message. The post is high risk and
+  approval-gated, and every tool is scoped to the bot that owns the link.
+- **No second network stack.** The desktop and headless daemon install a
+  `chat_bridge` handler that re-checks the link and connector switch and calls
+  the existing connector client. The skill never sees a token, results never
+  include one, and a disabled/unpaired/missing-bridge case fails closed.
+- **Honest history.** History is the local conversation routed through
+  RAVENBOT, not the platform's full archive; the tool says so. Attachments,
+  replies and platform-side history remain open.
+
 ### Meeting recording import
 
 - **Import an existing recording, not a live meeting.** The new

@@ -2,6 +2,28 @@
 
 Telegram, Slack, Discord, WhatsApp and Microsoft Teams are natively supported.
 
+## Agent messaging tools
+
+An agent can work with the chats you have already paired, without ever seeing a
+token:
+
+| Tool | What it does | Risk |
+|---|---|---|
+| `messaging_list_places` | Lists this agent's paired Telegram chats, Slack channels, Discord channels and WhatsApp numbers, with the connector's enabled state. Read-only. | Read-only |
+| `messaging_history` | Reads the **local RAVENBOT conversation** for one paired place, newest last, with optional text filter and a 100-message cap. It is not the platform's full archive. External text is marked untrusted. | Read-only |
+| `messaging_post` | Posts one plain-text message (1–8,000 characters) to a paired place. No attachments in v1. | High; approval-gated |
+
+The tools are scoped to the **running agent**: a link belongs to the bot that
+paired it. One agent cannot list, read or post to another agent's chat. The
+desktop and headless daemon install the same sender, which re-checks the link and
+the connector switch before using the existing client. A disabled connector, an
+unpaired place, or a headless process with no sender fails closed.
+
+WhatsApp free-form posts remain subject to Meta's 24-hour customer-service
+window; the provider error is returned rather than replaced with a fake success.
+`messaging_history` is local conversation history, so it does not fetch messages
+that were never routed to RAVENBOT.
+
 ## Native Telegram
 
 1. Create a bot with `@BotFather` and copy its token.

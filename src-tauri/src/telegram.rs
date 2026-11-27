@@ -1071,6 +1071,38 @@ pub async fn send_text(
     Ok(())
 }
 
+/// Send to a place that is already paired with RAVENBOT.
+///
+/// The agent tool path uses this wrapper instead of touching a token. It
+/// re-checks the connector switch and the link row, so an id that is not paired
+/// cannot become an outbound destination.
+pub async fn send_linked_text(
+    db: &Database,
+    bot_id: Uuid,
+    chat_id: &str,
+    text: &str,
+) -> Result<(), String> {
+    if !enabled(db).await {
+        return Err("Telegram is not enabled in Settings → Chat apps.".to_string());
+    }
+    if TelegramQueries::link_for_chat(db.pool(), chat_id)
+        .await
+        .map_err(|error| format!("Could not read the Telegram link: {error}"))?
+        .filter(|link| link.bot_id == bot_id.to_string())
+        .is_none()
+    {
+        return Err("That Telegram chat is not paired with this agent.".to_string());
+    }
+    let token = read_token(db)
+        .await
+        .ok_or_else(|| "Telegram has no bot token. Add one in Settings → Chat apps.".to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Could not prepare the Telegram request: {error}"))?;
+    send_text(&client, &api_base(), &token, chat_id, text).await
+}
+
 /// Telegram's hard limit is 4096 UTF-16 code units. 3500 characters leaves
 /// room for surrogate pairs and is still readable.
 pub fn split_message(text: &str) -> Vec<String> {
@@ -1119,6 +1151,17 @@ mod tests {
         let hash = hash_code("123456");
         assert_eq!(hash.len(), 64);
         assert_ne!(hash, "123456");
+    }
+
+    #[tokio::test]
+    async fn proactive_send_fails_closed_when_the_connector_is_off() {
+        let path = std::env::temp_dir().join(format!("ravenbot-telegram-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("db");
+        let error = send_linked_text(&db, Uuid::new_v4(), "42", "hello")
+            .await
+            .expect_err("disabled");
+        assert!(error.contains("not enabled"));
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]

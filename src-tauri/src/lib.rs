@@ -55,6 +55,42 @@ pub struct AppState {
     pub account_session: String,
 }
 
+/// Install the proactive chat sender used by the `messaging_post` tool.
+///
+/// Both the desktop app and the headless daemon install this after creating the
+/// database. The handler re-reads the link and the connector switch, so the
+/// skill cannot turn an arbitrary id into an outbound destination.
+pub(crate) fn install_chat_bridge(db: Database) {
+    ravenbot_core::chat_bridge::set_chat_send_handler(move |request| {
+        let db = db.clone();
+        async move {
+            let bot_id = request.bot_id;
+            let connection = request.connection.trim().to_ascii_lowercase();
+            let place = request.place.trim().to_string();
+            let text = request.text.trim().to_string();
+            if text.is_empty() {
+                return Err("The chat message is empty.".to_string());
+            }
+            match connection.as_str() {
+                "telegram" => telegram::send_linked_text(&db, bot_id, &place, &text).await?,
+                "slack" => slack::send_linked_text(&db, bot_id, &place, &text).await?,
+                "discord" => discord::send_linked_text(&db, bot_id, &place, &text).await?,
+                "whatsapp" => whatsapp::send_linked_text(&db, bot_id, &place, &text).await?,
+                other => {
+                    return Err(format!(
+                    "Unknown chat connection `{other}`. Use telegram, slack, discord or whatsapp."
+                ))
+                }
+            }
+            Ok(ravenbot_core::chat_bridge::ChatSendReceipt {
+                connection,
+                place,
+                characters: text.chars().count(),
+            })
+        }
+    });
+}
+
 // ── Interactive visual replies ─────────────────────────────────────────────
 //
 // An agent can publish a self-contained HTML page as a visual reply. The page
@@ -25607,6 +25643,11 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
                 full_account.actor.id.clone(),
                 full_account.workspace.id.clone(),
             );
+
+            // Proactive chat messages from an agent tool go through the same
+            // connector clients and keychain-backed credentials as a reply.
+            // The skill never sees a token; the handler re-checks the link.
+            install_chat_bridge(db.clone());
 
             // Native Telegram polling runs in whichever process owns the
             // fleet. It is a no-op until the connector is enabled.

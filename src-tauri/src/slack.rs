@@ -1084,6 +1084,34 @@ async fn send_text(
     Ok(())
 }
 
+/// Send to a Slack channel that is already paired with RAVENBOT.
+pub async fn send_linked_text(
+    db: &Database,
+    bot_id: Uuid,
+    channel: &str,
+    text: &str,
+) -> Result<(), String> {
+    if !enabled(db).await {
+        return Err("Slack is not enabled in Settings → Chat apps.".to_string());
+    }
+    if SlackQueries::link_for_channel(db.pool(), channel)
+        .await
+        .map_err(|error| format!("Could not read the Slack link: {error}"))?
+        .filter(|link| link.bot_id == bot_id.to_string())
+        .is_none()
+    {
+        return Err("That Slack channel is not paired with this agent.".to_string());
+    }
+    let token = bot_token(db)
+        .await
+        .ok_or_else(|| "Slack has no bot token. Add one in Settings → Chat apps.".to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Could not prepare the Slack request: {error}"))?;
+    send_text(&client, &api_base(), &token, channel, None, text).await
+}
+
 pub fn split_message(text: &str) -> Vec<String> {
     let text = text.trim();
     if text.is_empty() {
@@ -1106,6 +1134,17 @@ pub fn split_message(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn proactive_send_fails_closed_when_the_connector_is_off() {
+        let path = std::env::temp_dir().join(format!("ravenbot-slack-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("db");
+        let error = send_linked_text(&db, Uuid::new_v4(), "C1", "hello")
+            .await
+            .expect_err("disabled");
+        assert!(error.contains("not enabled"));
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn slack_tokens_are_validated() {

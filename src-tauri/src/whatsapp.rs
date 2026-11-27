@@ -1135,6 +1135,40 @@ async fn send_text(
     Ok(())
 }
 
+/// Send to a WhatsApp number that is already paired with RAVENBOT.
+///
+/// A free-form message is still subject to Meta's 24-hour customer-service
+/// window. The wrapper does not fake a template message: the provider error is
+/// returned instead.
+pub async fn send_linked_text(
+    db: &Database,
+    bot_id: Uuid,
+    wa_id: &str,
+    text: &str,
+) -> Result<(), String> {
+    if !enabled(db).await {
+        return Err("WhatsApp is not enabled in Settings → Chat apps.".to_string());
+    }
+    if WhatsAppQueries::link_for_number(db.pool(), wa_id)
+        .await
+        .map_err(|error| format!("Could not read the WhatsApp link: {error}"))?
+        .filter(|link| link.bot_id == bot_id.to_string())
+        .is_none()
+    {
+        return Err("That WhatsApp number is not paired with this agent.".to_string());
+    }
+    let base = api_base();
+    let config = load_config(db, &base).await.ok_or_else(|| {
+        "WhatsApp has no token or phone number id. Configure it in Settings → Chat apps."
+            .to_string()
+    })?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Could not prepare the WhatsApp request: {error}"))?;
+    send_text(&client, &config, wa_id, text).await
+}
+
 /// WhatsApp's text limit is 4096 characters. Leave room for formatting and
 /// multi-byte characters.
 pub fn split_message(text: &str) -> Vec<String> {
@@ -1159,6 +1193,17 @@ pub fn split_message(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn proactive_send_fails_closed_when_the_connector_is_off() {
+        let path = std::env::temp_dir().join(format!("ravenbot-whatsapp-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("db");
+        let error = send_linked_text(&db, Uuid::new_v4(), "15551234567", "hello")
+            .await
+            .expect_err("disabled");
+        assert!(error.contains("not enabled"));
+        let _ = std::fs::remove_file(&path);
+    }
 
     fn signature(secret: &str, body: &[u8]) -> String {
         let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("hmac");

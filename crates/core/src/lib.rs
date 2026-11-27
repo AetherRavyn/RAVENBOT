@@ -12,6 +12,7 @@ pub mod budget;
 pub mod bundle;
 pub mod capability;
 pub mod channel;
+pub mod chat_bridge;
 pub mod chatroom;
 pub mod commerce;
 pub mod email;

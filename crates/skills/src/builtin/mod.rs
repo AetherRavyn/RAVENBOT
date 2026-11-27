@@ -27,6 +27,7 @@ pub mod http_request;
 pub mod image_gen;
 pub mod local_skills;
 pub mod memory_tool;
+pub mod messaging;
 pub mod note_manager;
 pub mod package_manager;
 mod pptx;
@@ -76,6 +77,7 @@ pub use local_skills::{
     ReviseSkillSkill,
 };
 pub use memory_tool::{MemoryRecallSkill, MemorySaveSkill};
+pub use messaging::{MessagingHistorySkill, MessagingListPlacesSkill, MessagingPostSkill};
 pub use note_manager::NoteManagerSkill;
 pub use package_manager::PackageManagerSkill;
 pub use screenshot::ScreenshotSkill;

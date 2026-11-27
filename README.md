@@ -209,6 +209,8 @@ voice, and computer control. It also supports:
   rewrite remain open. See [`docs/DEMONSTRATIONS.md`](docs/DEMONSTRATIONS.md).
 - **Native chat channels.** Telegram, Slack, Discord, WhatsApp, and Microsoft
   Teams, with pairing codes, thread routing, attachments, and approval cards.
+  Agents can also list their own paired places, read the local conversation
+  history, and post an approval-gated message through the existing connector.
 - **A browser dock and desktop control.** A real webview beside the conversation,
   DOM snapshots and actions for the agent, plus opt-in window/screen control,
   app launch, clipboard read/write, and drag on Linux. App launch and clipboard
@@ -432,9 +434,9 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 262 Tauri library tests
-  plus 7 cross-tenant isolation tests, 246 runtime tests, 223 skill tests, 122
-  database tests, 89 core tests, 42 vision tests, 35 memory tests, 33 MCP
+- **1,100+ Rust tests** across the workspace, including 266 Tauri library tests
+  plus 7 cross-tenant isolation tests, 246 runtime tests, 229 skill tests, 122
+  database tests, 90 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
 - **1,014 frontend tests** across 144 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow

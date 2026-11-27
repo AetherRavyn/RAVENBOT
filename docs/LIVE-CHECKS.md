@@ -62,6 +62,32 @@ bot, not a production channel:
    send `answer <id> <text>`.
 6. Confirm a second click cannot decide the same request twice.
 
+## Manual proactive-messaging check
+
+CI covers the bridge contract, per-agent link scoping, send-once and the
+connector-disabled failures. A release should also send one real message to a
+test workspace:
+
+1. Pair a test Telegram DM, Slack channel, Discord channel or WhatsApp number
+   with a test agent, and enable that connector in Settings → Chat apps.
+2. Ask the agent to call `messaging_list_places`. Confirm it lists only that
+   agent's places, with the connector switch, and no token or other agent's
+   chat.
+3. Ask for `messaging_history` on the place. Confirm it returns the local
+   RAVENBOT conversation newest last, says it is not the platform archive, and
+   marks external text as untrusted.
+4. Ask for `messaging_post` with a short message. Under Review, confirm the
+   approval card names the place and text. Approve it once and confirm exactly
+   one plain-text message arrives, with no attachment or duplicate.
+5. Ask to post to a place paired with another agent and to an unpaired id.
+   Confirm both are refused before any network call.
+6. Disable the connector and retry. Confirm the post fails with the Settings
+   message, then re-enable it.
+7. For WhatsApp, try outside Meta's 24-hour customer-service window. Confirm the
+   provider error is shown; it must not claim the message was sent.
+8. Repeat one post from the headless daemon (desktop closed) and confirm it
+   still uses the same link and connector.
+
 ## Manual voice-key check
 
 Transcription and speech both prefer the OpenAI key saved in Settings, then

@@ -1137,6 +1137,34 @@ async fn send_text(
     Ok(())
 }
 
+/// Send to a Discord channel that is already paired with RAVENBOT.
+pub async fn send_linked_text(
+    db: &Database,
+    bot_id: Uuid,
+    channel_id: &str,
+    text: &str,
+) -> Result<(), String> {
+    if !enabled(db).await {
+        return Err("Discord is not enabled in Settings → Chat apps.".to_string());
+    }
+    if DiscordQueries::link_for_channel(db.pool(), channel_id)
+        .await
+        .map_err(|error| format!("Could not read the Discord link: {error}"))?
+        .filter(|link| link.bot_id == bot_id.to_string())
+        .is_none()
+    {
+        return Err("That Discord channel is not paired with this agent.".to_string());
+    }
+    let token = read_token(db)
+        .await
+        .ok_or_else(|| "Discord has no bot token. Add one in Settings → Chat apps.".to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("Could not prepare the Discord request: {error}"))?;
+    send_text(&client, &api_base(), &token, channel_id, text).await
+}
+
 /// Discord's hard limit is 2000 characters. Leave room for formatting and
 /// multi-byte characters.
 pub fn split_message(text: &str) -> Vec<String> {
@@ -1161,6 +1189,17 @@ pub fn split_message(text: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn proactive_send_fails_closed_when_the_connector_is_off() {
+        let path = std::env::temp_dir().join(format!("ravenbot-discord-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("db");
+        let error = send_linked_text(&db, Uuid::new_v4(), "123", "hello")
+            .await
+            .expect_err("disabled");
+        assert!(error.contains("not enabled"));
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn discord_tokens_are_validated_without_echoing_the_secret() {

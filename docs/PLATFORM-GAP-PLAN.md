@@ -44,7 +44,7 @@ Every slice must satisfy all of these before it is called done:
 |---|---|---|---|---|---|
 | 1 | Custom avatar upload/replace/remove | High | S | Low | shipped |
 | 2 | Visual page → composer actions | High | M | Medium | shipped |
-| 3 | Proactive messaging tools | High | M | Medium | planned |
+| 3 | Proactive messaging tools | High | M | Medium | shipped |
 | 4 | Browser action depth | Medium | M | Medium | planned |
 | 5 | Secure API-key request | Medium | M | Medium | planned |
 | 6 | Activity-aware avatars | Medium | S/M | Low | planned |
@@ -198,31 +198,37 @@ its own. Revisit after the island, backdrop and messaging tools ship.
 
 ---
 
-## Phase 3 — Proactive messaging tools — `planned`
+## Phase 3 — Proactive messaging tools — `shipped`
 
-**Why:** our connectors can receive and route chat messages, but an agent has no
-direct tool to list linked places, read history or post proactively. OpenBot
+**Why:** our connectors could receive and route chat messages, but an agent had
+no direct tool to list linked places, read history or post proactively. OpenBot
 has `messaging_list_places`, `messaging_history` and `messaging_post`.
 
-**Design**
+**Shipped**
 
-- A `messaging` skill with three tools:
-  - `messaging_list_places` — linked Telegram chats, Slack channels, Discord
-    channels, WhatsApp chats, with connection/place ids. Read-only.
-  - `messaging_history` — recent history with scope, limit, query and `before`
-    cursor. Treat external messages as untrusted data.
-  - `messaging_post` — text/files/reply target. High risk; approval required by
-    default. No DMs unless the place is explicitly linked.
-- Reuse the existing Telegram/Slack/Discord/WhatsApp clients; no new network
-  stack.
-- Enforce per-platform text/file limits, allowed MIME types, path confinement
-  and connection ids from the DB.
-- Never include tokens in results or errors.
-- Tests: fake local servers per platform, disallowed place, oversize text,
-  file path escape, token redaction, no-network `list_places`.
+- Three skills:
+  - `messaging_list_places` — this agent's linked Telegram chats, Slack channels,
+    Discord channels and WhatsApp numbers, with the connector switch. Read-only.
+  - `messaging_history` — the **local RAVENBOT conversation** for one place,
+    newest last, optional text filter, 100-message cap and 24,000-character cap.
+    It explicitly says this is not the platform's full archive.
+  - `messaging_post` — one plain-text message (1–8,000 characters), high risk and
+    approval-gated. No attachments or replies in v1.
+- Per-agent scoping: a link belongs to the bot that paired it; another agent
+  cannot list, read or post through it.
+- The desktop and headless daemon install the same `chat_bridge` sender. The
+  handler re-reads the link and connector switch and calls the existing
+  Telegram/Slack/Discord/WhatsApp client. No new network stack, no token in the
+  skill or the result.
+- A disabled connector, unpaired place or missing bridge fails closed. WhatsApp
+  free-form posts still obey Meta's 24-hour window and return the provider error.
 
-**Acceptance:** an agent posts once to a linked test channel, history returns it,
-a second post is blocked without approval, and no token appears in the result.
+**Tests:** core bridge contract; six skill tests including cross-agent refusal
+and send-once; four connector wrapper tests that fail before any network call;
+`cargo test --workspace` passes.
+
+**Still open:** attachments/replies, platform-side history and a live post to a
+real external workspace (manual check).
 
 ---
 
