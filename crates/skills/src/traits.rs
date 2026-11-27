@@ -85,6 +85,12 @@ pub struct SkillContext {
     /// generation) receive it here instead of reaching into process env. Never
     /// serialized or logged; `None` keeps the environment fallback.
     pub openai_api_key: Option<String>,
+    /// The application database, for tools that need to persist a row.
+    ///
+    /// `None` is the default for tests and for callers that deliberately do
+    /// not attach storage; such tools fail with a clear message instead of
+    /// reaching for a global path. The production runtime attaches its pool.
+    pub db: Option<sqlx::SqlitePool>,
 }
 
 impl SkillContext {
@@ -105,6 +111,7 @@ impl SkillContext {
             network_domains: None,
             allow_private_network: false,
             openai_api_key: None,
+            db: None,
         }
     }
 
@@ -112,6 +119,26 @@ impl SkillContext {
     pub fn with_openai_api_key(mut self, key: Option<String>) -> Self {
         self.openai_api_key = key.filter(|value| !value.trim().is_empty());
         self
+    }
+
+    /// Attach the application database to this run.
+    pub fn with_db(mut self, pool: sqlx::SqlitePool) -> Self {
+        self.db = Some(pool);
+        self
+    }
+
+    /// The database, or an error naming what is missing.
+    ///
+    /// Tools that need storage fail closed: there is no fallback to a global
+    /// database path, because a test or headless caller that forgot to attach
+    /// one should not silently write to the live app.
+    pub fn db_pool(&self) -> Result<&sqlx::SqlitePool, SkillError> {
+        self.db.as_ref().ok_or_else(|| {
+            SkillError::Execution(
+                "This tool needs the RAVENBOT database, but this run did not attach one."
+                    .to_string(),
+            )
+        })
     }
 
     /// Attach the project folders this run may work in.
@@ -194,6 +221,7 @@ impl SkillContext {
             network_domains: None,
             allow_private_network: false,
             openai_api_key: None,
+            db: None,
         }
     }
 
@@ -309,6 +337,7 @@ impl SkillContext {
             network_domains: self.network_domains.clone(),
             allow_private_network: self.allow_private_network,
             openai_api_key: self.openai_api_key.clone(),
+            db: self.db.clone(),
         }
     }
 

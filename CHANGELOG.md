@@ -4,6 +4,42 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Agent email drafts (backend, no Mail UI yet)
+
+- **The agent can only draft.** `email_draft` (risk `Low`, no permissions)
+  validates 1–20 To and 0–20 Cc addresses, a 1–200 character subject and a
+  1–50,000 character plain-text body, then stores a row in the new
+  `email_drafts` table (migration 079) with the run's bot, thread and run ids.
+  It has no SMTP client and no network path; a test points a configured SMTP
+  account at a live listener and proves `email_draft` never connects. There is
+  deliberately no `email_send` tool.
+- **A person sends.** `send_email_draft` is an owner-only desktop command. It
+  accepts only `status = 'draft'`, revalidates the saved allowlist, sends a
+  plain-text To/Cc message through `lettre` in `spawn_blocking`, marks the row
+  sent, and writes a `ToolCall` audit event named `email_send` containing only
+  `{ draft_id, recipient_count }` plus the draft's bot/thread/run ids. A failure
+  stores a single-line, ≤300-character sanitized error (password redacted) and
+  leaves the draft retryable.
+- **A separate account from alerts.** `get_agent_email`, `set_agent_email`,
+  `clear_agent_email` and `test_agent_email` manage
+  `agent_email_host/port/security/username/password/from/allowlist`. STARTTLS is
+  required for a public host; unencrypted SMTP is loopback-only. The password is
+  write-only, keychain-backed under `agent-email-password`, added to the vault
+  migration list, and never returned or logged. Exact addresses and domains
+  (including subdomains) are supported, with wildcards rejected.
+- **Draft commands and summaries.** `list_email_drafts` returns at most 100
+  body-free summaries newest first; `get_email_draft` returns the full row;
+  `update_email_draft` and `discard_email_draft` are guarded by
+  `status = 'draft'`. All configuration, draft and send commands are owner-only;
+  the read-shaped ones are in `VIEWER_DENY` so operators cannot read the SMTP
+  account or drafts.
+- **No UI yet.** This slice is backend plus the agent tool. The Settings → Mail
+  screen is a follow-up; the commands above are the interim surface.
+- **Deliberately out of scope.** No inbound mail/IMAP, attachments, HTML,
+  auto-send, provider OAuth or per-agent SMTP accounts. See
+  [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md); the real-SMTP release check is
+  in [`docs/LIVE-CHECKS.md`](docs/LIVE-CHECKS.md).
+
 ### Remote SCIM 2.0 user provisioning (Users only)
 
 - **Opt-in, workspace-scoped provisioning.** The remote listener can mount

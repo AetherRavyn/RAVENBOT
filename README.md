@@ -471,12 +471,19 @@ limitations rather than finished features:
   `viewer`/`operator` grant and never manages the owner or a shared account.
   See [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md) and
   [`docs/REMOTE-SCIM.md`](docs/REMOTE-SCIM.md).
+- **Agent email is draft-only.** An owner may configure one SMTP account; an
+  agent can only create a plain-text draft, and a person must review and send
+  it. There is no `email_send` tool, no auto-send, no inbound mail/IMAP, no
+  attachments or HTML, no provider OAuth, and the Settings → Mail screen is not
+  shipped yet. The password is keychain-backed, an address/domain allowlist is
+  enforced at draft time, and a send audits only the draft id and recipient
+  count. See [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md).
 - **No first-party telemetry.** Provider calls, an optional OIDC IdP, configured
-  MCP servers, optional remote alerts, an optional SCIM IdP, and the opt-in
-  enterprise export are the only outbound traffic the app initiates. The
-  enterprise export sends logs only; SCIM Groups, OTLP metrics/traces,
-  data-residency controls and a hosted relay are not shipped. See
-  [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md).
+  MCP servers, optional remote alerts, an optional SCIM IdP, an optional agent
+  SMTP account, and the opt-in enterprise export are the only outbound traffic
+  the app initiates. The enterprise export sends logs only; SCIM Groups, OTLP
+  metrics/traces, data-residency controls and a hosted relay are not shipped.
+  See [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md).
 
 The roadmap is tracked in [`ROADMAP.md`](ROADMAP.md). The code-level audit and
 remaining trust gaps are in
@@ -497,6 +504,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/SERVICE.md`](docs/SERVICE.md) | systemd, launchd, and Windows logon service |
 | [`docs/RELEASE.md`](docs/RELEASE.md) | Signing, notarization, updater, checksums and SBOM |
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
+| [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md) | Outbound draft-only agent email: config, allowlist, storage, audit, limits |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
 | [`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md) | The bundled OpenBot gallery, URL scheme, six work states, materials and fallbacks |
 | [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |

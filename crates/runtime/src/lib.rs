@@ -6369,6 +6369,7 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
             .with_network_domains(ravenbot_core::capability::network_grant(&bot))
             .with_private_network(allow_private_network)
             .with_openai_api_key(openai_api_key)
+            .with_db(self.db.pool().clone())
             .confined();
 
             // ── Approval pass (sequential, in order: cards appear in order) ──

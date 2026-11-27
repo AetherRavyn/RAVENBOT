@@ -99,6 +99,7 @@ impl SkillRegistry {
         registry.register(Arc::new(EnvManagerSkill::new()));
         registry.register(Arc::new(NoteManagerSkill::new()));
         registry.register(Arc::new(TaskRunnerSkill::new()));
+        registry.register(Arc::new(EmailDraftSkill::new()));
 
         // ── Awesome: flagship starter catalog; the rest of the 1,497+
         // VoltAgent skills load by id through the `awesome_fetch` meta-skill.

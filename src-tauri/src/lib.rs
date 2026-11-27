@@ -3496,21 +3496,41 @@ fn attention_email_view(config: &AttentionEmailConfig) -> AttentionEmailView {
 }
 
 fn build_smtp_transport(config: &AttentionEmailConfig) -> Result<lettre::SmtpTransport, String> {
+    build_smtp_transport_for(
+        &config.host,
+        config.port,
+        &config.security,
+        &config.username,
+        config.password.as_deref(),
+    )
+}
+
+/// Build a `lettre` transport from already-validated parts.
+///
+/// Alert mail and agent mail share this so the unencrypted-loopback rule cannot
+/// drift between the two accounts.
+fn build_smtp_transport_for(
+    host: &str,
+    port: u16,
+    security: &str,
+    username: &str,
+    password: Option<&str>,
+) -> Result<lettre::SmtpTransport, String> {
     use lettre::transport::smtp::authentication::Credentials;
 
-    let mut builder = if config.security == "none" {
-        lettre::SmtpTransport::builder_dangerous(&config.host)
+    let mut builder = if security == "none" {
+        lettre::SmtpTransport::builder_dangerous(host)
     } else {
-        lettre::SmtpTransport::starttls_relay(&config.host)
+        lettre::SmtpTransport::starttls_relay(host)
             .map_err(|error| format!("Could not prepare STARTTLS: {error}"))?
     };
     builder = builder
-        .port(config.port)
+        .port(port)
         .timeout(Some(std::time::Duration::from_secs(15)));
-    if !config.username.trim().is_empty() {
+    if !username.trim().is_empty() {
         builder = builder.credentials(Credentials::new(
-            config.username.trim().to_string(),
-            config.password.clone().unwrap_or_default(),
+            username.trim().to_string(),
+            password.unwrap_or_default().to_string(),
         ));
     }
     Ok(builder.build())
@@ -3739,6 +3759,532 @@ async fn deliver_attention_email(
     })
     .await
     .map_err(|error| format!("The email task failed: {error}"))?
+}
+
+const AGENT_EMAIL_HOST_KEY: &str = "agent_email_host";
+const AGENT_EMAIL_PORT_KEY: &str = "agent_email_port";
+const AGENT_EMAIL_SECURITY_KEY: &str = "agent_email_security";
+const AGENT_EMAIL_USERNAME_KEY: &str = "agent_email_username";
+const AGENT_EMAIL_PASSWORD_KEY: &str = "agent_email_password";
+const AGENT_EMAIL_FROM_KEY: &str = "agent_email_from";
+
+/// The account an agent may draft from. Deliberately separate from the fixed
+/// attention alert account: the alert recipient must never become the agent's
+/// identity, and an agent draft is only sent when a person presses Send.
+#[derive(Clone)]
+struct AgentEmailConfig {
+    host: String,
+    port: u16,
+    security: String,
+    username: String,
+    password: Option<String>,
+    from: String,
+    allowlist: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct AgentEmailView {
+    configured: bool,
+    host: String,
+    port: u16,
+    security: String,
+    username: String,
+    from: String,
+    allowlist: Vec<String>,
+    has_password: bool,
+}
+
+async fn read_agent_email_password(pool: &sqlx::SqlitePool) -> Option<String> {
+    let stored = ravenbot_db::queries::AppSettingsQueries::get(pool, AGENT_EMAIL_PASSWORD_KEY)
+        .await
+        .ok()
+        .flatten()?;
+    if stored.is_empty() {
+        None
+    } else if stored == ravenbot_db::secrets::KEYCHAIN_MARKER {
+        ravenbot_db::secrets::get_agent_email_password().await
+    } else {
+        Some(stored)
+    }
+}
+
+async fn write_agent_email_password(pool: &sqlx::SqlitePool, password: &str) -> Result<(), String> {
+    let stored = if ravenbot_db::secrets::set_agent_email_password(password).await {
+        ravenbot_db::secrets::KEYCHAIN_MARKER.to_string()
+    } else {
+        password.to_string()
+    };
+    ravenbot_db::queries::AppSettingsQueries::set(pool, AGENT_EMAIL_PASSWORD_KEY, &stored)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn clear_agent_email_password(pool: &sqlx::SqlitePool) -> Result<(), String> {
+    ravenbot_db::secrets::delete_agent_email_password().await;
+    ravenbot_db::queries::AppSettingsQueries::set(pool, AGENT_EMAIL_PASSWORD_KEY, "")
+        .await
+        .map_err(|error| error.to_string())
+}
+
+async fn load_agent_email_allowlist(pool: &sqlx::SqlitePool) -> Result<Vec<String>, String> {
+    let raw = ravenbot_db::queries::AppSettingsQueries::get(
+        pool,
+        ravenbot_core::email::ALLOWLIST_SETTING_KEY,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .unwrap_or_default();
+    ravenbot_core::email::validate_allowlist(&raw).map_err(|error| {
+        format!("The saved email allowlist is invalid. Fix it in Settings → Mail: {error}")
+    })
+}
+
+async fn load_agent_email_config(pool: &sqlx::SqlitePool) -> Result<AgentEmailConfig, String> {
+    let get = |key: &'static str| {
+        let pool = pool.clone();
+        async move {
+            ravenbot_db::queries::AppSettingsQueries::get(&pool, key)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+                .trim()
+                .to_string()
+        }
+    };
+    let host = get(AGENT_EMAIL_HOST_KEY).await;
+    let port = get(AGENT_EMAIL_PORT_KEY)
+        .await
+        .parse::<u16>()
+        .unwrap_or(587);
+    let security = normalize_email_security(&get(AGENT_EMAIL_SECURITY_KEY).await)
+        .unwrap_or_else(|_| "starttls".to_string());
+    let username = get(AGENT_EMAIL_USERNAME_KEY).await;
+    let from = get(AGENT_EMAIL_FROM_KEY).await;
+    let password = read_agent_email_password(pool).await;
+    let allowlist = load_agent_email_allowlist(pool).await?;
+    Ok(AgentEmailConfig {
+        host,
+        port,
+        security,
+        username,
+        password,
+        from,
+        allowlist,
+    })
+}
+
+fn agent_email_view(config: &AgentEmailConfig) -> AgentEmailView {
+    AgentEmailView {
+        configured: !config.host.is_empty() && !config.from.is_empty(),
+        host: config.host.clone(),
+        port: config.port,
+        security: config.security.clone(),
+        username: config.username.clone(),
+        from: config.from.clone(),
+        allowlist: config.allowlist.clone(),
+        has_password: config.password.is_some(),
+    }
+}
+
+fn build_agent_email_message(
+    config: &AgentEmailConfig,
+    to: &[String],
+    cc: &[String],
+    subject: &str,
+    body: &str,
+) -> Result<lettre::Message, String> {
+    use lettre::message::{header::ContentType, Mailbox};
+
+    let from = parse_email_address(&config.from, "sender")?;
+    let mut builder = lettre::Message::builder().from(Mailbox::new(None, from));
+    for address in to {
+        let address = parse_email_address(address, "recipient")?;
+        builder = builder.to(Mailbox::new(None, address));
+    }
+    for address in cc {
+        let address = parse_email_address(address, "Cc recipient")?;
+        builder = builder.cc(Mailbox::new(None, address));
+    }
+    builder
+        .subject(subject)
+        .header(ContentType::TEXT_PLAIN)
+        .body(body.to_string())
+        .map_err(|error| format!("Could not build the email: {error}"))
+}
+
+fn send_agent_email_blocking(
+    config: &AgentEmailConfig,
+    to: &[String],
+    cc: &[String],
+    subject: &str,
+    body: &str,
+) -> Result<(), String> {
+    use lettre::Transport;
+
+    // Re-check the stored values when opening the connection: a row edited
+    // outside the settings command must not turn into unencrypted public SMTP.
+    validate_smtp_host(&config.host, &config.security)?;
+    validate_smtp_port(config.port)?;
+    let message = build_agent_email_message(config, to, cc, subject, body)?;
+    let transport = build_smtp_transport_for(
+        &config.host,
+        config.port,
+        &config.security,
+        &config.username,
+        config.password.as_deref(),
+    )?;
+    transport
+        .send(&message)
+        .map(|_| ())
+        .map_err(|error| format!("The SMTP server rejected the message: {error}"))
+}
+
+/// Keep SMTP failures short, single-line, and free of the password. The body is
+/// never passed here, so a hostile server cannot echo it into a stored error.
+fn sanitize_agent_email_error(raw: &str, password: Option<&str>) -> String {
+    let mut text: String = raw
+        .chars()
+        .map(|character| {
+            if character.is_control() {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect();
+    if let Some(secret) = password.filter(|value| !value.is_empty()) {
+        text = text.replace(secret, "[redacted]");
+    }
+    let collapsed = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = collapsed.trim();
+    if trimmed.chars().count() > 300 {
+        trimmed.chars().take(300).collect()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn validate_agent_email_draft(
+    to: &str,
+    cc: &str,
+    subject: &str,
+    body: &str,
+    allowlist: &[String],
+) -> Result<(Vec<String>, Vec<String>, String, String), String> {
+    let to = ravenbot_core::email::parse_recipient_list(to, "To", true)?;
+    let cc = ravenbot_core::email::parse_recipient_list(cc, "Cc", false)?;
+    let subject = ravenbot_core::email::validate_subject(subject)?;
+    let body = ravenbot_core::email::validate_body(body)?;
+    ravenbot_core::email::ensure_allowlisted(&to, allowlist)?;
+    ravenbot_core::email::ensure_allowlisted(&cc, allowlist)?;
+    Ok((to, cc, subject, body))
+}
+
+#[tauri::command]
+async fn get_agent_email(state: State<'_, AppState>) -> Result<AgentEmailView, String> {
+    let config = load_agent_email_config(state.db.pool()).await?;
+    Ok(agent_email_view(&config))
+}
+
+#[derive(serde::Deserialize)]
+struct AgentEmailInput {
+    host: String,
+    port: u16,
+    security: String,
+    username: String,
+    /// Omitted or `null` keeps the saved password; an empty string clears it.
+    #[serde(default)]
+    password: Option<String>,
+    from: String,
+    #[serde(default)]
+    allowlist: String,
+}
+
+#[tauri::command]
+async fn set_agent_email(
+    state: State<'_, AppState>,
+    input: AgentEmailInput,
+) -> Result<AgentEmailView, String> {
+    let AgentEmailInput {
+        host,
+        port,
+        security,
+        username,
+        password,
+        from,
+        allowlist,
+    } = input;
+    let security = normalize_email_security(&security)?;
+    let host = validate_smtp_host(&host, &security)?;
+    let port = validate_smtp_port(port)?;
+    let username = username.trim().to_string();
+    if username.len() > 255 || username.chars().any(char::is_control) {
+        return Err("The SMTP username is not valid.".to_string());
+    }
+    let from_address = parse_email_address(&from, "sender")?;
+    let allowlist = ravenbot_core::email::validate_allowlist(&allowlist)?;
+    let provided_password = password
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if provided_password
+        .as_deref()
+        .is_some_and(|value| value.len() > 1024 || value.chars().any(char::is_control))
+    {
+        return Err("The SMTP password is not valid.".to_string());
+    }
+    let pool = state.db.pool();
+    let existing_password = read_agent_email_password(pool).await;
+    let effective_password = provided_password.clone().or(existing_password);
+    if !username.is_empty() && effective_password.is_none() {
+        return Err("An SMTP password is required when a username is set.".to_string());
+    }
+    if !username.is_empty() && password.as_deref() == Some("") {
+        return Err(
+            "Remove the SMTP username before clearing the password, or enter a new password."
+                .to_string(),
+        );
+    }
+
+    ravenbot_db::queries::AppSettingsQueries::set(pool, AGENT_EMAIL_HOST_KEY, &host)
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(pool, AGENT_EMAIL_PORT_KEY, &port.to_string())
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(pool, AGENT_EMAIL_SECURITY_KEY, &security)
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(pool, AGENT_EMAIL_USERNAME_KEY, &username)
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        AGENT_EMAIL_FROM_KEY,
+        from_address.to_string().as_str(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        ravenbot_core::email::ALLOWLIST_SETTING_KEY,
+        &allowlist.join(", "),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    match password {
+        Some(value) if value.is_empty() => clear_agent_email_password(pool).await?,
+        Some(value) => write_agent_email_password(pool, &value).await?,
+        None if username.is_empty() => clear_agent_email_password(pool).await?,
+        None => {}
+    }
+
+    let config = load_agent_email_config(pool).await?;
+    Ok(agent_email_view(&config))
+}
+
+#[tauri::command]
+async fn clear_agent_email(state: State<'_, AppState>) -> Result<(), String> {
+    let pool = state.db.pool();
+    for key in [
+        AGENT_EMAIL_HOST_KEY,
+        AGENT_EMAIL_PORT_KEY,
+        AGENT_EMAIL_SECURITY_KEY,
+        AGENT_EMAIL_USERNAME_KEY,
+        AGENT_EMAIL_FROM_KEY,
+        ravenbot_core::email::ALLOWLIST_SETTING_KEY,
+    ] {
+        ravenbot_db::queries::AppSettingsQueries::set(pool, key, "")
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    clear_agent_email_password(pool).await
+}
+
+#[tauri::command]
+async fn test_agent_email(state: State<'_, AppState>, to: String) -> Result<(), String> {
+    let recipient = ravenbot_core::email::validate_email_address(&to, "recipient")?;
+    let config = load_agent_email_config(state.db.pool()).await?;
+    if config.host.is_empty() || config.from.is_empty() {
+        return Err("No agent email account is configured.".to_string());
+    }
+    ravenbot_core::email::ensure_allowlisted(&[recipient.clone()], &config.allowlist)?;
+    let password_for_errors = config.password.clone();
+    let send_config = config.clone();
+    let send_result = tauri::async_runtime::spawn_blocking(move || {
+        send_agent_email_blocking(
+            &send_config,
+            &[recipient],
+            &[],
+            "RAVENBOT: Agent email test",
+            "This is a RAVENBOT agent email test.\n\nNothing was sent by an agent. If you received this, the configured account can deliver a plain-text message.",
+        )
+    })
+    .await
+    .map_err(|error| format!("The email task failed: {error}"))?;
+    send_result.map_err(|error| {
+        format!(
+            "Could not send the test email: {}",
+            sanitize_agent_email_error(&error, password_for_errors.as_deref())
+        )
+    })
+}
+
+#[tauri::command]
+async fn list_email_drafts(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::EmailDraftSummary>, String> {
+    ravenbot_db::queries::EmailDraftQueries::list(state.db.pool(), 100)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn get_email_draft(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Option<ravenbot_db::queries::EmailDraft>, String> {
+    ravenbot_db::queries::EmailDraftQueries::get(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn update_email_draft(
+    state: State<'_, AppState>,
+    id: String,
+    to: String,
+    cc: Option<String>,
+    subject: String,
+    body: String,
+) -> Result<ravenbot_db::queries::EmailDraft, String> {
+    let allowlist = load_agent_email_allowlist(state.db.pool()).await?;
+    let (to, cc, subject, body) = validate_agent_email_draft(
+        &to,
+        cc.as_deref().unwrap_or(""),
+        &subject,
+        &body,
+        &allowlist,
+    )?;
+    let updated = ravenbot_db::queries::EmailDraftQueries::update_content(
+        state.db.pool(),
+        &id,
+        &to,
+        &cc,
+        &subject,
+        &body,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if !updated {
+        return Err("Only a saved draft can be edited.".to_string());
+    }
+    ravenbot_db::queries::EmailDraftQueries::get(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The draft no longer exists.".to_string())
+}
+
+#[tauri::command]
+async fn discard_email_draft(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let discarded = ravenbot_db::queries::EmailDraftQueries::mark_discarded(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !discarded {
+        return Err("Only a saved draft can be discarded.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn send_email_draft(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let draft = ravenbot_db::queries::EmailDraftQueries::get(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The draft no longer exists.".to_string())?;
+    if draft.status != "draft" {
+        return Err(format!(
+            "This email draft is {}; only a draft can be sent.",
+            draft.status
+        ));
+    }
+    let config = load_agent_email_config(state.db.pool()).await?;
+    if config.host.is_empty() || config.from.is_empty() {
+        return Err(
+            "No agent email account is configured. Set one in Settings → Mail.".to_string(),
+        );
+    }
+    ravenbot_core::email::ensure_allowlisted(&draft.to_addresses, &config.allowlist)?;
+    ravenbot_core::email::ensure_allowlisted(&draft.cc_addresses, &config.allowlist)?;
+    // Revalidate the content at send time. Creation and edit already do this,
+    // but a row could predate a validation change or have been altered outside
+    // the UI; a newline in a header must never reach `lettre`.
+    let subject = ravenbot_core::email::validate_subject(&draft.subject)?;
+    let body = ravenbot_core::email::validate_body(&draft.body)?;
+
+    let recipient_count = draft.to_addresses.len() + draft.cc_addresses.len();
+    let password_for_errors = config.password.clone();
+    let send_config = config.clone();
+    let to = draft.to_addresses.clone();
+    let cc = draft.cc_addresses.clone();
+    let send_result = tauri::async_runtime::spawn_blocking(move || {
+        send_agent_email_blocking(&send_config, &to, &cc, &subject, &body)
+    })
+    .await
+    .map_err(|error| format!("The email task failed: {error}"))?;
+
+    if let Err(error) = send_result {
+        let sanitized = sanitize_agent_email_error(&error, password_for_errors.as_deref());
+        let _ = ravenbot_db::queries::EmailDraftQueries::record_error(
+            state.db.pool(),
+            &draft.id,
+            &sanitized,
+        )
+        .await;
+        return Err(format!("Could not send the draft: {sanitized}"));
+    }
+
+    if !ravenbot_db::queries::EmailDraftQueries::mark_sent(state.db.pool(), &draft.id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(
+            "The email was sent, but the draft was no longer a draft. Review the draft list before retrying."
+                .to_string(),
+        );
+    }
+
+    let mut entry = ravenbot_core::AuditEntry::new(
+        Uuid::parse_str(&draft.bot_id).unwrap_or_default(),
+        ravenbot_core::AuditEventType::ToolCall {
+            tool_name: "email_send".to_string(),
+            arguments: serde_json::json!({
+                "draft_id": draft.id,
+                "recipient_count": recipient_count,
+            }),
+        },
+    );
+    if let Some(run_id) = draft
+        .run_id
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok())
+    {
+        entry = entry.with_run_id(run_id);
+    }
+    if let Some(thread_id) = draft
+        .thread_id
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok())
+    {
+        entry = entry.with_thread_id(thread_id);
+    }
+    if let Err(error) = state.runtime.audit_logger().log(&entry).await {
+        tracing::warn!(%error, "Could not audit a sent email draft");
+    }
+
+    Ok(())
 }
 
 /// Send a generic attention notification through the OS.
@@ -24108,6 +24654,15 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         clear_attention_email,
         test_attention_email,
         deliver_attention_email,
+        get_agent_email,
+        set_agent_email,
+        clear_agent_email,
+        test_agent_email,
+        list_email_drafts,
+        get_email_draft,
+        update_email_draft,
+        discard_email_draft,
+        send_email_draft,
         computer_takeover,
         set_computer_takeover,
         set_wayland_control_allowed,
@@ -27507,6 +28062,259 @@ mod attention_email_tests {
         assert!(body.contains("State: pending"));
         assert!(body.contains("Prompt text, questions, secrets, and budget amounts are never sent"));
         assert!(body.contains("by email."));
+    }
+}
+
+#[cfg(test)]
+mod agent_email_tests {
+    use super::*;
+
+    fn config(port: u16) -> AgentEmailConfig {
+        AgentEmailConfig {
+            host: "127.0.0.1".to_string(),
+            port,
+            security: "none".to_string(),
+            username: String::new(),
+            password: None,
+            from: "agent@example.test".to_string(),
+            allowlist: vec!["example.test".to_string()],
+        }
+    }
+
+    #[test]
+    fn agent_email_config_reuses_the_safe_smtp_rules() {
+        assert!(validate_smtp_host("127.0.0.1", "none").is_ok());
+        assert!(validate_smtp_host("smtp.example.com", "none").is_err());
+        assert!(validate_smtp_host("smtp.example.com", "starttls").is_ok());
+        assert!(validate_smtp_port(0).is_err());
+        assert!(validate_smtp_port(587).is_ok());
+        assert_eq!(normalize_email_security("STARTTLS").unwrap(), "starttls");
+        assert!(normalize_email_security("ssl").is_err());
+        assert!(parse_email_address("agent@example.test", "sender").is_ok());
+        assert!(parse_email_address("not-an-address", "sender").is_err());
+    }
+
+    #[test]
+    fn draft_validation_applies_limits_and_the_allowlist() {
+        let allowlist = vec!["example.test".to_string()];
+        let (to, cc, subject, body) = validate_agent_email_draft(
+            "person@example.test",
+            "cc@sub.example.test",
+            "Hello",
+            "Body\nwith a tab\there",
+            &allowlist,
+        )
+        .expect("valid draft");
+        assert_eq!(to, vec!["person@example.test"]);
+        assert_eq!(cc, vec!["cc@sub.example.test"]);
+        assert_eq!(subject, "Hello");
+        assert_eq!(body, "Body\nwith a tab\there");
+
+        assert!(
+            validate_agent_email_draft("person@blocked.test", "", "Hello", "Body", &allowlist)
+                .is_err()
+        );
+        assert!(validate_agent_email_draft("", "", "Hello", "Body", &allowlist).is_err());
+        assert!(
+            validate_agent_email_draft("person@example.test", "", "", "Body", &allowlist).is_err()
+        );
+        assert!(validate_agent_email_draft(
+            "person@example.test",
+            "",
+            "Subject",
+            "bad\0body",
+            &allowlist
+        )
+        .is_err());
+
+        let twenty_one = (0..21)
+            .map(|index| format!("person{index}@example.test"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(
+            validate_agent_email_draft(&twenty_one, "", "Subject", "Body", &allowlist).is_err()
+        );
+        let long_subject = "s".repeat(201);
+        assert!(validate_agent_email_draft(
+            "person@example.test",
+            "",
+            &long_subject,
+            "Body",
+            &allowlist
+        )
+        .is_err());
+        let long_body = "b".repeat(50_001);
+        assert!(validate_agent_email_draft(
+            "person@example.test",
+            "",
+            "Subject",
+            &long_body,
+            &allowlist
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_public_host_cannot_use_unencrypted_smtp_at_send_time() {
+        let mut config = config(25);
+        config.host = "smtp.example.com".to_string();
+        let error = send_agent_email_blocking(
+            &config,
+            &["person@example.test".to_string()],
+            &[],
+            "Subject",
+            "Body",
+        )
+        .expect_err("public unencrypted SMTP must be refused");
+        assert!(error.contains("loopback"), "{error}");
+    }
+
+    #[test]
+    fn agent_messages_are_plain_text_with_every_to_and_cc() {
+        let message = build_agent_email_message(
+            &config(587),
+            &[
+                "one@example.test".to_string(),
+                "two@example.test".to_string(),
+            ],
+            &["cc@example.test".to_string()],
+            "Quarterly numbers",
+            "Plain body with <b>no HTML interpretation</b>.",
+        )
+        .expect("message");
+        let formatted = String::from_utf8_lossy(&message.formatted()).to_string();
+        assert!(
+            formatted.contains("Content-Type: text/plain"),
+            "{formatted}"
+        );
+        assert!(!formatted.to_ascii_lowercase().contains("text/html"));
+        assert!(formatted.contains("one@example.test"));
+        assert!(formatted.contains("two@example.test"));
+        assert!(formatted.contains("cc@example.test"));
+        assert!(formatted.contains("Quarterly numbers"));
+        assert!(formatted.contains("Plain body with <b>no HTML interpretation</b>."));
+        assert!(!formatted.contains("Attachment"));
+    }
+
+    #[test]
+    fn smtp_errors_are_short_single_line_and_redact_the_password() {
+        let raw = format!(
+            "auth failed for {} with password {}\r\nsecond line {}",
+            "agent@example.test",
+            "super-secret-password",
+            "x".repeat(500)
+        );
+        let sanitized = sanitize_agent_email_error(&raw, Some("super-secret-password"));
+        assert!(!sanitized.contains("super-secret-password"), "{sanitized}");
+        assert!(!sanitized.contains('\r'));
+        assert!(!sanitized.contains('\n'));
+        assert!(sanitized.chars().count() <= 300, "{sanitized}");
+        assert!(sanitized.contains("auth failed"));
+        assert!(sanitized.contains("[redacted]"));
+    }
+
+    #[tokio::test]
+    async fn a_draft_send_reaches_a_loopback_server() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = stream.into_split();
+            let mut reader = BufReader::new(read_half);
+            write_half
+                .write_all(b"220 localhost ESMTP\r\n")
+                .await
+                .unwrap();
+            let mut body = String::new();
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                    break;
+                }
+                let command = line.trim_end();
+                if command.starts_with("EHLO") || command.starts_with("HELO") {
+                    write_half
+                        .write_all(b"250-localhost\r\n250-8BITMIME\r\n250 HELP\r\n")
+                        .await
+                        .unwrap();
+                } else if command.starts_with("MAIL FROM") || command.starts_with("RCPT TO") {
+                    write_half.write_all(b"250 OK\r\n").await.unwrap();
+                } else if command == "DATA" {
+                    write_half
+                        .write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n")
+                        .await
+                        .unwrap();
+                    loop {
+                        line.clear();
+                        if reader.read_line(&mut line).await.unwrap_or(0) == 0 {
+                            break;
+                        }
+                        if line.trim_end() == "." {
+                            break;
+                        }
+                        body.push_str(&line);
+                    }
+                    write_half.write_all(b"250 OK\r\n").await.unwrap();
+                } else if command == "QUIT" {
+                    write_half.write_all(b"221 Bye\r\n").await.unwrap();
+                    break;
+                } else {
+                    write_half.write_all(b"250 OK\r\n").await.unwrap();
+                }
+            }
+            body
+        });
+
+        let config = config(addr.port());
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            tokio::task::spawn_blocking(move || {
+                send_agent_email_blocking(
+                    &config,
+                    &["person@example.test".to_string()],
+                    &["cc@example.test".to_string()],
+                    "A reviewed draft",
+                    "The exact plain-text body.",
+                )
+            }),
+        )
+        .await
+        .expect("send timed out")
+        .expect("send task");
+        assert!(result.is_ok(), "{result:?}");
+
+        let body = tokio::time::timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .expect("server timed out")
+            .expect("server task");
+        assert!(body.contains("To: person@example.test"), "{body}");
+        assert!(body.contains("Cc: cc@example.test"), "{body}");
+        assert!(body.contains("A reviewed draft"), "{body}");
+        assert!(body.contains("The exact plain-text body."), "{body}");
+        assert!(!body.to_ascii_lowercase().contains("text/html"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn the_allowlist_rejects_before_any_connection() {
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let allowlist = vec!["example.test".to_string()];
+        let error =
+            validate_agent_email_draft("person@blocked.test", "", "Subject", "Body", &allowlist)
+                .expect_err("must reject before sending");
+        assert!(error.contains("person@blocked.test"), "{error}");
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(250), listener.accept())
+                .await
+                .is_err(),
+            "validation opened an SMTP connection"
+        );
     }
 }
 

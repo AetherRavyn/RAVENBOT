@@ -25,6 +25,9 @@ const VIEWER_DENY: &[&str] = &[
     "reveal_vault_item",
     "get_attention_webhook",
     "get_attention_email",
+    "get_agent_email",
+    "list_email_drafts",
+    "get_email_draft",
     "get_service_status",
     "get_autostart_enabled",
     "get_remote_status",
@@ -260,6 +263,27 @@ mod tests {
             "create_remote_scim_token",
             "revoke_remote_scim_token",
         ] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(!role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
+    }
+
+    #[test]
+    fn agent_email_configuration_and_drafts_are_owner_only() {
+        for command in [
+            "set_agent_email",
+            "clear_agent_email",
+            "test_agent_email",
+            "update_email_draft",
+            "discard_email_draft",
+            "send_email_draft",
+        ] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(!role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
+        for command in ["get_agent_email", "list_email_drafts", "get_email_draft"] {
             assert!(role_allows("owner", command), "{command}");
             assert!(!role_allows("operator", command), "{command}");
             assert!(!role_allows("viewer", command), "{command}");

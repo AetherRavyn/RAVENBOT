@@ -447,7 +447,8 @@ pub async fn migrate_plaintext_at_rest(pool: &sqlx::SqlitePool) -> Result<usize,
 
     let app_rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT key, value FROM app_settings
-         WHERE key IN ('attention_email_password', 'memory_embedding_api_key',
+         WHERE key IN ('attention_email_password', 'agent_email_password',
+                       'memory_embedding_api_key',
                        'telegram_token', 'slack_app_token', 'slack_bot_token',
                        'discord_token', 'attention_webhook')
            AND value != '' AND value != ?",
@@ -459,6 +460,7 @@ pub async fn migrate_plaintext_at_rest(pool: &sqlx::SqlitePool) -> Result<usize,
     for (key, value) in app_rows {
         let account = match key.as_str() {
             "attention_email_password" => "attention-email-password",
+            "agent_email_password" => "agent-email-password",
             "memory_embedding_api_key" => "memory-embedding-key",
             "telegram_token" => "telegram:bot",
             "slack_app_token" => "slack:app",
@@ -535,6 +537,20 @@ pub async fn get_attention_email_password() -> Option<String> {
 
 pub async fn delete_attention_email_password() {
     delete_secret("attention-email-password".to_string()).await;
+}
+
+/// The agent's own SMTP password. Separate from the fixed alert account so
+/// the alert recipient never becomes the agent's identity.
+pub async fn set_agent_email_password(value: &str) -> bool {
+    set_secret("agent-email-password".to_string(), value.to_string()).await
+}
+
+pub async fn get_agent_email_password() -> Option<String> {
+    get_secret("agent-email-password".to_string()).await
+}
+
+pub async fn delete_agent_email_password() {
+    delete_secret("agent-email-password".to_string()).await;
 }
 
 pub async fn set_attention_webhook(value: &str) -> bool {
@@ -890,6 +906,12 @@ mod secret_migration_tests {
             .execute(&pool)
             .await
             .expect("provider key");
+        sqlx::query(
+            "INSERT INTO app_settings (key, value) VALUES ('agent_email_password', 'smtp-legacy')",
+        )
+        .execute(&pool)
+        .await
+        .expect("agent email password");
 
         let migrated = migrate_plaintext_at_rest(&pool).await.expect("migration");
         assert!(migrated >= 1, "the provider row must be migrated");
@@ -904,6 +926,17 @@ mod secret_migration_tests {
                 .await
                 .expect("read"),
             Some("sk-legacy".to_string())
+        );
+
+        let stored: (String,) =
+            sqlx::query_as("SELECT value FROM app_settings WHERE key = 'agent_email_password'")
+                .fetch_one(&pool)
+                .await
+                .expect("stored agent password");
+        assert_eq!(stored.0, KEYCHAIN_MARKER);
+        assert_eq!(
+            get_agent_email_password().await,
+            Some("smtp-legacy".to_string())
         );
 
         let _ = std::fs::remove_dir_all(root);

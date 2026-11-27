@@ -4992,6 +4992,291 @@ impl RemoteSsoQueries {
     }
 }
 
+/// A reviewable outbound email draft.
+///
+/// The body is present here because this is the full row used by the draft
+/// editor. [`EmailDraftSummary`] is what list responses return, so a list can
+/// never leak a body by accident.
+#[derive(Debug, Clone, Serialize)]
+pub struct EmailDraft {
+    pub id: String,
+    pub bot_id: String,
+    pub thread_id: Option<String>,
+    pub run_id: Option<String>,
+    pub to_addresses: Vec<String>,
+    pub cc_addresses: Vec<String>,
+    pub subject: String,
+    pub body: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub sent_at: Option<String>,
+}
+
+/// Draft metadata for lists. Deliberately has no `body` field.
+#[derive(Debug, Clone, Serialize)]
+pub struct EmailDraftSummary {
+    pub id: String,
+    pub bot_id: String,
+    pub thread_id: Option<String>,
+    pub run_id: Option<String>,
+    pub to_addresses: Vec<String>,
+    pub cc_addresses: Vec<String>,
+    pub subject: String,
+    pub status: String,
+    pub error: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub sent_at: Option<String>,
+}
+
+/// Values written when an agent creates a draft.
+#[derive(Debug, Clone)]
+pub struct NewEmailDraft<'a> {
+    pub bot_id: &'a str,
+    pub thread_id: Option<&'a str>,
+    pub run_id: Option<&'a str>,
+    pub to_addresses: &'a [String],
+    pub cc_addresses: &'a [String],
+    pub subject: &'a str,
+    pub body: &'a str,
+}
+
+type EmailDraftRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    Option<String>,
+);
+
+fn decode_addresses(raw: &str) -> Vec<String> {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn email_draft_from_row(row: EmailDraftRow) -> EmailDraft {
+    EmailDraft {
+        id: row.0,
+        bot_id: row.1,
+        thread_id: row.2,
+        run_id: row.3,
+        to_addresses: decode_addresses(&row.4),
+        cc_addresses: decode_addresses(&row.5),
+        subject: row.6,
+        body: row.7,
+        status: row.8,
+        error: row.9,
+        created_at: row.10,
+        updated_at: row.11,
+        sent_at: row.12,
+    }
+}
+
+/// Outbound email drafts. Every status transition is guarded by
+/// `status = 'draft'` in SQL, so two clicks cannot send or discard the same
+/// draft twice.
+pub struct EmailDraftQueries;
+
+impl EmailDraftQueries {
+    pub async fn create(
+        pool: &SqlitePool,
+        draft: &NewEmailDraft<'_>,
+    ) -> Result<EmailDraft, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        let to = serde_json::to_string(draft.to_addresses).unwrap_or_else(|_| "[]".to_string());
+        let cc = serde_json::to_string(draft.cc_addresses).unwrap_or_else(|_| "[]".to_string());
+        sqlx::query(
+            "INSERT INTO email_drafts
+               (id, bot_id, thread_id, run_id, to_addresses, cc_addresses,
+                subject, body, status, error, created_at, updated_at, sent_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', NULL, ?, ?, NULL)",
+        )
+        .bind(&id)
+        .bind(draft.bot_id)
+        .bind(draft.thread_id)
+        .bind(draft.run_id)
+        .bind(to)
+        .bind(cc)
+        .bind(draft.subject)
+        .bind(draft.body)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        Self::get(pool, &id)
+            .await?
+            .ok_or_else(|| sqlx::Error::RowNotFound)
+    }
+
+    /// Newest first, capped at 100 summaries. The body is never selected.
+    pub async fn list(
+        pool: &SqlitePool,
+        limit: i64,
+    ) -> Result<Vec<EmailDraftSummary>, sqlx::Error> {
+        let limit = limit.clamp(1, 100);
+        type SummaryRow = (
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+        );
+        let rows: Vec<SummaryRow> = sqlx::query_as(
+            "SELECT id, bot_id, thread_id, run_id, to_addresses, cc_addresses,
+                    subject, status, error, created_at, updated_at, sent_at
+               FROM email_drafts
+              ORDER BY created_at DESC, id DESC
+              LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    bot_id,
+                    thread_id,
+                    run_id,
+                    to,
+                    cc,
+                    subject,
+                    status,
+                    error,
+                    created_at,
+                    updated_at,
+                    sent_at,
+                )| EmailDraftSummary {
+                    id,
+                    bot_id,
+                    thread_id,
+                    run_id,
+                    to_addresses: decode_addresses(&to),
+                    cc_addresses: decode_addresses(&cc),
+                    subject,
+                    status,
+                    error,
+                    created_at,
+                    updated_at,
+                    sent_at,
+                },
+            )
+            .collect())
+    }
+
+    pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<EmailDraft>, sqlx::Error> {
+        let row: Option<EmailDraftRow> = sqlx::query_as(
+            "SELECT id, bot_id, thread_id, run_id, to_addresses, cc_addresses,
+                    subject, body, status, error, created_at, updated_at, sent_at
+               FROM email_drafts WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(email_draft_from_row))
+    }
+
+    /// Replace the editable content. Returns false when the row is missing or
+    /// is no longer a draft.
+    pub async fn update_content(
+        pool: &SqlitePool,
+        id: &str,
+        to_addresses: &[String],
+        cc_addresses: &[String],
+        subject: &str,
+        body: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let to = serde_json::to_string(to_addresses).unwrap_or_else(|_| "[]".to_string());
+        let cc = serde_json::to_string(cc_addresses).unwrap_or_else(|_| "[]".to_string());
+        let result = sqlx::query(
+            "UPDATE email_drafts
+                SET to_addresses = ?, cc_addresses = ?, subject = ?, body = ?,
+                    error = NULL, updated_at = ?
+              WHERE id = ? AND status = 'draft'",
+        )
+        .bind(to)
+        .bind(cc)
+        .bind(subject)
+        .bind(body)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Mark a draft sent. The status guard makes a retry after a successful
+    /// send a no-op instead of a second message.
+    pub async fn mark_sent(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE email_drafts
+                SET status = 'sent', sent_at = ?, error = NULL, updated_at = ?
+              WHERE id = ? AND status = 'draft'",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn mark_discarded(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE email_drafts
+                SET status = 'discarded', updated_at = ?
+              WHERE id = ? AND status = 'draft'",
+        )
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Record a sanitized send error and leave the row a draft so it can be
+    /// retried. The caller must never pass an SMTP password or the body.
+    pub async fn record_error(
+        pool: &SqlitePool,
+        id: &str,
+        error: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE email_drafts
+                SET error = ?, updated_at = ?
+              WHERE id = ? AND status = 'draft'",
+        )
+        .bind(error)
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+}
+
 /// A Telegram chat paired with a RAVENBOT conversation.
 #[derive(Debug, Clone, Serialize)]
 pub struct TelegramLink {
@@ -13511,5 +13796,202 @@ mod thread_share_tests {
             .await
             .expect("after delete")
             .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod email_draft_tests {
+    use super::*;
+    use crate::migrations;
+
+    async fn db() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    async fn create(pool: &SqlitePool, subject: &str) -> EmailDraft {
+        EmailDraftQueries::create(
+            pool,
+            &NewEmailDraft {
+                bot_id: "bot-1",
+                thread_id: Some("thread-1"),
+                run_id: Some("run-1"),
+                to_addresses: &["person@example.com".to_string()],
+                cc_addresses: &["cc@example.com".to_string()],
+                subject,
+                body: "Full body that lists must not return.",
+            },
+        )
+        .await
+        .expect("create")
+    }
+
+    #[tokio::test]
+    async fn create_round_trips_addresses_and_context() {
+        let pool = db().await;
+        let draft = create(&pool, "Hello").await;
+        assert_eq!(draft.status, "draft");
+        assert_eq!(draft.bot_id, "bot-1");
+        assert_eq!(draft.thread_id.as_deref(), Some("thread-1"));
+        assert_eq!(draft.run_id.as_deref(), Some("run-1"));
+        assert_eq!(draft.to_addresses, vec!["person@example.com"]);
+        assert_eq!(draft.cc_addresses, vec!["cc@example.com"]);
+        assert_eq!(draft.body, "Full body that lists must not return.");
+        assert!(draft.sent_at.is_none());
+        assert!(draft.error.is_none());
+
+        let loaded = EmailDraftQueries::get(&pool, &draft.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(loaded.subject, "Hello");
+        assert_eq!(loaded.body, draft.body);
+    }
+
+    #[tokio::test]
+    async fn summaries_are_newest_first_and_never_include_the_body() {
+        let pool = db().await;
+        create(&pool, "older").await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        create(&pool, "newer").await;
+
+        let summaries = EmailDraftQueries::list(&pool, 100).await.expect("list");
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].subject, "newer");
+        assert_eq!(summaries[1].subject, "older");
+        let encoded = serde_json::to_string(&summaries).expect("serialize");
+        assert!(
+            !encoded.contains("Full body that lists must not return."),
+            "a list response leaked a body: {encoded}"
+        );
+    }
+
+    #[tokio::test]
+    async fn only_a_draft_can_be_edited_or_transitioned() {
+        let pool = db().await;
+        let sent = create(&pool, "send me").await;
+        assert!(EmailDraftQueries::mark_sent(&pool, &sent.id)
+            .await
+            .expect("sent"));
+        assert!(!EmailDraftQueries::mark_sent(&pool, &sent.id)
+            .await
+            .expect("second send"));
+        assert!(!EmailDraftQueries::mark_discarded(&pool, &sent.id)
+            .await
+            .expect("discard sent"));
+        assert!(!EmailDraftQueries::record_error(&pool, &sent.id, "boom")
+            .await
+            .expect("error sent"));
+        assert!(!EmailDraftQueries::update_content(
+            &pool,
+            &sent.id,
+            &["other@example.com".to_string()],
+            &[],
+            "changed",
+            "changed body",
+        )
+        .await
+        .expect("edit sent"));
+
+        let loaded = EmailDraftQueries::get(&pool, &sent.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(loaded.status, "sent");
+        assert_eq!(loaded.subject, "send me");
+        assert!(loaded.sent_at.is_some());
+
+        let discarded = create(&pool, "throw away").await;
+        assert!(EmailDraftQueries::mark_discarded(&pool, &discarded.id)
+            .await
+            .expect("discard"));
+        assert!(!EmailDraftQueries::mark_sent(&pool, &discarded.id)
+            .await
+            .expect("send discarded"));
+        assert!(!EmailDraftQueries::mark_discarded(&pool, &discarded.id)
+            .await
+            .expect("discard twice"));
+        assert!(
+            !EmailDraftQueries::record_error(&pool, &discarded.id, "boom")
+                .await
+                .expect("error discarded")
+        );
+        assert!(!EmailDraftQueries::update_content(
+            &pool,
+            &discarded.id,
+            &["other@example.com".to_string()],
+            &[],
+            "changed",
+            "changed body",
+        )
+        .await
+        .expect("edit discarded"));
+        let loaded = EmailDraftQueries::get(&pool, &discarded.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(loaded.status, "discarded");
+        assert!(loaded.sent_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_draft_can_be_edited_and_a_failed_send_stays_retryable() {
+        let pool = db().await;
+        let draft = create(&pool, "before").await;
+        assert!(EmailDraftQueries::update_content(
+            &pool,
+            &draft.id,
+            &["new@example.com".to_string()],
+            &[],
+            "after",
+            "new body",
+        )
+        .await
+        .expect("update"));
+
+        let loaded = EmailDraftQueries::get(&pool, &draft.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(loaded.status, "draft");
+        assert_eq!(loaded.subject, "after");
+        assert_eq!(loaded.to_addresses, vec!["new@example.com"]);
+        assert!(loaded.cc_addresses.is_empty());
+
+        assert!(
+            EmailDraftQueries::record_error(&pool, &draft.id, "SMTP rejected the message")
+                .await
+                .expect("error")
+        );
+        let loaded = EmailDraftQueries::get(&pool, &draft.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(loaded.status, "draft", "a failed send must stay a draft");
+        assert_eq!(loaded.error.as_deref(), Some("SMTP rejected the message"));
+
+        assert!(EmailDraftQueries::update_content(
+            &pool,
+            &draft.id,
+            &loaded.to_addresses,
+            &loaded.cc_addresses,
+            "fixed",
+            "fixed body",
+        )
+        .await
+        .expect("retry edit"));
+        let loaded = EmailDraftQueries::get(&pool, &draft.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert!(loaded.error.is_none(), "editing clears the old error");
+        assert!(EmailDraftQueries::mark_sent(&pool, &draft.id)
+            .await
+            .expect("sent"));
     }
 }

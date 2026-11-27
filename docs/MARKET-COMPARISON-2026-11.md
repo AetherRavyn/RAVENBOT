@@ -45,7 +45,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Ecosystem** | 135 MCP connectors, 2,530-app OpenAPI directory, 1,497 skills, 30 jobs | ClawHub skills/plugins with scans; MCP, A2A, ACP | Bot marketplace, app connectors, MCP/API | 1,000+ plugins, Skills Hub, MCP | App connectors, can build tools |
 | **Public task-success evidence** | ○ no public benchmark | ● ShellBench | ◐ vendor examples, no public benchmark | ◐ trajectory research, no public success suite | ◐ vendor examples |
 | **Voice** | ◐ STT→send→TTS via provider key | ● voice nodes, Talk mode, realtime | ● voice notes and calls | ◐ voice memo transcription | ● voice mode |
-| **Meetings / email / commerce** | ○ no meeting join, agent inbox or payments | ◐ channels, no native meeting/commerce product | ● meetings, agent email, cards/wallets, purchases | ○ no meeting/commerce product | ● meetings-adjacent, email identity, commerce partners |
+| **Meetings / email / commerce** | ◐ draft-only agent email with human send; no meeting join, agent inbox or payments | ◐ channels, no native meeting/commerce product | ● meetings, agent email, cards/wallets, purchases | ○ no meeting/commerce product | ● meetings-adjacent, email identity, commerce partners |
 | **Localization / a11y** | ● 12 locales, axe gates, keyboard audit | ◐ English-first | ◐ English-first | ◐ English-first | ◐ English-first |
 | **Release trust** | ◐ checksums + SBOM; unsigned installers; no updater | ● signed releases, update channels | ● managed app distribution | ● desktop/MSIX installers, update ownership documented | ● managed app |
 | **Pricing** | MIT, free, BYO keys | MIT, free, no paid tier | Subscription (Grok/Cursor plans) | MIT; Cloud $20–$200/mo | Free / $20 / $100/mo |
@@ -123,7 +123,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Native mobile approvals** | Grok Bot (iOS), OpenClaw (iOS/Android), Muse (iOS/Android) | The decision that matters is an approval. A responsive web page is not a push notification. |
 | **Signed installers and auto-update** | OpenClaw, Grok Bot, Muse, Hermes (installer ownership) | An unsigned desktop agent that cannot update itself reads as a prototype. This is a trust gate, not polish. |
 | **Measured task success** | OpenClaw ShellBench; Hermes trajectory research | 1,035 tests prove plumbing. Buyers ask “does it finish the job?” RAVENBOT has no published task-success benchmark. |
-| **Channel breadth** | OpenClaw/Hermes 20+, Grok Slack/Teams/X/email | Five channels covers teams, not a personal assistant. iMessage, Signal, Matrix, Google Chat and email are missing. |
+| **Channel breadth** | OpenClaw/Hermes 20+, Grok Slack/Teams/X/email | Five channels covers teams, not a personal assistant. iMessage, Signal, Matrix, Google Chat and email as a chat channel are missing; agent email ships only as plain outbound drafts a person must send. |
 | **Shared-host multiplayer** | OpenClaw multiplayer gateway | RAVENBOT has accounts and a remote listener per workspace, but no one host/relay that a team joins with per-user identity and shared sessions. |
 | **Windows/macOS execution parity** | Grok Bot (cloud + local), OpenClaw, Hermes | Windows shell fails closed and computer use is Linux-only. “Three platforms” is still partly a build matrix. |
 
@@ -135,7 +135,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Independent action reviewer** | Grok Auto Review | A second, independent model evaluates risky actions against the user's request, with deterministic policy underneath it. RAVENBOT's Review→Auto is deterministic and auditable, but not an independent reviewer. |
 | **Marketplace trust** | ClawHub scans, Grok marketplace, Hermes 1,000+ plugins | Signed manifests, per-operation scopes, sandboxed MCP, verified badges, rollback, and a live-tested “recommended” set. RAVENBOT has catalog breadth without the trust layer. |
 | **Enterprise controls** | Grok Bot | SSO/SCIM, egress allowlists, inference hooks, action recording/OTel, retention, data residency, admin API. RAVENBOT now has local roles/audit, optional OIDC SSO for the remote surface, SCIM 2.0 **Users** provisioning with an owner-only **Settings → Remote** card (workspace-scoped token shown once, default viewer/operator grant, soft deprovision, no owner or shared-account control), and an opt-in OTLP/HTTP **logs** export of redacted metadata, but still no SCIM Groups/group mapping, metrics/traces, data-residency controls or hosted relay. |
-| **Meetings, agent email, voice calls** | Grok Bot, Muse | Join a meeting and return notes/actions; own an email address; make/receive a call with approvals. RAVENBOT has STT/TTS but not the workflow. |
+| **Meetings, agent email, voice calls** | Grok Bot, Muse | Join a meeting and return notes/actions; own an email address; make/receive a call with approvals. RAVENBOT has STT/TTS and draft-only agent email with human send (owner-configured SMTP, allowlist, plain text), but no meeting join, inbound mailbox or calls. |
 | **Consumer integrations and commerce** | Muse, Grok Bot | Shopping, cards/wallets, travel, health, relationships. High trust risk; only worth entering with spend controls and insurance. |
 | **Release governance** | OpenClaw Foundation, Grok ISO certifications | A neutral steward, signed artifacts, public advisories, independent security review. MIT alone is not a security story. |
 
@@ -233,8 +233,13 @@ testable acceptance bar.
     shared local account.
 12. **Voice, meetings and agent email.**
     Realtime voice, meeting join/transcribe, a dedicated agent inbox with
-    approval-before-send. Acceptance: join a meeting, return notes and actions;
-    email always drafts unless explicitly approved.
+    approval-before-send. The outbound half now ships as backend-only
+    draft-only agent email: the agent can create a plain-text draft, a person
+    sends it, and an owner configures one SMTP account with a recipient
+    allowlist. Inbound mail/IMAP, meeting join/transcription, voice calls and
+    the Mail UI remain open. Acceptance: join a meeting, return notes and
+    actions; email always drafts unless explicitly approved (shipped for
+    outbound drafts).
 13. **Subscription bridge.**
     Official/authorized adapters for Claude/ChatGPT/Grok subscriptions with
     health checks and fallback. Acceptance: one job runs through a subscription
