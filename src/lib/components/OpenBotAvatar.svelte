@@ -17,11 +17,17 @@
   import { mountAvatar, type AvatarOptions, type MountedAvatar } from "open-bot-avatar/dom";
   import type { AvatarMaterial } from "open-bot-avatar/dom";
   import {
+    isOpenBotDepth,
+    isOpenBotFinish,
+    isOpenBotRenderer,
     openBotStateForMood,
     openBotToneForMood,
     openBotStillUrl,
+    parseOpenBotUrl,
     resolveOpenBotColour,
     resolveOpenBotDefinition,
+    type OpenBotFinish,
+    type OpenBotRenderer,
     type OpenBotState,
     type OpenBotTone,
   } from "$lib/openBotAvatar";
@@ -44,8 +50,8 @@
     moodTone?: OpenBotTone;
     followPointer?: boolean;
     depth?: number;
-    material?: "flat" | "fluffy" | "glass";
-    renderer?: "canvas" | "scene";
+    material?: OpenBotFinish;
+    renderer?: OpenBotRenderer;
     /** Force one fixed pose. */
     still?: boolean;
     /** `false` forces a still pose; `true`/unset lets the state animate. */
@@ -63,10 +69,10 @@
     colour = null,
     state: stateProp = null,
     moodTone,
-    followPointer = false,
-    depth = 6,
-    material = "flat",
-    renderer = "canvas",
+    followPointer,
+    depth,
+    material,
+    renderer,
     still = false,
     animated,
     class: customClass = "",
@@ -80,6 +86,26 @@
   const isStill = $derived(still || animated === false);
   const label = $derived((name || definition.name || "OpenBot").trim() || "OpenBot");
   const stillUrl = $derived(openBotStillUrl(definition, resolvedColour, liveState, tone));
+
+  /**
+   * Render choices are explicit prop first, then the stored URL, then the
+   * package default. A component that only forwards a URL (RavenAvatar, a
+   * roster row) still gets the saved volume, pointer-follow, finish and
+   * renderer; the studio's explicit props win when it previews an edit.
+   */
+  const urlOptions = $derived(parseOpenBotUrl(imageUrl));
+  const resolvedDepth = $derived(
+    isOpenBotDepth(depth) ? depth : urlOptions?.depth ?? 6,
+  );
+  const resolvedFollow = $derived(
+    typeof followPointer === "boolean" ? followPointer : urlOptions?.followPointer ?? false,
+  );
+  const resolvedFinish = $derived(
+    isOpenBotFinish(material) ? material : urlOptions?.finish ?? "flat",
+  );
+  const resolvedRenderer = $derived(
+    isOpenBotRenderer(renderer) ? renderer : urlOptions?.renderer ?? "canvas",
+  );
 
   let host = $state<HTMLDivElement | null>(null);
   let live = $state(false);
@@ -108,7 +134,7 @@
   function canLiveRender(): boolean {
     if (typeof window === "undefined" || typeof document === "undefined") return false;
     if (typeof ResizeObserver === "undefined") return false;
-    if (renderer === "scene") return true;
+    if (resolvedRenderer === "scene") return true;
     // jsdom defines HTMLCanvasElement but has no 2D implementation, and asking
     // its stub for a context prints a "not implemented" error. The constructor
     // check is the cheap way to tell a real canvas from that stub.
@@ -127,10 +153,10 @@
       color: resolvedColour,
       state: liveState,
       mood: tone,
-      followPointer,
-      depth,
+      followPointer: resolvedFollow,
+      depth: resolvedDepth,
       material: materialValue,
-      renderer,
+      renderer: resolvedRenderer,
       still: isStill,
       // The package follows the system preference; the app never overrides a
       // person's reduced-motion setting from here.
@@ -173,7 +199,7 @@
   // Load the chosen finish once. A failure is a console warning and a flat
   // body, never a blank avatar or a user-facing error.
   $effect(() => {
-    const wanted = material;
+    const wanted = resolvedFinish;
     if (wanted === "flat") {
       materialValue = "flat";
       return;

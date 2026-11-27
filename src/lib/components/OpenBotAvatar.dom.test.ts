@@ -70,6 +70,58 @@ describe("OpenBotAvatar — live host", () => {
     expect(options.depth).toBe(6);
   });
 
+  it("mounts the render options stored in the URL", async () => {
+    render(OpenBotAvatar, {
+      props: {
+        name: "Ada",
+        imageUrl: "openbot://ghost?color=%23f4f4f4&depth=11&follow=1&renderer=scene",
+      },
+    });
+    await waitFor(() => expect(mountAvatar).toHaveBeenCalledTimes(1));
+    const [, options] = mountAvatar.mock.calls[0];
+    expect(options.definition.id).toBe("ghost");
+    expect(options.color).toBe("#f4f4f4");
+    expect(options.depth).toBe(11);
+    expect(options.followPointer).toBe(true);
+    expect(options.renderer).toBe("scene");
+  });
+
+  it("lets explicit props win over the URL's render options", async () => {
+    render(OpenBotAvatar, {
+      props: {
+        name: "Ada",
+        imageUrl:
+          "openbot://ghost?color=%23f4f4f4&depth=11&follow=1&finish=glass&renderer=scene",
+        depth: 2,
+        followPointer: false,
+        material: "flat",
+        renderer: "canvas",
+      },
+    });
+    await waitFor(() => expect(mountAvatar).toHaveBeenCalledTimes(1));
+    const [, options] = mountAvatar.mock.calls[0];
+    expect(options.depth).toBe(2);
+    expect(options.followPointer).toBe(false);
+    expect(options.renderer).toBe("canvas");
+    expect(options.material).toBe("flat");
+  });
+
+  it("loads the finish named by the URL after mounting", async () => {
+    render(OpenBotAvatar, {
+      props: {
+        name: "Ada",
+        imageUrl: "openbot://ghost?color=%23f4f4f4&finish=glass",
+      },
+    });
+    await waitFor(() => expect(mountAvatar).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const updates = instances[0]?.update.mock.calls ?? [];
+      expect(
+        updates.some(([changed]) => changed.material && changed.material !== "flat"),
+      ).toBe(true);
+    });
+  });
+
   it("takes its state from the live mood unless the studio overrides it", async () => {
     const { rerender } = render(OpenBotAvatar, {
       props: { name: "Ada", definitionId: "ghost", mood: "failed" },

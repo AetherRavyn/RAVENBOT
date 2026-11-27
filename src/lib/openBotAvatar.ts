@@ -12,10 +12,11 @@
  * change:
  *
  *   avatar_style = "openbot:cat"
- *   avatar_url   = "openbot://cat?color=%23f8a01c"
+ *   avatar_url   = "openbot://cat?color=%23f8a01c&depth=9&follow=1&finish=fluffy"
  *
- * The style names the character, the URL names the character and its body
- * colour, and both are enough for an agent to reload identically.
+ * The style names the character; the URL names the character, its body colour
+ * and the optional render choices. Both are enough for an agent to reload
+ * identically, and an old colour-only URL still parses.
  */
 import {
   renderAvatarSvg,
@@ -35,6 +36,29 @@ export type OpenBotState = AvatarState;
 
 /** The OpenBot renderer's mood axis. */
 export type OpenBotTone = OpenBotMood;
+
+/** The three body finishes. A material is imported as a value; these are the stored names. */
+export const OPENBOT_FINISHES = ["flat", "fluffy", "glass"] as const;
+export type OpenBotFinish = (typeof OPENBOT_FINISHES)[number];
+
+/** The two renderers. Canvas is the default; scene is the CSS 3D fallback. */
+export type OpenBotRenderer = "canvas" | "scene";
+
+/**
+ * The optional choices carried in an `openbot://` URL.
+ *
+ * `colour` stays first in the query because older readers (and humans) expect
+ * `?color=...`; the rest are appended only when they differ from the defaults.
+ */
+export interface OpenBotUrlOptions {
+  colour?: string | null;
+  /** 0 (flat) to 14, the package's volume range. */
+  depth?: number | null;
+  followPointer?: boolean | null;
+  finish?: OpenBotFinish | null;
+  /** Only `scene` is ever written; canvas is represented by omitting it. */
+  renderer?: OpenBotRenderer | null;
+}
 
 /** The six states, in the order a person meets them. */
 export const OPENBOT_STATES: readonly OpenBotState[] = [
@@ -171,16 +195,37 @@ export interface OpenBotUrlParts {
   id: string;
   /** A valid hex colour, or undefined when the URL had none (or an invalid one). */
   colour?: string;
+  /** A valid volume, 0..14. */
+  depth?: number;
+  /** Present only when the URL explicitly carried `follow=1` or `follow=0`. */
+  followPointer?: boolean;
+  /** A valid finish; invalid names are ignored. */
+  finish?: OpenBotFinish;
+  /** Only ever `scene`; canvas is represented by absence. */
+  renderer?: OpenBotRenderer;
+}
+
+/** Strictly validate the package's volume range (an integer, 0..14). */
+export function isOpenBotDepth(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 14;
+}
+
+export function isOpenBotFinish(value: unknown): value is OpenBotFinish {
+  return typeof value === "string" && (OPENBOT_FINISHES as readonly string[]).includes(value);
+}
+
+export function isOpenBotRenderer(value: unknown): value is OpenBotRenderer {
+  return value === "canvas" || value === "scene";
 }
 
 /**
- * `openbot://<definition-id>?color=<url-encoded-hex>`.
+ * `openbot://<definition-id>?color=<url-encoded-hex>` plus optional choices.
  *
- * A missing colour is legal and means "derive one from the name"; unknown
- * parameters are ignored. The parser is deliberately not `new URL` for the
- * colour value, because a raw `#` in a query is read as a fragment by the URL
- * parser — a hand-written URL should still work, and a builder-produced one
- * always escapes it.
+ * A missing colour is legal and means "derive one from the name"; unknown or
+ * invalid parameters are ignored. The parser is deliberately not `new URL`
+ * for the colour value, because a raw `#` in a query is read as a fragment by
+ * the URL parser — a hand-written URL should still work, and a builder-produced
+ * one always escapes it.
  */
 export function parseOpenBotUrl(value: string | null | undefined): OpenBotUrlParts | null {
   if (typeof value !== "string") return null;
@@ -192,22 +237,48 @@ export function parseOpenBotUrl(value: string | null | undefined): OpenBotUrlPar
   if (rawId.length === 0) return null;
 
   let colour: string | undefined;
+  let depth: number | undefined;
+  let followPointer: boolean | undefined;
+  let finish: OpenBotFinish | undefined;
+  let renderer: OpenBotRenderer | undefined;
+
   if (queryAt !== -1) {
     for (const pair of rest.slice(queryAt + 1).split("&")) {
+      if (pair.length === 0) continue;
       const equals = pair.indexOf("=");
-      const key = equals === -1 ? pair : pair.slice(0, equals);
-      if (decodePart(key) !== "color") continue;
-      const raw = equals === -1 ? "" : pair.slice(equals + 1);
+      const key = decodePart(equals === -1 ? pair : pair.slice(0, equals));
+      const valuePart = equals === -1 ? "" : pair.slice(equals + 1);
       // A raw # is technically a fragment; a value that starts with one is the
       // colour itself, while a fragment after an encoded value is ignored.
-      const candidate = raw.startsWith("#") ? raw : raw.split("#")[0];
-      const decoded = decodePart(candidate);
-      if (decoded) colour = normaliseOpenBotColour(decoded, "");
-      break;
+      const raw = valuePart.startsWith("#") ? valuePart : valuePart.split("#")[0];
+      const decoded = decodePart(raw);
+
+      if (key === "color") {
+        if (decoded) colour = normaliseOpenBotColour(decoded, "");
+      } else if (key === "depth") {
+        if (/^\d{1,2}$/.test(decoded)) {
+          const parsed = Number(decoded);
+          if (isOpenBotDepth(parsed)) depth = parsed;
+        }
+      } else if (key === "follow") {
+        if (decoded === "1") followPointer = true;
+        else if (decoded === "0") followPointer = false;
+      } else if (key === "finish") {
+        if (isOpenBotFinish(decoded)) finish = decoded;
+      } else if (key === "renderer") {
+        if (decoded === "scene") renderer = "scene";
+      }
     }
   }
 
-  return { id: decodePart(rawId), ...(colour ? { colour } : {}) };
+  return {
+    id: decodePart(rawId),
+    ...(colour ? { colour } : {}),
+    ...(depth !== undefined ? { depth } : {}),
+    ...(followPointer !== undefined ? { followPointer } : {}),
+    ...(finish ? { finish } : {}),
+    ...(renderer ? { renderer } : {}),
+  };
 }
 
 function decodePart(value: string): string {
@@ -236,11 +307,34 @@ export function normaliseOpenBotColour(
   return HEX.test(withHash) ? withHash.toLowerCase() : fallback;
 }
 
-/** Build a complete OpenBot URL. An invalid colour falls back safely. */
-export function openBotUrl(id: string, colourHex?: string | null): string {
+/**
+ * Build a complete OpenBot URL. An invalid colour falls back safely, and
+ * invalid options are omitted rather than written.
+ *
+ * The old `openBotUrl(id, "#hex")` call shape still works: a string second
+ * argument is read as the colour.
+ */
+export function openBotUrl(id: string, colourHex?: string | null): string;
+export function openBotUrl(id: string, options?: OpenBotUrlOptions | null): string;
+export function openBotUrl(
+  id: string,
+  colourOrOptions?: string | null | OpenBotUrlOptions,
+): string {
   const definitionId = ((id ?? "").trim() || OPENBOT_GALLERY[0]?.id || "idle").toLowerCase();
-  const colour = normaliseOpenBotColour(colourHex, DEFAULT_OPENBOT_COLOUR);
-  return `openbot://${encodeURIComponent(definitionId)}?color=${encodeURIComponent(colour)}`;
+  const options: OpenBotUrlOptions =
+    typeof colourOrOptions === "object" && colourOrOptions !== null
+      ? colourOrOptions
+      : { colour: colourOrOptions };
+  const colour = normaliseOpenBotColour(options.colour, DEFAULT_OPENBOT_COLOUR);
+  // `color` stays first; the rest only appear when explicitly chosen.
+  const params = [`color=${encodeURIComponent(colour)}`];
+  if (isOpenBotDepth(options.depth)) params.push(`depth=${options.depth}`);
+  if (typeof options.followPointer === "boolean") {
+    params.push(`follow=${options.followPointer ? "1" : "0"}`);
+  }
+  if (isOpenBotFinish(options.finish)) params.push(`finish=${options.finish}`);
+  if (options.renderer === "scene") params.push("renderer=scene");
+  return `openbot://${encodeURIComponent(definitionId)}?${params.join("&")}`;
 }
 
 /** A stable character for a name, used when an agent has not chosen one. */

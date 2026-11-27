@@ -33,9 +33,18 @@ describe("AvatarPicker — OpenBot", () => {
 
     expect(onSelect).toHaveBeenCalledTimes(1);
     expect(onSelect).toHaveBeenCalledWith(
-      openBotUrl("ghost", openBotCuratedColour("ghost")),
+      openBotUrl("ghost", {
+        colour: openBotCuratedColour("ghost"),
+        depth: 6,
+        followPointer: false,
+        finish: "flat",
+      }),
       openBotStyleId("ghost"),
     );
+    const url = onSelect.mock.calls[0][0];
+    expect(url).toContain("depth=6");
+    expect(url).toContain("follow=0");
+    expect(url).toContain("finish=flat");
   });
 
   it("previews a stored OpenBot URL through the avatar, not as a custom image", () => {
@@ -53,22 +62,56 @@ describe("AvatarPicker — OpenBot", () => {
     expect(container.querySelector(".size-20 img[alt='Avatar preview']")).toBeNull();
   });
 
-  it("confirms a stored OpenBot character as OpenBot, never as a DiceBear URL", () => {
+  it("confirms a stored OpenBot character with its saved render options", () => {
     const onSelect = vi.fn();
+    const stored =
+      "openbot://ghost?color=%23f4f4f4&depth=11&follow=1&finish=fluffy";
     render(AvatarPicker, {
       props: {
         seed: "Ada",
         style: "openbot:ghost",
-        customUrl: "openbot://ghost?color=%23f4f4f4",
+        customUrl: stored,
         onSelect,
       },
     });
     fireEvent.click(screen.getByRole("button", { name: /Use Selected Avatar/i }));
     expect(onSelect).toHaveBeenCalledTimes(1);
     const [url, styleValue] = onSelect.mock.calls[0];
-    expect(url).toBe(openBotUrl("ghost", "#f4f4f4"));
+    expect(url).toBe(stored);
+    expect(url).toContain("depth=11");
+    expect(url).toContain("follow=1");
+    expect(url).toContain("finish=fluffy");
     expect(styleValue).toBe("openbot:ghost");
     expect(url).not.toContain("dicebear.com");
+  });
+
+  it("reopens the studio with the saved render options and applies them", async () => {
+    const onSelect = vi.fn();
+    const stored =
+      "openbot://ghost?color=%23f4f4f4&depth=11&follow=1&finish=fluffy";
+    const { container } = render(AvatarPicker, {
+      props: {
+        seed: "Ada",
+        style: "openbot:ghost",
+        customUrl: stored,
+        onSelect,
+      },
+    });
+    const tile = container.querySelector('section[aria-label="OpenBot character"] button')!;
+    fireEvent.click(tile);
+    await tick();
+    const range = document.querySelector("#openbot-volume") as HTMLInputElement;
+    expect(range.value).toBe("11");
+    expect(
+      (screen.getByRole("checkbox", { name: /Follow the pointer/i }) as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    expect(screen.getByRole("button", { name: "Fluffy" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use character" }));
+    expect(onSelect).toHaveBeenCalledWith(stored, "openbot:ghost");
   });
 
   it("leaves OpenBot mode when a DiceBear style is picked afterwards", () => {

@@ -508,6 +508,10 @@
       {mood}
       imageUrl={imageUrl}
       definitionId={openBotId}
+      depth={openBotFromUrl?.depth}
+      followPointer={openBotFromUrl?.followPointer}
+      material={openBotFromUrl?.finish}
+      renderer={openBotFromUrl?.renderer}
       still={!openBotAnimated}
       decorative
       class="raven-avatar-openbot"

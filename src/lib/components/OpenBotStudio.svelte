@@ -21,32 +21,51 @@
     openBotStillUrl,
     openBotStyleId,
     openBotUrl,
+    parseOpenBotUrl,
+    type OpenBotFinish,
     type OpenBotState,
     type OpenBotTone,
   } from "$lib/openBotAvatar";
   import { X } from "@lucide/svelte";
 
-  type Finish = "flat" | "fluffy" | "glass";
+  type Finish = OpenBotFinish;
 
   interface Props {
     seed: string;
     definitionId?: string | null;
     colour?: string | null;
+    /** The current stored URL, so the studio reopens on the saved render choices. */
+    imageUrl?: string | null;
     onApply?: (url: string, style: string) => void;
     onClose?: () => void;
   }
 
-  let { seed, definitionId = null, colour = null, onApply, onClose }: Props = $props();
+  let {
+    seed,
+    definitionId = null,
+    colour = null,
+    imageUrl = null,
+    onApply,
+    onClose,
+  }: Props = $props();
 
+  // The stored URL carries the options that are not identity. Invalid or
+  // missing values fall back to the package defaults, and the explicit
+  // `definitionId`/`colour` props still win for the character itself.
+  // svelte-ignore state_referenced_locally
+  const saved = parseOpenBotUrl(imageUrl);
   // The studio opens with the character and colour it was given; a click
   // then owns them. `initial` is intentionally a snapshot of the opening
   // props, not a live binding that would undo a choice.
   // svelte-ignore state_referenced_locally
-  const initial = openBotDefinition(definitionId) ?? openBotDefinitionForName(seed || "Agent");
+  const initial =
+    openBotDefinition(definitionId) ??
+    openBotDefinition(saved?.id) ??
+    openBotDefinitionForName(seed || "Agent");
   let chosenId = $state(initial.id);
   // svelte-ignore state_referenced_locally
   let chosenColour = $state(
-    normaliseOpenBotColour(colour, openBotCuratedColour(initial.id)),
+    normaliseOpenBotColour(colour ?? saved?.colour, openBotCuratedColour(initial.id)),
   );
   const definition = $derived(openBotDefinition(chosenId) ?? initial);
   const bodyColour = $derived(
@@ -55,9 +74,12 @@
 
   let previewState = $state<OpenBotState>("idle");
   let tone = $state<OpenBotTone>("neutral");
-  let depth = $state(6);
-  let followPointer = $state(false);
-  let finish = $state<Finish>("flat");
+  // svelte-ignore state_referenced_locally
+  let depth = $state(saved?.depth ?? 6);
+  // svelte-ignore state_referenced_locally
+  let followPointer = $state(saved?.followPointer ?? false);
+  // svelte-ignore state_referenced_locally
+  let finish = $state<Finish>(saved?.finish ?? "flat");
   let animate = $state(true);
 
   function choose(id: string) {
@@ -77,7 +99,12 @@
 
   function apply() {
     onApply?.(
-      openBotUrl(definition.id, bodyColour),
+      openBotUrl(definition.id, {
+        colour: bodyColour,
+        depth,
+        followPointer,
+        finish,
+      }),
       openBotStyleId(definition.id),
     );
   }

@@ -33,20 +33,34 @@ bundled gallery and runtime are.
 
 ```
 avatar_style = openbot:cat
-avatar_url   = openbot://cat?color=%23f8a01c
+avatar_url   = openbot://cat?color=%23f8a01c&depth=9&follow=1&finish=fluffy
 ```
 
-- `openbot://<definition-id>?color=<url-encoded-hex>` is the image URL.
-- `openbot:<definition-id>` is the style. Either one is enough to render an
-  OpenBot character, which is why a surface that only stores `avatar_url` still
-  works.
+- `openbot://<definition-id>?color=<url-encoded-hex>` is the image URL. Render
+  choices are appended after the colour:
+  - `depth=0`…`14` — the package volume (default 6).
+  - `follow=1` or `follow=0` — pointer-follow (default off).
+  - `finish=flat|fluffy|glass` — body finish (default flat).
+  - `renderer=scene` — the CSS 3D renderer. Canvas is the default and is
+    represented by omitting the parameter. The studio does not expose this
+    choice and never writes it; the URL and component accept it for callers
+    that opt in.
+- `openbot:<definition-id>` is the style. Either the style or the URL is enough
+  to render an OpenBot character, which is why a surface that only stores
+  `avatar_url` still works.
+- `color` is always first. The other parameters appear only when explicitly
+  chosen.
 - A missing or invalid `color` is treated as absent; the colour then falls back
   from the definition's URL, to a stable colour derived from the agent's name.
-  Unknown query parameters are ignored.
+  Unknown or invalid query parameters are ignored: an out-of-range `depth`, a
+  non-`1`/`0` `follow`, an unknown `finish`, or a non-`scene` `renderer` is
+  never passed to the renderer.
 - Accepted colours are `#rgb` and `#rrggbb`, with or without the leading `#`.
   Anything else falls back to `#ff6a1a`, the package default.
 - Definition ids and colours are normalised by `openBotUrl`,
-  `parseOpenBotUrl`, `openBotStyleId` and `parseOpenBotStyle`.
+  `parseOpenBotUrl`, `openBotStyleId` and `parseOpenBotStyle`. An older
+  colour-only URL (`openbot://cat?color=%23f8a01c`) still parses and uses the
+  defaults.
 
 Existing agents keep their records. A DiceBear URL, a custom image, or
 `raven-native` is untouched; only values that start with `openbot://` or
@@ -94,7 +108,8 @@ done. It also reports the definition id in `data-shape`, the hex in
   swatches plus a native colour input), neutral/happy, volume 0–14,
   follow-pointer, flat/fluffy/glass, an animation toggle, and the six-state
   strip in the reference order: Idle, Thinking, Working, Waiting, Blocked,
-  Done.
+  Done. Apply stores the character, colour, volume, pointer-follow and finish
+  in `avatar_url`; reopening the studio reads them back.
 
 ## Rendering and materials
 
@@ -126,8 +141,9 @@ updates only the options that changed. It supports:
 ## Tests
 
 - `src/lib/openBotAvatar.test.ts` — gallery validation and unique ids, URL and
-  style round-trips, colour fallbacks, stable name defaults, the full mood
-  mapping, and still-data-URL safety.
+  style round-trips (including depth/follow/finish/renderer and invalid-value
+  rejection), colour fallbacks, stable name defaults, the full mood mapping,
+  and still-data-URL safety.
 - `src/lib/components/OpenBotAvatar.dom.test.ts` — mount/update/destroy,
   decorative vs labelled semantics, the six states, and both fallback paths
   (mocked `open-bot-avatar/dom`).
@@ -146,7 +162,8 @@ updates only the options that changed. It supports:
 - The renderer receives a definition object and a hex colour; no remote assets,
   scripts, or CSS colours from user input reach it.
 - Fluffy and glass degrade to flat without WebGL2. The CSS 3D scene renderer is
-  available to callers, but the picker/studio do not persist it; they use the
-  package default.
+  supported by the URL and component (`renderer=scene`), but the studio keeps
+  it explicitly unexposed and writes the canvas default (by omitting the
+  parameter).
 - The selected studio state is not stored. A live agent's pose is always
   derived from its fleet mood, so an agent cannot be left frozen in "blocked".

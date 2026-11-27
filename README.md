@@ -152,7 +152,8 @@ all six work states (**Idle, Thinking, Working, Waiting, Blocked, Done**) before
 you apply, with body colour, volume, pointer-follow and flat, fluffy or glass
 finishes. Live state comes from fleet activity: a waiting agent looks waiting, a
 failed run looks blocked, and an unread reply celebrates. The studio selection
-is a preview only; reloads keep the chosen character and colour. See
+is a preview only; reloads keep the chosen character, colour, volume,
+pointer-follow and finish. See
 [`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md).
 
 ### Memory that is retrieved, not dumped

@@ -160,11 +160,21 @@
         ? openBotStyleId(openBotCharacter.id)
         : selectedStyle,
   );
+  /**
+   * The stored OpenBot URL for the current character, including its render
+   * choices. Rebuild only when the id does not match (a new character, or no
+   * stored URL yet), so the hero and studio keep depth/follow/finish.
+   */
+  const openBotCurrentUrl = $derived(
+    parseOpenBotUrl(customImageUrl)?.id.toLowerCase() === openBotCharacter.id
+      ? customImageUrl.trim()
+      : null,
+  );
   const previewImage = $derived(
     useCustom
       ? customImageUrl.trim() || null
       : openBotSelected
-        ? openBotUrl(openBotCharacter.id, openBotColour)
+        ? openBotCurrentUrl ?? openBotUrl(openBotCharacter.id, openBotColour)
         : null,
   );
 
@@ -264,7 +274,10 @@
 
   function confirm() {
     if (openBotSelected && !useCustom) {
-      onSelect(openBotUrl(openBotCharacter.id, openBotColour), openBotStyleId(openBotCharacter.id));
+      onSelect(
+        openBotCurrentUrl ?? openBotUrl(openBotCharacter.id, openBotColour),
+        openBotStyleId(openBotCharacter.id),
+      );
       return;
     }
     if (useCustom && customImageUrl.trim()) {
@@ -411,6 +424,7 @@
       seed={previewSeed || "Agent"}
       definitionId={openBotId}
       colour={openBotColour}
+      imageUrl={openBotCurrentUrl}
       onApply={applyOpenBot}
       onClose={() => (openBotOpen = false)}
     />

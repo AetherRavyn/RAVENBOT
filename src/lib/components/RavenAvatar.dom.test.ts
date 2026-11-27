@@ -566,7 +566,11 @@ describe("RavenAvatar — the sixteen expressions", () => {
 describe("RavenAvatar — OpenBot characters", () => {
   it("renders an OpenBot host from an image URL, not a custom image", async () => {
     const { container } = render(RavenAvatar, {
-      props: { name: "Ada", imageUrl: "openbot://cat?color=%23ff6a1a" },
+      props: {
+        name: "Ada",
+        imageUrl:
+          "openbot://cat?color=%23ff6a1a&depth=10&follow=1&finish=fluffy&renderer=scene",
+      },
     });
     await waitFor(() => expect(mountAvatar).toHaveBeenCalled());
 
@@ -578,6 +582,9 @@ describe("RavenAvatar — OpenBot characters", () => {
     expect(container.querySelector("img")).toBeNull();
     expect(mountAvatar.mock.calls[0][1].color).toBe("#ff6a1a");
     expect(mountAvatar.mock.calls[0][1].definition.id).toBe("cat");
+    expect(mountAvatar.mock.calls[0][1].depth).toBe(10);
+    expect(mountAvatar.mock.calls[0][1].followPointer).toBe(true);
+    expect(mountAvatar.mock.calls[0][1].renderer).toBe("scene");
   });
 
   it("renders from a style alone, without an image URL", async () => {

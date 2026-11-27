@@ -83,7 +83,7 @@ describe("OpenBotStudio", () => {
     expect(blocked.getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("applies the chosen definition and colour, never the previewed state", () => {
+  it("applies the chosen definition, colour and render options, never the previewed state", () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { onApply } = studio();
     fireEvent.click(screen.getByRole("button", { name: "Blocked" }));
@@ -93,11 +93,42 @@ describe("OpenBotStudio", () => {
 
     expect(onApply).toHaveBeenCalledTimes(1);
     expect(onApply).toHaveBeenCalledWith(
-      openBotUrl("ghost", "#1fbf68"),
+      openBotUrl("ghost", {
+        colour: "#1fbf68",
+        depth: 6,
+        followPointer: false,
+        finish: "flat",
+      }),
       openBotStyleId("ghost"),
     );
-    expect(onApply.mock.calls[0][0]).not.toContain("blocked");
-    expect(onApply.mock.calls[0][0]).not.toContain("state");
+    const url = onApply.mock.calls[0][0];
+    expect(url).toContain("depth=6");
+    expect(url).toContain("follow=0");
+    expect(url).toContain("finish=flat");
+    expect(url).not.toContain("blocked");
+    expect(url).not.toContain("state");
+  });
+
+  it("reopens with the saved depth, pointer-follow and finish", () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { onApply } = studio({
+      imageUrl: "openbot://cat?color=%23f8a01c&depth=12&follow=1&finish=fluffy",
+    });
+    const range = document.querySelector("#openbot-volume") as HTMLInputElement;
+    expect(range.value).toBe("12");
+    expect(
+      (screen.getByRole("checkbox", { name: /Follow the pointer/i }) as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    expect(screen.getByRole("button", { name: "Fluffy" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Use character" }));
+    expect(onApply).toHaveBeenCalledWith(
+      "openbot://cat?color=%23f8a01c&depth=12&follow=1&finish=fluffy",
+      openBotStyleId("cat"),
+    );
   });
 
   it("starts a newly picked character on its curated upstream colour", () => {
@@ -106,7 +137,12 @@ describe("OpenBotStudio", () => {
     fireEvent.click(screen.getByRole("button", { name: /Rocket/ }));
     fireEvent.click(screen.getByRole("button", { name: "Use character" }));
     expect(onApply).toHaveBeenCalledWith(
-      openBotUrl("rocket", openBotCuratedColour("rocket")),
+      openBotUrl("rocket", {
+        colour: openBotCuratedColour("rocket"),
+        depth: 6,
+        followPointer: false,
+        finish: "flat",
+      }),
       openBotStyleId("rocket"),
     );
   });

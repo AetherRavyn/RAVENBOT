@@ -70,6 +70,68 @@ describe("OpenBot URLs and styles", () => {
     expect(parseOpenBotUrl(url)).toEqual({ id: "cat", colour: "#f8a01c" });
   });
 
+  it("round-trips every render option, with color first", () => {
+    const url = openBotUrl("cat", {
+      colour: "#F8A01C",
+      depth: 9,
+      followPointer: true,
+      finish: "fluffy",
+      renderer: "scene",
+    });
+    expect(url).toBe(
+      "openbot://cat?color=%23f8a01c&depth=9&follow=1&finish=fluffy&renderer=scene",
+    );
+    expect(url.indexOf("color=")).toBeLessThan(url.indexOf("depth="));
+    expect(parseOpenBotUrl(url)).toEqual({
+      id: "cat",
+      colour: "#f8a01c",
+      depth: 9,
+      followPointer: true,
+      finish: "fluffy",
+      renderer: "scene",
+    });
+  });
+
+  it("writes false follow and flat finish, and omits canvas", () => {
+    const url = openBotUrl("ghost", {
+      colour: "#f4f4f4",
+      depth: 0,
+      followPointer: false,
+      finish: "flat",
+      renderer: "canvas",
+    });
+    expect(url).toBe("openbot://ghost?color=%23f4f4f4&depth=0&follow=0&finish=flat");
+    expect(parseOpenBotUrl(url)).toEqual({
+      id: "ghost",
+      colour: "#f4f4f4",
+      depth: 0,
+      followPointer: false,
+      finish: "flat",
+    });
+  });
+
+  it("keeps the old colour-only call shape and stored URL working", () => {
+    expect(openBotUrl("ghost", "#f4f4f4")).toBe("openbot://ghost?color=%23f4f4f4");
+    expect(openBotUrl("ghost", { colour: "#f4f4f4" })).toBe(
+      "openbot://ghost?color=%23f4f4f4",
+    );
+    expect(parseOpenBotUrl("openbot://ghost?color=%23f4f4f4")).toEqual({
+      id: "ghost",
+      colour: "#f4f4f4",
+    });
+  });
+
+  it("omits invalid builder options instead of writing them", () => {
+    const url = openBotUrl("cat", {
+      colour: "#f8a01c",
+      depth: 15,
+      followPointer: "yes" as never,
+      finish: "satin" as never,
+      renderer: "webgl" as never,
+    });
+    expect(url).toBe("openbot://cat?color=%23f8a01c");
+  });
+
   it("accepts a missing colour and ignores unknown parameters", () => {
     expect(parseOpenBotUrl("openbot://ghost")).toEqual({ id: "ghost" });
     expect(parseOpenBotUrl("openbot://ghost?foo=bar&color=%23ff6a1a")).toEqual({
@@ -88,6 +150,24 @@ describe("OpenBot URLs and styles", () => {
     expect(resolveOpenBotColour({ name: "Ada", imageUrl: "openbot://cat?color=red" })).toBe(
       openBotColourForName("Ada"),
     );
+  });
+
+  it("ignores invalid render options rather than passing them through", () => {
+    const invalid =
+      "openbot://cat?color=%23f8a01c&depth=15&follow=2&finish=metal&renderer=canvas";
+    expect(parseOpenBotUrl(invalid)).toEqual({ id: "cat", colour: "#f8a01c" });
+    expect(
+      parseOpenBotUrl(
+        "openbot://cat?depth=-1&follow=true&finish=Flat&renderer=webgl&color=%23f8a01c",
+      ),
+    ).toEqual({ id: "cat", colour: "#f8a01c" });
+    expect(parseOpenBotUrl("openbot://cat?depth=3.5&depth=abc")).toEqual({ id: "cat" });
+  });
+
+  it("parses options without a colour", () => {
+    expect(
+      parseOpenBotUrl("openbot://cat?depth=4&follow=1&finish=glass"),
+    ).toEqual({ id: "cat", depth: 4, followPointer: true, finish: "glass" });
   });
 
   it("falls back safely when the builder receives an invalid colour", () => {
