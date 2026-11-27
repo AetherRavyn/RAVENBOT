@@ -521,6 +521,16 @@ pub(crate) async fn verify_id_token(
     if claims.get("iss").and_then(Value::as_str) != Some(issuer) {
         return Err(SsoFailure::Token);
     }
+    // `azp` is optional, but when an IdP sends it, it names the client the
+    // token was issued to. A token minted for another client must not become a
+    // RAVENBOT session merely because our client id also appears in `aud`.
+    if claims
+        .get("azp")
+        .and_then(Value::as_str)
+        .is_some_and(|authorized_party| authorized_party != client_id)
+    {
+        return Err(SsoFailure::Token);
+    }
     if claims
         .get("sub")
         .and_then(Value::as_str)

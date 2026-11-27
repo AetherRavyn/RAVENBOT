@@ -50,6 +50,7 @@ enum TokenMode {
 struct TokenSpec {
     issuer: Option<String>,
     audience: Option<String>,
+    authorized_party: Option<String>,
     nonce: Option<String>,
     omit_nonce: bool,
     username: Option<String>,
@@ -63,6 +64,7 @@ impl Default for TokenSpec {
         Self {
             issuer: None,
             audience: None,
+            authorized_party: None,
             nonce: None,
             omit_nonce: false,
             username: None,
@@ -226,6 +228,9 @@ async fn token(
             .as_object_mut()
             .expect("claims object")
             .remove("preferred_username");
+    }
+    if let Some(authorized_party) = &grant.spec.authorized_party {
+        claims["azp"] = json!(authorized_party);
     }
     if let Some(nonce) = &grant.spec.nonce {
         claims["nonce"] = json!(nonce);
@@ -655,6 +660,13 @@ async fn invalid_id_tokens_and_wrong_algorithms_fail_closed() {
             "wrong audience",
             TokenSpec {
                 audience: Some("another-client".to_string()),
+                ..TokenSpec::default()
+            },
+        ),
+        (
+            "wrong authorized party",
+            TokenSpec {
+                authorized_party: Some("another-client".to_string()),
                 ..TokenSpec::default()
             },
         ),

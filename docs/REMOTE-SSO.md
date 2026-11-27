@@ -34,7 +34,8 @@ SSO proves an identity. It does not create or grant an account.
 4. The ID token must be **RS256**. `none`, HMAC and every other algorithm are
    rejected before a key is selected. The signature is checked against the
    provider JWKS; `iss`, `aud`, `exp`, optional `nbf`, `sub` and `nonce` are
-   checked. Clock leeway is 60 seconds.
+   checked. When `azp` is present it must name the same client. Clock leeway is
+   60 seconds.
 5. The configured claim (default `preferred_username`) is mapped
    case-insensitively to an **existing** local RAVENBOT account through
    `AccountAuthenticator::account_by_identity`. An unknown, disabled,
@@ -134,8 +135,9 @@ and before pairing. It is owner-only, like the rest of Settings. The form has:
   saving restarts a running listener.
 
 Saving validates on the host, writes the settings, updates the form from the
-returned `RemoteStatus`, and restarts a running remote listener so the new
-snapshot applies. Disabling works even with blank or stale values.
+returned `RemoteStatus`, and restarts a running desktop listener so the new
+snapshot applies. A headless daemon reads the new settings on its next start.
+Disabling works even with blank or stale values.
 
 **Saving does not contact the IdP and there is no "Test connection" button.**
 Discovery, JWKS and the token endpoint are first contacted when a paired device
