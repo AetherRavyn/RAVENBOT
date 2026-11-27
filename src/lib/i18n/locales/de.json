@@ -3137,7 +3137,7 @@
     "close": "Schließen",
     "galleryNote": "Mitgelieferte Galerie. Kein Download, keine externen Bilder."
   },
-  "mail":   {
+  "mail": {
     "nav": "E-Mail",
     "title": "Agent-E-Mail",
     "description": "Von Agenten erstellte Entwürfe prüfen und selbst senden. RAVENBOT sendet einen Entwurf niemals selbst.",
@@ -3188,6 +3188,8 @@
     "saveDraft": "Änderungen speichern",
     "loadError": "Mail konnte nicht geladen werden.",
     "advancedHint": "Entwürfe sind nur reiner Text. Anhänge, HTML und Rich-Text-Formatierung werden nicht unterstützt.",
-    "noInbound": "Es gibt keinen Posteingang. RAVENBOT ruft eingehende E-Mails nicht ab, liest sie nicht und antwortet nicht; es gibt keine IMAP-Verbindung."
+    "noInbound": "Es gibt keinen Posteingang. RAVENBOT ruft eingehende E-Mails nicht ab, liest sie nicht und antwortet nicht; es gibt keine IMAP-Verbindung.",
+    "allowlistInvalid": "Die gespeicherte Liste ist ungültig. Korrigieren und speichern, um sie zu reparieren.",
+    "saveBeforeSend": "Speichern Sie Ihre Änderungen vor dem Senden. Gesendet wird der gespeicherte Entwurf."
   }
 }

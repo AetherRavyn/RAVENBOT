@@ -20,7 +20,8 @@
     security: string;
     username: string;
     from: string;
-    allowlist: string[];
+    allowlist: string;
+    allowlist_valid: boolean;
     has_password: boolean;
   }
 
@@ -68,6 +69,13 @@
   let notice = $state("");
 
   let canEdit = $derived(draft?.status === "draft");
+  let dirty = $derived(
+    draft !== null &&
+      (to !== draft.to_addresses.join(", ") ||
+        cc !== draft.cc_addresses.join(", ") ||
+        subject !== draft.subject ||
+        body !== draft.body),
+  );
   let validPort = $derived(Number(port) >= 1 && Number(port) <= 65535);
   let securityOptions = $derived([
     { value: "starttls", label: t("mail.starttls") },
@@ -97,7 +105,7 @@
     security = next.security === "none" ? "none" : "starttls";
     username = next.username ?? "";
     from = next.from ?? "";
-    allowlist = (next.allowlist ?? []).join(", ");
+    allowlist = next.allowlist ?? "";
     password = "";
     if (!testTo || testTo === previousFrom) {
       testTo = next.from ?? "";
@@ -315,7 +323,7 @@
   }
 
   async function sendDraft() {
-    if (editorBusy || !draft || !canEdit) return;
+    if (editorBusy || !draft || !canEdit || dirty) return;
     const id = draft.id;
     const recipients = [...draft.to_addresses, ...draft.cc_addresses].join(", ");
     if (
@@ -504,6 +512,11 @@
           <span class="mt-1 block text-[11px] leading-4 text-[var(--text-muted)]">
             {t("mail.allowlistHint")}
           </span>
+          {#if account && !account.allowlist_valid}
+            <span class="mt-1 block text-[11px] leading-4 text-[var(--danger-text)]" role="alert">
+              {t("mail.allowlistInvalid")}
+            </span>
+          {/if}
         </label>
       </div>
 
@@ -655,6 +668,12 @@
           </label>
         </div>
 
+        {#if dirty && canEdit}
+          <p class="text-[11px] leading-4 text-[var(--warning-text)]" role="status">
+            {t("mail.saveBeforeSend")}
+          </p>
+        {/if}
+
         <div class="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -673,7 +692,7 @@
             type="button"
             class="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--brand)]/40 bg-[var(--brand-soft)] px-3 text-[11px] font-semibold text-[var(--brand-text)] cursor-pointer disabled:opacity-50"
             onclick={() => void sendDraft()}
-            disabled={editorBusy || !canEdit}
+            disabled={editorBusy || !canEdit || dirty}
           >
             <Send class="size-3.5" />
             {t("mail.send")}

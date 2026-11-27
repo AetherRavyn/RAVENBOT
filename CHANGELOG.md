@@ -49,6 +49,14 @@ All notable changes to RAVENBOT are documented here.
   are terminal. A failed send reloads the retryable draft and shows the error.
   The panel is covered by a DOM suite, and its copy ships in all twelve
   locales. There is no composer, inbox, attachment or HTML surface.
+- **Repair-safe allowlist and no unsaved sends.** `get_agent_email` returns the
+  raw saved allowlist string plus `allowlist_valid` and does not validate on
+  read, so an invalid saved value still loads; the Mail form warns and Save
+  repairs it, while drafts/tests/sends stay fail-closed until it is valid. The
+  editor disables Send while To/Cc/Subject/Body differ from the stored draft and
+  tells the user to save first; the send confirmation names the stored
+  recipients and subject that will actually be sent. The atomic `sending`
+  claim, confirmations, owner-only gates and body-free audit are unchanged.
 - **Deliberately out of scope.** No inbound mail/IMAP, attachments, HTML,
   auto-send, provider OAuth or per-agent SMTP accounts. See
   [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md); the real-SMTP release check is

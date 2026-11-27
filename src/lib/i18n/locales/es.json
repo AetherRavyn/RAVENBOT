@@ -3137,7 +3137,7 @@
     "close": "Cerrar",
     "galleryNote": "Galería incluida. Sin descargas ni imágenes remotas."
   },
-  "mail":   {
+  "mail": {
     "nav": "Correo",
     "title": "Correo del agente",
     "description": "Revisa los borradores que crean los agentes y envíalos tú mismo. RAVENBOT nunca envía un borrador por su cuenta.",
@@ -3188,6 +3188,8 @@
     "saveDraft": "Guardar cambios",
     "loadError": "No se pudo cargar Correo.",
     "advancedHint": "Los borradores son solo texto plano. No se admiten adjuntos, HTML ni formato enriquecido.",
-    "noInbound": "No hay bandeja de entrada. RAVENBOT no descarga, lee ni responde correo entrante, y no hay conexión IMAP."
+    "noInbound": "No hay bandeja de entrada. RAVENBOT no descarga, lee ni responde correo entrante, y no hay conexión IMAP.",
+    "allowlistInvalid": "La lista guardada no es válida. Corrígela y guarda para repararla.",
+    "saveBeforeSend": "Guarda los cambios antes de enviar. Se envía el borrador guardado."
   }
 }

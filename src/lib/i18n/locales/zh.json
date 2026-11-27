@@ -3137,7 +3137,7 @@
     "close": "关闭",
     "galleryNote": "内置画廊。无需下载，也无远程图片。"
   },
-  "mail":   {
+  "mail": {
     "nav": "邮件",
     "title": "代理邮件",
     "description": "查看代理创建的草稿，并由您亲自发送。RAVENBOT 绝不会自行发送草稿。",
@@ -3188,6 +3188,8 @@
     "saveDraft": "保存更改",
     "loadError": "无法加载邮件。",
     "advancedHint": "草稿仅支持纯文本。不支持附件、HTML 和富文本格式。",
-    "noInbound": "没有收件箱。RAVENBOT 不会收取、读取或回复收到的邮件，也没有 IMAP 连接。"
+    "noInbound": "没有收件箱。RAVENBOT 不会收取、读取或回复收到的邮件，也没有 IMAP 连接。",
+    "allowlistInvalid": "已保存的列表无效。请修正并保存以修复。",
+    "saveBeforeSend": "发送前请保存更改。发送的是已保存的草稿。"
   }
 }

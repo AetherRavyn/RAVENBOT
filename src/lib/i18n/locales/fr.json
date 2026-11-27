@@ -3137,7 +3137,7 @@
     "close": "Fermer",
     "galleryNote": "Galerie intégrée. Aucun téléchargement ni image distante."
   },
-  "mail":   {
+  "mail": {
     "nav": "Courrier",
     "title": "Courriel de l’agent",
     "description": "Relisez les brouillons créés par les agents et envoyez-les vous-même. RAVENBOT n’envoie jamais un brouillon de lui-même.",
@@ -3188,6 +3188,8 @@
     "saveDraft": "Enregistrer les modifications",
     "loadError": "Impossible de charger Courrier.",
     "advancedHint": "Les brouillons sont en texte brut uniquement. Les pièces jointes, le HTML et la mise en forme enrichie ne sont pas pris en charge.",
-    "noInbound": "Il n’y a pas de boîte de réception. RAVENBOT ne récupère, ne lit et ne répond pas aux courriels entrants, et il n’y a pas de connexion IMAP."
+    "noInbound": "Il n’y a pas de boîte de réception. RAVENBOT ne récupère, ne lit et ne répond pas aux courriels entrants, et il n’y a pas de connexion IMAP.",
+    "allowlistInvalid": "La liste enregistrée n’est pas valide. Corrigez-la et enregistrez pour la réparer.",
+    "saveBeforeSend": "Enregistrez vos modifications avant d’envoyer. C’est le brouillon enregistré qui est envoyé."
   }
 }

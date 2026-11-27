@@ -34,7 +34,8 @@ const account = {
   security: "starttls",
   username: "agent@example.com",
   from: "agent@example.com",
-  allowlist: ["example.com", "boss@other.test"],
+  allowlist: "example.com, boss@other.test",
+  allowlist_valid: true,
   has_password: true,
 };
 
@@ -127,7 +128,7 @@ beforeEach(() => {
   invokeMock.mockImplementation(async (command: string, args?: any) => {
     switch (command) {
       case "get_agent_email":
-        return { ...account, allowlist: [...account.allowlist] };
+        return { ...account };
       case "list_email_drafts":
         return drafts.map((draft) => ({ ...draft }));
       case "get_email_draft": {
@@ -143,7 +144,8 @@ beforeEach(() => {
           security: input.security,
           username: input.username,
           from: input.from,
-          allowlist: mapAddresses(input.allowlist),
+          allowlist: input.allowlist,
+          allowlist_valid: true,
           has_password: account.has_password || Boolean(input.password),
         };
       }
@@ -359,6 +361,109 @@ describe("MailPanel", () => {
         ).length,
       ).toBeGreaterThan(before),
     );
+  });
+
+  it("loads an invalid saved allowlist and saves a repaired one", async () => {
+    let stored = {
+      ...account,
+      allowlist: "bad domain",
+      allowlist_valid: false,
+    };
+    invokeMock.mockImplementation(async (command: string, args?: any) => {
+      if (command === "get_agent_email") return { ...stored };
+      if (command === "list_email_drafts") return [];
+      if (command === "set_agent_email") {
+        const input = args.input;
+        stored = {
+          ...stored,
+          host: input.host,
+          port: input.port,
+          security: input.security,
+          username: input.username,
+          from: input.from,
+          allowlist: input.allowlist,
+          allowlist_valid: true,
+        };
+        return { ...stored };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+
+    const { getByText, getByLabelText, queryByText } = render(MailPanel);
+    const warning =
+      "The saved allowlist is invalid. Correct it and save to repair it.";
+    await waitFor(() => expect(getByText(warning)).toBeTruthy());
+    const allowlistInput = getByLabelText(
+      "Recipient allowlist",
+    ) as HTMLInputElement;
+    expect(allowlistInput.value).toBe("bad domain");
+    expect(getByText("Configured")).toBeTruthy();
+
+    await fireEvent.input(allowlistInput, {
+      target: { value: "example.com" },
+    });
+    await fireEvent.click(getByText("Save account"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("set_agent_email", {
+        input: {
+          host: "smtp.example.com",
+          port: 587,
+          security: "starttls",
+          username: "agent@example.com",
+          from: "agent@example.com",
+          allowlist: "example.com",
+        },
+      }),
+    );
+    await waitFor(() => expect(queryByText(warning)).toBeNull());
+    expect(allowlistInput.value).toBe("example.com");
+  });
+
+  it("does not send unsaved edits and sends the saved values after Save", async () => {
+    const confirmMock = vi
+      .spyOn(window, "confirm")
+      .mockReturnValue(true);
+    const { getByText, getByLabelText, getByRole } = render(MailPanel);
+    await waitFor(() => expect(getByText("Quarterly numbers")).toBeTruthy());
+    await fireEvent.click(getByText("Quarterly numbers"));
+    await waitFor(() => expect(getByLabelText("Body")).toBeTruthy());
+
+    await fireEvent.input(getByLabelText("Subject"), {
+      target: { value: "Unsaved subject" },
+    });
+    expect(getByText("Save your changes before sending. The stored draft is what gets sent.")).toBeTruthy();
+    expect(
+      (getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+    await fireEvent.click(getByRole("button", { name: "Send" }));
+    expect(invokeMock).not.toHaveBeenCalledWith("send_email_draft", {
+      id: "draft-1",
+    });
+
+    await fireEvent.click(getByText("Save changes"));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("update_email_draft", {
+        id: "draft-1",
+        to: "person@example.com",
+        cc: "cc@example.com",
+        subject: "Unsaved subject",
+        body: "Body for Quarterly numbers",
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        (getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+    await fireEvent.click(getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(invokeMock).toHaveBeenCalledWith("send_email_draft", {
+        id: "draft-1",
+      }),
+    );
+    const confirmation = confirmMock.mock.calls.at(-1)?.[0] as string;
+    expect(confirmation).toContain("Unsaved subject");
+    expect(confirmation).not.toContain("Quarterly numbers");
   });
 
   it("confirms a send, sends once, and shows the sent state", async () => {

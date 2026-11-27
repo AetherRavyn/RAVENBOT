@@ -3137,7 +3137,7 @@
     "close": "Fechar",
     "galleryNote": "Galeria incluída. Sem downloads nem imagens remotas."
   },
-  "mail":   {
+  "mail": {
     "nav": "Correio",
     "title": "E-mail do agente",
     "description": "Revise os rascunhos criados pelos agentes e envie você mesmo. O RAVENBOT nunca envia um rascunho sozinho.",
@@ -3188,6 +3188,8 @@
     "saveDraft": "Salvar alterações",
     "loadError": "Não foi possível carregar o Correio.",
     "advancedHint": "Os rascunhos são somente texto sem formatação. Anexos, HTML e formatação rica não são suportados.",
-    "noInbound": "Não há caixa de entrada. O RAVENBOT não busca, lê nem responde e-mails recebidos, e não há conexão IMAP."
+    "noInbound": "Não há caixa de entrada. O RAVENBOT não busca, lê nem responde e-mails recebidos, e não há conexão IMAP.",
+    "allowlistInvalid": "A lista salva é inválida. Corrija e salve para repará-la.",
+    "saveBeforeSend": "Salve suas alterações antes de enviar. O rascunho salvo é o que será enviado."
   }
 }

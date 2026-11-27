@@ -3137,7 +3137,7 @@
     "close": "Close",
     "galleryNote": "Bundled gallery. No download, no remote images."
   },
-  "mail":   {
+  "mail": {
     "nav": "Mail",
     "title": "Agent email",
     "description": "Review drafts agents create and send them yourself. RAVENBOT never sends a draft on its own.",
@@ -3188,6 +3188,8 @@
     "saveDraft": "Save changes",
     "loadError": "Could not load Mail.",
     "advancedHint": "Drafts are plain text only. Attachments, HTML and rich formatting are not supported.",
-    "noInbound": "There is no inbox. RAVENBOT does not fetch, read or reply to incoming mail, and there is no IMAP connection."
+    "noInbound": "There is no inbox. RAVENBOT does not fetch, read or reply to incoming mail, and there is no IMAP connection.",
+    "allowlistInvalid": "The saved allowlist is invalid. Correct it and save to repair it.",
+    "saveBeforeSend": "Save your changes before sending. The stored draft is what gets sent."
   }
 }

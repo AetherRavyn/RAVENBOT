@@ -45,6 +45,12 @@ string clears it (clear the username first, because a username without a
 password is rejected). Responses expose only `has_password`. The password is
 never logged, returned, stored in the draft, or included in an SMTP error.
 
+`get_agent_email` deliberately does **not** validate the allowlist. It returns
+the raw saved string plus `allowlist_valid`, so a bad saved value still loads in
+the Mail form for repair. `set_agent_email` validates and stores a corrected
+allowlist; drafts, tests and sends still fail closed while the saved value is
+invalid.
+
 ### Allowlist
 
 - An entry containing `@` is an exact address, matched case-insensitively
@@ -103,6 +109,11 @@ Saving sends `set_agent_email` with the non-secret fields and omits the password
 when blank. **Remove account** confirms, then calls `clear_agent_email`;
 existing drafts are not deleted.
 
+If the saved allowlist is invalid, the raw value still loads and the card shows
+an invalid-allowlist warning. Editing the field and pressing **Save account**
+repairs it; Save is not blocked by the warning. Draft, test and send operations
+continue to fail closed until the allowlist is valid.
+
 The card explains that this account is separate from attention alert email,
 that STARTTLS is required except for loopback, and that there is no inbox, no
 IMAP, no HTML and no attachments.
@@ -122,9 +133,11 @@ There is no manual “new draft” control: drafts come from agents.
 Clicking a row calls `get_email_draft(id)` and opens the editor:
 
 - `draft` — To, Cc, Subject and Body are editable. **Save changes** calls
-  `update_email_draft`; **Send** shows a confirmation with the recipients and
-  subject before calling `send_email_draft`; **Discard** confirms before
-  calling `discard_email_draft`.
+  `update_email_draft`; **Send** shows a confirmation with the stored
+  recipients and subject before calling `send_email_draft`; **Discard** confirms
+  before calling `discard_email_draft`. Send is disabled while the form has
+  unsaved changes, with a hint to save first, because the command sends the
+  stored row rather than the editor text.
 - `sending` — read-only. The panel shows **Sending…** and disables edit, send
   and discard. This is either another send in flight or a crashed send waiting
   for stale-row recovery.
@@ -142,7 +155,7 @@ All commands are owner-only at the IPC gate. The read-shaped ones are in
 
 | Command | Purpose |
 |---|---|
-| `get_agent_email` | Safe view: configured, host, port, security, username, from, allowlist, has_password. |
+| `get_agent_email` | Safe view: configured, host, port, security, username, from, raw allowlist string, allowlist_valid, has_password. Never fails on an invalid saved allowlist. |
 | `set_agent_email(input)` | Validate and save the account; write/keep/clear the password; return the view. |
 | `clear_agent_email` | Remove the configuration and password. |
 | `test_agent_email(to)` | Validate the recipient and allowlist, then send a fixed plain-text test in `spawn_blocking`. |
@@ -211,10 +224,11 @@ a draft may address; it is not a substitute for reviewing the draft.
   listener that proves `email_draft` opens no SMTP connection.
 - `cargo test -p ravenbot --lib` covers the config rules, plain-text To/Cc
   message, password redaction, owner-only access, allowlist rejection before a
-  connection, and a loopback SMTP send through the helper the send command
-  uses.
+  connection, invalid-saved-allowlist loading for repair, and a loopback SMTP
+  send through the helper the send command uses.
 - `npx vitest run` covers the Mail panel: account save with omitted password,
-  confirmed test/remove/send/discard, open/edit/save, list refresh, read-only
+  invalid-allowlist warning and repair, confirmed test/remove/send/discard,
+  open/edit/save, unsaved-edit send blocking, list refresh, read-only
   `sending`/`sent`/`discarded`, failed-send reload, load errors and the
   no-inbox copy. The Settings suite keeps the owner/viewer navigation gate
   green.

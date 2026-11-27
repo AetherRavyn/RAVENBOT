@@ -235,7 +235,8 @@ function mockSettings() {
           security: "starttls",
           username: "",
           from: "",
-          allowlist: [],
+          allowlist: "",
+          allowlist_valid: true,
           has_password: false,
         };
       case "list_email_drafts":

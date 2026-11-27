@@ -3782,6 +3782,18 @@ struct AgentEmailConfig {
     allowlist: Vec<String>,
 }
 
+/// The account's stored values. `allowlist` is the raw saved string so the
+/// settings form can show an invalid value and let the owner repair it.
+struct AgentEmailSettings {
+    host: String,
+    port: u16,
+    security: String,
+    username: String,
+    password: Option<String>,
+    from: String,
+    allowlist: String,
+}
+
 #[derive(serde::Serialize)]
 struct AgentEmailView {
     configured: bool,
@@ -3790,7 +3802,8 @@ struct AgentEmailView {
     security: String,
     username: String,
     from: String,
-    allowlist: Vec<String>,
+    allowlist: String,
+    allowlist_valid: bool,
     has_password: bool,
 }
 
@@ -3839,7 +3852,7 @@ async fn load_agent_email_allowlist(pool: &sqlx::SqlitePool) -> Result<Vec<Strin
     })
 }
 
-async fn load_agent_email_config(pool: &sqlx::SqlitePool) -> Result<AgentEmailConfig, String> {
+async fn load_agent_email_settings(pool: &sqlx::SqlitePool) -> Result<AgentEmailSettings, String> {
     let get = |key: &'static str| {
         let pool = pool.clone();
         async move {
@@ -3862,8 +3875,16 @@ async fn load_agent_email_config(pool: &sqlx::SqlitePool) -> Result<AgentEmailCo
     let username = get(AGENT_EMAIL_USERNAME_KEY).await;
     let from = get(AGENT_EMAIL_FROM_KEY).await;
     let password = read_agent_email_password(pool).await;
-    let allowlist = load_agent_email_allowlist(pool).await?;
-    Ok(AgentEmailConfig {
+    // The raw value, not a trimmed or parsed one: an invalid saved allowlist
+    // must reach the form verbatim so the owner can see and repair it.
+    let allowlist = ravenbot_db::queries::AppSettingsQueries::get(
+        pool,
+        ravenbot_core::email::ALLOWLIST_SETTING_KEY,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    .unwrap_or_default();
+    Ok(AgentEmailSettings {
         host,
         port,
         security,
@@ -3874,16 +3895,36 @@ async fn load_agent_email_config(pool: &sqlx::SqlitePool) -> Result<AgentEmailCo
     })
 }
 
-fn agent_email_view(config: &AgentEmailConfig) -> AgentEmailView {
+async fn load_agent_email_config(pool: &sqlx::SqlitePool) -> Result<AgentEmailConfig, String> {
+    let settings = load_agent_email_settings(pool).await?;
+    let allowlist =
+        ravenbot_core::email::validate_allowlist(&settings.allowlist).map_err(|error| {
+            format!("The saved email allowlist is invalid. Fix it in Settings → Mail: {error}")
+        })?;
+    Ok(AgentEmailConfig {
+        host: settings.host,
+        port: settings.port,
+        security: settings.security,
+        username: settings.username,
+        password: settings.password,
+        from: settings.from,
+        allowlist,
+    })
+}
+
+/// The owner-facing view never validates the allowlist. It reports whether the
+/// saved value parses so the form can warn and still let the owner save a fix.
+fn agent_email_view(settings: &AgentEmailSettings) -> AgentEmailView {
     AgentEmailView {
-        configured: !config.host.is_empty() && !config.from.is_empty(),
-        host: config.host.clone(),
-        port: config.port,
-        security: config.security.clone(),
-        username: config.username.clone(),
-        from: config.from.clone(),
-        allowlist: config.allowlist.clone(),
-        has_password: config.password.is_some(),
+        configured: !settings.host.is_empty() && !settings.from.is_empty(),
+        host: settings.host.clone(),
+        port: settings.port,
+        security: settings.security.clone(),
+        username: settings.username.clone(),
+        from: settings.from.clone(),
+        allowlist: settings.allowlist.clone(),
+        allowlist_valid: ravenbot_core::email::validate_allowlist(&settings.allowlist).is_ok(),
+        has_password: settings.password.is_some(),
     }
 }
 
@@ -3983,8 +4024,8 @@ fn validate_agent_email_draft(
 
 #[tauri::command]
 async fn get_agent_email(state: State<'_, AppState>) -> Result<AgentEmailView, String> {
-    let config = load_agent_email_config(state.db.pool()).await?;
-    Ok(agent_email_view(&config))
+    let settings = load_agent_email_settings(state.db.pool()).await?;
+    Ok(agent_email_view(&settings))
 }
 
 #[derive(serde::Deserialize)]
@@ -4081,8 +4122,8 @@ async fn set_agent_email(
         None => {}
     }
 
-    let config = load_agent_email_config(pool).await?;
-    Ok(agent_email_view(&config))
+    let settings = load_agent_email_settings(pool).await?;
+    Ok(agent_email_view(&settings))
 }
 
 #[tauri::command]
@@ -28142,6 +28183,59 @@ mod agent_email_tests {
         assert!(normalize_email_security("ssl").is_err());
         assert!(parse_email_address("agent@example.test", "sender").is_ok());
         assert!(parse_email_address("not-an-address", "sender").is_err());
+    }
+
+    #[tokio::test]
+    async fn an_invalid_saved_allowlist_loads_for_repair_and_still_fails_closed() {
+        let path =
+            std::env::temp_dir().join(format!("ravenbot-agent-email-view-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("temp db");
+        for (key, value) in [
+            (AGENT_EMAIL_HOST_KEY, "smtp.example.test"),
+            (AGENT_EMAIL_FROM_KEY, "agent@example.test"),
+            (ravenbot_core::email::ALLOWLIST_SETTING_KEY, "bad domain"),
+        ] {
+            ravenbot_db::queries::AppSettingsQueries::set(db.pool(), key, value)
+                .await
+                .expect("setting");
+        }
+
+        let settings = load_agent_email_settings(db.pool())
+            .await
+            .expect("settings load");
+        let view = agent_email_view(&settings);
+        assert_eq!(
+            view.allowlist, "bad domain",
+            "the raw value must reach the form"
+        );
+        assert!(!view.allowlist_valid);
+        assert!(view.configured, "the account is still configured");
+        assert!(
+            load_agent_email_config(db.pool()).await.is_err(),
+            "send/test paths must keep failing closed on the invalid allowlist"
+        );
+
+        let repaired = ravenbot_core::email::validate_allowlist("example.com")
+            .expect("valid allowlist")
+            .join(", ");
+        ravenbot_db::queries::AppSettingsQueries::set(
+            db.pool(),
+            ravenbot_core::email::ALLOWLIST_SETTING_KEY,
+            &repaired,
+        )
+        .await
+        .expect("repair");
+        let settings = load_agent_email_settings(db.pool())
+            .await
+            .expect("repaired load");
+        let view = agent_email_view(&settings);
+        assert!(view.allowlist_valid);
+        assert_eq!(view.allowlist, "example.com");
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(format!("{}-wal", path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", path.display()));
     }
 
     #[test]

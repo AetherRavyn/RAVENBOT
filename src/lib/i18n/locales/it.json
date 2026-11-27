@@ -3137,7 +3137,7 @@
     "close": "Chiudi",
     "galleryNote": "Galleria inclusa. Nessun download né immagini remote."
   },
-  "mail":   {
+  "mail": {
     "nav": "Posta",
     "title": "Email dell’agente",
     "description": "Rivedi le bozze create dagli agenti e inviale tu stesso. RAVENBOT non invia mai una bozza da solo.",
@@ -3188,6 +3188,8 @@
     "saveDraft": "Salva modifiche",
     "loadError": "Impossibile caricare Posta.",
     "advancedHint": "Le bozze sono solo testo semplice. Allegati, HTML e formattazione avanzata non sono supportati.",
-    "noInbound": "Non c’è una casella di posta. RAVENBOT non scarica, legge o risponde alle email in arrivo e non esiste una connessione IMAP."
+    "noInbound": "Non c’è una casella di posta. RAVENBOT non scarica, legge o risponde alle email in arrivo e non esiste una connessione IMAP.",
+    "allowlistInvalid": "La lista salvata non è valida. Correggila e salva per ripararla.",
+    "saveBeforeSend": "Salva le modifiche prima di inviare. Viene inviata la bozza salvata."
   }
 }

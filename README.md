@@ -416,11 +416,11 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 251 Tauri library tests
+- **1,100+ Rust tests** across the workspace, including 252 Tauri library tests
   plus 7 cross-tenant isolation tests, 246 runtime tests, 215 skill tests, 117
   database tests, 79 core tests, 39 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **953 frontend tests** across 138 files. A gate rejects literal English
+- **955 frontend tests** across 138 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
@@ -480,7 +480,9 @@ limitations rather than finished features:
   `email_send` tool, no auto-send, no inbound mail/IMAP, no attachments or HTML,
   and no provider OAuth. The password is keychain-backed, an address/domain
   allowlist is enforced at draft time, and a send audits only the draft id and
-  recipient count. See [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md).
+  recipient count. An invalid saved allowlist still loads in Mail for repair;
+  sending stays blocked until it is fixed. See
+  [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md).
 - **No first-party telemetry.** Provider calls, an optional OIDC IdP, configured
   MCP servers, optional remote alerts, an optional SCIM IdP, an optional agent
   SMTP account, and the opt-in enterprise export are the only outbound traffic

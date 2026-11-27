@@ -3137,7 +3137,7 @@
     "close": "Kapat",
     "galleryNote": "Yerleşik galeri. İndirme veya uzak görsel yok."
   },
-  "mail":   {
+  "mail": {
     "nav": "Posta",
     "title": "Aracı e-postası",
     "description": "Aracıların oluşturduğu taslakları inceleyin ve kendiniz gönderin. RAVENBOT bir taslağı asla kendi başına göndermez.",
@@ -3188,6 +3188,8 @@
     "saveDraft": "Değişiklikleri kaydet",
     "loadError": "Posta yüklenemedi.",
     "advancedHint": "Taslaklar yalnızca düz metindir. Ekler, HTML ve zengin biçimlendirme desteklenmez.",
-    "noInbound": "Gelen kutusu yoktur. RAVENBOT gelen postayı almaz, okumaz veya yanıtlamaz ve IMAP bağlantısı yoktur."
+    "noInbound": "Gelen kutusu yoktur. RAVENBOT gelen postayı almaz, okumaz veya yanıtlamaz ve IMAP bağlantısı yoktur.",
+    "allowlistInvalid": "Kayıtlı liste geçersiz. Düzeltip kaydedin.",
+    "saveBeforeSend": "Göndermeden önce değişikliklerinizi kaydedin. Kayıtlı taslak gönderilir."
   }
 }
