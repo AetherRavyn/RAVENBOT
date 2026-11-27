@@ -22258,6 +22258,8 @@ struct RemoteStatus {
     /// this boolean; the desktop owner also gets the non-secret summary.
     sso_enabled: bool,
     sso: Option<ravenbot_remote::SsoConfig>,
+    /// Saved SCIM configuration plus whether the running listener loaded it.
+    scim: ravenbot_remote::RemoteScimStatus,
     devices: Vec<ravenbot_db::queries::RemoteDevice>,
     audit: Vec<ravenbot_db::queries::RemoteAuditEntry>,
 }
@@ -22312,6 +22314,40 @@ async fn saved_remote_sso(pool: &sqlx::SqlitePool) -> Option<ravenbot_remote::Ss
             username_claim.trim().to_string()
         },
     })
+}
+
+/// Normalize a saved SCIM role for display. An unknown value falls back to the
+/// safe default; it never widens a grant.
+fn scim_role_or_default(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "operator" => "operator".to_string(),
+        "viewer" => "viewer".to_string(),
+        _ => ravenbot_remote::ScimConfig::DEFAULT_ROLE.to_string(),
+    }
+}
+
+/// The saved SCIM values, independent of whether they validate. The owner's
+/// form must survive a disabled flag or a malformed saved hash.
+async fn saved_remote_scim(pool: &sqlx::SqlitePool) -> ravenbot_remote::RemoteScimStatus {
+    let enabled = ravenbot_db::queries::AppSettingsQueries::get(pool, "remote_scim_enabled")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    let default_role =
+        scim_role_or_default(&remote_sso_setting(pool, "remote_scim_default_role").await);
+    let token_hash = remote_sso_setting(pool, "remote_scim_token_hash").await;
+    let last_used_at = remote_sso_setting(pool, "remote_scim_last_used_at")
+        .await
+        .trim()
+        .to_string();
+    ravenbot_remote::RemoteScimStatus {
+        enabled,
+        active: false,
+        token_configured: !token_hash.trim().is_empty(),
+        default_role,
+        last_used_at: (!last_used_at.is_empty()).then_some(last_used_at),
+    }
 }
 
 async fn remote_config_from_settings(pool: &sqlx::SqlitePool) -> ravenbot_remote::RemoteConfig {
@@ -22380,6 +22416,32 @@ async fn remote_config_from_settings(pool: &sqlx::SqlitePool) -> ravenbot_remote
     } else {
         None
     };
+    let scim_enabled = ravenbot_db::queries::AppSettingsQueries::get(pool, "remote_scim_enabled")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    let scim = if scim_enabled {
+        let token_hash = remote_sso_setting(pool, "remote_scim_token_hash").await;
+        let saved_role = remote_sso_setting(pool, "remote_scim_default_role").await;
+        let saved_role = saved_role.trim().to_ascii_lowercase();
+        let default_role = if saved_role.is_empty() {
+            ravenbot_remote::ScimConfig::DEFAULT_ROLE.to_string()
+        } else {
+            saved_role
+        };
+        match ravenbot_remote::ScimConfig::new(&token_hash, &default_role) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                // A malformed saved hash or role disables SCIM with a warning;
+                // it must never stop the listener or fall back to no auth.
+                tracing::warn!(%error, "Invalid remote SCIM settings; SCIM is disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
     ravenbot_remote::RemoteConfig {
         port: if port < 1024 {
             ravenbot_remote::DEFAULT_PORT
@@ -22390,6 +22452,7 @@ async fn remote_config_from_settings(pool: &sqlx::SqlitePool) -> ravenbot_remote
         tls,
         tls_dir: None,
         sso,
+        scim,
     }
 }
 
@@ -22476,6 +22539,8 @@ async fn remote_status(state: &AppState) -> Result<RemoteStatus, String> {
     // owner needs to see what is stored in order to correct it; `sso_enabled`
     // distinguishes a live configuration from a saved one.
     let sso = saved_remote_sso(state.db.pool()).await;
+    let mut scim = saved_remote_scim(state.db.pool()).await;
+    scim.active = running && config.scim.is_some();
     Ok(RemoteStatus {
         enabled,
         running,
@@ -22489,6 +22554,7 @@ async fn remote_status(state: &AppState) -> Result<RemoteStatus, String> {
         fingerprint,
         sso_enabled: config.sso.is_some(),
         sso,
+        scim,
         devices,
         audit,
     })
@@ -22506,11 +22572,14 @@ async fn start_remote_listener(state: &AppState) -> Result<RemoteStatus, String>
         state.workspace.id.clone(),
         state.workspace.username.clone(),
     ));
-    let server = ravenbot_remote::start_with_authenticator(
+    let account_auth: Arc<dyn ravenbot_remote::AccountAuthenticator> = authenticator.clone();
+    let provisioner: Arc<dyn ravenbot_remote::AccountProvisioner> = authenticator;
+    let server = ravenbot_remote::start_with_services(
         state.db.pool().clone(),
         state.runtime.clone(),
         config,
-        Some(authenticator),
+        Some(account_auth),
+        Some(provisioner),
     )
     .await?;
     *guard = Some(server);
@@ -22541,6 +22610,7 @@ async fn configure_remote_access(
     if port != 0 && !(1024..=65535).contains(&port) {
         return Err("Choose a port between 1024 and 65535.".to_string());
     }
+    let saved = remote_config_from_settings(state.db.pool()).await;
     let config = ravenbot_remote::RemoteConfig {
         port: if port == 0 {
             ravenbot_remote::DEFAULT_PORT
@@ -22550,8 +22620,9 @@ async fn configure_remote_access(
         allow_lan,
         tls,
         tls_dir: None,
-        // Changing the listener's transport must not silently drop SSO.
-        sso: remote_config_from_settings(state.db.pool()).await.sso,
+        // Changing the listener's transport must not silently drop SSO/SCIM.
+        sso: saved.sso,
+        scim: saved.scim,
     };
     stop_remote_listener(&state).await;
     if enabled {
@@ -22629,6 +22700,85 @@ async fn configure_remote_sso(
         stop_remote_listener(&state).await;
         start_remote_listener(&state).await?;
     }
+    remote_status(&state).await
+}
+
+/// Restart a running listener so it picks up a new immutable config snapshot.
+async fn restart_remote_listener_if_running(state: &AppState) -> Result<(), String> {
+    if state.remote.lock().await.is_some() {
+        stop_remote_listener(state).await;
+        start_remote_listener(state).await?;
+    }
+    Ok(())
+}
+
+/// Owner-only SCIM configuration. Enabling requires an existing token hash;
+/// the token itself is never accepted here and never read back.
+#[tauri::command]
+async fn configure_remote_scim(
+    state: State<'_, AppState>,
+    enabled: bool,
+    default_role: String,
+) -> Result<RemoteStatus, String> {
+    let default_role = default_role.trim().to_ascii_lowercase();
+    if !matches!(default_role.as_str(), "viewer" | "operator") {
+        return Err("The SCIM default role must be viewer or operator.".to_string());
+    }
+    let token_hash = remote_sso_setting(state.db.pool(), "remote_scim_token_hash").await;
+    if enabled {
+        ravenbot_remote::ScimConfig::new(&token_hash, &default_role)
+            .map_err(|_| "Create a SCIM token before enabling SCIM.".to_string())?;
+    }
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        "remote_scim_enabled",
+        if enabled { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        "remote_scim_default_role",
+        &default_role,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    restart_remote_listener_if_running(&state).await?;
+    remote_status(&state).await
+}
+
+/// Generate the only plaintext SCIM token the desktop will ever see. Only its
+/// SHA-256 hash is saved; rotating invalidates the previous token immediately.
+#[tauri::command]
+async fn create_remote_scim_token(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
+    let token = ravenbot_remote::generate_scim_token();
+    ravenbot_db::queries::AppSettingsQueries::set(
+        state.db.pool(),
+        "remote_scim_token_hash",
+        &ravenbot_remote::hash_secret(&token),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), "remote_scim_last_used_at", "")
+        .await
+        .map_err(|error| error.to_string())?;
+    restart_remote_listener_if_running(&state).await?;
+    let status = remote_status(&state).await?;
+    Ok(serde_json::json!({ "token": token, "status": status }))
+}
+
+#[tauri::command]
+async fn revoke_remote_scim_token(state: State<'_, AppState>) -> Result<RemoteStatus, String> {
+    ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), "remote_scim_token_hash", "")
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), "remote_scim_enabled", "0")
+        .await
+        .map_err(|error| error.to_string())?;
+    ravenbot_db::queries::AppSettingsQueries::set(state.db.pool(), "remote_scim_last_used_at", "")
+        .await
+        .map_err(|error| error.to_string())?;
+    restart_remote_listener_if_running(&state).await?;
     remote_status(&state).await
 }
 
@@ -23860,6 +24010,9 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         get_remote_status,
         configure_remote_access,
         configure_remote_sso,
+        configure_remote_scim,
+        create_remote_scim_token,
+        revoke_remote_scim_token,
         start_remote_access,
         stop_remote_access,
         create_remote_pairing,
@@ -24740,6 +24893,68 @@ mod remote_sso_settings_tests {
         .expect("clear");
         assert!(remote_config_from_settings(&pool).await.sso.is_none());
         assert!(saved_remote_sso(&pool).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn scim_settings_are_saved_independently_and_invalid_values_disable_scim() {
+        use ravenbot_db::queries::AppSettingsQueries;
+
+        let pool = pool().await;
+        let hash = ravenbot_remote::hash_secret(&ravenbot_remote::generate_scim_token());
+        AppSettingsQueries::set(&pool, "remote_scim_enabled", "1")
+            .await
+            .expect("enabled");
+        AppSettingsQueries::set(&pool, "remote_scim_default_role", "operator")
+            .await
+            .expect("role");
+        AppSettingsQueries::set(&pool, "remote_scim_token_hash", &hash)
+            .await
+            .expect("hash");
+        let config = remote_config_from_settings(&pool)
+            .await
+            .scim
+            .expect("valid SCIM");
+        assert_eq!(config.default_role, "operator");
+        assert_eq!(config.token_hash, hash);
+        let status = saved_remote_scim(&pool).await;
+        assert!(status.enabled);
+        assert!(status.token_configured);
+        assert_eq!(status.default_role, "operator");
+        assert!(!status.active);
+
+        // A direct database edit bypasses the command. Loading must disable
+        // SCIM, while the saved summary still tells the owner what is stored.
+        AppSettingsQueries::set(&pool, "remote_scim_token_hash", "not-a-hash")
+            .await
+            .expect("bad hash");
+        assert!(remote_config_from_settings(&pool).await.scim.is_none());
+        let status = saved_remote_scim(&pool).await;
+        assert!(status.enabled, "the saved checkbox must stay visible");
+        assert!(status.token_configured);
+        assert_eq!(status.default_role, "operator");
+
+        AppSettingsQueries::set(&pool, "remote_scim_enabled", "0")
+            .await
+            .expect("disable");
+        assert!(remote_config_from_settings(&pool).await.scim.is_none());
+        let status = saved_remote_scim(&pool).await;
+        assert!(!status.enabled);
+        assert!(!status.active);
+        assert_eq!(status.default_role, "operator");
+
+        // An unknown saved role falls back to the safe default for display and
+        // is rejected by the validated loader.
+        AppSettingsQueries::set(&pool, "remote_scim_enabled", "1")
+            .await
+            .expect("enable");
+        AppSettingsQueries::set(&pool, "remote_scim_token_hash", &hash)
+            .await
+            .expect("hash again");
+        AppSettingsQueries::set(&pool, "remote_scim_default_role", "owner")
+            .await
+            .expect("bad role");
+        assert!(remote_config_from_settings(&pool).await.scim.is_none());
+        assert_eq!(saved_remote_scim(&pool).await.default_role, "viewer");
     }
 }
 

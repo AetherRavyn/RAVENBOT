@@ -252,8 +252,10 @@ sign in with a local RAVENBOT account, and the effective role is the lower of
 the paired role and the account's workspace grant; disabling the account or
 revoking its grant fails closed within a minute. An optional OIDC public-client
 flow (authorization code + PKCE, RS256 only) can replace the password step for
-an existing account; it never creates one. There are no shell, filesystem, or
-settings endpoints on the remote listener.
+an existing account; it never creates one. An optional SCIM 2.0 users endpoint
+can provision and soft-deprovision workspace members with a separate
+workspace-scoped bearer token and a viewer/operator default role. There are no
+shell, filesystem, or settings endpoints on the remote listener.
 
 ## Quick start
 
@@ -414,10 +416,10 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,105 Rust tests** across the workspace, including 229 Tauri library tests
+- **1,100+ Rust tests** across the workspace, including 241 Tauri library tests
   plus 7 cross-tenant isolation tests, 246 runtime tests, 210 skill tests, 110
   database tests, 74 core tests, 39 vision tests, 35 memory tests, 33 MCP
-  tests, and 20 remote-access tests.
+  tests, and 39 remote-access tests.
 - **866 frontend tests** across 129 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
@@ -462,14 +464,18 @@ limitations rather than finished features:
   PKCE with RS256 ID tokens can sign in an **existing** local account. Owners
   configure it in **Settings → Remote → Single sign-on (OIDC)**; saving does
   not contact the IdP, so the first check happens when a paired device signs in.
-  There is no SCIM, group mapping, auto-provisioning, client secret, OIDC logout
-  or account creation from the IdP. See
-  [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md).
+  There is no group mapping, auto-provisioning, client secret or OIDC logout.
+  SCIM user provisioning is a separate, off-by-default surface with its own
+  workspace-scoped token; it can create a member with only the configured
+  `viewer`/`operator` grant and never manages the owner or a shared account.
+  See [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md) and
+  [`docs/REMOTE-SCIM.md`](docs/REMOTE-SCIM.md).
 - **No first-party telemetry.** Provider calls, an optional OIDC IdP, configured
-  MCP servers, optional remote alerts, and the opt-in enterprise export are the
-  only outbound traffic the app initiates. The enterprise export sends logs
-  only; SCIM, OTLP metrics/traces, data-residency controls and a hosted relay
-  are not shipped. See [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md).
+  MCP servers, optional remote alerts, an optional SCIM IdP, and the opt-in
+  enterprise export are the only outbound traffic the app initiates. The
+  enterprise export sends logs only; SCIM Groups, OTLP metrics/traces,
+  data-residency controls and a hosted relay are not shipped. See
+  [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md).
 
 The roadmap is tracked in [`ROADMAP.md`](ROADMAP.md). The code-level audit and
 remaining trust gaps are in
@@ -486,6 +492,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/ACCOUNTS.md`](docs/ACCOUNTS.md) | Local accounts, sessions, and workspace roles |
 | [`docs/REMOTE-ACCESS.md`](docs/REMOTE-ACCESS.md) | Pairing, RBAC, and the remote listener |
 | [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md) | OIDC single sign-on: flow, configuration, account mapping, audit, limits |
+| [`docs/REMOTE-SCIM.md`](docs/REMOTE-SCIM.md) | SCIM 2.0 users: token lifecycle, default role, tenant isolation, soft deprovision, limits |
 | [`docs/SERVICE.md`](docs/SERVICE.md) | systemd, launchd, and Windows logon service |
 | [`docs/RELEASE.md`](docs/RELEASE.md) | Signing, notarization, updater, checksums and SBOM |
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |

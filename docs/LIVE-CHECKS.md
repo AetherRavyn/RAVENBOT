@@ -214,8 +214,60 @@ Use a test workspace, a public/native OIDC client and a throwaway account.
    callback while spoofing `Host`. Confirm the `Location` origin follows the
    configured URL, not `Host`.
 10. Record the provider, issuer, claim, account roles, audit rows and the
-    browser/OS build in the release notes. Do not claim SCIM, group mapping,
-    auto-provisioning or OIDC logout.
+    browser/OS build in the release notes. Do not claim SCIM Groups, group
+    mapping, auto-provisioning or OIDC logout.
+
+## Manual real-IdP SCIM check
+
+The SCIM suites use a loopback listener, a mock provisioner and direct
+account-registry calls. That is CI evidence, not proof against a real identity
+provider. Run this pass before calling SCIM live-verified. Use a test workspace,
+a throwaway member account and an IdP that can reach the listener (HTTPS or a
+private tunnel with a certificate the IdP trusts).
+
+1. Start remote access over HTTPS and confirm the IdP can reach
+   `https://<host>/scim/v2/Users`. A loopback-only listener is not enough.
+2. Until the desktop card ships, generate the token from the owner's dev console
+   with `await window.__TAURI__.core.invoke("create_remote_scim_token")`, then
+   call `configure_remote_scim` with `enabled: true` and
+   `defaultRole: "viewer"`. Confirm the returned token is shown once and that
+   `get_remote_status` reports `scim.enabled` and `scim.active` true but never a
+   token or hash. Restart the app and confirm the same token still works.
+3. At the IdP, create a SCIM 2.0 **Users** integration with the listener base URL
+   and bearer token. Do not enable Groups or bulk. Push one user whose
+   `userName` follows RAVENBOT's rules (3–64 characters, starts alphanumeric,
+   letters/numbers/`.`/`_`/`-`; no `@`).
+4. Confirm the user appears in Settings → Team with the configured default role,
+   not owner. Confirm a second push of the same `userName` or `externalId`
+   returns a conflict and does not create a duplicate.
+5. Confirm the new account has no usable password: attempt text login and expect
+   failure. Sign in through the separately configured OIDC SSO path and confirm
+   the account resolves to the SCIM `userName`.
+6. Rename the user at the IdP and confirm `GET`/list reflects the new name and
+   the old name is gone. Disable the user at the IdP and confirm `active: false`,
+   the member is disabled, and an existing session/device fails closed within the
+   revalidation window. Re-enable and confirm the same account returns.
+7. Delete the user at the IdP. Confirm the response is `204`, the account remains
+   present but disabled, and its data root and workspace grant are untouched.
+   Reactivate it with `PATCH` `active: true` or a `PUT` and confirm the same
+   account id and external-id mapping return. A fresh `POST` with the same
+   `userName` is expected to return `409` (duplicate by design).
+8. Confirm the workspace owner is absent from the SCIM list and that pushing the
+   owner's username returns `403` `mutability`. Confirm a SCIM token for another
+   workspace cannot see or change this workspace's members.
+9. Grant the same member to a second workspace. Confirm SCIM rename and delete
+   now return `403` `mutability` and the host-level account is unchanged.
+10. Send a wrong token (expect `401` with `WWW-Authenticate: Bearer`), then
+    disable SCIM in settings (expect `404` for every `/scim/v2` path, even with
+    the old token). Confirm `remote_audit` has `SCIM` rows for create/patch/put/
+    delete and auth failures, and that `remote_scim_last_used_at` advances on an
+    authenticated read.
+11. Confirm `/api/status` and the mobile page expose no SCIM fields and that a
+    paired-device token cannot call `/scim/v2`.
+12. Record the provider, SCIM base URL, default role, audit rows, list/filter
+    behaviour and the browser/OS build. Do not claim Groups, bulk, sort, role
+    mapping, auto-provisioning without SCIM, or live evidence for a provider you
+    did not test.
 
 ## Manual OpenBot avatar check
 

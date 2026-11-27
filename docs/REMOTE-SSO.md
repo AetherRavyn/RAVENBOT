@@ -15,8 +15,10 @@ What ships today:
 
 What deliberately does **not** ship:
 
-- SCIM, group mapping, role mapping, or auto-provisioning;
-- creating a RAVENBOT account from an IdP identity;
+- SCIM Groups, group mapping, role mapping, or auto-provisioning from an OIDC
+  claim (SCIM **Users** is a separate, off-by-default surface; see
+  [`REMOTE-SCIM.md`](REMOTE-SCIM.md));
+- creating a RAVENBOT account from an IdP identity in the SSO flow;
 - OIDC logout, back-channel logout, or provider-side session management;
 - confidential clients or client secrets;
 - a hosted SSO relay.
@@ -133,8 +135,8 @@ and before pairing. It is owner-only, like the rest of Settings. The form has:
 - scopes (default `openid profile email`) and username claim (default
   `preferred_username`);
 - a short security block explaining the public client + PKCE model, existing
-  accounts only, RS256-only ID tokens, no SCIM/auto-provisioning, and that
-  saving restarts a running listener.
+  accounts only, RS256-only ID tokens, no group/role mapping or
+  auto-provisioning, and that saving restarts a running listener.
 
 Saving validates on the host, writes the settings, updates the form from the
 returned `RemoteStatus`, and restarts a running desktop listener so the new
@@ -232,10 +234,12 @@ Nothing provider-supplied is reflected in the redirect, audit row or logs.
   workspace grant, or a role. A person must already be a member.
 - **RS256 only.** Providers that sign ID tokens with another algorithm are not
   supported. Discovery must advertise a compatible code flow and S256.
-- **No SCIM, group mapping or auto-provisioning.** Removing someone at the IdP
-  does not disable their local account; disable it in RAVENBOT or revoke its
-  workspace grant. Revoking the grant fails the device closed within the
-  existing one-minute revalidation window.
+- **No group/role mapping or auto-provisioning in the SSO flow.** Removing
+  someone at the IdP does not, through SSO alone, disable their local account;
+  disable it in RAVENBOT or revoke its workspace grant. A separately configured
+  SCIM **Users** client can soft-deprovision them (see
+  [`REMOTE-SCIM.md`](REMOTE-SCIM.md)). Revoking the grant fails the device
+  closed within the existing one-minute revalidation window.
 - **No OIDC logout or session management.** "Forget device" revokes the
   RAVENBOT device token; it does not end the IdP session.
 - **The host must reach the IdP.** Discovery, JWKS and the token endpoint are

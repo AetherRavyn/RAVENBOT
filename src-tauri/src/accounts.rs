@@ -354,6 +354,19 @@ async fn registry(base: &Path) -> Result<SqlitePool, String> {
     .execute(&pool)
     .await
     .map_err(|error| error.to_string())?;
+    // SCIM external ids are host-level, like accounts: one account can hold
+    // grants on several workspaces, and the mapping must stay stable when a
+    // workspace is disabled. The table is not a versioned workspace migration.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS scim_identities (
+            account_id TEXT PRIMARY KEY NOT NULL,
+            external_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL
+        )",
+    )
+    .execute(&pool)
+    .await
+    .map_err(|error| error.to_string())?;
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_sessions_account ON sessions(account_id)")
         .execute(&pool)
         .await
@@ -727,6 +740,7 @@ pub async fn delete_account(base: &Path, username: &str, purge: bool) -> Result<
         .execute(&pool)
         .await
         .map_err(|error| error.to_string())?;
+    delete_scim_identity(base, &account.id).await?;
     sqlx::query("DELETE FROM accounts WHERE id = ?")
         .bind(&account.id)
         .execute(&pool)
@@ -1044,9 +1058,420 @@ impl ravenbot_remote::AccountAuthenticator for RemoteAccountAuthenticator {
     }
 }
 
+async fn scim_external_id(base: &Path, account_id: &str) -> Result<Option<String>, String> {
+    let pool = registry(base).await?;
+    let external_id: Option<String> =
+        sqlx::query_scalar("SELECT external_id FROM scim_identities WHERE account_id = ?")
+            .bind(account_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    Ok(external_id)
+}
+
+async fn set_scim_identity(base: &Path, account_id: &str, external_id: &str) -> Result<(), String> {
+    let pool = registry(base).await?;
+    sqlx::query(
+        "INSERT INTO scim_identities (account_id, external_id, created_at)
+         VALUES (?, ?, ?)
+         ON CONFLICT(account_id) DO UPDATE SET external_id = excluded.external_id",
+    )
+    .bind(account_id)
+    .bind(external_id)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .execute(&pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn delete_scim_identity(base: &Path, account_id: &str) -> Result<(), String> {
+    let pool = registry(base).await?;
+    sqlx::query("DELETE FROM scim_identities WHERE account_id = ?")
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+async fn account_by_external_id(base: &Path, external_id: &str) -> Result<Option<Account>, String> {
+    let pool = registry(base).await?;
+    let account_id: Option<String> =
+        sqlx::query_scalar("SELECT account_id FROM scim_identities WHERE external_id = ?")
+            .bind(external_id)
+            .fetch_optional(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    match account_id {
+        Some(account_id) => account_by_id(base, &account_id).await,
+        None => Ok(None),
+    }
+}
+
+/// SCIM visibility is a grant, not a global account property. A disabled
+/// account still holds its grant, so it must remain visible to a re-enable.
+async fn holds_workspace_grant(
+    base: &Path,
+    workspace_id: &str,
+    account_id: &str,
+) -> Result<bool, String> {
+    let pool = registry(base).await?;
+    let found: Option<i64> = sqlx::query_scalar(
+        "SELECT 1 FROM workspace_grants WHERE workspace_id = ? AND grantee_id = ?",
+    )
+    .bind(workspace_id)
+    .bind(account_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(found.is_some())
+}
+
+/// A SCIM token is workspace-scoped, so it must not change an account another
+/// workspace also relies on. The account's own workspace is not a grant.
+async fn has_other_workspace_grant(
+    base: &Path,
+    workspace_id: &str,
+    account_id: &str,
+) -> Result<bool, String> {
+    let pool = registry(base).await?;
+    let count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM workspace_grants
+         WHERE grantee_id = ? AND workspace_id <> ?",
+    )
+    .bind(account_id)
+    .bind(workspace_id)
+    .fetch_one(&pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(count > 0)
+}
+
+fn scim_user(account: &Account, external_id: Option<String>) -> ravenbot_remote::ScimUser {
+    ravenbot_remote::ScimUser {
+        id: account.id.clone(),
+        user_name: account.username.clone(),
+        external_id,
+        active: !account.disabled,
+        created_at: account.created_at.clone(),
+    }
+}
+
+impl RemoteAccountAuthenticator {
+    /// An account is visible to this workspace's SCIM client only when it is
+    /// not the workspace owner and holds a grant on this workspace.
+    async fn visible_account(&self, account: Account) -> Result<Option<Account>, String> {
+        if account.id == self.workspace_id {
+            return Ok(None);
+        }
+        if !holds_workspace_grant(&self.base, &self.workspace_id, &account.id).await? {
+            return Ok(None);
+        }
+        Ok(Some(account))
+    }
+
+    async fn scim_user(&self, account: &Account) -> Result<ravenbot_remote::ScimUser, String> {
+        let external_id = scim_external_id(&self.base, &account.id).await?;
+        Ok(scim_user(account, external_id))
+    }
+
+    async fn rollback_created(&self, username: &str) {
+        if let Err(error) = delete_account(&self.base, username, true).await {
+            tracing::warn!(%error, account = %username, "Could not roll back a SCIM account");
+        }
+    }
+}
+
+fn provision_conflict(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("already taken") || error.contains("already exists") || error.contains("unique")
+}
+
+fn provision_owner(error: &str) -> bool {
+    error.to_ascii_lowercase().contains("owner")
+}
+
+#[async_trait::async_trait]
+impl ravenbot_remote::AccountProvisioner for RemoteAccountAuthenticator {
+    async fn list_users(&self) -> Result<Vec<ravenbot_remote::ScimUser>, String> {
+        let members = workspace_members(&self.base, &self.workspace_username).await?;
+        let pool = registry(&self.base).await?;
+        let identities: Vec<(String, String)> =
+            sqlx::query_as("SELECT account_id, external_id FROM scim_identities")
+                .fetch_all(&pool)
+                .await
+                .map_err(|error| error.to_string())?;
+        let identities: HashMap<String, String> = identities.into_iter().collect();
+        Ok(members
+            .into_iter()
+            .filter(|member| !member.owner)
+            .map(|member| ravenbot_remote::ScimUser {
+                external_id: identities.get(&member.id).cloned(),
+                id: member.id,
+                user_name: member.username,
+                active: !member.disabled,
+                created_at: member.created_at,
+            })
+            .collect())
+    }
+
+    async fn get_user(&self, id: &str) -> Result<Option<ravenbot_remote::ScimUser>, String> {
+        let Some(account) = account_by_id(&self.base, id).await? else {
+            return Ok(None);
+        };
+        match self.visible_account(account).await? {
+            Some(account) => Ok(Some(self.scim_user(&account).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn find_user(
+        &self,
+        field: ravenbot_remote::ScimFilterField,
+        value: &str,
+    ) -> Result<Option<ravenbot_remote::ScimUser>, String> {
+        let account = match field {
+            ravenbot_remote::ScimFilterField::Id => {
+                return self.get_user(value).await;
+            }
+            ravenbot_remote::ScimFilterField::UserName => {
+                account_by_username(&self.base, value).await?
+            }
+            ravenbot_remote::ScimFilterField::ExternalId => {
+                account_by_external_id(&self.base, value).await?
+            }
+        };
+        let Some(account) = account else {
+            return Ok(None);
+        };
+        match self.visible_account(account).await? {
+            Some(account) => Ok(Some(self.scim_user(&account).await?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn create_user(
+        &self,
+        user_name: &str,
+        external_id: Option<&str>,
+        active: bool,
+        role: &str,
+    ) -> Result<ravenbot_remote::ScimUser, ravenbot_remote::ProvisionError> {
+        use ravenbot_remote::ProvisionError;
+
+        let role = role.trim().to_ascii_lowercase();
+        if !matches!(role.as_str(), "viewer" | "operator") {
+            return Err(ProvisionError::Invalid(
+                "SCIM may only grant viewer or operator.".to_string(),
+            ));
+        }
+        let username = validate_username(user_name).map_err(ProvisionError::Invalid)?;
+        if username.eq_ignore_ascii_case(self.workspace_username.trim()) {
+            return Err(ProvisionError::Forbidden(
+                "The workspace owner is not SCIM-managed.".to_string(),
+            ));
+        }
+        if account_by_username(&self.base, &username)
+            .await
+            .map_err(ProvisionError::Internal)?
+            .is_some()
+        {
+            return Err(ProvisionError::Conflict(
+                "That username already exists.".to_string(),
+            ));
+        }
+        if let Some(external_id) = external_id.filter(|value| !value.trim().is_empty()) {
+            if account_by_external_id(&self.base, external_id.trim())
+                .await
+                .map_err(ProvisionError::Internal)?
+                .is_some()
+            {
+                return Err(ProvisionError::Conflict(
+                    "That external id already exists.".to_string(),
+                ));
+            }
+        }
+
+        // A random password keeps the password hash path valid while ensuring
+        // no usable text/password login exists until an owner sets one. It is
+        // never returned, logged or persisted in plaintext.
+        let password = new_token();
+        let member = match add_workspace_member(
+            &self.base,
+            &self.workspace_username,
+            &username,
+            Some(&password),
+            &role,
+        )
+        .await
+        {
+            Ok(member) => member,
+            Err(error) if provision_conflict(&error) => {
+                return Err(ProvisionError::Conflict(
+                    "That username already exists.".to_string(),
+                ))
+            }
+            Err(error) if provision_owner(&error) => {
+                return Err(ProvisionError::Forbidden(
+                    "The workspace owner is not SCIM-managed.".to_string(),
+                ))
+            }
+            Err(error) => return Err(ProvisionError::Internal(error)),
+        };
+
+        if let Some(external_id) = external_id.filter(|value| !value.trim().is_empty()) {
+            if let Err(error) = set_scim_identity(&self.base, &member.id, external_id.trim()).await
+            {
+                self.rollback_created(&username).await;
+                if provision_conflict(&error) {
+                    return Err(ProvisionError::Conflict(
+                        "That external id already exists.".to_string(),
+                    ));
+                }
+                return Err(ProvisionError::Internal(error));
+            }
+        }
+        if !active {
+            if let Err(error) = set_disabled(&self.base, &username, true).await {
+                self.rollback_created(&username).await;
+                return Err(ProvisionError::Internal(error));
+            }
+        }
+        Ok(ravenbot_remote::ScimUser {
+            id: member.id,
+            user_name: member.username,
+            external_id: external_id
+                .filter(|value| !value.trim().is_empty())
+                .map(|value| value.trim().to_string()),
+            active,
+            created_at: member.created_at,
+        })
+    }
+
+    async fn set_active(
+        &self,
+        id: &str,
+        active: bool,
+    ) -> Result<ravenbot_remote::ScimUser, ravenbot_remote::ProvisionError> {
+        use ravenbot_remote::ProvisionError;
+
+        let Some(account) = account_by_id(&self.base, id)
+            .await
+            .map_err(ProvisionError::Internal)?
+        else {
+            return Err(ProvisionError::Invalid("No such user.".to_string()));
+        };
+        if account.id == self.workspace_id {
+            return Err(ProvisionError::Forbidden(
+                "The workspace owner is not SCIM-managed.".to_string(),
+            ));
+        }
+        if !holds_workspace_grant(&self.base, &self.workspace_id, &account.id)
+            .await
+            .map_err(ProvisionError::Internal)?
+        {
+            return Err(ProvisionError::Conflict(
+                "That account is not a member of this workspace.".to_string(),
+            ));
+        }
+        // Disabling or re-enabling is a host-level account change. A SCIM
+        // token for one workspace must not pull the rug from under another.
+        if has_other_workspace_grant(&self.base, &self.workspace_id, &account.id)
+            .await
+            .map_err(ProvisionError::Internal)?
+        {
+            return Err(ProvisionError::Forbidden(
+                "That account is shared with another workspace.".to_string(),
+            ));
+        }
+        if let Err(error) = set_disabled(&self.base, &account.username, !active).await {
+            return Err(if provision_owner(&error) {
+                ProvisionError::Forbidden("The workspace owner is not SCIM-managed.".to_string())
+            } else {
+                ProvisionError::Internal(error)
+            });
+        }
+        if !active {
+            // `set_disabled` already does this; keep the explicit call so a
+            // future change to that helper cannot silently leave sessions live.
+            if let Err(error) = revoke_account_sessions(&self.base, &account.id).await {
+                return Err(ProvisionError::Internal(error));
+            }
+        }
+        let account = account_by_id(&self.base, id)
+            .await
+            .map_err(ProvisionError::Internal)?
+            .ok_or_else(|| ProvisionError::Internal("The account disappeared.".to_string()))?;
+        self.scim_user(&account)
+            .await
+            .map_err(ProvisionError::Internal)
+    }
+
+    async fn rename(
+        &self,
+        id: &str,
+        user_name: &str,
+    ) -> Result<ravenbot_remote::ScimUser, ravenbot_remote::ProvisionError> {
+        use ravenbot_remote::ProvisionError;
+
+        let username = validate_username(user_name).map_err(ProvisionError::Invalid)?;
+        let Some(account) = account_by_id(&self.base, id)
+            .await
+            .map_err(ProvisionError::Internal)?
+        else {
+            return Err(ProvisionError::Invalid("No such user.".to_string()));
+        };
+        if account.id == self.workspace_id {
+            return Err(ProvisionError::Forbidden(
+                "The workspace owner is not SCIM-managed.".to_string(),
+            ));
+        }
+        if !holds_workspace_grant(&self.base, &self.workspace_id, &account.id)
+            .await
+            .map_err(ProvisionError::Internal)?
+        {
+            return Err(ProvisionError::Conflict(
+                "That account is not a member of this workspace.".to_string(),
+            ));
+        }
+        if has_other_workspace_grant(&self.base, &self.workspace_id, &account.id)
+            .await
+            .map_err(ProvisionError::Internal)?
+        {
+            return Err(ProvisionError::Forbidden(
+                "That account is shared with another workspace.".to_string(),
+            ));
+        }
+        if username.eq_ignore_ascii_case(self.workspace_username.trim()) {
+            return Err(ProvisionError::Forbidden(
+                "A member cannot take the workspace owner's name.".to_string(),
+            ));
+        }
+        let updated = match rename_account(&self.base, &account.username, &username).await {
+            Ok(updated) => updated,
+            Err(error) if provision_conflict(&error) => {
+                return Err(ProvisionError::Conflict(
+                    "That username already exists.".to_string(),
+                ))
+            }
+            Err(error) if provision_owner(&error) => {
+                return Err(ProvisionError::Forbidden(
+                    "The workspace owner is not SCIM-managed.".to_string(),
+                ))
+            }
+            Err(error) => return Err(ProvisionError::Internal(error)),
+        };
+        self.scim_user(&updated)
+            .await
+            .map_err(ProvisionError::Internal)
+    }
+}
+
 /// A member of one workspace, as the Team panel shows them.
 #[derive(Debug, Clone, Serialize)]
 pub struct WorkspaceMember {
+    pub id: String,
     pub username: String,
     pub role: String,
     pub owner: bool,
@@ -1069,6 +1494,7 @@ pub async fn workspace_members(
         .collect();
 
     let mut members = vec![WorkspaceMember {
+        id: workspace.id.clone(),
         username: workspace.username.clone(),
         role: "owner".to_string(),
         owner: true,
@@ -1080,6 +1506,7 @@ pub async fn workspace_members(
             continue;
         };
         members.push(WorkspaceMember {
+            id: account.id.clone(),
             username: account.username.clone(),
             role,
             owner: false,
@@ -1143,6 +1570,7 @@ pub async fn add_workspace_member(
         return Err(error);
     }
     Ok(WorkspaceMember {
+        id: account.id,
         username: account.username,
         role,
         owner: false,
@@ -2130,6 +2558,322 @@ mod tests {
             .await
             .expect_err("throttled");
         assert!(error.contains("Too many"), "{error}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    async fn scim_fixture() -> (PathBuf, Account, Account) {
+        let base = temp_base();
+        let owner = create_account(&base, "owner", "correct horse battery")
+            .await
+            .expect("owner");
+        let member = add_workspace_member(
+            &base,
+            "owner",
+            "alice",
+            Some("alice password 123"),
+            "viewer",
+        )
+        .await
+        .expect("alice");
+        let account = account_by_id(&base, &member.id)
+            .await
+            .expect("lookup")
+            .expect("member");
+        (base, owner, account)
+    }
+
+    #[tokio::test]
+    async fn scim_lists_only_this_workspace_and_excludes_the_owner() {
+        use ravenbot_remote::{AccountProvisioner as _, ScimFilterField};
+
+        let (base, owner, alice) = scim_fixture().await;
+        let provisioner =
+            RemoteAccountAuthenticator::new(base.clone(), owner.id.clone(), owner.username.clone());
+        let users = provisioner.list_users().await.expect("list");
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].user_name, "alice");
+        assert_eq!(users[0].id, alice.id);
+        assert!(users[0].active);
+
+        assert!(provisioner
+            .get_user(&owner.id)
+            .await
+            .expect("owner get")
+            .is_none());
+        assert_eq!(
+            provisioner
+                .find_user(ScimFilterField::UserName, "ALICE")
+                .await
+                .expect("case-insensitive")
+                .expect("found")
+                .id,
+            alice.id
+        );
+        assert!(provisioner
+            .find_user(ScimFilterField::Id, &owner.id)
+            .await
+            .expect("owner filter")
+            .is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn scim_create_rejects_duplicates_owner_and_external_id_conflicts() {
+        use ravenbot_remote::{AccountProvisioner as _, ProvisionError};
+
+        let (base, owner, _) = scim_fixture().await;
+        let provisioner =
+            RemoteAccountAuthenticator::new(base.clone(), owner.id.clone(), owner.username.clone());
+        let created = provisioner
+            .create_user("bob", Some("ext-bob"), true, "operator")
+            .await
+            .expect("create bob");
+        assert_eq!(created.user_name, "bob");
+        assert_eq!(created.external_id.as_deref(), Some("ext-bob"));
+        assert!(created.active);
+        let grant = list_workspace_grants(&base, "owner").await.expect("grants");
+        assert!(grant
+            .iter()
+            .any(|(username, role)| username == "bob" && role == "operator"));
+        assert!(
+            account_by_username(&base, "bob")
+                .await
+                .expect("lookup")
+                .expect("bob")
+                .id
+                != owner.id
+        );
+
+        assert!(matches!(
+            provisioner.create_user("BOB", None, true, "viewer").await,
+            Err(ProvisionError::Conflict(_))
+        ));
+        assert!(matches!(
+            provisioner
+                .create_user("carol", Some("ext-bob"), true, "viewer")
+                .await,
+            Err(ProvisionError::Conflict(_))
+        ));
+        assert!(matches!(
+            provisioner.create_user("owner", None, true, "viewer").await,
+            Err(ProvisionError::Forbidden(_))
+        ));
+        assert!(matches!(
+            provisioner.create_user("dave", None, true, "owner").await,
+            Err(ProvisionError::Invalid(_))
+        ));
+        assert!(matches!(
+            provisioner.set_active(&owner.id, false).await,
+            Err(ProvisionError::Forbidden(_))
+        ));
+        assert!(matches!(
+            provisioner.rename(&owner.id, "owner2").await,
+            Err(ProvisionError::Forbidden(_))
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn scim_inactive_create_then_disable_revoke_and_rename() {
+        use ravenbot_remote::AccountProvisioner as _;
+
+        let (base, owner, alice) = scim_fixture().await;
+        let provisioner =
+            RemoteAccountAuthenticator::new(base.clone(), owner.id.clone(), owner.username.clone());
+        let bob = provisioner
+            .create_user("bob", None, false, "viewer")
+            .await
+            .expect("inactive bob");
+        assert!(!bob.active);
+        assert!(
+            account_by_username(&base, "bob")
+                .await
+                .expect("lookup")
+                .expect("bob")
+                .disabled
+        );
+
+        // A session minted before the SCIM disable must stop working.
+        let session = authenticate(&base, "alice", "alice password 123")
+            .await
+            .expect("alice session");
+        let disabled = provisioner
+            .set_active(&alice.id, false)
+            .await
+            .expect("disable alice");
+        assert!(!disabled.active);
+        assert!(validate_session(&base, &session.token)
+            .await
+            .expect("validate")
+            .is_none());
+        let reenabled = provisioner
+            .set_active(&alice.id, true)
+            .await
+            .expect("re-enable");
+        assert!(reenabled.active);
+
+        let renamed = provisioner
+            .rename(&alice.id, "alicia")
+            .await
+            .expect("rename");
+        assert_eq!(renamed.user_name, "alicia");
+        assert!(account_by_username(&base, "alice")
+            .await
+            .expect("lookup")
+            .is_none());
+        let disabled = provisioner
+            .set_active(&alice.id, false)
+            .await
+            .expect("disable again");
+        assert!(!disabled.active);
+        let reenabled = provisioner
+            .set_active(&alice.id, true)
+            .await
+            .expect("re-enable again");
+        assert!(reenabled.active);
+        assert_eq!(reenabled.user_name, "alicia");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn scim_cannot_change_an_account_shared_with_another_workspace() {
+        use ravenbot_remote::{AccountProvisioner as _, ProvisionError};
+
+        let (base, owner, alice) = scim_fixture().await;
+        let second = create_account(&base, "second-owner", "another good password")
+            .await
+            .expect("second owner");
+        grant_workspace(&base, "second-owner", "alice", "operator")
+            .await
+            .expect("second grant");
+        let provisioner =
+            RemoteAccountAuthenticator::new(base.clone(), owner.id.clone(), owner.username.clone());
+
+        assert!(matches!(
+            provisioner.set_active(&alice.id, false).await,
+            Err(ProvisionError::Forbidden(_))
+        ));
+        assert!(
+            !account_by_id(&base, &alice.id)
+                .await
+                .expect("lookup")
+                .expect("alice")
+                .disabled,
+            "a shared account must stay enabled"
+        );
+        assert!(matches!(
+            provisioner.rename(&alice.id, "alice-renamed").await,
+            Err(ProvisionError::Forbidden(_))
+        ));
+        assert!(account_by_id(&base, &alice.id)
+            .await
+            .expect("lookup")
+            .expect("alice")
+            .username
+            .eq("alice"));
+
+        // Workspace isolation is independent of sharing: the second SCIM
+        // client can see alice, but not any member unique to the first.
+        let second_client = RemoteAccountAuthenticator::new(
+            base.clone(),
+            second.id.clone(),
+            second.username.clone(),
+        );
+        let second_users = second_client.list_users().await.expect("second list");
+        assert!(second_users.iter().any(|user| user.user_name == "alice"));
+        assert!(second_client
+            .get_user(&owner.id)
+            .await
+            .expect("owner lookup")
+            .is_none());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn scim_isolation_never_exposes_another_workspaces_members() {
+        use ravenbot_remote::AccountProvisioner as _;
+
+        let (base, owner, alice) = scim_fixture().await;
+        let second = create_account(&base, "second-owner", "another good password")
+            .await
+            .expect("second owner");
+        let bob = add_workspace_member(
+            &base,
+            "second-owner",
+            "bob",
+            Some("bob password 123"),
+            "viewer",
+        )
+        .await
+        .expect("bob");
+        let first =
+            RemoteAccountAuthenticator::new(base.clone(), owner.id.clone(), owner.username.clone());
+        let users = first.list_users().await.expect("list");
+        assert!(users.iter().any(|user| user.id == alice.id));
+        assert!(!users.iter().any(|user| user.id == bob.id));
+        assert!(first.get_user(&bob.id).await.expect("bob get").is_none());
+        assert!(first.rename(&bob.id, "stolen").await.is_err());
+        assert!(second.id != owner.id);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn scim_creation_rolls_back_when_an_external_identity_is_taken() {
+        use ravenbot_remote::{AccountProvisioner as _, ProvisionError};
+
+        let (base, owner, _) = scim_fixture().await;
+        // Simulate a mapping left by a deleted account or a concurrent create:
+        // the account id does not resolve, so the pre-check passes and the
+        // UNIQUE constraint fires after the account was created.
+        let pool = registry(&base).await.expect("registry");
+        sqlx::query(
+            "INSERT INTO scim_identities (account_id, external_id, created_at)
+             VALUES ('missing-account', 'taken-ext', ?)",
+        )
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(&pool)
+        .await
+        .expect("stale identity");
+        let provisioner =
+            RemoteAccountAuthenticator::new(base.clone(), owner.id.clone(), owner.username.clone());
+        assert!(matches!(
+            provisioner
+                .create_user("ghost", Some("taken-ext"), true, "viewer")
+                .await,
+            Err(ProvisionError::Conflict(_))
+        ));
+        assert!(
+            account_by_username(&base, "ghost")
+                .await
+                .expect("lookup")
+                .is_none(),
+            "a failed create must not leave an orphan account"
+        );
+        let grants = list_workspace_grants(&base, "owner").await.expect("grants");
+        assert!(!grants.iter().any(|(username, _)| username == "ghost"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn deleting_an_account_removes_its_scim_identity() {
+        use ravenbot_remote::AccountProvisioner as _;
+
+        let (base, owner, _) = scim_fixture().await;
+        let provisioner =
+            RemoteAccountAuthenticator::new(base.clone(), owner.id.clone(), owner.username.clone());
+        let bob = provisioner
+            .create_user("bob", Some("ext-bob"), true, "viewer")
+            .await
+            .expect("create");
+        delete_account(&base, "bob", false).await.expect("delete");
+        assert!(scim_external_id(&base, &bob.id)
+            .await
+            .expect("identity")
+            .is_none());
+        assert!(account_by_external_id(&base, "ext-bob")
+            .await
+            .expect("lookup")
+            .is_none());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

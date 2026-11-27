@@ -4,6 +4,46 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Remote SCIM 2.0 user provisioning (Users only)
+
+- **Opt-in, workspace-scoped provisioning.** The remote listener can mount
+  `/scim/v2/Users` (list, get, create, patch, put, soft delete) with a separate
+  bearer token. Only the token's SHA-256 hash is stored in workspace
+  `app_settings`; the plaintext is generated in the desktop and shown once. SCIM
+  is off by default, returns `404` when disabled, and never opens the device API
+  or appears in `/api/status`.
+- **No privilege widening.** A SCIM-created member gets one grant: the
+  configured default role `viewer` or `operator`, never `owner`. Groups, claims
+  and roles from the IdP are ignored. The workspace owner is excluded from lists
+  and cannot be created, renamed, disabled or deleted through SCIM.
+- **Tenant isolation and shared-account protection.** Every list/get/filter/
+  patch/put/delete proves the account holds a grant on this workspace. An account
+  that also holds a grant on another workspace cannot be renamed or disabled by a
+  single-workspace SCIM token; the request returns `403` `mutability` and leaves
+  the host-level account intact. New accounts start with only this workspace's
+  grant because duplicate usernames are rejected.
+- **Soft deprovision.** `DELETE` sets `active: false` and revokes sessions but
+  keeps the account, grants and external-id mapping for a later reactivation
+  (`PATCH`/`PUT`). It never purges the data root. A SCIM-created account gets a random 32-byte password
+  that is never shown or logged, so text/password login is unavailable until an
+  owner sets one; the intended path is OIDC SSO or a later owner-set password.
+- **Bounded.** 600 requests/min per IP and 3000/min globally, before database
+  work; pages cap at 1000; only `userName eq`, `externalId eq` and `id eq`
+  filters are accepted; no Groups, bulk, sort or full SCIM schema validation.
+  Mutations and auth failures are audited with device name `SCIM`, and
+  authenticated requests update `remote_scim_last_used_at`.
+- **Owner-only commands already shipped for the follow-up card:**
+  `configure_remote_scim`, `create_remote_scim_token` (the one-time plaintext),
+  and `revoke_remote_scim_token`, plus a safe `RemoteStatus.scim` summary that
+  never includes the hash. The desktop card itself is not part of this slice.
+- Covered by remote-route tests with a mock provisioner (token/401/404/429,
+  filters, pagination, create/Location/conflicts/owner/inactive, get/patch/put/
+  delete idempotence, audit and last-used, device-route isolation) and
+  account-registry tests (case-insensitive usernames, external-id conflicts,
+  cross-workspace isolation, owner protection, shared-account refusal, rollback,
+  disable/revoke, re-enable and rename). A real-IdP SCIM pass remains a manual
+  release check. See [`docs/REMOTE-SCIM.md`](docs/REMOTE-SCIM.md).
+
 ### Remote single sign-on (OIDC)
 
 - **Optional SSO on the paired-device login page.** A host with a valid OIDC
@@ -17,7 +57,8 @@ All notable changes to RAVENBOT are documented here.
   `preferred_username`) is mapped case-insensitively to a local account that is
   enabled and holds a workspace grant. An unknown, disabled or grant-less
   account gets a generic `reason=account`; SSO never creates an account, role or
-  grant. There is no SCIM, group mapping or auto-provisioning.
+  grant. The SSO flow has no group mapping or auto-provisioning; SCIM Users is a
+  separate opt-in surface.
 - **Bounded and private.** Discovery/JWKS/token requests have a 10 s timeout,
   256 KiB response cap and at most two revalidated redirects; the callback is
   limited to 30/min per IP and 300/min globally, with 5 outstanding attempts per

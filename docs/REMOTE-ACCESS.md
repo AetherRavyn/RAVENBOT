@@ -180,9 +180,11 @@ access tokens and ID tokens are never stored.
   profiles or a shared-host relay.
 - Remote SSO is optional, uses existing accounts only, and supports RS256 ID
   tokens from a provider reachable by the host. Owners configure it in
-  **Settings → Remote → Single sign-on (OIDC)**. It does not add SCIM, group
-  mapping, auto-provisioning, client secrets or OIDC logout. Saving does not
-  contact the provider; the first check happens when a paired device signs in.
+  **Settings → Remote → Single sign-on (OIDC)**. It does not add SCIM Groups,
+  group mapping, auto-provisioning, client secrets or OIDC logout. SCIM 2.0
+  **Users** is a separate, off-by-default surface with its own token; see
+  [`REMOTE-SCIM.md`](REMOTE-SCIM.md). Saving SSO does not contact the provider;
+  the first check happens when a paired device signs in.
 - No WebSocket/SSE streaming yet; the mobile page polls.
 - No attachment upload, voice capture, or settings management over the API.
 - The self-signed certificate is generated locally; there is no ACME/Let's

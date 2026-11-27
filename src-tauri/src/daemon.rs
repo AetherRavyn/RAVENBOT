@@ -75,7 +75,7 @@ pub async fn run() -> Result<(), String> {
     // daemon runs for an account workspace, remote devices must sign in with a
     // local account too; a legacy single-user daemon keeps device-role-only
     // behavior because it has no workspace identity.
-    let authenticator: Option<Arc<dyn ravenbot_remote::AccountAuthenticator>> =
+    let account_registry: Option<Arc<crate::accounts::RemoteAccountAuthenticator>> =
         match std::env::var("RAVENBOT_WORKSPACE_ID")
             .ok()
             .map(|value| value.trim().to_string())
@@ -97,14 +97,20 @@ pub async fn run() -> Result<(), String> {
             }
             None => None,
         };
+    let authenticator: Option<Arc<dyn ravenbot_remote::AccountAuthenticator>> = account_registry
+        .clone()
+        .map(|registry| registry as Arc<dyn ravenbot_remote::AccountAuthenticator>);
+    let provisioner: Option<Arc<dyn ravenbot_remote::AccountProvisioner>> =
+        account_registry.map(|registry| registry as Arc<dyn ravenbot_remote::AccountProvisioner>);
 
     let remote = if remote_enabled_setting(db.pool()).await {
         let config = remote_config_from_settings(db.pool()).await;
-        match ravenbot_remote::start_with_authenticator(
+        match ravenbot_remote::start_with_services(
             db.pool().clone(),
             runtime.clone(),
             config,
             authenticator,
+            provisioner,
         )
         .await
         {

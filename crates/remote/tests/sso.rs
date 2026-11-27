@@ -416,6 +416,7 @@ async fn start_harness(
         tls: false,
         tls_dir: None,
         sso,
+        scim: None,
     };
     let db = ravenbot_db::Database::from_pool(pool.clone());
     let runtime = Arc::new(ravenbot_runtime::Runtime::new(db));

@@ -254,6 +254,19 @@ mod tests {
     }
 
     #[test]
+    fn remote_scim_configuration_and_tokens_are_owner_only() {
+        for command in [
+            "configure_remote_scim",
+            "create_remote_scim_token",
+            "revoke_remote_scim_token",
+        ] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(!role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
+    }
+
+    #[test]
     fn an_unknown_role_is_denied() {
         assert!(!role_allows("guest", "list_messages"));
     }

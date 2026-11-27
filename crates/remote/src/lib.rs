@@ -47,6 +47,7 @@ use ravenbot_db::queries::{
 };
 use ravenbot_runtime::Runtime;
 
+mod scim;
 mod sso;
 pub use sso::SsoConfig;
 
@@ -62,6 +63,13 @@ const MAX_GLOBAL_LOGIN_ATTEMPTS_PER_MINUTE: usize = 30;
 /// keeps a spray from filling the database or the provider's logs.
 const MAX_SSO_CALLBACKS_PER_MINUTE: usize = 30;
 const MAX_GLOBAL_SSO_CALLBACKS_PER_MINUTE: usize = 300;
+/// SCIM is a machine-to-machine surface: a directory sync can burst, so the
+/// per-IP cap is generous but not unbounded. The global cap keeps one IdP from
+/// crowding out the mobile API.
+const MAX_SCIM_REQUESTS_PER_MINUTE: usize = 600;
+const MAX_GLOBAL_SCIM_REQUESTS_PER_MINUTE: usize = 3_000;
+/// No SCIM list is allowed to materialise an unbounded result set.
+pub const SCIM_MAX_RESULTS: usize = 1_000;
 /// Bounds how long a revoked account can keep using a device. Revalidation is
 /// cheap but goes to the account registry, so it is not done per poll.
 const ACCOUNT_REVALIDATE_INTERVAL: Duration = Duration::from_secs(60);
@@ -140,6 +148,140 @@ impl RemoteRole {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScimConfig {
+    /// SHA-256 hex of the bearer token. The plaintext exists only in the
+    /// desktop command response that generated it.
+    pub token_hash: String,
+    /// The only role SCIM may grant. Never `owner`.
+    pub default_role: String,
+}
+
+impl ScimConfig {
+    pub const DEFAULT_ROLE: &'static str = "viewer";
+
+    /// Validate and normalize a saved configuration. Roles are lowercase and
+    /// limited to `viewer`/`operator`; the hash must be a full SHA-256 hex.
+    pub fn new(token_hash: &str, default_role: &str) -> Result<Self, String> {
+        let default_role = default_role.trim().to_ascii_lowercase();
+        let config = Self {
+            token_hash: token_hash.trim().to_ascii_lowercase(),
+            default_role: if default_role.is_empty() {
+                Self::DEFAULT_ROLE.to_string()
+            } else {
+                default_role
+            },
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.token_hash.len() != 64 || !self.token_hash.chars().all(|ch| ch.is_ascii_hexdigit())
+        {
+            return Err("The SCIM token hash must be 64 hexadecimal characters.".to_string());
+        }
+        if !matches!(self.default_role.as_str(), "viewer" | "operator") {
+            return Err("The SCIM default role must be viewer or operator.".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn default_role(&self) -> &str {
+        &self.default_role
+    }
+}
+
+/// A safe, non-secret summary for the owner's settings card. It never contains
+/// the token or its hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RemoteScimStatus {
+    /// The saved checkbox, independent of whether it validates.
+    pub enabled: bool,
+    /// True only when the running listener loaded a valid configuration.
+    pub active: bool,
+    pub token_configured: bool,
+    pub default_role: String,
+    pub last_used_at: Option<String>,
+}
+
+impl Default for RemoteScimStatus {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            active: false,
+            token_configured: false,
+            default_role: ScimConfig::DEFAULT_ROLE.to_string(),
+            last_used_at: None,
+        }
+    }
+}
+
+/// A user as SCIM sees it. Only the core attributes RAVENBOT can honour are
+/// exposed; emails, groups, phone numbers and passwords are deliberately absent.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ScimUser {
+    pub id: String,
+    pub user_name: String,
+    pub external_id: Option<String>,
+    pub active: bool,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProvisionError {
+    Conflict(String),
+    Invalid(String),
+    Forbidden(String),
+    Internal(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScimFilterField {
+    Id,
+    UserName,
+    ExternalId,
+}
+
+/// The account-registry write path used by SCIM.
+///
+/// This is deliberately separate from `AccountAuthenticator`: sign-in and
+/// provisioning have different failure semantics, and SCIM must stay opt-in.
+/// Every method is scoped to the workspace the implementation was built for.
+#[async_trait::async_trait]
+pub trait AccountProvisioner: Send + Sync {
+    async fn list_users(&self) -> Result<Vec<ScimUser>, String>;
+
+    async fn get_user(&self, id: &str) -> Result<Option<ScimUser>, String>;
+
+    async fn find_user(
+        &self,
+        field: ScimFilterField,
+        value: &str,
+    ) -> Result<Option<ScimUser>, String>;
+
+    async fn create_user(
+        &self,
+        user_name: &str,
+        external_id: Option<&str>,
+        active: bool,
+        role: &str,
+    ) -> Result<ScimUser, ProvisionError>;
+
+    async fn set_active(&self, id: &str, active: bool) -> Result<ScimUser, ProvisionError>;
+
+    async fn rename(&self, id: &str, user_name: &str) -> Result<ScimUser, ProvisionError>;
+}
+
+/// Generate a 32-byte bearer token as 64 hex characters. The caller returns it
+/// once and persists only its hash.
+pub fn generate_scim_token() -> String {
+    use rand::RngCore;
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteConfig {
     pub port: u16,
     /// Bind `0.0.0.0` instead of loopback. The UI warns about cleartext LAN
@@ -157,6 +299,9 @@ pub struct RemoteConfig {
     /// username/password form as the only account path.
     #[serde(default)]
     pub sso: Option<SsoConfig>,
+    /// SCIM 2.0 user provisioning. `None` disables every `/scim/v2` route.
+    #[serde(default)]
+    pub scim: Option<ScimConfig>,
 }
 
 impl Default for RemoteConfig {
@@ -167,6 +312,7 @@ impl Default for RemoteConfig {
             tls: false,
             tls_dir: None,
             sso: None,
+            scim: None,
         }
     }
 }
@@ -506,6 +652,22 @@ pub async fn start_with_authenticator(
     config: RemoteConfig,
     authenticator: Option<Arc<dyn AccountAuthenticator>>,
 ) -> Result<RemoteServer, String> {
+    start_with_services(pool, runtime, config, authenticator, None).await
+}
+
+/// Start the listener with optional account sign-in and SCIM provisioning.
+///
+/// Both services are optional and fail closed: an invalid saved configuration
+/// disables that feature with a warning but never stops the listener. SCIM
+/// without a provisioner is unusable, so it is disabled rather than mounted as
+/// a route that always returns 500.
+pub async fn start_with_services(
+    pool: SqlitePool,
+    runtime: Arc<Runtime>,
+    config: RemoteConfig,
+    authenticator: Option<Arc<dyn AccountAuthenticator>>,
+    provisioner: Option<Arc<dyn AccountProvisioner>>,
+) -> Result<RemoteServer, String> {
     // Bound the pairing, audit and SSO attempt tables before the listener
     // accepts traffic.
     if let Err(error) = RemoteAccessQueries::prune(&pool).await {
@@ -533,11 +695,27 @@ pub async fn start_with_authenticator(
         },
         None => None,
     };
-    let state = Arc::new(RemoteState::new_with_authenticator(
+    let scim = match config.scim.clone() {
+        Some(config) => match (config.validate(), provisioner.is_some()) {
+            (Ok(()), true) => Some(config),
+            (Ok(()), false) => {
+                tracing::warn!("Remote SCIM is configured without an account provisioner");
+                None
+            }
+            (Err(error), _) => {
+                tracing::warn!(%error, "Invalid remote SCIM settings; SCIM is disabled");
+                None
+            }
+        },
+        None => None,
+    };
+    let state = Arc::new(RemoteState::new_with_services(
         pool,
         runtime,
         authenticator,
         sso,
+        scim,
+        provisioner,
     ));
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -619,6 +797,10 @@ pub struct RemoteState {
     pool: SqlitePool,
     runtime: Arc<Runtime>,
     authenticator: Option<Arc<dyn AccountAuthenticator>>,
+    provisioner: Option<Arc<dyn AccountProvisioner>>,
+    /// A validated, active SCIM configuration. `None` means every SCIM route
+    /// returns 404, including with a token.
+    scim: Option<ScimConfig>,
     sso: Option<ActiveSso>,
     pairing_attempts: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
     global_pairing_attempts: Mutex<VecDeque<Instant>>,
@@ -626,6 +808,8 @@ pub struct RemoteState {
     global_login_attempts: Mutex<VecDeque<Instant>>,
     sso_attempts: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
     global_sso_attempts: Mutex<VecDeque<Instant>>,
+    scim_attempts: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    global_scim_attempts: Mutex<VecDeque<Instant>>,
     grants: Mutex<HashMap<String, CachedGrant>>,
     last_touch: Mutex<HashMap<String, Instant>>,
 }
@@ -633,14 +817,26 @@ pub struct RemoteState {
 impl RemoteState {
     #[cfg(test)]
     fn new(pool: SqlitePool, runtime: Arc<Runtime>) -> Self {
-        Self::new_with_authenticator(pool, runtime, None, None)
+        Self::new_with_services(pool, runtime, None, None, None, None)
     }
 
+    #[cfg(test)]
     fn new_with_authenticator(
         pool: SqlitePool,
         runtime: Arc<Runtime>,
         authenticator: Option<Arc<dyn AccountAuthenticator>>,
         sso: Option<SsoConfig>,
+    ) -> Self {
+        Self::new_with_services(pool, runtime, authenticator, sso, None, None)
+    }
+
+    fn new_with_services(
+        pool: SqlitePool,
+        runtime: Arc<Runtime>,
+        authenticator: Option<Arc<dyn AccountAuthenticator>>,
+        sso: Option<SsoConfig>,
+        scim: Option<ScimConfig>,
+        provisioner: Option<Arc<dyn AccountProvisioner>>,
     ) -> Self {
         let sso = sso.and_then(|config| match sso::http_client() {
             Ok(client) => Some(ActiveSso { config, client }),
@@ -653,6 +849,8 @@ impl RemoteState {
             pool,
             runtime,
             authenticator,
+            provisioner,
+            scim,
             sso,
             pairing_attempts: Mutex::new(HashMap::new()),
             global_pairing_attempts: Mutex::new(VecDeque::new()),
@@ -660,6 +858,8 @@ impl RemoteState {
             global_login_attempts: Mutex::new(VecDeque::new()),
             sso_attempts: Mutex::new(HashMap::new()),
             global_sso_attempts: Mutex::new(VecDeque::new()),
+            scim_attempts: Mutex::new(HashMap::new()),
+            global_scim_attempts: Mutex::new(VecDeque::new()),
             grants: Mutex::new(HashMap::new()),
             last_touch: Mutex::new(HashMap::new()),
         }
@@ -692,6 +892,16 @@ impl RemoteState {
             ip,
             MAX_SSO_CALLBACKS_PER_MINUTE,
             MAX_GLOBAL_SSO_CALLBACKS_PER_MINUTE,
+        )
+    }
+
+    fn scim_allowed(&self, ip: IpAddr) -> bool {
+        rate_limit_allowed(
+            &self.scim_attempts,
+            &self.global_scim_attempts,
+            ip,
+            MAX_SCIM_REQUESTS_PER_MINUTE,
+            MAX_GLOBAL_SCIM_REQUESTS_PER_MINUTE,
         )
     }
 
@@ -812,6 +1022,7 @@ pub fn router(state: Arc<RemoteState>) -> Router {
 
     public
         .merge(protected)
+        .merge(scim::router(state.clone()))
         .with_state(state)
         .layer(DefaultBodyLimit::max(MAX_ANSWER_BYTES))
 }
@@ -2380,6 +2591,180 @@ mod tests {
         }
     }
 
+    /// A workspace-scoped SCIM provisioner stand-in. The real implementation
+    /// lives in the desktop crate; these tests cover HTTP shape, auth, filters
+    /// and audit, not the account registry.
+    struct StubProvisioner {
+        owner: String,
+        users: Mutex<Vec<ScimUser>>,
+        next_id: std::sync::atomic::AtomicUsize,
+    }
+
+    impl StubProvisioner {
+        fn new(owner: &str) -> Self {
+            Self {
+                owner: owner.to_string(),
+                users: Mutex::new(Vec::new()),
+                next_id: std::sync::atomic::AtomicUsize::new(1),
+            }
+        }
+
+        fn users(&self) -> std::sync::MutexGuard<'_, Vec<ScimUser>> {
+            self.users.lock().expect("users lock")
+        }
+
+        fn next_id(&self) -> String {
+            format!(
+                "scim-{}",
+                self.next_id
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            )
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl AccountProvisioner for StubProvisioner {
+        async fn list_users(&self) -> Result<Vec<ScimUser>, String> {
+            Ok(self.users().clone())
+        }
+
+        async fn get_user(&self, id: &str) -> Result<Option<ScimUser>, String> {
+            Ok(self.users().iter().find(|user| user.id == id).cloned())
+        }
+
+        async fn find_user(
+            &self,
+            field: ScimFilterField,
+            value: &str,
+        ) -> Result<Option<ScimUser>, String> {
+            Ok(self
+                .users()
+                .iter()
+                .find(|user| match field {
+                    ScimFilterField::Id => user.id == value,
+                    ScimFilterField::UserName => user.user_name.eq_ignore_ascii_case(value),
+                    ScimFilterField::ExternalId => user.external_id.as_deref() == Some(value),
+                })
+                .cloned())
+        }
+
+        async fn create_user(
+            &self,
+            user_name: &str,
+            external_id: Option<&str>,
+            active: bool,
+            _role: &str,
+        ) -> Result<ScimUser, ProvisionError> {
+            if user_name.eq_ignore_ascii_case(&self.owner) {
+                return Err(ProvisionError::Forbidden("owner".to_string()));
+            }
+            let mut users = self.users();
+            if users
+                .iter()
+                .any(|user| user.user_name.eq_ignore_ascii_case(user_name))
+                || external_id.is_some_and(|external_id| {
+                    users
+                        .iter()
+                        .any(|user| user.external_id.as_deref() == Some(external_id))
+                })
+            {
+                return Err(ProvisionError::Conflict("duplicate".to_string()));
+            }
+            let user = ScimUser {
+                id: self.next_id(),
+                user_name: user_name.to_string(),
+                external_id: external_id.map(str::to_string),
+                active,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            };
+            users.push(user.clone());
+            Ok(user)
+        }
+
+        async fn set_active(&self, id: &str, active: bool) -> Result<ScimUser, ProvisionError> {
+            if id == "owner-id" {
+                return Err(ProvisionError::Forbidden("owner".to_string()));
+            }
+            let mut users = self.users();
+            let user = users
+                .iter_mut()
+                .find(|user| user.id == id)
+                .ok_or_else(|| ProvisionError::Invalid("missing".to_string()))?;
+            user.active = active;
+            Ok(user.clone())
+        }
+
+        async fn rename(&self, id: &str, user_name: &str) -> Result<ScimUser, ProvisionError> {
+            if user_name.eq_ignore_ascii_case(&self.owner) {
+                return Err(ProvisionError::Forbidden("owner".to_string()));
+            }
+            let mut users = self.users();
+            if users
+                .iter()
+                .any(|user| user.id != id && user.user_name.eq_ignore_ascii_case(user_name))
+            {
+                return Err(ProvisionError::Conflict("duplicate".to_string()));
+            }
+            let user = users
+                .iter_mut()
+                .find(|user| user.id == id)
+                .ok_or_else(|| ProvisionError::Invalid("missing".to_string()))?;
+            user.user_name = user_name.to_string();
+            Ok(user.clone())
+        }
+    }
+
+    async fn scim_state() -> (Arc<RemoteState>, Arc<StubProvisioner>, String) {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        ravenbot_db::migrations::run(&pool)
+            .await
+            .expect("migrations");
+        let db = ravenbot_db::Database::from_pool(pool.clone());
+        let token = generate_scim_token();
+        let config = ScimConfig::new(&hash_secret(&token), "viewer").expect("scim config");
+        let provisioner = Arc::new(StubProvisioner::new("owner"));
+        let state = Arc::new(RemoteState::new_with_services(
+            pool,
+            Arc::new(Runtime::new(db)),
+            None,
+            None,
+            Some(config),
+            Some(provisioner.clone()),
+        ));
+        (state, provisioner, token)
+    }
+
+    fn scim_request(
+        method: &str,
+        uri: &str,
+        token: Option<&str>,
+        body: Option<serde_json::Value>,
+    ) -> HttpRequest<Body> {
+        let mut request = HttpRequest::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::CONTENT_TYPE, "application/scim+json");
+        if let Some(token) = token {
+            request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let body = match body {
+            Some(body) => Body::from(body.to_string()),
+            None => Body::empty(),
+        };
+        let mut request = request.body(body).unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(PeerAddr(SocketAddr::from((
+                [127, 0, 0, 1],
+                52000,
+            )))));
+        request
+    }
+
     async fn state_with_authenticator(
         authenticator: Arc<dyn AccountAuthenticator>,
     ) -> Arc<RemoteState> {
@@ -2629,6 +3014,27 @@ mod tests {
     }
 
     #[test]
+    fn scim_config_accepts_only_a_full_hash_and_viewer_or_operator() {
+        let hash = hash_secret(&generate_scim_token());
+        assert_eq!(generate_scim_token().len(), 64);
+        assert_eq!(
+            ScimConfig::new(&hash, "OPERATOR")
+                .expect("valid")
+                .default_role,
+            "operator"
+        );
+        assert_eq!(
+            ScimConfig::new(&hash, "")
+                .expect("default role")
+                .default_role,
+            "viewer"
+        );
+        assert!(ScimConfig::new("short", "viewer").is_err());
+        assert!(ScimConfig::new(&hash, "owner").is_err());
+        assert!(ScimConfig::new(&hash, "admin").is_err());
+    }
+
+    #[test]
     fn roles_are_ordered_by_capability() {
         assert!(!RemoteRole::Viewer.can_write());
         assert!(RemoteRole::Operator.can_write());
@@ -2848,6 +3254,7 @@ mod tests {
                 tls: true,
                 tls_dir: Some(dir.clone()),
                 sso: None,
+                scim: None,
             },
         )
         .await
@@ -2888,6 +3295,7 @@ mod tests {
                 tls: false,
                 tls_dir: None,
                 sso: None,
+                scim: None,
             },
         )
         .await
@@ -3509,5 +3917,633 @@ mod tests {
         assert!(body_json(response).await["error"]
             .as_str()
             .is_some_and(|message| message.contains("not enabled")));
+    }
+
+    #[tokio::test]
+    async fn scim_requires_its_own_bearer_token_and_is_404_when_disabled() {
+        let (state, provisioner, token) = scim_state().await;
+        let app = router(state.clone());
+
+        let response = app
+            .clone()
+            .oneshot(scim_request("GET", "/scim/v2/Users", None, None))
+            .await
+            .expect("missing token");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/scim+json")
+        );
+        assert_eq!(body_json(response).await["status"], "401");
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "GET",
+                "/scim/v2/Users",
+                Some("not-the-token"),
+                None,
+            ))
+            .await
+            .expect("wrong token");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        // A paired device token is not a SCIM token, even with the same value
+        // shape.
+        let device = test_device(&state, "Phone", "admin").await;
+        let response = app
+            .oneshot(scim_request("GET", "/scim/v2/Users", Some(&device), None))
+            .await
+            .expect("device token");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let disabled = Arc::new(RemoteState::new_with_services(
+            state.pool.clone(),
+            state.runtime.clone(),
+            None,
+            None,
+            None,
+            Some(provisioner),
+        ));
+        let response = router(disabled)
+            .oneshot(scim_request("GET", "/scim/v2/Users", Some(&token), None))
+            .await
+            .expect("disabled");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn scim_rate_limit_returns_429() {
+        let (state, _, token) = scim_state().await;
+        let ip = IpAddr::from([127, 0, 0, 1]);
+        for _ in 0..MAX_SCIM_REQUESTS_PER_MINUTE {
+            assert!(state.scim_allowed(ip));
+        }
+        let response = router(state)
+            .oneshot(scim_request("GET", "/scim/v2/Users", Some(&token), None))
+            .await
+            .expect("rate limited");
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn scim_lists_filters_paginates_and_accepts_the_trailing_slash() {
+        let (state, provisioner, token) = scim_state().await;
+        let alice = provisioner
+            .create_user("alice", Some("ext-a"), true, "viewer")
+            .await
+            .expect("alice");
+        provisioner
+            .create_user("bob", Some("ext-b"), true, "operator")
+            .await
+            .expect("bob");
+        let app = router(state);
+
+        let response = app
+            .clone()
+            .oneshot(scim_request("GET", "/scim/v2/Users", Some(&token), None))
+            .await
+            .expect("list");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/scim+json")
+        );
+        let body = body_json(response).await;
+        assert_eq!(body["totalResults"], 2);
+        assert_eq!(body["startIndex"], 1);
+        assert_eq!(body["itemsPerPage"], 2);
+        assert_eq!(body["Resources"][0]["userName"], "alice");
+        assert_eq!(
+            body["Resources"][0]["schemas"][0],
+            "urn:ietf:params:scim:schemas:core:2.0:User"
+        );
+        assert!(body["Resources"][0]["meta"]["created"].is_string());
+        assert!(body["Resources"][0].get("location").is_none());
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "GET",
+                "/scim/v2/Users?filter=userName%20EQ%20%22ALICE%22",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("filter userName");
+        let body = body_json(response).await;
+        assert_eq!(body["totalResults"], 1);
+        assert_eq!(body["Resources"][0]["id"], alice.id);
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "GET",
+                "/scim/v2/Users?filter=externalId%20eq%20%22ext-b%22",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("filter externalId");
+        assert_eq!(body_json(response).await["Resources"][0]["userName"], "bob");
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "GET",
+                &format!("/scim/v2/Users?filter=id%20eq%20%22{}%22", alice.id),
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("filter id");
+        assert_eq!(body_json(response).await["totalResults"], 1);
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "GET",
+                "/scim/v2/Users?startIndex=2&count=1",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("pagination");
+        let body = body_json(response).await;
+        assert_eq!(body["totalResults"], 2);
+        assert_eq!(body["startIndex"], 2);
+        assert_eq!(body["itemsPerPage"], 1);
+        assert_eq!(body["Resources"][0]["userName"], "bob");
+
+        let response = app
+            .clone()
+            .oneshot(scim_request("GET", "/scim/v2/Users/", Some(&token), None))
+            .await
+            .expect("trailing slash");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(scim_request(
+                "GET",
+                "/scim/v2/Users?filter=displayName%20eq%20%22x%22",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("bad filter");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(response).await["scimType"], "invalidFilter");
+    }
+
+    #[tokio::test]
+    async fn scim_create_returns_201_and_maps_conflicts_owner_and_inactive() {
+        let (state, _, token) = scim_state().await;
+        let app = router(state);
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "POST",
+                "/scim/v2/Users",
+                Some(&token),
+                Some(json!({
+                    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+                    "userName": "dave",
+                    "externalId": "ext-dave",
+                })),
+            ))
+            .await
+            .expect("create");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .expect("location")
+            .to_string();
+        assert!(location.starts_with("/scim/v2/Users/"));
+        let body = body_json(response).await;
+        assert_eq!(body["userName"], "dave");
+        assert_eq!(body["externalId"], "ext-dave");
+        assert_eq!(body["active"], true);
+        assert_eq!(body["meta"]["resourceType"], "User");
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "POST",
+                "/scim/v2/Users",
+                Some(&token),
+                Some(json!({ "userName": "DAVE" })),
+            ))
+            .await
+            .expect("duplicate");
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(body_json(response).await["scimType"], "uniqueness");
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "POST",
+                "/scim/v2/Users",
+                Some(&token),
+                Some(json!({ "userName": "owner" })),
+            ))
+            .await
+            .expect("owner");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(body_json(response).await["scimType"], "mutability");
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "POST",
+                "/scim/v2/Users",
+                Some(&token),
+                Some(json!({ "userName": "erin", "active": false })),
+            ))
+            .await
+            .expect("inactive create");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(body_json(response).await["active"], false);
+
+        let response = app
+            .oneshot(scim_request(
+                "POST",
+                "/scim/v2/Users",
+                Some(&token),
+                Some(json!({ "externalId": "missing-name" })),
+            ))
+            .await
+            .expect("missing username");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(response).await["scimType"], "invalidValue");
+    }
+
+    #[tokio::test]
+    async fn scim_get_patch_put_and_soft_delete() {
+        let (state, provisioner, token) = scim_state().await;
+        let bob = provisioner
+            .create_user("bob", Some("ext-bob"), true, "viewer")
+            .await
+            .expect("bob");
+        let app = router(state);
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "GET",
+                &format!("/scim/v2/Users/{}", bob.id),
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("get");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["userName"], "bob");
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "PATCH",
+                &format!("/scim/v2/Users/{}", bob.id),
+                Some(&token),
+                Some(json!({
+                    "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+                    "Operations": [{ "op": "replace", "path": "active", "value": false }],
+                })),
+            ))
+            .await
+            .expect("patch active");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["active"], false);
+
+        // The no-path object form and an add for active are both tolerated.
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "PATCH",
+                &format!("/scim/v2/Users/{}", bob.id),
+                Some(&token),
+                Some(json!({
+                    "Operations": [{ "op": "add", "value": { "active": true } }],
+                })),
+            ))
+            .await
+            .expect("add active");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["active"], true);
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "PATCH",
+                &format!("/scim/v2/Users/{}", bob.id),
+                Some(&token),
+                Some(json!({
+                    "Operations": [{ "op": "replace", "value": { "userName": "robert" } }],
+                })),
+            ))
+            .await
+            .expect("rename patch");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["userName"], "robert");
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "PATCH",
+                &format!("/scim/v2/Users/{}", bob.id),
+                Some(&token),
+                Some(json!({
+                    "Operations": [{ "op": "replace", "path": "displayName", "value": "x" }],
+                })),
+            ))
+            .await
+            .expect("bad patch");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(response).await["scimType"], "invalidPath");
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "PUT",
+                &format!("/scim/v2/Users/{}", bob.id),
+                Some(&token),
+                Some(json!({
+                    "userName": "bobby",
+                    "active": true,
+                    "displayName": "ignored",
+                })),
+            ))
+            .await
+            .expect("put");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["userName"], "bobby");
+        assert_eq!(body["active"], true);
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "DELETE",
+                &format!("/scim/v2/Users/{}", bob.id),
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("delete");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "DELETE",
+                &format!("/scim/v2/Users/{}", bob.id),
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("delete again");
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = app
+            .oneshot(scim_request(
+                "GET",
+                &format!("/scim/v2/Users/{}", bob.id),
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("get deleted");
+        assert_eq!(body_json(response).await["active"], false);
+    }
+
+    #[tokio::test]
+    async fn scim_audits_mutations_and_auth_failures_and_updates_last_used() {
+        let (state, _, token) = scim_state().await;
+        let app = router(state.clone());
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "POST",
+                "/scim/v2/Users",
+                Some(&token),
+                Some(json!({ "userName": "dave" })),
+            ))
+            .await
+            .expect("create");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let user_id = body_json(response).await["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let last_used =
+            ravenbot_db::queries::AppSettingsQueries::get(&state.pool, "remote_scim_last_used_at")
+                .await
+                .expect("last used")
+                .expect("last used value");
+        assert!(!last_used.is_empty());
+
+        let audit = RemoteAccessQueries::recent_audit(&state.pool, 20)
+            .await
+            .expect("audit");
+        let created = audit
+            .iter()
+            .find(|entry| entry.method == "SCIM POST" && entry.status == 201)
+            .expect("create audit");
+        assert_eq!(created.device_name.as_deref(), Some("SCIM"));
+        assert_eq!(created.account_name.as_deref(), Some("dave"));
+        assert_eq!(created.path, "/scim/v2/Users");
+
+        // A read is not audited.
+        let before = audit.len();
+        let response = app
+            .clone()
+            .oneshot(scim_request("GET", "/scim/v2/Users", Some(&token), None))
+            .await
+            .expect("read");
+        assert_eq!(response.status(), StatusCode::OK);
+        let audit_after = RemoteAccessQueries::recent_audit(&state.pool, 20)
+            .await
+            .expect("audit after read");
+        assert_eq!(audit_after.len(), before);
+
+        // A bad token writes an authentication failure row.
+        let response = app
+            .clone()
+            .oneshot(scim_request("GET", "/scim/v2/Users", Some("wrong"), None))
+            .await
+            .expect("bad token");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let audit = RemoteAccessQueries::recent_audit(&state.pool, 20)
+            .await
+            .expect("audit after failure");
+        assert!(audit
+            .iter()
+            .any(|entry| entry.device_name.as_deref() == Some("SCIM") && entry.status == 401));
+
+        let _ = user_id;
+    }
+
+    #[tokio::test]
+    async fn an_invalid_or_unbacked_scim_config_never_stops_the_listener() {
+        let (state, provisioner, token) = scim_state().await;
+
+        // An invalid saved config disables SCIM but the listener still serves
+        // the device surface.
+        let server = start_with_services(
+            state.pool.clone(),
+            state.runtime.clone(),
+            RemoteConfig {
+                port: 0,
+                allow_lan: false,
+                tls: false,
+                tls_dir: None,
+                sso: None,
+                scim: Some(ScimConfig {
+                    token_hash: "not-a-hash".to_string(),
+                    default_role: "viewer".to_string(),
+                }),
+            },
+            None,
+            Some(provisioner.clone()),
+        )
+        .await
+        .expect("listener");
+        let base = format!("http://127.0.0.1:{}", server.addr().port());
+        let client = reqwest::Client::new();
+        assert_eq!(
+            client
+                .get(format!("{base}/api/health"))
+                .send()
+                .await
+                .expect("health")
+                .status(),
+            200
+        );
+        assert_eq!(
+            client
+                .get(format!("{base}/scim/v2/Users"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .expect("scim")
+                .status(),
+            404
+        );
+        server.shutdown().await;
+
+        // A valid config without a provisioner is also disabled, not mounted
+        // as a route that returns 500.
+        let config = ScimConfig::new(&hash_secret(&token), "viewer").expect("config");
+        let server = start_with_services(
+            state.pool.clone(),
+            state.runtime.clone(),
+            RemoteConfig {
+                port: 0,
+                allow_lan: false,
+                tls: false,
+                tls_dir: None,
+                sso: None,
+                scim: Some(config),
+            },
+            None,
+            None,
+        )
+        .await
+        .expect("listener");
+        let base = format!("http://127.0.0.1:{}", server.addr().port());
+        assert_eq!(
+            client
+                .get(format!("{base}/scim/v2/Users"))
+                .bearer_auth(&token)
+                .send()
+                .await
+                .expect("scim without provisioner")
+                .status(),
+            404
+        );
+        server.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn scim_does_not_open_the_device_api_or_leak_into_status() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("pool");
+        ravenbot_db::migrations::run(&pool)
+            .await
+            .expect("migrations");
+        let db = ravenbot_db::Database::from_pool(pool.clone());
+        let token = generate_scim_token();
+        let config = ScimConfig::new(&hash_secret(&token), "viewer").expect("scim");
+        let provisioner = Arc::new(StubProvisioner::new("owner"));
+        let authenticator = Arc::new(StubAuthenticator::new(
+            RemoteAccount {
+                id: "account-alice".to_string(),
+                username: "alice".to_string(),
+                role: "owner".to_string(),
+            },
+            "correct horse battery",
+        ));
+        let state = Arc::new(RemoteState::new_with_services(
+            pool,
+            Arc::new(Runtime::new(db)),
+            Some(authenticator),
+            None,
+            Some(config),
+            Some(provisioner),
+        ));
+
+        let device = test_device(&state, "Phone", "admin").await;
+        let app = router(state);
+
+        // Status is reachable before the device is bound and must stay free of
+        // SCIM configuration.
+        let response = app
+            .clone()
+            .oneshot(get_with_token("/api/status", &device))
+            .await
+            .expect("device status");
+        assert_eq!(response.status(), StatusCode::OK);
+        let status = body_json(response).await;
+        assert!(status.get("scim").is_none());
+        assert!(status.get("sso").is_none());
+
+        let response = app
+            .clone()
+            .oneshot(login_request(&device, "alice", "correct horse battery"))
+            .await
+            .expect("device login");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .clone()
+            .oneshot(get_with_token("/api/bots", &device))
+            .await
+            .expect("device api");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(scim_request("GET", "/scim/v2/Users", Some(&device), None))
+            .await
+            .expect("scim with device token");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
