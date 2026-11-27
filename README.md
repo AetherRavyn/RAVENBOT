@@ -459,10 +459,12 @@ limitations rather than finished features:
 - **Remote access is off by default.** It is a local listener with pairing and
   RBAC, not a hosted cloud service.
 - **Remote SSO is optional and deliberately narrow.** OIDC authorization code +
-  PKCE with RS256 ID tokens can sign in an **existing** local account. There is
-  no SCIM, group mapping, auto-provisioning, client secret, OIDC logout or
-  account creation from the IdP, and the desktop Settings form is still
-  pending. See [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md).
+  PKCE with RS256 ID tokens can sign in an **existing** local account. Owners
+  configure it in **Settings → Remote → Single sign-on (OIDC)**; saving does
+  not contact the IdP, so the first check happens when a paired device signs in.
+  There is no SCIM, group mapping, auto-provisioning, client secret, OIDC logout
+  or account creation from the IdP. See
+  [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md).
 - **No first-party telemetry.** Provider calls, an optional OIDC IdP, configured
   MCP servers, optional remote alerts, and the opt-in enterprise export are the
   only outbound traffic the app initiates. The enterprise export sends logs

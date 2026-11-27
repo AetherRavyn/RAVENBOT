@@ -185,11 +185,12 @@ Use a test workspace, a public/native OIDC client and a throwaway account.
    authorization-code + PKCE and no client secret. Confirm the provider issues
    RS256 ID tokens and exposes `issuer`, `authorization_endpoint`,
    `token_endpoint` and `jwks_uri` in discovery.
-2. Configure the host with the exact issuer (no trailing slash), client id,
-   redirect URL, `openid profile email` and the claim that holds the local
-   RAVENBOT username. Until the desktop Settings form ships, use the SQL in
-   [`REMOTE-SSO.md`](REMOTE-SSO.md#configuration); the owner-only
-   `configure_remote_sso` command is the supported IPC path.
+2. Open **Settings → Remote → Single sign-on (OIDC)** as the workspace owner.
+   Enter the exact issuer (no trailing slash), client id, redirect URL,
+   `openid profile email` and the claim that holds the local RAVENBOT username,
+   then enable SSO and save. Confirm the form keeps the returned values. Saving
+   does not contact the provider and there is no test-connection button; the
+   first request happens in step 4.
 3. Start remote access over HTTPS or a private tunnel. Pair a phone. Confirm the
    login page shows **Sign in with SSO** and that the username/password form is
    still visible and can sign in.
@@ -214,7 +215,7 @@ Use a test workspace, a public/native OIDC client and a throwaway account.
    configured URL, not `Host`.
 10. Record the provider, issuer, claim, account roles, audit rows and the
     browser/OS build in the release notes. Do not claim SCIM, group mapping,
-    auto-provisioning, OIDC logout or a desktop SSO form.
+    auto-provisioning or OIDC logout.
 
 ## Manual OpenBot avatar check
 

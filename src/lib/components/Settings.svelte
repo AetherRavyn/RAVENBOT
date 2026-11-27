@@ -9,6 +9,7 @@
   import NotificationSettings from "$lib/components/NotificationSettings.svelte";
   import BrowserProfilesPanel from "$lib/components/BrowserProfilesPanel.svelte";
   import MemoryEmbeddingSettings from "$lib/components/MemoryEmbeddingSettings.svelte";
+  import RemoteSsoCard from "$lib/components/RemoteSsoCard.svelte";
   import * as Dialog from "$lib/components/ui/dialog";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -663,22 +664,26 @@
     }
   }
 
+  function applyRemoteStatus(status: any) {
+    remoteStatus = status;
+    remotePort = status?.port || remotePort;
+    remoteAllowLan = Boolean(status?.allow_lan);
+    remoteTls = Boolean(status?.tls);
+    if (!status?.running) remotePairing = null;
+  }
+
   async function saveRemoteAccess(enabled = Boolean(remoteStatus?.enabled)) {
     if (remoteBusy) return;
     remoteBusy = true;
     remoteError = null;
     remoteSaved = false;
     try {
-      remoteStatus = await invoke("configure_remote_access", {
+      applyRemoteStatus(await invoke("configure_remote_access", {
         enabled,
         port: Number(remotePort) || 8790,
         allowLan: remoteAllowLan,
         tls: remoteTls,
-      });
-      remotePort = remoteStatus?.port || remotePort;
-      remoteAllowLan = Boolean(remoteStatus?.allow_lan);
-      remoteTls = Boolean(remoteStatus?.tls);
-      if (!remoteStatus?.running) remotePairing = null;
+      }));
       remoteSaved = true;
       setTimeout(() => (remoteSaved = false), 1600);
     } catch (e) {
@@ -3048,6 +3053,12 @@
               {/if}
               <p class="text-[11px] leading-relaxed text-[var(--text-muted)]">{t("settings.remoteTunnelHint")}</p>
             </div>
+
+            <RemoteSsoCard
+              sso={remoteStatus?.sso ?? null}
+              enabled={Boolean(remoteStatus?.sso_enabled)}
+              onSaved={applyRemoteStatus}
+            />
 
             <div class="p-5 rounded-2xl border bg-card/60 space-y-3" style="border-color: {currentTheme.borderHex};">
               <h4 class="text-sm font-bold text-[var(--text-primary)]">{t("settings.remotePairing")}</h4>

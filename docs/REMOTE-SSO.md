@@ -9,13 +9,9 @@ What ships today:
 - the backend authorization-code + PKCE flow for the paired-device listener;
 - a **Sign in with SSO** button on the mobile login page when the host has a
   valid configuration;
-- an owner-only `configure_remote_sso` Tauri command and a non-secret SSO
-  summary in `RemoteStatus`, so the desktop Settings form is a follow-up UI-only
-  change.
-
-**The desktop Settings form is not part of this slice.** Until it lands, the
-command can be invoked through the Tauri IPC surface or the settings can be
-written with the SQL in [Configuration](#configuration).
+- an owner-only **Settings → Remote → Single sign-on (OIDC)** card, backed by
+  the `configure_remote_sso` Tauri command and the non-secret SSO summary in
+  `RemoteStatus`.
 
 What deliberately does **not** ship:
 
@@ -124,7 +120,33 @@ the remote listener. The mobile `/api/status` exposes only `sso_enabled`. The
 desktop `RemoteStatus` also exposes the safe summary (`issuer`, `client_id`,
 `redirect_url`, `scopes`, `username_claim`).
 
-The Tauri command is owner-only, matching `configure_remote_access`:
+### Desktop form
+
+Settings → Remote shows **Single sign-on (OIDC)** after the remote-server card
+and before pairing. It is owner-only, like the rest of Settings. The form has:
+
+- an enable checkbox;
+- issuer URL, client ID and exact redirect URL;
+- scopes (default `openid profile email`) and username claim (default
+  `preferred_username`);
+- a short security block explaining the public client + PKCE model, existing
+  accounts only, RS256-only ID tokens, no SCIM/auto-provisioning, and that
+  saving restarts a running listener.
+
+Saving validates on the host, writes the settings, updates the form from the
+returned `RemoteStatus`, and restarts a running remote listener so the new
+snapshot applies. Disabling works even with blank or stale values.
+
+**Saving does not contact the IdP and there is no "Test connection" button.**
+Discovery, JWKS and the token endpoint are first contacted when a paired device
+presses **Sign in with SSO**. The provider must therefore be reachable from the
+host before that step; a green save only means the configuration passed local
+validation.
+
+If a saved value was invalid, the host disables SSO and the status summary is
+`null`, so the form opens empty. Re-enter the values and save to repair it.
+
+The same save is available through the owner-only Tauri command:
 
 ```ts
 invoke("configure_remote_sso", {
@@ -136,9 +158,6 @@ invoke("configure_remote_sso", {
   usernameClaim: "preferred_username",
 });
 ```
-
-Changing the configuration restarts the listener when it is running so the new
-snapshot applies. Disabling works even with blank or stale values.
 
 Equivalent SQL for a headless/development setup:
 
@@ -221,8 +240,9 @@ Nothing provider-supplied is reflected in the redirect, audit row or logs.
 - **Loopback HTTP is test-only.** Use HTTPS for every real deployment. Do not
   expose the listener directly to the internet; use a private tunnel or a
   TLS-terminating reverse proxy.
-- **Desktop Settings UI is pending.** The command and status metadata exist;
-  the form does not.
+- **Saving the form does not verify the IdP.** Local validation only; the first
+  network request happens when a paired device starts sign-in. There is no
+  test-connection button because the backend has no such command.
 - **No live-IdP evidence is claimed.** CI uses a loopback mock IdP. A release
   must follow the manual check in
   [`LIVE-CHECKS.md`](LIVE-CHECKS.md#manual-oidc-sso-check) against a real
@@ -244,3 +264,7 @@ Nothing provider-supplied is reflected in the redirect, audit row or logs.
 - `src-tauri/src/accounts.rs` covers case-insensitive identity mapping and
   rejects unknown, disabled and grant-less accounts.
 - `src-tauri/src/access.rs` proves `configure_remote_sso` is owner-only.
+- `src/lib/components/RemoteSsoCard.dom.test.ts` covers the form, camelCase IPC
+  arguments, the returned status, rejected saves, disabling and the absence of
+  a fake test/connect button. `Settings.dom.test.ts` renders the card in the
+  remote section without axe violations.

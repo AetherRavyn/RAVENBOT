@@ -25,15 +25,20 @@ All notable changes to RAVENBOT are documented here.
   PKCE verifier live only for the ten-minute attempt and are deleted on use. No
   authorization code, access token or ID token is stored or logged, and provider
   error text is never reflected.
-- **Owner-only configuration.** `configure_remote_sso` validates and saves the
-  non-secret settings and restarts a running listener. `RemoteStatus` carries
-  `sso_enabled` plus the safe summary; the mobile `/api/status` carries only the
-  boolean. The desktop Settings form is a follow-up UI-only change.
+- **Owner-only configuration.** **Settings → Remote → Single sign-on (OIDC)**
+  configures the provider through `configure_remote_sso`, validates and saves
+  the non-secret settings, and restarts a running listener. `RemoteStatus`
+  carries `sso_enabled` plus the safe summary; the mobile `/api/status` carries
+  only the boolean. Saving does not contact the IdP and there is deliberately
+  no fake test-connection button; the first request happens when a paired
+  device starts sign-in. The form is covered by a DOM suite and the remote
+  section still passes the axe check.
 - Covered by config/URL/secrets unit tests, attempt expiry/pruning/cap tests, a
   loopback axum IdP suite with a committed test-only RSA key (start URL, bind,
   audit, replay, wrong nonce/issuer/audience/signature/expiry, `none`/HS256,
   bad PKCE, revoked device, unknown account, spoofed Host, provider error text,
-  password login), account-mapping tests and an owner-only access test. See
+  password login), account-mapping tests, an owner-only access test and a
+  `RemoteSsoCard` DOM suite. See
   [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md). A real-IdP release check remains
   manual; the loopback mock is CI evidence, not live-IdP evidence.
 
