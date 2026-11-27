@@ -4705,6 +4705,131 @@ async fn prune_audit_log(state: State<'_, AppState>, older_than_days: u32) -> Re
     state.runtime.audit_logger().prune(older_than_days).await
 }
 
+#[tauri::command]
+async fn get_otel_export_status(
+    state: State<'_, AppState>,
+) -> Result<ravenbot_governance::otel::OtelStatus, String> {
+    ravenbot_governance::otel::load_status(state.db.pool()).await
+}
+
+/// Save the enterprise export configuration.
+///
+/// Headers are write-only: `Some("")` deletes the keychain entry, `Some(json)`
+/// replaces it, and `None` leaves the existing entry untouched. The response is
+/// the same safe status the card reads; header values never cross IPC.
+#[tauri::command]
+async fn set_otel_export_config(
+    state: State<'_, AppState>,
+    enabled: bool,
+    endpoint: String,
+    service_name: String,
+    interval_secs: u32,
+    batch_size: u32,
+    headers: Option<String>,
+) -> Result<ravenbot_governance::otel::OtelStatus, String> {
+    use ravenbot_db::queries::AppSettingsQueries;
+    use ravenbot_governance::otel;
+
+    let endpoint = endpoint.trim();
+    let endpoint = if endpoint.is_empty() {
+        if enabled {
+            return Err("Choose a collector endpoint before enabling export.".to_string());
+        }
+        String::new()
+    } else {
+        otel::normalize_endpoint(endpoint)?
+    };
+    let service_name = otel::validate_service_name(&service_name)?;
+    otel::validate_interval_secs(interval_secs)?;
+    otel::validate_batch_size(batch_size)?;
+
+    match headers {
+        None => {}
+        Some(raw) if raw.trim().is_empty() => {
+            ravenbot_db::secrets::delete_otel_export_headers().await;
+            AppSettingsQueries::set(state.db.pool(), otel::KEY_HEADERS_MARKER, "")
+                .await
+                .map_err(|error| error.to_string())?;
+        }
+        Some(raw) => {
+            let parsed = otel::parse_headers(&raw)?;
+            if parsed.is_empty() {
+                ravenbot_db::secrets::delete_otel_export_headers().await;
+                AppSettingsQueries::set(state.db.pool(), otel::KEY_HEADERS_MARKER, "")
+                    .await
+                    .map_err(|error| error.to_string())?;
+            } else {
+                let canonical =
+                    serde_json::to_string(&parsed).map_err(|error| error.to_string())?;
+                if !ravenbot_db::secrets::set_otel_export_headers(&canonical).await {
+                    return Err(
+                        "Could not store the export headers in protected storage.".to_string()
+                    );
+                }
+                AppSettingsQueries::set(
+                    state.db.pool(),
+                    otel::KEY_HEADERS_MARKER,
+                    ravenbot_db::secrets::KEYCHAIN_MARKER,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            }
+        }
+    }
+
+    AppSettingsQueries::set(
+        state.db.pool(),
+        otel::KEY_ENABLED,
+        if enabled { "1" } else { "0" },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    AppSettingsQueries::set(state.db.pool(), otel::KEY_ENDPOINT, &endpoint)
+        .await
+        .map_err(|error| error.to_string())?;
+    AppSettingsQueries::set(state.db.pool(), otel::KEY_SERVICE_NAME, &service_name)
+        .await
+        .map_err(|error| error.to_string())?;
+    AppSettingsQueries::set(
+        state.db.pool(),
+        otel::KEY_INTERVAL_SECS,
+        &interval_secs.to_string(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    AppSettingsQueries::set(
+        state.db.pool(),
+        otel::KEY_BATCH_SIZE,
+        &batch_size.to_string(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    otel::load_status(state.db.pool()).await
+}
+
+#[tauri::command]
+async fn export_otel_now(
+    state: State<'_, AppState>,
+) -> Result<ravenbot_governance::otel::OtelExportReport, String> {
+    let config = ravenbot_governance::otel::load_config(state.db.pool()).await?;
+    if config.endpoint.trim().is_empty() {
+        return Err("Choose a collector endpoint first.".to_string());
+    }
+    ravenbot_governance::otel::run_export(state.db.pool(), config).await
+}
+
+#[tauri::command]
+async fn test_otel_export(
+    state: State<'_, AppState>,
+) -> Result<ravenbot_governance::otel::OtelExportReport, String> {
+    let config = ravenbot_governance::otel::load_config(state.db.pool()).await?;
+    if config.endpoint.trim().is_empty() {
+        return Err("Choose a collector endpoint first.".to_string());
+    }
+    ravenbot_governance::otel::send_test(state.db.pool(), config).await
+}
+
 const AUDIT_RETENTION_KEY: &str = "audit_retention_days";
 const AUDIT_EXPORT_DIR_KEY: &str = "audit_export_dir";
 const AUDIT_EXPORT_INTERVAL_KEY: &str = "audit_export_interval_hours";
@@ -23392,6 +23517,59 @@ pub(crate) async fn audit_maintenance_loop(pool: sqlx::SqlitePool) {
     }
 }
 
+/// Opt-in enterprise export, shared by the desktop shell and headless daemon.
+///
+/// Reads the saved status every 30 seconds and sends only when enabled and the
+/// configured interval has elapsed since the last attempt. `run_export`
+/// records the attempt even on a transport failure, so a broken collector is
+/// retried on its configured cadence rather than on every 30-second tick.
+pub(crate) async fn otel_export_loop(pool: sqlx::SqlitePool) {
+    loop {
+        match ravenbot_governance::otel::load_status(&pool).await {
+            Ok(status) if status.enabled => {
+                if ravenbot_governance::otel::export_due(
+                    status.interval_secs,
+                    status.last_attempt_at.as_deref(),
+                    chrono::Utc::now(),
+                ) {
+                    match ravenbot_governance::otel::load_config(&pool).await {
+                        Ok(config) => {
+                            match ravenbot_governance::otel::run_export(&pool, config).await {
+                                Ok(report) if report.delivered => tracing::info!(
+                                    audit = report.audit_count,
+                                    runs = report.run_count,
+                                    "Enterprise audit export delivered"
+                                ),
+                                Ok(report) => {
+                                    if let Some(error) = report.error {
+                                        tracing::warn!(
+                                            %error,
+                                            "Enterprise audit export failed; the cursor was kept"
+                                        );
+                                    }
+                                }
+                                Err(error) => tracing::warn!(
+                                    %error,
+                                    "Enterprise audit export could not run"
+                                ),
+                            }
+                        }
+                        Err(error) => {
+                            ravenbot_governance::otel::record_failure(&pool, &error).await;
+                            tracing::warn!(%error, "Enterprise audit export settings are unreadable");
+                        }
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "Could not read enterprise export status")
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+    }
+}
+
 /// Run the desktop app.
 ///
 /// The Tauri context is passed in by `main.rs` instead of expanded here.
@@ -23625,6 +23803,10 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         export_audit_log,
         verify_audit_export,
         prune_audit_log,
+        get_otel_export_status,
+        set_otel_export_config,
+        export_otel_now,
+        test_otel_export,
         get_usage_summary,
         update_bot,
         delete_bot,
@@ -24228,6 +24410,12 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             // before they have been backed up.
             let maintenance_pool = db.pool().clone();
             tauri::async_runtime::spawn(audit_maintenance_loop(maintenance_pool));
+
+            // Enterprise export is opt-in and metadata-only. Running it here,
+            // beside audit maintenance, means it keeps working when the audit
+            // pane has never been opened.
+            let otel_pool = db.pool().clone();
+            tauri::async_runtime::spawn(otel_export_loop(otel_pool));
 
             // The window is created hidden so service mode never flashes a
             // window. An interactive launch reveals it once setup is complete;

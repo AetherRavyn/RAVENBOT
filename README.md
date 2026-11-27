@@ -216,6 +216,12 @@ The default posture is useful autonomy, not blind autonomy:
 - The OS keychain is preferred for secrets. Without it, RAVENBOT seals secrets
   with XChaCha20-Poly1305 under `config/sealed-secrets` and keeps only a marker in
   SQLite. A copied database alone does not reveal them.
+- An opt-in **enterprise export** streams redacted audit and run metadata to an
+  OTLP/HTTP logs collector. Prompts, messages, tool arguments, file contents,
+  thread titles, reasons and URL query strings never leave the machine; HTTP
+  headers stay in the keychain and are never shown again. Delivery is
+  cursor-based, with a background loop in the desktop app and headless daemon.
+  See [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md).
 
 ### Run it headless
 
@@ -436,9 +442,11 @@ limitations rather than finished features:
   "engine not linked" error instead of pretending to run.
 - **Remote access is off by default.** It is a local listener with pairing and
   RBAC, not a hosted cloud service.
-- **No first-party telemetry.** Provider calls, MCP servers, and optional remote
-  alerts are the only outbound traffic the app initiates, and only when you
-  configure them.
+- **No first-party telemetry.** Provider calls, configured MCP servers, optional
+  remote alerts, and the opt-in enterprise export are the only outbound traffic
+  the app initiates. The enterprise export sends logs only; SSO/OIDC, SCIM,
+  OTLP metrics/traces, data-residency controls and a hosted relay are not
+  shipped. See [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md).
 
 The roadmap is tracked in [`ROADMAP.md`](ROADMAP.md). The code-level audit and
 remaining trust gaps are in
@@ -461,6 +469,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |
 | [`docs/LEARNING.md`](docs/LEARNING.md) | Learning from a run: synthesis, redaction, review, provenance, and limits |
 | [`docs/DEMONSTRATIONS.md`](docs/DEMONSTRATIONS.md) | Teach and replay a browser demonstration: capture, selectors, secrets, `demo.json`, repair reports, limits |
+| [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md) | OTLP/HTTP log export: fields, exclusions, cursors, headers and limits |
 | [`docs/MARKET-COMPARISON-2026-11.md`](docs/MARKET-COMPARISON-2026-11.md) | OpenClaw, Grok Bot, Hermes, Muse and RAVENBOT, with the path to best in market |
 | [`docs/LIVE-CHECKS.md`](docs/LIVE-CHECKS.md) | Opt-in provider and platform checks |
 | [`docs/OPENCODE-PARITY.md`](docs/OPENCODE-PARITY.md) | Harness and rendering parity audit |

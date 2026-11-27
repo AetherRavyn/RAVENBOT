@@ -4,6 +4,37 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Enterprise export plane (OTLP/HTTP logs)
+
+- **Opt-in audit and run metadata stream.** The Audit log gains an **Enterprise
+  export** card that posts redacted records to any OTLP/HTTP JSON logs collector
+  at `/v1/logs`. A background loop runs in both the desktop app and the headless
+  daemon, and **Export now** / **Test connection** work without enabling it.
+- **Cursor delivery, not a firehose.** Audit rows are read by `audit_log.rowid`
+  and runs by `(updated_at, id)`. A 2xx advances both cursors; a timeout, a
+  non-2xx response or a broken endpoint leaves them untouched and is retried on
+  the configured cadence. A crash between cursor writes can duplicate a batch
+  but cannot skip one; collectors should deduplicate on `audit.id` / `run.id`.
+- **Metadata only.** Audit kind, ids, bot and actor names, tool name, permission,
+  model/provider, tokens, cost and memory metadata leave the machine. Prompts,
+  messages, tool arguments, file contents, thread titles, free-text reasons and
+  approval notes, run result/error text, checkpoints and URL query strings do
+  not. Network URLs are reduced to `scheme://host/path`.
+- **Headers stay secret.** Collector headers are validated and stored through the
+  existing keychain-or-sealed-vault path; the UI sees only a configured/not
+  configured state and can clear them. Error bodies are clipped and every
+  configured header value is redacted.
+- **Settings and roles.** Owner-only configuration, owner/operator export and
+  test, viewer denied even status because it exposes the collector endpoint.
+  Endpoints require HTTPS except for documented loopback hosts.
+- Covered by governance unit tests, a loopback axum collector integration suite
+  (payload, exclusions, cursors, batch limit, retry, header redaction, synthetic
+  test log), access-role tests, a DOM suite that proves header values are never
+  rendered back, and all twelve locale dictionaries. See
+  [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md). SSO/OIDC, SCIM, OTLP
+  metrics/traces, dashboards and a hosted relay remain open, and no live
+  customer collector test is claimed.
+
 ### Teach a browser workflow
 
 - **"Show it once" now works in the browser dock.** A **Teach** button records

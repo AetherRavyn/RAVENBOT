@@ -585,6 +585,23 @@ pub async fn delete_mcp_headers(server_id: &str) {
     delete_secret(format!("mcp-server:{server_id}:headers")).await;
 }
 
+/// HTTP headers for the enterprise OTLP export collector, as a JSON object.
+///
+/// Header values are credentials (a bearer token, an API key), so they follow
+/// the same keychain-or-sealed-vault path as provider keys. The database only
+/// keeps a marker that the entry exists.
+pub async fn set_otel_export_headers(value: &str) -> bool {
+    set_secret("otel-export:headers".to_string(), value.to_string()).await
+}
+
+pub async fn get_otel_export_headers() -> Option<String> {
+    get_secret("otel-export:headers".to_string()).await
+}
+
+pub async fn delete_otel_export_headers() {
+    delete_secret("otel-export:headers".to_string()).await;
+}
+
 pub async fn set_custom_provider_headers(provider_id: &str, value: &str) -> bool {
     set_secret(
         format!("custom-provider:{provider_id}:headers"),

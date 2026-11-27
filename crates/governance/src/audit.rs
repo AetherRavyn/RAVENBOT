@@ -297,6 +297,174 @@ fn apply_audit_filters(qb: &mut QueryBuilder<Sqlite>, filter: &NormalizedAuditQu
     }
 }
 
+/// The projected columns shared by the audit viewer and the OTLP exporter.
+type AuditRowTuple = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+);
+
+/// Project one stored audit row into the allow-listed display shape.
+///
+/// The raw event JSON is parsed only to copy named, safe fields. Tool
+/// arguments, approval notes and any other free text are deliberately dropped.
+fn project_audit_row(
+    (
+        id,
+        bot_id,
+        bot_name,
+        run_id,
+        thread_id,
+        thread_title,
+        stored_kind,
+        event_json,
+        timestamp,
+        actor_name,
+        actor_role,
+    ): AuditRowTuple,
+) -> AuditLogRow {
+    let event: Option<AuditEventType> = serde_json::from_str(&event_json).ok();
+    let kind = event
+        .as_ref()
+        .map(|event| event.kind().to_string())
+        .filter(|kind| !kind.is_empty())
+        .unwrap_or(stored_kind);
+    let mut row = AuditLogRow {
+        id,
+        bot_id,
+        bot_name,
+        run_id,
+        thread_id,
+        thread_title,
+        kind,
+        timestamp,
+        tool_name: None,
+        path: None,
+        url: None,
+        method: None,
+        provider: None,
+        model: None,
+        tokens_in: None,
+        tokens_out: None,
+        cost: None,
+        size: None,
+        permission: None,
+        reason: None,
+        actor_name,
+        actor_role,
+        memory_scope: None,
+        memory_action: None,
+        memory_id: None,
+        category: None,
+        office_id: None,
+    };
+    if let Some(event) = event {
+        match event {
+            AuditEventType::ModelCall {
+                provider,
+                model,
+                tokens_in,
+                tokens_out,
+                cost,
+            } => {
+                row.provider = Some(provider);
+                row.model = Some(model);
+                row.tokens_in = Some(tokens_in);
+                row.tokens_out = Some(tokens_out);
+                row.cost = Some(cost);
+            }
+            AuditEventType::ToolCall { tool_name, .. } => {
+                // Arguments are intentionally dropped: they can
+                // contain file contents, prompts or secrets.
+                row.tool_name = Some(tool_name);
+            }
+            AuditEventType::NetworkRequest { url, method } => {
+                row.url = Some(url);
+                row.method = Some(method);
+            }
+            AuditEventType::FileRead { path } => row.path = Some(path),
+            AuditEventType::FileWrite { path, size } => {
+                row.path = Some(path);
+                row.size = Some(size);
+            }
+            AuditEventType::PermissionGranted { permission } => {
+                row.permission = Some(permission);
+            }
+            AuditEventType::PermissionDenied { permission, reason } => {
+                row.permission = Some(permission);
+                row.reason = Some(reason);
+            }
+            AuditEventType::ApprovalDecision {
+                tool_name,
+                allowed,
+                source,
+                note,
+                ..
+            } => {
+                row.tool_name = Some(tool_name);
+                row.permission = Some(if allowed { "approved" } else { "denied" }.to_string());
+                row.reason = Some(match note.filter(|v| !v.trim().is_empty()) {
+                    Some(note) => format!("{source}: {note}"),
+                    None => source,
+                });
+            }
+            AuditEventType::BotStarted | AuditEventType::BotPaused | AuditEventType::BotStopped => {
+            }
+            AuditEventType::MemoryChanged {
+                scope,
+                action,
+                memory_id,
+                category,
+                office_id,
+            } => {
+                row.memory_scope = Some(scope);
+                row.memory_action = Some(action);
+                row.memory_id = Some(memory_id);
+                row.category = Some(category).filter(|value| !value.is_empty());
+                row.office_id = office_id;
+            }
+            AuditEventType::MemoryEmbeddingsUpdated {
+                provider,
+                model,
+                base_url,
+                reindexed,
+            } => {
+                row.provider = Some(provider);
+                row.model = Some(model);
+                row.url = Some(base_url);
+                row.size = Some(reindexed);
+            }
+            AuditEventType::WorkspaceAccess {
+                actor,
+                workspace,
+                role,
+            } => {
+                row.permission = Some(format!("workspace:{role}"));
+                row.reason = Some(format!("{actor} opened {workspace}"));
+            }
+            AuditEventType::WorkspaceMembershipChanged {
+                actor,
+                workspace,
+                member,
+                role,
+                action,
+            } => {
+                row.permission = Some(action);
+                row.reason = Some(format!("{actor} → {member} ({role}) in {workspace}"));
+            }
+        }
+    }
+    row
+}
+
 /// Audit logger for recording all bot actions
 pub struct AuditLogger {
     pool: SqlitePool,
@@ -547,28 +715,74 @@ impl AuditLogger {
         qb.push(" OFFSET ");
         qb.push_bind(offset);
 
-        let rows: Vec<(
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-        )> = qb
+        let rows: Vec<AuditRowTuple> = qb
             .build_query_as()
             .fetch_all(&self.pool)
             .await
             .map_err(|e| e.to_string())?;
 
-        Ok(rows
-            .into_iter()
-            .map(
-                |(
+        Ok(rows.into_iter().map(project_audit_row).collect())
+    }
+
+    /// Read audit rows strictly after an append-only `rowid` cursor.
+    ///
+    /// The OTLP exporter uses this instead of the timestamp-ordered viewer
+    /// query: a rowid is stable, monotonic and cannot be reordered by a clock
+    /// change. `limit` is clamped to a bounded row count.
+    pub async fn rows_after_rowid(
+        &self,
+        after_rowid: i64,
+        limit: i64,
+    ) -> Result<Vec<(i64, AuditLogRow)>, String> {
+        let limit = limit.clamp(1, 50_000);
+        let rows: Vec<(
+            i64,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT a.rowid, a.id, a.bot_id, b.name, a.run_id, a.thread_id, t.title, \
+                    a.event_kind, a.event, a.timestamp, ra.actor_name, ra.role \
+             FROM audit_log a \
+             LEFT JOIN bots b ON b.id = a.bot_id \
+             LEFT JOIN threads t ON t.id = a.thread_id \
+             LEFT JOIN run_actors ra ON ra.run_id = a.run_id \
+             WHERE a.rowid > ? \
+             ORDER BY a.rowid ASC LIMIT ?",
+        )
+        .bind(after_rowid)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| e.to_string())?;
+
+        let mut projected = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (
+                rowid,
+                id,
+                bot_id,
+                bot_name,
+                run_id,
+                thread_id,
+                thread_title,
+                stored_kind,
+                event_json,
+                timestamp,
+                actor_name,
+                actor_role,
+            ) = row;
+            projected.push((
+                rowid,
+                project_audit_row((
                     id,
                     bot_id,
                     bot_name,
@@ -580,145 +794,10 @@ impl AuditLogger {
                     timestamp,
                     actor_name,
                     actor_role,
-                )| {
-                    let event: Option<AuditEventType> = serde_json::from_str(&event_json).ok();
-                    let kind = event
-                        .as_ref()
-                        .map(|event| event.kind().to_string())
-                        .filter(|kind| !kind.is_empty())
-                        .unwrap_or(stored_kind);
-                    let mut row = AuditLogRow {
-                        id,
-                        bot_id,
-                        bot_name,
-                        run_id,
-                        thread_id,
-                        thread_title,
-                        kind,
-                        timestamp,
-                        tool_name: None,
-                        path: None,
-                        url: None,
-                        method: None,
-                        provider: None,
-                        model: None,
-                        tokens_in: None,
-                        tokens_out: None,
-                        cost: None,
-                        size: None,
-                        permission: None,
-                        reason: None,
-                        actor_name,
-                        actor_role,
-                        memory_scope: None,
-                        memory_action: None,
-                        memory_id: None,
-                        category: None,
-                        office_id: None,
-                    };
-                    if let Some(event) = event {
-                        match event {
-                            AuditEventType::ModelCall {
-                                provider,
-                                model,
-                                tokens_in,
-                                tokens_out,
-                                cost,
-                            } => {
-                                row.provider = Some(provider);
-                                row.model = Some(model);
-                                row.tokens_in = Some(tokens_in);
-                                row.tokens_out = Some(tokens_out);
-                                row.cost = Some(cost);
-                            }
-                            AuditEventType::ToolCall { tool_name, .. } => {
-                                // Arguments are intentionally dropped: they can
-                                // contain file contents, prompts or secrets.
-                                row.tool_name = Some(tool_name);
-                            }
-                            AuditEventType::NetworkRequest { url, method } => {
-                                row.url = Some(url);
-                                row.method = Some(method);
-                            }
-                            AuditEventType::FileRead { path } => row.path = Some(path),
-                            AuditEventType::FileWrite { path, size } => {
-                                row.path = Some(path);
-                                row.size = Some(size);
-                            }
-                            AuditEventType::PermissionGranted { permission } => {
-                                row.permission = Some(permission);
-                            }
-                            AuditEventType::PermissionDenied { permission, reason } => {
-                                row.permission = Some(permission);
-                                row.reason = Some(reason);
-                            }
-                            AuditEventType::ApprovalDecision {
-                                tool_name,
-                                allowed,
-                                source,
-                                note,
-                                ..
-                            } => {
-                                row.tool_name = Some(tool_name);
-                                row.permission =
-                                    Some(if allowed { "approved" } else { "denied" }.to_string());
-                                row.reason = Some(match note.filter(|v| !v.trim().is_empty()) {
-                                    Some(note) => format!("{source}: {note}"),
-                                    None => source,
-                                });
-                            }
-                            AuditEventType::BotStarted
-                            | AuditEventType::BotPaused
-                            | AuditEventType::BotStopped => {}
-                            AuditEventType::MemoryChanged {
-                                scope,
-                                action,
-                                memory_id,
-                                category,
-                                office_id,
-                            } => {
-                                row.memory_scope = Some(scope);
-                                row.memory_action = Some(action);
-                                row.memory_id = Some(memory_id);
-                                row.category = Some(category).filter(|value| !value.is_empty());
-                                row.office_id = office_id;
-                            }
-                            AuditEventType::MemoryEmbeddingsUpdated {
-                                provider,
-                                model,
-                                base_url,
-                                reindexed,
-                            } => {
-                                row.provider = Some(provider);
-                                row.model = Some(model);
-                                row.url = Some(base_url);
-                                row.size = Some(reindexed);
-                            }
-                            AuditEventType::WorkspaceAccess {
-                                actor,
-                                workspace,
-                                role,
-                            } => {
-                                row.permission = Some(format!("workspace:{role}"));
-                                row.reason = Some(format!("{actor} opened {workspace}"));
-                            }
-                            AuditEventType::WorkspaceMembershipChanged {
-                                actor,
-                                workspace,
-                                member,
-                                role,
-                                action,
-                            } => {
-                                row.permission = Some(action);
-                                row.reason =
-                                    Some(format!("{actor} → {member} ({role}) in {workspace}"));
-                            }
-                        }
-                    }
-                    row
-                },
-            )
-            .collect())
+                )),
+            ));
+        }
+        Ok(projected)
     }
 
     /// Get audit log entries for a bot

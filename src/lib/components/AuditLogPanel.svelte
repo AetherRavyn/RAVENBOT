@@ -11,6 +11,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
   import AuditBackupPanel from "$lib/components/AuditBackupPanel.svelte";
+  import AuditExportPanel from "$lib/components/AuditExportPanel.svelte";
   import { t } from "$lib/i18n";
   import { requestThreadFocus } from "$lib/chat/messageFocus";
   import { workspace } from "$lib/workspace.svelte";
@@ -20,6 +21,7 @@
     Brain,
     ChevronLeft,
     ChevronRight,
+    CloudUpload,
     Cpu,
     Download,
     ExternalLink,
@@ -69,6 +71,7 @@
   let verifyError = $state("");
   let showRetention = $state(false);
   let showBackup = $state(false);
+  let showExport = $state(false);
   let retentionPolicy = $state("0");
   let retentionDraft = $state("0");
   let policyBusy = $state(false);
@@ -481,6 +484,7 @@
         onclick={() => {
           showBackup = !showBackup;
           showRetention = false;
+          showExport = false;
         }}
         disabled={loading}
         aria-expanded={showBackup}
@@ -491,10 +495,26 @@
       </button>
       <button
         type="button"
+        class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[var(--hairline)] bg-[var(--surface-1)] px-2.5 text-[11px] font-semibold text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer disabled:opacity-50"
+        onclick={() => {
+          showExport = !showExport;
+          showRetention = false;
+          showBackup = false;
+        }}
+        disabled={loading}
+        aria-expanded={showExport}
+        title={t("otel.title")}
+      >
+        <CloudUpload class="size-3.5" />
+        {t("otel.title")}
+      </button>
+      <button
+        type="button"
         class="inline-flex h-7 items-center gap-1.5 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] px-2.5 text-[11px] font-semibold text-[var(--danger-text)] hover:bg-[var(--surface-2)] cursor-pointer disabled:opacity-50"
         onclick={() => {
           showRetention = !showRetention;
           showBackup = false;
+          showExport = false;
         }}
         disabled={pruning}
         aria-expanded={showRetention}
@@ -631,6 +651,12 @@
   {#if showBackup}
     <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-3">
       <AuditBackupPanel />
+    </div>
+  {/if}
+
+  {#if showExport}
+    <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-3">
+      <AuditExportPanel />
     </div>
   {/if}
 

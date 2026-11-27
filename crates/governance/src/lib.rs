@@ -5,6 +5,7 @@
 
 pub mod audit;
 pub mod budget;
+pub mod otel;
 pub mod version_control;
 
 pub use audit::{
@@ -13,4 +14,5 @@ pub use audit::{
     MAX_AUDIT_EXPORT_ENTRIES,
 };
 pub use budget::{BudgetCheck, BudgetManager};
+pub use otel::{OtelConfig, OtelExportReport, OtelStatus, RunCursor};
 pub use version_control::PromptVersionControl;

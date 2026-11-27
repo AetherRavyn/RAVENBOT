@@ -34,6 +34,7 @@ const VIEWER_DENY: &[&str] = &[
     "list_audit_entries",
     "export_audit_log",
     "verify_audit_export",
+    "get_otel_export_status",
 ];
 
 /// Operator-only actions: running and steering work inside the workspace.
@@ -104,6 +105,9 @@ const OPERATOR_EXTRA: &[&str] = &[
     "replay_demonstration",
     "propose_skill_from_run",
     "save_learned_skill",
+    "export_otel_now",
+    "test_otel_export",
+    "get_otel_export_status",
 ];
 
 fn is_read_command(command: &str) -> bool {
@@ -214,6 +218,25 @@ mod tests {
             assert!(role_allows("operator", command), "{command}");
             assert!(!role_allows("viewer", command), "{command}");
         }
+    }
+
+    #[test]
+    fn enterprise_export_config_is_owner_only_while_export_and_status_are_operator_actions() {
+        for command in [
+            "get_otel_export_status",
+            "export_otel_now",
+            "test_otel_export",
+        ] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
+        assert!(role_allows("owner", "set_otel_export_config"));
+        assert!(!role_allows("operator", "set_otel_export_config"));
+        assert!(!role_allows("viewer", "set_otel_export_config"));
+        // The status exposes the collector endpoint, which is workspace
+        // metadata a viewer must not read.
+        assert!(!role_allows("viewer", "get_otel_export_status"));
     }
 
     #[test]
