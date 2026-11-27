@@ -97,6 +97,38 @@ All notable changes to RAVENBOT are documented here.
   [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md); the real-SMTP release check is
   in [`docs/LIVE-CHECKS.md`](docs/LIVE-CHECKS.md).
 
+### Commerce spend requests and owner approval
+
+- **The agent can only ask.** `spend_request` (risk `Low`, no permissions)
+  validates a one-line title, merchant name, HTTPS checkout URL, integer
+  `amount_minor`, three-letter currency and a reason, then stores a `pending`
+  row in the new `spend_requests` table (migration 080). It has no purchase
+  action, payment client, card field or network path; there is deliberately no
+  `purchase`, `pay`, `checkout` or `buy` tool.
+- **Policy enforcement.** The owner configures `commerce_enabled`,
+  `commerce_currency`, a per-request limit, a UTC-daily limit and a merchant
+  domain allowlist in **Settings → Commerce**. Limits are checked when the
+  request is created and again at approval. Approval rebuilds and revalidates
+  the row, then re-checks the day's approved + purchased total inside the same
+  SQLite transaction that flips `pending -> approved`, so two approvals cannot
+  exceed the daily budget. Host matching is exact or subdomain; lookalike
+  domains and non-HTTPS/credentialed URLs are rejected.
+- **Human checkout only.** Approving reserves budget and records the decision;
+  it buys nothing. The panel's **Open checkout** calls the external opener with
+  the stored merchant URL. The person completes checkout in the browser and then
+  chooses **Mark purchased** or **Cancel**. The table stores no card, order,
+  tax, shipping or refund data, and “mark purchased” does not verify an order.
+- **Owned and audited decisions.** `get_commerce_settings`,
+  `set_commerce_settings`, `list_spend_requests`, `approve_spend_request`,
+  `deny_spend_request`, `mark_spend_purchased` and `cancel_spend_request` are
+  owner-only; the read-shaped ones are in `VIEWER_DENY`. Approve/deny/purchase/
+  cancel write `ApprovalDecision` audit rows and every transition is guarded in
+  SQL. The panel and its copy ship in all twelve locales. See
+  [`docs/COMMERCE.md`](docs/COMMERCE.md).
+- **Deliberately out of scope.** No payment rail, card storage, automated
+  checkout, orders, invoices, receipts, tax, shipping, refunds, subscriptions,
+  multi-currency conversion or agent auto-approval.
+
 ### Remote SCIM 2.0 user provisioning (Users only)
 
 - **Opt-in, workspace-scoped provisioning.** The remote listener can mount

@@ -28,6 +28,8 @@ const VIEWER_DENY: &[&str] = &[
     "get_agent_email",
     "list_email_drafts",
     "get_email_draft",
+    "get_commerce_settings",
+    "list_spend_requests",
     "get_service_status",
     "get_autostart_enabled",
     "get_remote_status",
@@ -289,6 +291,23 @@ mod tests {
             assert!(!role_allows("viewer", command), "{command}");
         }
         for command in ["get_agent_email", "list_email_drafts", "get_email_draft"] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(!role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
+    }
+
+    #[test]
+    fn commerce_settings_and_spend_decisions_are_owner_only() {
+        for command in [
+            "get_commerce_settings",
+            "set_commerce_settings",
+            "list_spend_requests",
+            "approve_spend_request",
+            "deny_spend_request",
+            "mark_spend_purchased",
+            "cancel_spend_request",
+        ] {
             assert!(role_allows("owner", command), "{command}");
             assert!(!role_allows("operator", command), "{command}");
             assert!(!role_allows("viewer", command), "{command}");

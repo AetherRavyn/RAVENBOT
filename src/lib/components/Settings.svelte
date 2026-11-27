@@ -12,6 +12,7 @@
   import RemoteSsoCard from "$lib/components/RemoteSsoCard.svelte";
   import RemoteScimCard from "$lib/components/RemoteScimCard.svelte";
   import MailPanel from "$lib/components/MailPanel.svelte";
+  import CommercePanel from "$lib/components/CommercePanel.svelte";
   import * as Dialog from "$lib/components/ui/dialog";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -41,7 +42,7 @@
     DollarSign, Shield, BookOpen, Settings, ChevronRight, Sparkles,
     Cpu, Globe, Lock, Unlock, Trash2, ExternalLink, X, Plug, Plus,
     Activity, BarChart3, Bell, Bot, Brain, Search, Power, MessageSquare, LogOut,
-    Users, Mail,
+    Users, Mail, ShoppingBag,
   } from "@lucide/svelte";
 
   interface Props {
@@ -112,6 +113,7 @@
     { id: "budgets", label: t("settings.navBudgets"), icon: DollarSign, color: "text-success", keywords: "budget cost spend usage limit" },
     { id: "usage", label: t("settings.navUsage"), icon: BarChart3, color: "text-success", keywords: "usage cost tokens spend runs" },
     { id: "mail", label: t("mail.nav"), icon: Mail, color: "text-[var(--brand-text)]", keywords: "mail email drafts smtp inbox" },
+    { id: "commerce", label: t("commerce.nav"), icon: ShoppingBag, color: "text-success", keywords: "commerce spend purchase buy approval budget merchant checkout request" },
     { id: "remote", label: t("settings.navRemote"), icon: Globe, color: "text-info", keywords: "remote mobile phone pair token rbac role lan service" },
     { id: "chatapps", label: t("settings.navChatApps"), icon: MessageSquare, color: "text-info", keywords: "telegram chat bot native messaging pair" },
     { id: "diagnostics", label: "Diagnostics", icon: Activity, color: "text-[var(--text-tertiary)]", keywords: "runs errors logs audit" },
@@ -2383,6 +2385,14 @@
         <div class="flex-1 overflow-y-auto no-scrollbar p-6">
           <div class="mx-auto max-w-3xl">
             <MailPanel />
+          </div>
+        </div>
+      {/if}
+
+      {#if activeSection === "commerce"}
+        <div class="flex-1 overflow-y-auto no-scrollbar p-6">
+          <div class="mx-auto max-w-3xl">
+            <CommercePanel />
           </div>
         </div>
       {/if}

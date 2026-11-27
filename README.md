@@ -184,6 +184,12 @@ voice, and computer control. It also supports:
   still review and send. This is not a live meeting join: RAVENBOT does not sit
   in calls, record calls, or label speakers.
   See [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md).
+- **Commerce with human checkout.** An agent can only create a pending spend
+  request. The owner-only **Settings → Commerce** panel enforces a currency,
+  per-request limit, UTC-daily limit and merchant allowlist, then approves or
+  denies, opens the merchant's checkout in your browser, and records the result.
+  RAVENBOT has no payment rail, card storage, order API, tax, shipping or
+  currency conversion. See [`docs/COMMERCE.md`](docs/COMMERCE.md).
 - **OpenAPI plugins.** Import an OpenAPI document as a local toolkit.
 - **Community skills.** Search and install versioned skills from the VoltAgent
   marketplace, or write your own with the built-in skill authoring tools.
@@ -423,11 +429,11 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 261 Tauri library tests
-  plus 7 cross-tenant isolation tests, 246 runtime tests, 215 skill tests, 117
-  database tests, 79 core tests, 39 vision tests, 35 memory tests, 33 MCP
+- **1,100+ Rust tests** across the workspace, including 262 Tauri library tests
+  plus 7 cross-tenant isolation tests, 246 runtime tests, 223 skill tests, 122
+  database tests, 89 core tests, 39 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **965 frontend tests** across 139 files. A gate rejects literal English
+- **999 frontend tests** across 142 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
@@ -490,6 +496,12 @@ limitations rather than finished features:
   recipient count. An invalid saved allowlist still loads in Mail for repair;
   sending stays blocked until it is fixed. See
   [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md).
+- **Commerce never spends.** The `spend_request` tool can only insert a pending
+  request; the owner approves or denies it, and limits are re-checked at
+  approval. Opening checkout is an external browser handoff, and “mark
+  purchased” records a person's statement without verifying an order. There is
+  no payment rail, card data, automated checkout, tax, shipping, refunds or
+  currency conversion. See [`docs/COMMERCE.md`](docs/COMMERCE.md).
 - **Voice is not a meeting bot.** Hands-free voice mode transcribes microphone
   speech, sends it to the agent, and speaks the reply. Recording import accepts
   an existing audio file (WAV, MP3, OGG, M4A, WebM or FLAC, 100 bytes–25 MiB) and
@@ -526,6 +538,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/RELEASE.md`](docs/RELEASE.md) | Signing, notarization, updater, checksums and SBOM |
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
 | [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md) | Draft-only agent email: Mail panel, config, allowlist, storage, audit, limits |
+| [`docs/COMMERCE.md`](docs/COMMERCE.md) | Spend requests, owner approval, limits, merchant allowlist and human checkout handoff |
 | [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md) | Hands-free voice mode, recording import, formats/limits, STT cost, honest limits |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
 | [`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md) | The bundled OpenBot gallery, URL scheme, six work states, materials and fallbacks |

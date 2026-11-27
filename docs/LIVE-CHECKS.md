@@ -179,6 +179,42 @@ through **Settings → Mail**:
 
 See [`AGENT-EMAIL.md`](AGENT-EMAIL.md).
 
+## Manual commerce check
+
+CI covers the tool, policy validation, transactional daily limit, owner gates
+and the Commerce panel. A release should also exercise one real external
+checkout handoff with a merchant page you control; do not complete a purchase
+unless it is a sandbox cart.
+
+1. As the workspace owner, open **Settings → Commerce**. Confirm commerce is off
+   by default and the panel says RAVENBOT never checks out or stores card data.
+2. Ask an agent to use `spend_request` while commerce is off. Confirm it fails
+   with a Settings → Commerce message and the request list stays empty.
+3. Set currency `USD`, a per-request limit of `2000`, a daily limit of `5000`,
+   and allowlist `example.com`. Save and confirm the saved values come back.
+4. Ask for a `1500` request at `https://shop.example.com/checkout/test`. Confirm
+   the reply says **pending**, **approved: false**, **purchased: false**, and the
+   panel shows the title, merchant, amount in minor units, reason and URL.
+   Nothing opens and nothing is purchased.
+5. Ask for `2500` and for `https://other.example/checkout`; confirm both are
+   refused (per-request limit and merchant allowlist) and no row is added.
+6. Approve the `1500` request. Confirm the status becomes **Approved**, the
+   browser does not open automatically, and the audit viewer gets an
+   `ApprovalDecision` row. Press **Open checkout** and confirm your browser opens
+   the exact stored HTTPS URL while the app window stays put.
+7. With `1500` already approved today, approve a second `4000` request. Confirm
+   it is refused with the committed total and the daily limit, and remains
+   **Pending**.
+8. Use a sandbox cart to complete checkout, then press **Mark purchased** and
+   confirm the status and purchase time. Separately, deny one request and
+   cancel another; confirm each is terminal and cannot be approved afterwards.
+9. Confirm the card shows no card number, CVV, expiry, order id, tax, shipping
+   or refund fields, and that no agent tool can approve or purchase.
+10. Sign in as an operator and a viewer; confirm neither can read or change
+    commerce settings or requests.
+
+See [`COMMERCE.md`](COMMERCE.md).
+
 ## Manual enterprise export check
 
 The export loop is covered by an in-process collector in CI. A release should

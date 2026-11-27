@@ -45,7 +45,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Ecosystem** | 135 MCP connectors, 2,530-app OpenAPI directory, 1,497 skills, 30 jobs | ClawHub skills/plugins with scans; MCP, A2A, ACP | Bot marketplace, app connectors, MCP/API | 1,000+ plugins, Skills Hub, MCP | App connectors, can build tools |
 | **Public task-success evidence** | ○ no public benchmark | ● ShellBench | ◐ vendor examples, no public benchmark | ◐ trajectory research, no public success suite | ◐ vendor examples |
 | **Voice** | ◐ STT→send→TTS via provider key; recording-import notes from local audio (WAV/MP3/OGG/M4A/WebM/FLAC, 25 MiB cap); no realtime voice | ● voice nodes, Talk mode, realtime | ● voice notes and calls | ◐ voice memo transcription | ● voice mode |
-| **Meetings / email / commerce** | ◐ recording-import notes and draft-only agent email with a human send and owner-only Mail panel; no live meeting join, agent inbox or payments | ◐ channels, no native meeting/commerce product | ● meetings, agent email, cards/wallets, purchases | ○ no meeting/commerce product | ● meetings-adjacent, email identity, commerce partners |
+| **Meetings / email / commerce** | ◐ recording-import notes, draft-only agent email with a human send and owner-only Mail panel, and owner-approved spend requests with limits and a human checkout handoff; no live meeting join, agent inbox, payment rail or card handling | ◐ channels, no native meeting/commerce product | ● meetings, agent email, cards/wallets, purchases | ○ no meeting/commerce product | ● meetings-adjacent, email identity, commerce partners |
 | **Localization / a11y** | ● 12 locales, axe gates, keyboard audit | ◐ English-first | ◐ English-first | ◐ English-first | ◐ English-first |
 | **Release trust** | ◐ checksums + SBOM; unsigned installers; no updater | ● signed releases, update channels | ● managed app distribution | ● desktop/MSIX installers, update ownership documented | ● managed app |
 | **Pricing** | MIT, free, BYO keys | MIT, free, no paid tier | Subscription (Grok/Cursor plans) | MIT; Cloud $20–$200/mo | Free / $20 / $100/mo |
@@ -136,7 +136,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Marketplace trust** | ClawHub scans, Grok marketplace, Hermes 1,000+ plugins | Signed manifests, per-operation scopes, sandboxed MCP, verified badges, rollback, and a live-tested “recommended” set. RAVENBOT has catalog breadth without the trust layer. |
 | **Enterprise controls** | Grok Bot | SSO/SCIM, egress allowlists, inference hooks, action recording/OTel, retention, data residency, admin API. RAVENBOT now has local roles/audit, optional OIDC SSO for the remote surface, SCIM 2.0 **Users** provisioning with an owner-only **Settings → Remote** card (workspace-scoped token shown once, default viewer/operator grant, soft deprovision, no owner or shared-account control), and an opt-in OTLP/HTTP **logs** export of redacted metadata, but still no SCIM Groups/group mapping, metrics/traces, data-residency controls or hosted relay. |
 | **Meetings, agent email, voice calls** | Grok Bot, Muse | Join a meeting and return notes/actions; own an email address; make/receive a call with approvals. RAVENBOT has STT/TTS, recording-import notes for local audio (WAV/MP3/OGG/M4A/WebM/FLAC, 25 MiB cap, 60,000-character transcript cap, audio only; no live join, diarization, video or calls) and draft-only agent email with human send from an owner-only Mail panel (SMTP account, allowlist, plain text), but no meeting join, inbound mailbox, manual composer or calls. |
-| **Consumer integrations and commerce** | Muse, Grok Bot | Shopping, cards/wallets, travel, health, relationships. High trust risk; only worth entering with spend controls and insurance. |
+| **Consumer integrations and commerce** | Muse, Grok Bot | Shopping, cards/wallets, travel, health, relationships. High trust risk; only worth entering with spend controls and insurance. RAVENBOT now records owner-approved spend requests with per-request and UTC-daily limits, a merchant allowlist and an external human checkout, but has no payment rail, cards, orders or automated purchase. |
 | **Release governance** | OpenClaw Foundation, Grok ISO certifications | A neutral steward, signed artifacts, public advisories, independent security review. MIT alone is not a security story. |
 
 ## 4. What “best in market” should mean
@@ -240,11 +240,16 @@ testable acceptance bar.
     composer's meeting-notes dialog, picks a local WAV/MP3/OGG/M4A/WebM/FLAC file
     (≤25 MiB, audio only), gets a transcript capped at 60,000 characters, reviews
     the preview, and inserts a notes prompt with a summary, decisions, action
-    items and open questions without sending it. Inbound mail/IMAP, live meeting
-    join, diarization, video import, voice calls and a manual email draft composer
-    remain open. Acceptance: import a recording and return notes and actions
-    (shipped); join a live meeting (open); email always drafts unless explicitly
-    approved (shipped for outbound drafts).
+    items and open questions without sending it. Commerce ships as owner-approved
+    spend requests: the agent can only create a pending request, policy limits
+    and the merchant allowlist are re-checked at approval, and the person opens
+    the merchant checkout in a browser and records the result. Inbound mail/IMAP,
+    live meeting join, diarization, video import, voice calls, a manual email
+    draft composer, payment rails, card handling and automated checkout remain
+    open. Acceptance: import a recording and return notes and actions (shipped);
+    join a live meeting (open); email always drafts unless explicitly approved
+    (shipped for outbound drafts); no agent can spend without owner approval
+    (shipped, with human checkout).
 13. **Subscription bridge.**
     Official/authorized adapters for Claude/ChatGPT/Grok subscriptions with
     health checks and fallback. Acceptance: one job runs through a subscription

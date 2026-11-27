@@ -4378,6 +4378,333 @@ async fn send_email_draft(state: State<'_, AppState>, id: String) -> Result<(), 
     Ok(())
 }
 
+/// Commerce settings are strings on the wire so an invalid saved value can be
+/// shown and repaired instead of being silently replaced by a default.
+#[derive(serde::Serialize)]
+struct CommerceSettingsView {
+    enabled: bool,
+    currency: String,
+    per_request_limit_minor: String,
+    daily_limit_minor: String,
+    allowlist: String,
+    valid: bool,
+    validation_error: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct CommerceSettingsInput {
+    enabled: bool,
+    currency: String,
+    per_request_limit_minor: String,
+    daily_limit_minor: String,
+    #[serde(default)]
+    allowlist: String,
+}
+
+async fn load_commerce_settings(pool: &sqlx::SqlitePool) -> Result<CommerceSettingsView, String> {
+    let read = |key: &'static str| {
+        let pool = pool.clone();
+        async move {
+            ravenbot_db::queries::AppSettingsQueries::get(&pool, key)
+                .await
+                .map(|value| value.unwrap_or_default())
+                .map_err(|error| error.to_string())
+        }
+    };
+    let enabled = read(ravenbot_core::commerce::ENABLED_SETTING_KEY).await? == "true";
+    let currency = {
+        let value = read(ravenbot_core::commerce::CURRENCY_SETTING_KEY).await?;
+        if value.trim().is_empty() {
+            "USD".to_string()
+        } else {
+            value
+        }
+    };
+    let per_request_limit_minor =
+        read(ravenbot_core::commerce::PER_REQUEST_LIMIT_SETTING_KEY).await?;
+    let daily_limit_minor = read(ravenbot_core::commerce::DAILY_LIMIT_SETTING_KEY).await?;
+    let allowlist = read(ravenbot_core::commerce::ALLOWLIST_SETTING_KEY).await?;
+    let validation = ravenbot_core::commerce::SpendPolicy::from_stored(
+        enabled,
+        &currency,
+        &per_request_limit_minor,
+        &daily_limit_minor,
+        &allowlist,
+    );
+    Ok(CommerceSettingsView {
+        enabled,
+        currency,
+        per_request_limit_minor,
+        daily_limit_minor,
+        allowlist,
+        valid: validation.is_ok(),
+        validation_error: validation.err(),
+    })
+}
+
+async fn load_commerce_policy(
+    pool: &sqlx::SqlitePool,
+) -> Result<ravenbot_core::commerce::SpendPolicy, String> {
+    let view = load_commerce_settings(pool).await?;
+    ravenbot_core::commerce::SpendPolicy::from_stored(
+        view.enabled,
+        &view.currency,
+        &view.per_request_limit_minor,
+        &view.daily_limit_minor,
+        &view.allowlist,
+    )
+    .map_err(|error| {
+        format!("The saved commerce policy is invalid. Fix it in Settings → Commerce: {error}")
+    })
+}
+
+fn spend_request_input(
+    row: &ravenbot_db::queries::SpendRequest,
+) -> Result<ravenbot_core::commerce::SpendRequestInput, String> {
+    ravenbot_core::commerce::SpendRequestInput::validate(
+        &row.title,
+        &row.merchant,
+        &row.merchant_url,
+        u64::try_from(row.amount_minor).unwrap_or(0),
+        &row.currency,
+        &row.reason,
+    )
+    .map_err(|error| format!("The saved spend request is no longer valid: {error}"))
+}
+
+fn clean_spend_note(note: Option<String>) -> Result<Option<String>, String> {
+    let value = note.unwrap_or_default().trim().to_string();
+    if value.chars().count() > 500 {
+        return Err("The decision note is longer than 500 characters.".to_string());
+    }
+    if value
+        .chars()
+        .any(|character| character.is_control() && character != '\n' && character != '\t')
+    {
+        return Err("The decision note contains an unsupported control character.".to_string());
+    }
+    Ok(if value.is_empty() { None } else { Some(value) })
+}
+
+async fn audit_spend_decision(
+    state: &AppState,
+    row: &ravenbot_db::queries::SpendRequest,
+    allowed: bool,
+    note: Option<String>,
+) {
+    let bot_id = Uuid::parse_str(&row.bot_id).unwrap_or_default();
+    let mut entry = ravenbot_core::AuditEntry::new(
+        bot_id,
+        ravenbot_core::AuditEventType::ApprovalDecision {
+            approval_id: row.id.clone(),
+            tool_name: "spend_request".to_string(),
+            allowed,
+            source: "desktop".to_string(),
+            note,
+        },
+    );
+    if let Some(run_id) = row
+        .run_id
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok())
+    {
+        entry = entry.with_run_id(run_id);
+    }
+    if let Some(thread_id) = row
+        .thread_id
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok())
+    {
+        entry = entry.with_thread_id(thread_id);
+    }
+    if let Err(error) = state.runtime.audit_logger().log(&entry).await {
+        tracing::warn!(%error, "Could not audit a spend decision");
+    }
+}
+
+#[tauri::command]
+async fn get_commerce_settings(state: State<'_, AppState>) -> Result<CommerceSettingsView, String> {
+    load_commerce_settings(state.db.pool()).await
+}
+
+#[tauri::command]
+async fn set_commerce_settings(
+    state: State<'_, AppState>,
+    input: CommerceSettingsInput,
+) -> Result<CommerceSettingsView, String> {
+    let policy = ravenbot_core::commerce::SpendPolicy::from_stored(
+        input.enabled,
+        &input.currency,
+        &input.per_request_limit_minor,
+        &input.daily_limit_minor,
+        &input.allowlist,
+    )?;
+    let pool = state.db.pool();
+    for (key, value) in [
+        (
+            ravenbot_core::commerce::ENABLED_SETTING_KEY,
+            if policy.enabled { "true" } else { "false" }.to_string(),
+        ),
+        (
+            ravenbot_core::commerce::CURRENCY_SETTING_KEY,
+            policy.currency.clone(),
+        ),
+        (
+            ravenbot_core::commerce::PER_REQUEST_LIMIT_SETTING_KEY,
+            policy.per_request_limit_minor.to_string(),
+        ),
+        (
+            ravenbot_core::commerce::DAILY_LIMIT_SETTING_KEY,
+            policy.daily_limit_minor.to_string(),
+        ),
+        (
+            ravenbot_core::commerce::ALLOWLIST_SETTING_KEY,
+            policy.allowed_merchants.join(", "),
+        ),
+    ] {
+        ravenbot_db::queries::AppSettingsQueries::set(pool, key, &value)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    load_commerce_settings(pool).await
+}
+
+#[tauri::command]
+async fn list_spend_requests(
+    state: State<'_, AppState>,
+) -> Result<Vec<ravenbot_db::queries::SpendRequest>, String> {
+    ravenbot_db::queries::SpendRequestQueries::list(state.db.pool(), 100)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+async fn approve_spend_request(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ravenbot_db::queries::SpendRequest, String> {
+    let policy = load_commerce_policy(state.db.pool()).await?;
+    let row = ravenbot_db::queries::SpendRequestQueries::get(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The spend request no longer exists.".to_string())?;
+    if row.status != "pending" {
+        return Err("Only a pending spend request can be approved.".to_string());
+    }
+    let input = spend_request_input(&row)?;
+    // Re-check the request against the current policy, then let the DB method
+    // re-check the day's total inside the transaction that flips the row.
+    let today = chrono::Utc::now().date_naive().to_string();
+    let spent_today = ravenbot_db::queries::SpendRequestQueries::spent_on(state.db.pool(), &today)
+        .await
+        .map_err(|error| error.to_string())?;
+    policy.check(&input, spent_today)?;
+    let outcome = ravenbot_db::queries::SpendRequestQueries::approve(
+        state.db.pool(),
+        &id,
+        &state.account.username,
+        policy.daily_limit_minor,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    match outcome {
+        ravenbot_db::queries::ApproveOutcome::Approved(row) => {
+            audit_spend_decision(&state, &row, true, None).await;
+            Ok(row)
+        }
+        ravenbot_db::queries::ApproveOutcome::NotFound => {
+            Err("The spend request no longer exists.".to_string())
+        }
+        ravenbot_db::queries::ApproveOutcome::NotPending => {
+            Err("Only a pending spend request can be approved.".to_string())
+        }
+        ravenbot_db::queries::ApproveOutcome::DailyLimitExceeded {
+            spent_today_minor,
+            limit_minor,
+        } => Err(format!(
+            "Approving this would exceed the daily limit of {limit_minor} {} minor units. Already committed today: {spent_today_minor}.",
+            policy.currency
+        )),
+    }
+}
+
+#[tauri::command]
+async fn deny_spend_request(
+    state: State<'_, AppState>,
+    id: String,
+    note: Option<String>,
+) -> Result<ravenbot_db::queries::SpendRequest, String> {
+    let note = clean_spend_note(note)?;
+    let denied = ravenbot_db::queries::SpendRequestQueries::deny(
+        state.db.pool(),
+        &id,
+        &state.account.username,
+        note.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if !denied {
+        return Err("Only a pending spend request can be denied.".to_string());
+    }
+    let row = ravenbot_db::queries::SpendRequestQueries::get(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The spend request no longer exists.".to_string())?;
+    audit_spend_decision(&state, &row, false, note).await;
+    Ok(row)
+}
+
+#[tauri::command]
+async fn mark_spend_purchased(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<ravenbot_db::queries::SpendRequest, String> {
+    let purchased = ravenbot_db::queries::SpendRequestQueries::mark_purchased(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?;
+    if !purchased {
+        return Err("Only an approved spend request can be marked purchased.".to_string());
+    }
+    let row = ravenbot_db::queries::SpendRequestQueries::get(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The spend request no longer exists.".to_string())?;
+    audit_spend_decision(
+        &state,
+        &row,
+        true,
+        Some("Marked purchased by the owner after checkout.".to_string()),
+    )
+    .await;
+    Ok(row)
+}
+
+#[tauri::command]
+async fn cancel_spend_request(
+    state: State<'_, AppState>,
+    id: String,
+    note: Option<String>,
+) -> Result<ravenbot_db::queries::SpendRequest, String> {
+    let note = clean_spend_note(note)?;
+    let cancelled = ravenbot_db::queries::SpendRequestQueries::cancel(
+        state.db.pool(),
+        &id,
+        &state.account.username,
+        note.as_deref(),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if !cancelled {
+        return Err("Only a pending or approved spend request can be cancelled.".to_string());
+    }
+    let row = ravenbot_db::queries::SpendRequestQueries::get(state.db.pool(), &id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "The spend request no longer exists.".to_string())?;
+    audit_spend_decision(&state, &row, false, note).await;
+    Ok(row)
+}
+
 /// Send a generic attention notification through the OS.
 ///
 /// The renderer supplies only short, already-redacted text. Notifications must
@@ -24906,6 +25233,13 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         update_email_draft,
         discard_email_draft,
         send_email_draft,
+        get_commerce_settings,
+        set_commerce_settings,
+        list_spend_requests,
+        approve_spend_request,
+        deny_spend_request,
+        mark_spend_purchased,
+        cancel_spend_request,
         computer_takeover,
         set_computer_takeover,
         set_wayland_control_allowed,

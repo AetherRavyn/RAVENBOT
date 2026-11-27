@@ -13,6 +13,7 @@ pub mod bundle;
 pub mod capability;
 pub mod channel;
 pub mod chatroom;
+pub mod commerce;
 pub mod email;
 pub mod file_change;
 pub mod goal;

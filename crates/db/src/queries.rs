@@ -5329,6 +5329,322 @@ impl EmailDraftQueries {
     }
 }
 
+/// A spend request and the owner's decision. The URL is the merchant's own
+/// checkout page; RAVENBOT opens it in the browser and never posts to it.
+#[derive(Debug, Clone, Serialize)]
+pub struct SpendRequest {
+    pub id: String,
+    pub bot_id: String,
+    pub thread_id: Option<String>,
+    pub run_id: Option<String>,
+    pub title: String,
+    pub merchant: String,
+    pub merchant_url: String,
+    pub amount_minor: i64,
+    pub currency: String,
+    pub reason: String,
+    pub status: String,
+    pub decided_by: Option<String>,
+    pub decided_at: Option<String>,
+    pub decision_note: Option<String>,
+    pub purchased_at: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Values written when an agent creates a pending request.
+#[derive(Debug, Clone)]
+pub struct NewSpendRequest<'a> {
+    pub bot_id: &'a str,
+    pub thread_id: Option<&'a str>,
+    pub run_id: Option<&'a str>,
+    pub title: &'a str,
+    pub merchant: &'a str,
+    pub merchant_url: &'a str,
+    pub amount_minor: i64,
+    pub currency: &'a str,
+    pub reason: &'a str,
+}
+
+/// Result of an approval attempt. The daily limit is re-checked inside the same
+/// transaction that flips the row, so two approvals cannot both spend the last
+/// of the day's budget.
+#[derive(Debug, Clone)]
+pub enum ApproveOutcome {
+    Approved(SpendRequest),
+    NotFound,
+    NotPending,
+    DailyLimitExceeded {
+        spent_today_minor: u64,
+        limit_minor: u64,
+    },
+}
+
+#[derive(sqlx::FromRow)]
+struct SpendRequestRow {
+    id: String,
+    bot_id: String,
+    thread_id: Option<String>,
+    run_id: Option<String>,
+    title: String,
+    merchant: String,
+    merchant_url: String,
+    amount_minor: i64,
+    currency: String,
+    reason: String,
+    status: String,
+    decided_by: Option<String>,
+    decided_at: Option<String>,
+    decision_note: Option<String>,
+    purchased_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+fn spend_request_from_row(row: SpendRequestRow) -> SpendRequest {
+    SpendRequest {
+        id: row.id,
+        bot_id: row.bot_id,
+        thread_id: row.thread_id,
+        run_id: row.run_id,
+        title: row.title,
+        merchant: row.merchant,
+        merchant_url: row.merchant_url,
+        amount_minor: row.amount_minor,
+        currency: row.currency,
+        reason: row.reason,
+        status: row.status,
+        decided_by: row.decided_by,
+        decided_at: row.decided_at,
+        decision_note: row.decision_note,
+        purchased_at: row.purchased_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    }
+}
+
+/// Spend requests. Every decision transition is guarded by the current status,
+/// so a browser retry or a second click cannot approve or purchase twice.
+pub struct SpendRequestQueries;
+
+impl SpendRequestQueries {
+    pub async fn create(
+        pool: &SqlitePool,
+        request: &NewSpendRequest<'_>,
+    ) -> Result<SpendRequest, sqlx::Error> {
+        let id = Uuid::new_v4().to_string();
+        let now = Utc::now().to_rfc3339();
+        sqlx::query(
+            "INSERT INTO spend_requests
+               (id, bot_id, thread_id, run_id, title, merchant, merchant_url,
+                amount_minor, currency, reason, status, decided_by, decided_at,
+                decision_note, purchased_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL,
+                     NULL, NULL, ?, ?)",
+        )
+        .bind(&id)
+        .bind(request.bot_id)
+        .bind(request.thread_id)
+        .bind(request.run_id)
+        .bind(request.title)
+        .bind(request.merchant)
+        .bind(request.merchant_url)
+        .bind(request.amount_minor)
+        .bind(request.currency)
+        .bind(request.reason)
+        .bind(&now)
+        .bind(&now)
+        .execute(pool)
+        .await?;
+        Self::get(pool, &id)
+            .await?
+            .ok_or_else(|| sqlx::Error::RowNotFound)
+    }
+
+    /// Newest first, capped at 100. Pending and decided rows share the list so
+    /// the owner can see what was refused or bought, not only the queue.
+    pub async fn list(pool: &SqlitePool, limit: i64) -> Result<Vec<SpendRequest>, sqlx::Error> {
+        let limit = limit.clamp(1, 100);
+        let rows: Vec<SpendRequestRow> = sqlx::query_as(
+            "SELECT id, bot_id, thread_id, run_id, title, merchant, merchant_url,
+                    amount_minor, currency, reason, status, decided_by, decided_at,
+                    decision_note, purchased_at, created_at, updated_at
+               FROM spend_requests
+              ORDER BY created_at DESC, id DESC
+              LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().map(spend_request_from_row).collect())
+    }
+
+    pub async fn get(pool: &SqlitePool, id: &str) -> Result<Option<SpendRequest>, sqlx::Error> {
+        let row: Option<SpendRequestRow> = sqlx::query_as(
+            "SELECT id, bot_id, thread_id, run_id, title, merchant, merchant_url,
+                    amount_minor, currency, reason, status, decided_by, decided_at,
+                    decision_note, purchased_at, created_at, updated_at
+               FROM spend_requests WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(spend_request_from_row))
+    }
+
+    /// Sum of requests that counted against the day's budget. `day` is a
+    /// `YYYY-MM-DD` UTC date; approved and purchased rows count on the day they
+    /// were approved.
+    pub async fn spent_on(pool: &SqlitePool, day: &str) -> Result<u64, sqlx::Error> {
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(amount_minor), 0)
+               FROM spend_requests
+              WHERE status IN ('approved', 'purchased')
+                AND substr(decided_at, 1, 10) = ?",
+        )
+        .bind(day)
+        .fetch_one(pool)
+        .await?;
+        Ok(total.max(0) as u64)
+    }
+
+    /// Atomically approve a pending request if the day's budget still allows
+    /// it. Returns the committed row, or the exact reason nothing changed.
+    pub async fn approve(
+        pool: &SqlitePool,
+        id: &str,
+        decided_by: &str,
+        daily_limit_minor: u64,
+    ) -> Result<ApproveOutcome, sqlx::Error> {
+        let now = Utc::now();
+        let now_text = now.to_rfc3339();
+        let day = now.date_naive().to_string();
+        let mut tx = pool.begin().await?;
+        let row: Option<(String, i64)> =
+            sqlx::query_as("SELECT status, amount_minor FROM spend_requests WHERE id = ?")
+                .bind(id)
+                .fetch_optional(&mut *tx)
+                .await?;
+        let Some((status, amount_minor)) = row else {
+            tx.rollback().await?;
+            return Ok(ApproveOutcome::NotFound);
+        };
+        if status != "pending" {
+            tx.rollback().await?;
+            return Ok(ApproveOutcome::NotPending);
+        }
+        let spent: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(amount_minor), 0)
+               FROM spend_requests
+              WHERE status IN ('approved', 'purchased')
+                AND substr(decided_at, 1, 10) = ?
+                AND id != ?",
+        )
+        .bind(&day)
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        let spent = spent.max(0) as u64;
+        let amount = amount_minor.max(0) as u64;
+        let exceeds = spent
+            .checked_add(amount)
+            .map(|total| total > daily_limit_minor)
+            .unwrap_or(true);
+        if exceeds {
+            tx.rollback().await?;
+            return Ok(ApproveOutcome::DailyLimitExceeded {
+                spent_today_minor: spent,
+                limit_minor: daily_limit_minor,
+            });
+        }
+        sqlx::query(
+            "UPDATE spend_requests
+                SET status = 'approved', decided_by = ?, decided_at = ?,
+                    decision_note = NULL, updated_at = ?
+              WHERE id = ? AND status = 'pending'",
+        )
+        .bind(decided_by)
+        .bind(&now_text)
+        .bind(&now_text)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(match Self::get(pool, id).await? {
+            Some(request) => ApproveOutcome::Approved(request),
+            None => ApproveOutcome::NotFound,
+        })
+    }
+
+    /// Deny a pending request. A decided row cannot change status here.
+    pub async fn deny(
+        pool: &SqlitePool,
+        id: &str,
+        decided_by: &str,
+        note: Option<&str>,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE spend_requests
+                SET status = 'denied', decided_by = ?, decided_at = ?,
+                    decision_note = ?, updated_at = ?
+              WHERE id = ? AND status = 'pending'",
+        )
+        .bind(decided_by)
+        .bind(&now)
+        .bind(note)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Record that the person completed the purchase. Only an approved request
+    /// can become purchased, and this records no payment details.
+    pub async fn mark_purchased(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE spend_requests
+                SET status = 'purchased', purchased_at = ?, updated_at = ?
+              WHERE id = ? AND status = 'approved'",
+        )
+        .bind(&now)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Cancel a pending or approved request before it is marked purchased.
+    pub async fn cancel(
+        pool: &SqlitePool,
+        id: &str,
+        decided_by: &str,
+        note: Option<&str>,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE spend_requests
+                SET status = 'cancelled',
+                    decided_by = COALESCE(decided_by, ?),
+                    decided_at = COALESCE(decided_at, ?),
+                    decision_note = COALESCE(?, decision_note),
+                    updated_at = ?
+              WHERE id = ? AND status IN ('pending', 'approved')",
+        )
+        .bind(decided_by)
+        .bind(&now)
+        .bind(note)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+}
+
 /// A Telegram chat paired with a RAVENBOT conversation.
 #[derive(Debug, Clone, Serialize)]
 pub struct TelegramLink {
@@ -14189,5 +14505,224 @@ mod email_draft_tests {
             .expect("row");
         assert_eq!(recovered.status, "draft");
         assert_eq!(recovered.error.as_deref(), Some(SEND_INTERRUPTED_ERROR));
+    }
+}
+
+#[cfg(test)]
+mod commerce_query_tests {
+    use super::*;
+
+    async fn db() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("in-memory pool");
+        crate::migrations::run(&pool).await.expect("migrations");
+        pool
+    }
+
+    fn request(title: &str, amount: i64) -> NewSpendRequest<'_> {
+        NewSpendRequest {
+            bot_id: "bot-1",
+            thread_id: Some("thread-1"),
+            run_id: Some("run-1"),
+            title,
+            merchant: "Example Store",
+            merchant_url: "https://shop.example.com/checkout",
+            amount_minor: amount,
+            currency: "USD",
+            reason: "A test purchase.",
+        }
+    }
+
+    #[tokio::test]
+    async fn creates_lists_and_reads_requests() {
+        let pool = db().await;
+        let first = SpendRequestQueries::create(&pool, &request("Drive", 1_200))
+            .await
+            .expect("create");
+        SpendRequestQueries::create(&pool, &request("Cable", 300))
+            .await
+            .expect("create");
+        assert_eq!(first.status, "pending");
+        assert_eq!(first.amount_minor, 1_200);
+        assert!(first.decided_at.is_none());
+
+        let loaded = SpendRequestQueries::get(&pool, &first.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(loaded.title, "Drive");
+        assert_eq!(loaded.merchant_url, "https://shop.example.com/checkout");
+
+        let all = SpendRequestQueries::list(&pool, 100).await.expect("list");
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|row| row.id == first.id));
+    }
+
+    #[tokio::test]
+    async fn approval_is_pending_only_and_records_the_actor() {
+        let pool = db().await;
+        let row = SpendRequestQueries::create(&pool, &request("Drive", 1_200))
+            .await
+            .expect("create");
+
+        let outcome = SpendRequestQueries::approve(&pool, &row.id, "owner", 10_000)
+            .await
+            .expect("approve");
+        let ApproveOutcome::Approved(approved) = outcome else {
+            panic!("expected approval");
+        };
+        assert_eq!(approved.status, "approved");
+        assert_eq!(approved.decided_by.as_deref(), Some("owner"));
+        assert!(approved.decided_at.is_some());
+
+        assert!(matches!(
+            SpendRequestQueries::approve(&pool, &row.id, "owner", 10_000)
+                .await
+                .expect("second approve"),
+            ApproveOutcome::NotPending
+        ));
+        assert!(matches!(
+            SpendRequestQueries::approve(&pool, "missing", "owner", 10_000)
+                .await
+                .expect("missing"),
+            ApproveOutcome::NotFound
+        ));
+    }
+
+    #[tokio::test]
+    async fn daily_limit_is_enforced_at_approval_and_rolls_back() {
+        let pool = db().await;
+        let first = SpendRequestQueries::create(&pool, &request("Drive", 3_000))
+            .await
+            .expect("create");
+        let second = SpendRequestQueries::create(&pool, &request("Cable", 3_000))
+            .await
+            .expect("create");
+
+        assert!(matches!(
+            SpendRequestQueries::approve(&pool, &first.id, "owner", 5_000)
+                .await
+                .expect("first"),
+            ApproveOutcome::Approved(_)
+        ));
+        match SpendRequestQueries::approve(&pool, &second.id, "owner", 5_000)
+            .await
+            .expect("second")
+        {
+            ApproveOutcome::DailyLimitExceeded {
+                spent_today_minor,
+                limit_minor,
+            } => {
+                assert_eq!(spent_today_minor, 3_000);
+                assert_eq!(limit_minor, 5_000);
+            }
+            other => panic!("expected daily limit, got {other:?}"),
+        }
+        let still_pending = SpendRequestQueries::get(&pool, &second.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(still_pending.status, "pending");
+        assert!(still_pending.decided_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn decisions_are_terminal_and_do_not_skip_states() {
+        let pool = db().await;
+        let denied = SpendRequestQueries::create(&pool, &request("Denied", 100))
+            .await
+            .expect("create");
+        assert!(
+            SpendRequestQueries::deny(&pool, &denied.id, "owner", Some("not needed"))
+                .await
+                .expect("deny")
+        );
+        assert!(!SpendRequestQueries::deny(&pool, &denied.id, "owner", None)
+            .await
+            .expect("second deny"));
+        assert!(!SpendRequestQueries::mark_purchased(&pool, &denied.id)
+            .await
+            .expect("purchase denied"));
+
+        let approved = SpendRequestQueries::create(&pool, &request("Approved", 200))
+            .await
+            .expect("create");
+        SpendRequestQueries::approve(&pool, &approved.id, "owner", 1_000)
+            .await
+            .expect("approve");
+        assert!(SpendRequestQueries::mark_purchased(&pool, &approved.id)
+            .await
+            .expect("purchase"));
+        assert!(!SpendRequestQueries::mark_purchased(&pool, &approved.id)
+            .await
+            .expect("second purchase"));
+        assert!(
+            !SpendRequestQueries::cancel(&pool, &approved.id, "owner", None)
+                .await
+                .expect("cancel purchased")
+        );
+
+        let pending = SpendRequestQueries::create(&pool, &request("Pending", 300))
+            .await
+            .expect("create");
+        assert!(
+            SpendRequestQueries::cancel(&pool, &pending.id, "owner", Some("changed mind"))
+                .await
+                .expect("cancel")
+        );
+        assert!(matches!(
+            SpendRequestQueries::approve(&pool, &pending.id, "owner", 1_000)
+                .await
+                .expect("approve cancelled"),
+            ApproveOutcome::NotPending
+        ));
+    }
+
+    #[tokio::test]
+    async fn spent_today_counts_only_approved_and_purchased() {
+        let pool = db().await;
+        let approved = SpendRequestQueries::create(&pool, &request("Approved", 1_000))
+            .await
+            .expect("create");
+        SpendRequestQueries::approve(&pool, &approved.id, "owner", 10_000)
+            .await
+            .expect("approve");
+
+        let purchased = SpendRequestQueries::create(&pool, &request("Purchased", 500))
+            .await
+            .expect("create");
+        SpendRequestQueries::approve(&pool, &purchased.id, "owner", 10_000)
+            .await
+            .expect("approve");
+        SpendRequestQueries::mark_purchased(&pool, &purchased.id)
+            .await
+            .expect("purchase");
+
+        SpendRequestQueries::create(&pool, &request("Pending", 9_999))
+            .await
+            .expect("create");
+        let denied = SpendRequestQueries::create(&pool, &request("Denied", 9_999))
+            .await
+            .expect("create");
+        SpendRequestQueries::deny(&pool, &denied.id, "owner", None)
+            .await
+            .expect("deny");
+
+        let today = Utc::now().date_naive().to_string();
+        assert_eq!(
+            SpendRequestQueries::spent_on(&pool, &today)
+                .await
+                .expect("sum"),
+            1_500
+        );
+        assert_eq!(
+            SpendRequestQueries::spent_on(&pool, "2000-01-01")
+                .await
+                .expect("other day"),
+            0
+        );
     }
 }
