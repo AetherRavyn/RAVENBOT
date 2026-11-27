@@ -3239,6 +3239,9 @@
     "decideError": "Impossible de mettre à jour la demande de dépense.",
     "minorUnits": "unités mineures"
   },
+  "visual": {
+    "contextLabel": "Contexte visuel"
+  },
   "meeting": {
     "title": "Enregistrement de réunion",
     "description": "Transformez un enregistrement existant en prompt de notes de réunion. RAVENBOT ne rejoint pas les appels.",

@@ -16,6 +16,13 @@
   import { invoke } from "@tauri-apps/api/core";
   import { openExternal } from "$lib/external";
   import { isExternal, safeHref } from "$lib/markdown/safeUrl";
+  import {
+    normalizeVisualText,
+    VISUAL_COMPOSE_EVENT,
+    VISUAL_COMPOSE_LIMIT,
+    VISUAL_CONTEXT_EVENT,
+    VISUAL_CONTEXT_LIMIT,
+  } from "$lib/chat/visualComposer";
   import MarkdownCode from "./MarkdownCode.svelte";
   import { Code2, Eye, Maximize2, Minimize2, ShieldCheck } from "@lucide/svelte";
 
@@ -88,8 +95,8 @@
   setTimeout(report, 250);
 
   let userActed = false;
-  addEventListener("pointerdown", () => { userActed = true; }, true);
-  addEventListener("keydown", () => { userActed = true; }, true);
+  addEventListener("pointerdown", (event) => { if (event.isTrusted) userActed = true; }, true);
+  addEventListener("keydown", (event) => { if (event.isTrusted) userActed = true; }, true);
   document.addEventListener("click", (event) => {
     if (!event.isTrusted || !(event.target instanceof Element)) return;
     const link = event.target.closest("a[href]");
@@ -111,6 +118,12 @@
   window.ravenbot = Object.freeze({
     requestFullscreen: () => userActed && send({ type: "display-mode", mode: "fullscreen" }),
     exitFullscreen: () => send({ type: "display-mode", mode: "inline" }),
+    compose: (text) => {
+      if (userActed && typeof text === "string" && text.trim()) send({ type: "compose", text });
+    },
+    setContext: (text) => {
+      if (userActed && typeof text === "string") send({ type: "set-context", text });
+    },
   });
 })();
 `;
@@ -293,10 +306,30 @@
     frame.contentWindow?.postMessage({ __ravenbotRequestSize: true }, "*");
   }
 
+  function emitVisual(name: string, text: string) {
+    if (typeof window === "undefined") return;
+    window.dispatchEvent(new CustomEvent(name, { detail: { text } }));
+  }
+
   function onMessage(event: MessageEvent) {
     if (!frameWindow || event.source !== frameWindow) return;
     const data = event.data as Record<string, unknown> | null;
     if (!data || data.__ravenbotVisual !== true) return;
+    if (data.type === "compose") {
+      const text = normalizeVisualText(data.text, VISUAL_COMPOSE_LIMIT);
+      if (text) emitVisual(VISUAL_COMPOSE_EVENT, text);
+      return;
+    }
+    if (data.type === "set-context") {
+      if (typeof data.text !== "string") return;
+      if (!data.text.trim()) {
+        emitVisual(VISUAL_CONTEXT_EVENT, "");
+        return;
+      }
+      const text = normalizeVisualText(data.text, VISUAL_CONTEXT_LIMIT);
+      if (text) emitVisual(VISUAL_CONTEXT_EVENT, text);
+      return;
+    }
     if (data.type === "size") {
       const value = Number(data.height);
       if (Number.isFinite(value)) height = clampHeight(value);

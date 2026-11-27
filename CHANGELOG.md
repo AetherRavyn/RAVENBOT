@@ -16,6 +16,17 @@ All notable changes to RAVENBOT are documented here.
   clean-room/licence guardrails, release gates, and the ordered slices. OpenBot
   is PolyForm Noncommercial; no code is copied.
 
+### Visual pages can hand text back to the composer
+
+- **Compose and context, never send.** Sandboxed `visual` pages now get
+  `window.ravenbot.compose(text)` and `window.ravenbot.setContext(text)`.
+  Compose appends to the current draft (10,000-character cap); context attaches
+  one replaceable “Visual context” blockquote (2,000-character cap) and clears
+  with an empty string. Both require a real click or keypress inside the page.
+  The host validates the message, focuses the composer and strips editor-only
+  markers before send; the page still cannot send. `ThreadView` and
+  `ChatRoomView` both handle it, and `visuals.md` documents the API.
+
 ### Meeting recording import
 
 - **Import an existing recording, not a live meeting.** The new

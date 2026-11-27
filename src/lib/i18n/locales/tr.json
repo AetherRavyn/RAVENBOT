@@ -3239,6 +3239,9 @@
     "decideError": "Harcama talebi güncellenemedi.",
     "minorUnits": "küçük birim"
   },
+  "visual": {
+    "contextLabel": "Görsel bağlam"
+  },
   "meeting": {
     "title": "Toplantı kaydı",
     "description": "Var olan bir kaydı toplantı notu istemine dönüştürün. RAVENBOT aramalara katılmaz.",

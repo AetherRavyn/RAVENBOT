@@ -12,6 +12,17 @@
   import VirtualTranscript from "$lib/components/chat/VirtualTranscript.svelte";
   import MessageSelectionToolbar from "$lib/components/chat/MessageSelectionToolbar.svelte";
   import { quoteAsMarkdown, type SelectionQuote } from "$lib/chat/selection";
+  import {
+    normalizeVisualText,
+    removeVisualContextBlock,
+    stripVisualContextMarkers,
+    visualComposeDraft,
+    visualContextBlock,
+    VISUAL_COMPOSE_EVENT,
+    VISUAL_COMPOSE_LIMIT,
+    VISUAL_CONTEXT_EVENT,
+    VISUAL_CONTEXT_LIMIT,
+  } from "$lib/chat/visualComposer";
   import ChatEmptyState from "$lib/components/chat/ChatEmptyState.svelte";
   import DiffView from "$lib/components/workspace/DiffView.svelte";
   import { matchingMessageIds, messageKey, stepMatchIndex } from "$lib/chat/search";
@@ -421,6 +432,47 @@
     startReply(message);
     newMessage = `${quoteAsMarkdown(selection.text)}\n\n${newMessage}`.trimStart();
     void tick().then(() => textareaRef?.focus());
+  }
+
+  function saveVisualDraft() {
+    if (bot?.id) drafts.saveNow(threadDraftKey(bot.id, selectedThreadId), newMessage);
+  }
+
+  /** A sandboxed page can add to the composer, never send it. */
+  function applyVisualCompose(raw: string) {
+    const text = normalizeVisualText(raw, VISUAL_COMPOSE_LIMIT);
+    if (!text) return;
+    newMessage = visualComposeDraft(newMessage, text);
+    saveVisualDraft();
+    void tick().then(() => textareaRef?.focus());
+  }
+
+  /**
+   * Attach page state as one replaceable quote. The markers stay in the editor
+   * so a second call replaces the first block; they are stripped before send.
+   */
+  function applyVisualContext(raw: string) {
+    if (!raw.trim()) {
+      newMessage = removeVisualContextBlock(newMessage);
+    } else {
+      const text = normalizeVisualText(raw, VISUAL_CONTEXT_LIMIT);
+      if (!text) return;
+      const rest = removeVisualContextBlock(newMessage);
+      const block = visualContextBlock(text, t("visual.contextLabel"));
+      newMessage = rest ? `${block}\n\n${rest}` : block;
+    }
+    saveVisualDraft();
+    void tick().then(() => textareaRef?.focus());
+  }
+
+  function onVisualCompose(event: Event) {
+    const text = (event as CustomEvent<{ text?: unknown }>).detail?.text;
+    if (typeof text === "string") applyVisualCompose(text);
+  }
+
+  function onVisualContext(event: Event) {
+    const text = (event as CustomEvent<{ text?: unknown }>).detail?.text;
+    if (typeof text === "string") applyVisualContext(text);
   }
 
   async function jumpToMessage(id: string) {
@@ -882,6 +934,8 @@
 
   onMount(async () => {
     window.addEventListener("local-skill-try", handleTryLocalSkill);
+    window.addEventListener(VISUAL_COMPOSE_EVENT, onVisualCompose);
+    window.addEventListener(VISUAL_CONTEXT_EVENT, onVisualContext);
     window.addEventListener(MESSAGE_FOCUS_EVENT, handleMessageFocus);
     window.addEventListener(THREAD_FOCUS_EVENT, handleThreadFocus);
     ensureBotLoaded(bot.id);
@@ -1125,6 +1179,8 @@
     goalUnlisten?.();
     goalUnlisten = null;
     window.removeEventListener("local-skill-try", handleTryLocalSkill);
+    window.removeEventListener(VISUAL_COMPOSE_EVENT, onVisualCompose);
+    window.removeEventListener(VISUAL_CONTEXT_EVENT, onVisualContext);
     window.removeEventListener(MESSAGE_FOCUS_EVENT, handleMessageFocus);
     window.removeEventListener(THREAD_FOCUS_EVENT, handleThreadFocus);
     if (threadSearchTimer) clearTimeout(threadSearchTimer);
@@ -1782,7 +1838,7 @@
 
   async function sendMessage(textToSend?: string) {
     if (sessionRole.role === "viewer") return;
-    const typed = (textToSend || newMessage).trim();
+    const typed = stripVisualContextMarkers((textToSend || newMessage).trim());
     const hasAttachments = pendingAttachments.length > 0;
     if (!typed && !hasAttachments) return;
     if (sending || (activeRunId && !pausedRunId)) {

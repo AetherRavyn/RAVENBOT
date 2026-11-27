@@ -43,7 +43,7 @@ Every slice must satisfy all of these before it is called done:
 | Order | Slice | Value | Effort | Risk | Status |
 |---|---|---|---|---|---|
 | 1 | Custom avatar upload/replace/remove | High | S | Low | shipped |
-| 2 | Visual page → composer actions | High | M | Medium | planned |
+| 2 | Visual page → composer actions | High | M | Medium | shipped |
 | 3 | Proactive messaging tools | High | M | Medium | planned |
 | 4 | Browser action depth | Medium | M | Medium | planned |
 | 5 | Secure API-key request | Medium | M | Medium | planned |
@@ -111,7 +111,7 @@ now; if a real fleet shows payload pressure, move the bytes to
 
 **Shipped evidence:** `AvatarPicker.upload.dom.test.ts` covers a valid PNG,
 forged bytes, a >512 KB file, remove and the generated fallback; the six keys
-exist in all twelve locales; the full frontend suite passes at 1003 tests.
+exist in all twelve locales; the full frontend suite passes at 1,014 tests.
 
 ### 1.2 Activity-aware avatars — `planned`
 
@@ -146,7 +146,7 @@ exist in all twelve locales; the full frontend suite passes at 1003 tests.
 
 ## Phase 2 — Visual interaction
 
-### 2.1 Visual page → composer actions — `planned`
+### 2.1 Visual page → composer actions — `shipped`
 
 OpenBot pages can call `openbotPage.sendMessage(text)` and `setContext(text)`.
 Our pages can report height, follow theme, open links and go fullscreen, but they
@@ -156,19 +156,21 @@ cannot hand a choice back to the composer.
 
 - Page API:
   - `window.ravenbot.compose(text)` — places text in the composer for review.
-  - `window.ravenbot.setContext(text)` — attaches a short quote/context to the
-    composer, not a sent message.
-- Both require a real user gesture (`event.isTrusted`) and enforce length caps
-  (compose 10,000; context 2,000).
+  - `window.ravenbot.setContext(text)` — attaches a short replaceable quote to
+    the composer, not a sent message.
+- Both require a real pointer/key press inside the page (the bridge's
+  `userActed` gate) and enforce length caps (compose 10,000; context 2,000).
 - The iframe→host message is validated in `VisualBlock.svelte` and forwarded as
-  a typed window event or a small store; `ThreadView` handles it.
+  a typed window event; `ThreadView` and `ChatRoomView` own the draft, replace
+  one context block and focus the composer.
 - Nothing is sent automatically. The composer is focused and the user presses
-  Send.
+  Send. Editor-only context markers are stripped before sending.
 - `visual` pages remain on `ravenvisual://` without same-origin access.
 
-**Tests:** pure message parser, VisualBlock postMessage, ThreadView handler,
-oversize/gesture rejection, and a DOM test that the composer is filled but not
-sent.
+**Tests:** `visualComposer.test.ts` covers limits, replacement and marker
+stripping; `Visuals.dom.test.ts` covers compose, context, clear, oversize and
+non-string messages. `visuals.md` tells the agent the API exists.
+**Shipped evidence:** the full frontend suite passes; the page still cannot send.
 
 ### 2.2 Chat backdrop — `planned`
 

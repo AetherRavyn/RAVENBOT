@@ -3239,6 +3239,9 @@
     "decideError": "Impossibile aggiornare la richiesta di spesa.",
     "minorUnits": "unità minori"
   },
+  "visual": {
+    "contextLabel": "Contesto visivo"
+  },
   "meeting": {
     "title": "Registrazione di riunione",
     "description": "Trasforma una registrazione esistente in un prompt per le note di riunione. RAVENBOT non partecipa alle chiamate.",

@@ -3239,6 +3239,9 @@
     "decideError": "Die Ausgabenanfrage konnte nicht aktualisiert werden.",
     "minorUnits": "Minor Units"
   },
+  "visual": {
+    "contextLabel": "Visueller Kontext"
+  },
   "meeting": {
     "title": "Besprechungsaufnahme",
     "description": "Wandelt eine vorhandene Aufnahme in einen Prompt für Besprechungsnotizen um. RAVENBOT nimmt nicht an Anrufen teil.",

@@ -25,8 +25,11 @@ frame and speaks JSON-RPC over `postMessage`:
 
 This is the feature that makes OpenBot feel like a workspace rather than a chat.
 RAVENBOT now has a compatible first version: a `visual` fence served on
-`ravenvisual://`, sandboxed with `allow-scripts`, theme-aware, height-aware, and
-link-safe.
+`ravenvisual://`, sandboxed with `allow-scripts`, theme-aware, height-aware,
+link-safe, fullscreen, and able to put text or a replaceable context quote into
+the composer through `window.ravenbot.compose` / `setContext` without sending.
+Selection-quote and key-chord messages, fullscreen top-layer preservation and an
+“open in panel” path remain open.
 
 ### 2. Rich message surface
 OpenBot’s `ChatMessageRow` and `MessageRendering` combine:

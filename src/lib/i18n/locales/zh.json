@@ -3239,6 +3239,9 @@
     "decideError": "无法更新支出申请。",
     "minorUnits": "最小单位"
   },
+  "visual": {
+    "contextLabel": "视觉上下文"
+  },
   "meeting": {
     "title": "会议录音",
     "description": "把已有的录音变成会议纪要提示词。RAVENBOT 不会加入通话。",

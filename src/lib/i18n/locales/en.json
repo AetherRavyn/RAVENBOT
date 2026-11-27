@@ -3239,6 +3239,9 @@
     "decideError": "Could not update the spend request.",
     "minorUnits": "minor units"
   },
+  "visual": {
+    "contextLabel": "Visual context"
+  },
   "meeting": {
     "title": "Meeting recording",
     "description": "Turn a recording you already have into a meeting-notes prompt. RAVENBOT does not join calls.",

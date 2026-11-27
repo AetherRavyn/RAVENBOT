@@ -7,11 +7,16 @@
  * the message down. The slide deck is tested through a real button click, not
  * by reading its state, because the navigation is the feature.
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, cleanup, fireEvent, waitFor } from "@testing-library/svelte";
 import MarkdownMessage from "./MarkdownMessage.svelte";
 import ImageLightbox from "$lib/components/chat/ImageLightbox.svelte";
 import ImageGallery from "$lib/components/chat/ImageGallery.svelte";
+import {
+  VISUAL_COMPOSE_EVENT,
+  VISUAL_COMPOSE_LIMIT,
+  VISUAL_CONTEXT_EVENT,
+} from "$lib/chat/visualComposer";
 import { setLocale } from "$lib/i18n";
 
 beforeEach(() => {
@@ -35,6 +40,36 @@ beforeEach(() => {
 });
 
 const renderMd = (content: string) => render(MarkdownMessage, { props: { content } });
+
+async function mountedVisualFrame() {
+  const content = `\`\`\`visual
+<!doctype html>
+<html><body><button id="pick">Pick B</button></body></html>
+\`\`\``;
+  const view = renderMd(content);
+  await waitFor(() => expect(view.container.querySelector(".md-visual iframe")).not.toBeNull());
+  const frame = view.container.querySelector(".md-visual iframe") as HTMLIFrameElement;
+  await fireEvent.load(frame);
+  return frame;
+}
+
+function postFromVisual(frame: HTMLIFrameElement, data: Record<string, unknown>) {
+  const event = new MessageEvent("message", {
+    data: { __ravenbotVisual: true, ...data },
+  });
+  Object.defineProperty(event, "source", { value: frame.contentWindow });
+  window.dispatchEvent(event);
+}
+
+function nextVisualEvent(name: string): Promise<string> {
+  return new Promise((resolve) => {
+    window.addEventListener(
+      name,
+      (event) => resolve(String((event as CustomEvent<{ text?: unknown }>).detail?.text)),
+      { once: true },
+    );
+  });
+}
 
 describe("visual fences", () => {
   it("renders a bar chart as SVG with a title and legend", async () => {
@@ -97,6 +132,35 @@ describe("visual fences", () => {
     expect(frame.getAttribute("srcdoc")).toContain("__ravenbotVisual");
     // The page's heading must live inside the frame, never in the app DOM.
     expect(container.querySelector(".md-visual h1")).toBeNull();
+  });
+
+  it("forwards a page compose request without sending it", async () => {
+    const frame = await mountedVisualFrame();
+    const next = nextVisualEvent(VISUAL_COMPOSE_EVENT);
+    postFromVisual(frame, { type: "compose", text: "  Pick B  " });
+    await expect(next).resolves.toBe("Pick B");
+  });
+
+  it("forwards a page context request and allows clearing it", async () => {
+    const frame = await mountedVisualFrame();
+    const next = nextVisualEvent(VISUAL_CONTEXT_EVENT);
+    postFromVisual(frame, { type: "set-context", text: "Page 2, filter open" });
+    await expect(next).resolves.toBe("Page 2, filter open");
+
+    const cleared = nextVisualEvent(VISUAL_CONTEXT_EVENT);
+    postFromVisual(frame, { type: "set-context", text: "   " });
+    await expect(cleared).resolves.toBe("");
+  });
+
+  it("ignores over-limit and non-string visual compose messages", async () => {
+    const frame = await mountedVisualFrame();
+    const listener = vi.fn();
+    window.addEventListener(VISUAL_COMPOSE_EVENT, listener);
+    postFromVisual(frame, { type: "compose", text: "x".repeat(VISUAL_COMPOSE_LIMIT + 1) });
+    postFromVisual(frame, { type: "compose", text: 42 });
+    await Promise.resolve();
+    expect(listener).not.toHaveBeenCalled();
+    window.removeEventListener(VISUAL_COMPOSE_EVENT, listener);
   });
 
   it("opens a markdown image in the lightbox", async () => {

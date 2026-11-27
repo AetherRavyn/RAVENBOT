@@ -68,6 +68,21 @@ its height, and opens web links through the app. Use it for calculators,
 dashboards, and click-through prototypes — not for anything that must be printed
 or filed.
 
+The page gets a small `window.ravenbot` bridge:
+
+- `ravenbot.compose(text)` puts text in the composer for review. It appends to
+  whatever the person already typed and never sends. Limit: 10,000 characters.
+- `ravenbot.setContext(text)` attaches one replaceable "Visual context"
+  blockquote for the next message. Calling it again replaces the previous one;
+  `setContext("")` clears it. Limit: 2,000 characters.
+- `ravenbot.requestFullscreen()` and `ravenbot.exitFullscreen()` change the
+  frame size.
+
+All three require a real click or keypress inside the page; a call while the
+page loads is ignored. Guard for the mobile/preview case with
+`if (window.ravenbot) ...`. Do not build a second send button: the person sends
+from the real composer.
+
 A fenced `html` block is a static, script-free preview. Use it when the markup
 is the deliverable.
 

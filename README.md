@@ -219,9 +219,10 @@ voice, and computer control. It also supports:
 
 Chat is not the only artifact. Agents can produce DOCX, PDF, PPTX, and HTML
 documents; 1920×1080 designed slide decks; SVG charts; Mermaid diagrams; KaTeX
-math; interactive HTML visuals; images; and MP4 motion graphics. Tool traces
-carry a preview or an Open button, so the result is one click away instead of a
-path buried in a paragraph.
+math; interactive HTML visuals; images; and MP4 motion graphics. Interactive
+visuals can place a choice or page state into the composer, but never send it.
+Tool traces carry a preview or an Open button, so the result is one click away
+instead of a path buried in a paragraph.
 
 ### Autonomy with brakes
 
@@ -435,7 +436,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
   plus 7 cross-tenant isolation tests, 246 runtime tests, 223 skill tests, 122
   database tests, 89 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **1,003 frontend tests** across 143 files. A gate rejects literal English
+- **1,014 frontend tests** across 144 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

@@ -3239,6 +3239,9 @@
     "decideError": "Não foi possível atualizar o pedido de gasto.",
     "minorUnits": "unidades menores"
   },
+  "visual": {
+    "contextLabel": "Contexto visual"
+  },
   "meeting": {
     "title": "Gravação de reunião",
     "description": "Transforme uma gravação existente num prompt de notas de reunião. O RAVENBOT não entra em chamadas.",

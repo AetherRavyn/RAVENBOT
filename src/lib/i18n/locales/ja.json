@@ -3239,6 +3239,9 @@
     "decideError": "支出リクエストを更新できませんでした。",
     "minorUnits": "最小単位"
   },
+  "visual": {
+    "contextLabel": "ビジュアルのコンテキスト"
+  },
   "meeting": {
     "title": "会議の録音",
     "description": "手持ちの録音を会議メモ用のプロンプトに変換します。RAVENBOT は通話に参加しません。",

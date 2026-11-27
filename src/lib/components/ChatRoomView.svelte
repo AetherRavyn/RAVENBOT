@@ -48,6 +48,17 @@
   } from "$lib/chat/replyResolution";
   import MessageSelectionToolbar from "$lib/components/chat/MessageSelectionToolbar.svelte";
   import { quoteAsMarkdown, type SelectionQuote } from "$lib/chat/selection";
+  import {
+    normalizeVisualText,
+    removeVisualContextBlock,
+    stripVisualContextMarkers,
+    visualComposeDraft,
+    visualContextBlock,
+    VISUAL_COMPOSE_EVENT,
+    VISUAL_COMPOSE_LIMIT,
+    VISUAL_CONTEXT_EVENT,
+    VISUAL_CONTEXT_LIMIT,
+  } from "$lib/chat/visualComposer";
   import { isPersistedMessageId, toggleReaction as nextReactions } from "$lib/chat/reactions";
   import { matchingMessageIds, messageKey, stepMatchIndex } from "$lib/chat/search";
   import { replyQuoteFor } from "$lib/chat/replies";
@@ -288,6 +299,42 @@
     startReply(message);
     newMessage = `${quoteAsMarkdown(selection.text)}\n\n${newMessage}`.trimStart();
     void tick().then(() => composerRef?.focus());
+  }
+
+  function saveVisualDraft() {
+    if (room?.id) drafts.saveNow(officeDraftKey(room.id), newMessage);
+  }
+
+  function applyVisualCompose(raw: string) {
+    const text = normalizeVisualText(raw, VISUAL_COMPOSE_LIMIT);
+    if (!text) return;
+    newMessage = visualComposeDraft(newMessage, text);
+    saveVisualDraft();
+    void tick().then(() => composerRef?.focus());
+  }
+
+  function applyVisualContext(raw: string) {
+    if (!raw.trim()) {
+      newMessage = removeVisualContextBlock(newMessage);
+    } else {
+      const text = normalizeVisualText(raw, VISUAL_CONTEXT_LIMIT);
+      if (!text) return;
+      const rest = removeVisualContextBlock(newMessage);
+      const block = visualContextBlock(text, t("visual.contextLabel"));
+      newMessage = rest ? `${block}\n\n${rest}` : block;
+    }
+    saveVisualDraft();
+    void tick().then(() => composerRef?.focus());
+  }
+
+  function onVisualCompose(event: Event) {
+    const text = (event as CustomEvent<{ text?: unknown }>).detail?.text;
+    if (typeof text === "string") applyVisualCompose(text);
+  }
+
+  function onVisualContext(event: Event) {
+    const text = (event as CustomEvent<{ text?: unknown }>).detail?.text;
+    if (typeof text === "string") applyVisualContext(text);
   }
 
   async function jumpToMessage(id: string) {
@@ -1523,6 +1570,8 @@
   onMount(() => {
     void loadMentionSources();
     window.addEventListener("local-skill-try", handleTryLocalSkill);
+    window.addEventListener(VISUAL_COMPOSE_EVENT, onVisualCompose);
+    window.addEventListener(VISUAL_CONTEXT_EVENT, onVisualContext);
     listen<any>("agent-stream", (event) => {
         const p = event.payload;
             if (!p) return;
@@ -1759,6 +1808,8 @@
     unlisten?.();
     unlisten = null;
     window.removeEventListener("local-skill-try", handleTryLocalSkill);
+    window.removeEventListener(VISUAL_COMPOSE_EVENT, onVisualCompose);
+    window.removeEventListener(VISUAL_CONTEXT_EVENT, onVisualContext);
     signalDispatchDone();
     if (roomSearchTimer) clearTimeout(roomSearchTimer);
     if (commitTimer) window.clearTimeout(commitTimer);
@@ -2390,7 +2441,7 @@
 
   async function send(taskText?: string) {
     if (sessionRole.role === "viewer") return;
-    const typed = (taskText || newMessage).trim();
+    const typed = stripVisualContextMarkers((taskText || newMessage).trim());
     if (sending) return;
     // Sending starts a fresh turn and clears the local HITL cards. If a run is
     // parked on a decision, that would strand it with no way to answer.

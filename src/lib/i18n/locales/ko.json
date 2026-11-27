@@ -3239,6 +3239,9 @@
     "decideError": "지출 요청을 업데이트하지 못했습니다.",
     "minorUnits": "최소 단위"
   },
+  "visual": {
+    "contextLabel": "시각적 컨텍스트"
+  },
   "meeting": {
     "title": "회의 녹음",
     "description": "가지고 있는 녹음을 회의 노트 프롬프트로 바꿉니다. RAVENBOT은 통화에 참여하지 않습니다.",

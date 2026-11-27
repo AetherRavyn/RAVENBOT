@@ -306,10 +306,11 @@ iframe:
   reload.
 
 **RAVENBOT status:** has a `visual` fence served from `ravenvisual://`, a
-sandboxed frame, theme variables, and height reporting
+sandboxed frame, theme variables, height reporting, fullscreen, link opening,
+and a user-gesture-gated `compose`/`setContext` composer bridge
 (`docs/rendering-and-design-stack.md`). Missing: fullscreen top-layer
-preservation, postMessage composer/context/quote actions, a strict
-user-gesture gate, and a side-panel "open in panel" path.
+preservation, selection-quote and key-chord messages, and a side-panel
+"open in panel" path.
 
 **Action:** define a small `ravenvisual` message protocol in Rust/TS and test
 it with a fixture. Do not add `allow-same-origin`.
