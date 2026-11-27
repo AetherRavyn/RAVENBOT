@@ -14,14 +14,17 @@ All notable changes to RAVENBOT are documented here.
   or appears in `/api/status`.
 - **No privilege widening.** A SCIM-created member gets one grant: the
   configured default role `viewer` or `operator`, never `owner`. Groups, claims
-  and roles from the IdP are ignored. The workspace owner is excluded from lists
-  and cannot be created, renamed, disabled or deleted through SCIM.
-- **Tenant isolation and shared-account protection.** Every list/get/filter/
-  patch/put/delete proves the account holds a grant on this workspace. An account
-  that also holds a grant on another workspace cannot be renamed or disabled by a
-  single-workspace SCIM token; the request returns `403` `mutability` and leaves
-  the host-level account intact. New accounts start with only this workspace's
-  grant because duplicate usernames are rejected.
+  and roles from the IdP are ignored. Both the workspace owner and the host-level
+  owner are excluded from lists and cannot be created, renamed, disabled or
+  deleted through SCIM, even when the global owner holds a grant on the workspace.
+- **Tenant isolation and external-id scoping.** Every list/get/filter/patch/put/
+  delete proves the account holds a grant on this workspace. SCIM external ids
+  are unique per workspace, not per host, so two workspaces with different IdPs
+  may reuse the same value for different people. An account that also holds a
+  grant on another workspace cannot be renamed or disabled by a single-workspace
+  SCIM token; the request returns `403` `mutability` and leaves the host-level
+  account intact. New accounts start with only this workspace's grant because
+  duplicate usernames are rejected.
 - **Soft deprovision.** `DELETE` sets `active: false` and revokes sessions but
   keeps the account, grants and external-id mapping for a later reactivation
   (`PATCH`/`PUT`). It never purges the data root. A SCIM-created account gets a random 32-byte password
@@ -39,10 +42,11 @@ All notable changes to RAVENBOT are documented here.
 - Covered by remote-route tests with a mock provisioner (token/401/404/429,
   filters, pagination, create/Location/conflicts/owner/inactive, get/patch/put/
   delete idempotence, audit and last-used, device-route isolation) and
-  account-registry tests (case-insensitive usernames, external-id conflicts,
-  cross-workspace isolation, owner protection, shared-account refusal, rollback,
-  disable/revoke, re-enable and rename). A real-IdP SCIM pass remains a manual
-  release check. See [`docs/REMOTE-SCIM.md`](docs/REMOTE-SCIM.md).
+  account-registry tests (case-insensitive usernames, external-id conflicts and
+  workspace scoping, cross-workspace isolation, workspace and host-owner
+  protection, shared-account refusal, rollback, disable/revoke, re-enable and
+  rename). A real-IdP SCIM pass remains a manual release check. See
+  [`docs/REMOTE-SCIM.md`](docs/REMOTE-SCIM.md).
 
 ### Remote single sign-on (OIDC)
 

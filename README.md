@@ -416,7 +416,7 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 241 Tauri library tests
+- **1,100+ Rust tests** across the workspace, including 243 Tauri library tests
   plus 7 cross-tenant isolation tests, 246 runtime tests, 210 skill tests, 110
   database tests, 74 core tests, 39 vision tests, 35 memory tests, 33 MCP
   tests, and 39 remote-access tests.

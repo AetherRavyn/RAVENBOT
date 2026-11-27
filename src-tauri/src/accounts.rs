@@ -354,14 +354,33 @@ async fn registry(base: &Path) -> Result<SqlitePool, String> {
     .execute(&pool)
     .await
     .map_err(|error| error.to_string())?;
-    // SCIM external ids are host-level, like accounts: one account can hold
-    // grants on several workspaces, and the mapping must stay stable when a
-    // workspace is disabled. The table is not a versioned workspace migration.
+    // SCIM external ids are unique within one IdP, not across the host. Two
+    // workspaces with different IdPs may legitimately reuse the same
+    // externalId for different people, so the mapping is workspace-scoped.
+    // This is host registry state, not a versioned workspace migration.
+    let scim_columns = sqlx::query("PRAGMA table_info(scim_identities)")
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    let has_workspace_id = scim_columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == "workspace_id");
+    if !scim_columns.is_empty() && !has_workspace_id {
+        // The earlier global mapping cannot be assigned to a workspace safely.
+        // It belonged to an unreleased branch; drop it rather than cross-map.
+        sqlx::query("DROP TABLE scim_identities")
+            .execute(&pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS scim_identities (
-            account_id TEXT PRIMARY KEY NOT NULL,
-            external_id TEXT NOT NULL UNIQUE,
-            created_at TEXT NOT NULL
+            workspace_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            external_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, account_id),
+            UNIQUE (workspace_id, external_id)
         )",
     )
     .execute(&pool)
@@ -740,7 +759,7 @@ pub async fn delete_account(base: &Path, username: &str, purge: bool) -> Result<
         .execute(&pool)
         .await
         .map_err(|error| error.to_string())?;
-    delete_scim_identity(base, &account.id).await?;
+    delete_scim_identities_for_account(base, &account.id).await?;
     sqlx::query("DELETE FROM accounts WHERE id = ?")
         .bind(&account.id)
         .execute(&pool)
@@ -1058,24 +1077,37 @@ impl ravenbot_remote::AccountAuthenticator for RemoteAccountAuthenticator {
     }
 }
 
-async fn scim_external_id(base: &Path, account_id: &str) -> Result<Option<String>, String> {
+async fn scim_external_id(
+    base: &Path,
+    workspace_id: &str,
+    account_id: &str,
+) -> Result<Option<String>, String> {
     let pool = registry(base).await?;
-    let external_id: Option<String> =
-        sqlx::query_scalar("SELECT external_id FROM scim_identities WHERE account_id = ?")
-            .bind(account_id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(|error| error.to_string())?;
+    let external_id: Option<String> = sqlx::query_scalar(
+        "SELECT external_id FROM scim_identities
+         WHERE workspace_id = ? AND account_id = ?",
+    )
+    .bind(workspace_id)
+    .bind(account_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|error| error.to_string())?;
     Ok(external_id)
 }
 
-async fn set_scim_identity(base: &Path, account_id: &str, external_id: &str) -> Result<(), String> {
+async fn set_scim_identity(
+    base: &Path,
+    workspace_id: &str,
+    account_id: &str,
+    external_id: &str,
+) -> Result<(), String> {
     let pool = registry(base).await?;
     sqlx::query(
-        "INSERT INTO scim_identities (account_id, external_id, created_at)
-         VALUES (?, ?, ?)
-         ON CONFLICT(account_id) DO UPDATE SET external_id = excluded.external_id",
+        "INSERT INTO scim_identities (workspace_id, account_id, external_id, created_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(workspace_id, account_id) DO UPDATE SET external_id = excluded.external_id",
     )
+    .bind(workspace_id)
     .bind(account_id)
     .bind(external_id)
     .bind(chrono::Utc::now().to_rfc3339())
@@ -1085,7 +1117,8 @@ async fn set_scim_identity(base: &Path, account_id: &str, external_id: &str) -> 
     Ok(())
 }
 
-async fn delete_scim_identity(base: &Path, account_id: &str) -> Result<(), String> {
+/// Account deletion is host-level: remove every workspace's mapping for it.
+async fn delete_scim_identities_for_account(base: &Path, account_id: &str) -> Result<(), String> {
     let pool = registry(base).await?;
     sqlx::query("DELETE FROM scim_identities WHERE account_id = ?")
         .bind(account_id)
@@ -1095,14 +1128,21 @@ async fn delete_scim_identity(base: &Path, account_id: &str) -> Result<(), Strin
     Ok(())
 }
 
-async fn account_by_external_id(base: &Path, external_id: &str) -> Result<Option<Account>, String> {
+async fn account_by_external_id(
+    base: &Path,
+    workspace_id: &str,
+    external_id: &str,
+) -> Result<Option<Account>, String> {
     let pool = registry(base).await?;
-    let account_id: Option<String> =
-        sqlx::query_scalar("SELECT account_id FROM scim_identities WHERE external_id = ?")
-            .bind(external_id)
-            .fetch_optional(&pool)
-            .await
-            .map_err(|error| error.to_string())?;
+    let account_id: Option<String> = sqlx::query_scalar(
+        "SELECT account_id FROM scim_identities
+         WHERE workspace_id = ? AND external_id = ?",
+    )
+    .bind(workspace_id)
+    .bind(external_id)
+    .fetch_optional(&pool)
+    .await
+    .map_err(|error| error.to_string())?;
     match account_id {
         Some(account_id) => account_by_id(base, &account_id).await,
         None => Ok(None),
@@ -1160,9 +1200,9 @@ fn scim_user(account: &Account, external_id: Option<String>) -> ravenbot_remote:
 
 impl RemoteAccountAuthenticator {
     /// An account is visible to this workspace's SCIM client only when it is
-    /// not the workspace owner and holds a grant on this workspace.
+    /// neither the workspace owner nor the host owner and holds a grant here.
     async fn visible_account(&self, account: Account) -> Result<Option<Account>, String> {
-        if account.id == self.workspace_id {
+        if account.id == self.workspace_id || account.is_owner {
             return Ok(None);
         }
         if !holds_workspace_grant(&self.base, &self.workspace_id, &account.id).await? {
@@ -1172,7 +1212,7 @@ impl RemoteAccountAuthenticator {
     }
 
     async fn scim_user(&self, account: &Account) -> Result<ravenbot_remote::ScimUser, String> {
-        let external_id = scim_external_id(&self.base, &account.id).await?;
+        let external_id = scim_external_id(&self.base, &self.workspace_id, &account.id).await?;
         Ok(scim_user(account, external_id))
     }
 
@@ -1197,15 +1237,17 @@ impl ravenbot_remote::AccountProvisioner for RemoteAccountAuthenticator {
     async fn list_users(&self) -> Result<Vec<ravenbot_remote::ScimUser>, String> {
         let members = workspace_members(&self.base, &self.workspace_username).await?;
         let pool = registry(&self.base).await?;
-        let identities: Vec<(String, String)> =
-            sqlx::query_as("SELECT account_id, external_id FROM scim_identities")
-                .fetch_all(&pool)
-                .await
-                .map_err(|error| error.to_string())?;
+        let identities: Vec<(String, String)> = sqlx::query_as(
+            "SELECT account_id, external_id FROM scim_identities WHERE workspace_id = ?",
+        )
+        .bind(&self.workspace_id)
+        .fetch_all(&pool)
+        .await
+        .map_err(|error| error.to_string())?;
         let identities: HashMap<String, String> = identities.into_iter().collect();
         Ok(members
             .into_iter()
-            .filter(|member| !member.owner)
+            .filter(|member| !member.owner && !member.global_owner)
             .map(|member| ravenbot_remote::ScimUser {
                 external_id: identities.get(&member.id).cloned(),
                 id: member.id,
@@ -1239,7 +1281,7 @@ impl ravenbot_remote::AccountProvisioner for RemoteAccountAuthenticator {
                 account_by_username(&self.base, value).await?
             }
             ravenbot_remote::ScimFilterField::ExternalId => {
-                account_by_external_id(&self.base, value).await?
+                account_by_external_id(&self.base, &self.workspace_id, value).await?
             }
         };
         let Some(account) = account else {
@@ -1272,17 +1314,21 @@ impl ravenbot_remote::AccountProvisioner for RemoteAccountAuthenticator {
                 "The workspace owner is not SCIM-managed.".to_string(),
             ));
         }
-        if account_by_username(&self.base, &username)
+        if let Some(existing) = account_by_username(&self.base, &username)
             .await
             .map_err(ProvisionError::Internal)?
-            .is_some()
         {
+            if existing.id == self.workspace_id || existing.is_owner {
+                return Err(ProvisionError::Forbidden(
+                    "The workspace or host owner is not SCIM-managed.".to_string(),
+                ));
+            }
             return Err(ProvisionError::Conflict(
                 "That username already exists.".to_string(),
             ));
         }
         if let Some(external_id) = external_id.filter(|value| !value.trim().is_empty()) {
-            if account_by_external_id(&self.base, external_id.trim())
+            if account_by_external_id(&self.base, &self.workspace_id, external_id.trim())
                 .await
                 .map_err(ProvisionError::Internal)?
                 .is_some()
@@ -1321,7 +1367,13 @@ impl ravenbot_remote::AccountProvisioner for RemoteAccountAuthenticator {
         };
 
         if let Some(external_id) = external_id.filter(|value| !value.trim().is_empty()) {
-            if let Err(error) = set_scim_identity(&self.base, &member.id, external_id.trim()).await
+            if let Err(error) = set_scim_identity(
+                &self.base,
+                &self.workspace_id,
+                &member.id,
+                external_id.trim(),
+            )
+            .await
             {
                 self.rollback_created(&username).await;
                 if provision_conflict(&error) {
@@ -1365,6 +1417,11 @@ impl ravenbot_remote::AccountProvisioner for RemoteAccountAuthenticator {
         if account.id == self.workspace_id {
             return Err(ProvisionError::Forbidden(
                 "The workspace owner is not SCIM-managed.".to_string(),
+            ));
+        }
+        if account.is_owner {
+            return Err(ProvisionError::Forbidden(
+                "The host owner is not SCIM-managed.".to_string(),
             ));
         }
         if !holds_workspace_grant(&self.base, &self.workspace_id, &account.id)
@@ -1427,6 +1484,11 @@ impl ravenbot_remote::AccountProvisioner for RemoteAccountAuthenticator {
                 "The workspace owner is not SCIM-managed.".to_string(),
             ));
         }
+        if account.is_owner {
+            return Err(ProvisionError::Forbidden(
+                "The host owner is not SCIM-managed.".to_string(),
+            ));
+        }
         if !holds_workspace_grant(&self.base, &self.workspace_id, &account.id)
             .await
             .map_err(ProvisionError::Internal)?
@@ -1475,6 +1537,9 @@ pub struct WorkspaceMember {
     pub username: String,
     pub role: String,
     pub owner: bool,
+    /// The host-level owner account. A workspace grant on another workspace
+    /// must not turn the global owner into a SCIM-managed member.
+    pub global_owner: bool,
     pub disabled: bool,
     pub created_at: String,
 }
@@ -1498,6 +1563,7 @@ pub async fn workspace_members(
         username: workspace.username.clone(),
         role: "owner".to_string(),
         owner: true,
+        global_owner: workspace.is_owner,
         disabled: workspace.disabled,
         created_at: workspace.created_at.clone(),
     }];
@@ -1510,6 +1576,7 @@ pub async fn workspace_members(
             username: account.username.clone(),
             role,
             owner: false,
+            global_owner: account.is_owner,
             disabled: account.disabled,
             created_at: account.created_at.clone(),
         });
@@ -1574,6 +1641,7 @@ pub async fn add_workspace_member(
         username: account.username,
         role,
         owner: false,
+        global_owner: account.is_owner,
         disabled: account.disabled,
         created_at: account.created_at,
     })
@@ -2827,9 +2895,10 @@ mod tests {
         // UNIQUE constraint fires after the account was created.
         let pool = registry(&base).await.expect("registry");
         sqlx::query(
-            "INSERT INTO scim_identities (account_id, external_id, created_at)
-             VALUES ('missing-account', 'taken-ext', ?)",
+            "INSERT INTO scim_identities (workspace_id, account_id, external_id, created_at)
+             VALUES (?, 'missing-account', 'taken-ext', ?)",
         )
+        .bind(&owner.id)
         .bind(chrono::Utc::now().to_rfc3339())
         .execute(&pool)
         .await
@@ -2855,6 +2924,177 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scim_protects_the_workspace_owner_and_the_host_owner() {
+        use ravenbot_remote::{AccountProvisioner as _, ProvisionError};
+
+        let base = temp_base();
+        let global = create_account(&base, "global-owner", "correct horse battery")
+            .await
+            .expect("global owner");
+        assert!(global.is_owner);
+        let workspace = create_account(&base, "workspace-owner", "another good password")
+            .await
+            .expect("workspace owner");
+        assert!(!workspace.is_owner);
+        grant_workspace(&base, "workspace-owner", "global-owner", "operator")
+            .await
+            .expect("grant the host owner");
+        add_workspace_member(
+            &base,
+            "workspace-owner",
+            "alice",
+            Some("alice password 123"),
+            "viewer",
+        )
+        .await
+        .expect("alice");
+        let provisioner = RemoteAccountAuthenticator::new(
+            base.clone(),
+            workspace.id.clone(),
+            workspace.username.clone(),
+        );
+
+        let users = provisioner.list_users().await.expect("list");
+        assert_eq!(users.len(), 1);
+        assert_eq!(users[0].user_name, "alice");
+        assert!(!users.iter().any(|user| user.id == global.id));
+        assert!(!users.iter().any(|user| user.id == workspace.id));
+        let members = workspace_members(&base, "workspace-owner")
+            .await
+            .expect("members");
+        let granted_host_owner = members
+            .iter()
+            .find(|member| member.id == global.id)
+            .expect("host owner grant row");
+        assert!(granted_host_owner.global_owner);
+        assert!(!granted_host_owner.owner);
+
+        assert!(provisioner
+            .get_user(&global.id)
+            .await
+            .expect("host owner get")
+            .is_none());
+        assert!(provisioner
+            .get_user(&workspace.id)
+            .await
+            .expect("workspace owner get")
+            .is_none());
+
+        assert!(matches!(
+            provisioner.set_active(&global.id, false).await,
+            Err(ProvisionError::Forbidden(_))
+        ));
+        assert!(matches!(
+            provisioner.set_active(&workspace.id, false).await,
+            Err(ProvisionError::Forbidden(_))
+        ));
+        assert!(matches!(
+            provisioner.rename(&global.id, "global-renamed").await,
+            Err(ProvisionError::Forbidden(_))
+        ));
+        assert!(matches!(
+            provisioner.rename(&workspace.id, "workspace-renamed").await,
+            Err(ProvisionError::Forbidden(_))
+        ));
+
+        // Both accounts must be unchanged by the attempts.
+        let global_after = account_by_id(&base, &global.id)
+            .await
+            .expect("lookup")
+            .expect("global account");
+        assert_eq!(global_after.username, "global-owner");
+        assert!(!global_after.disabled);
+        let workspace_after = account_by_id(&base, &workspace.id)
+            .await
+            .expect("lookup")
+            .expect("workspace account");
+        assert_eq!(workspace_after.username, "workspace-owner");
+        assert!(!workspace_after.disabled);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
+    async fn scim_external_ids_are_scoped_to_one_workspace() {
+        use ravenbot_remote::{AccountProvisioner as _, ProvisionError, ScimFilterField};
+
+        let base = temp_base();
+        create_account(&base, "global-owner", "correct horse battery")
+            .await
+            .expect("global owner");
+        let first = create_account(&base, "first-owner", "another good password")
+            .await
+            .expect("first owner");
+        let second = create_account(&base, "second-owner", "a third good password")
+            .await
+            .expect("second owner");
+        let first_client =
+            RemoteAccountAuthenticator::new(base.clone(), first.id.clone(), first.username.clone());
+        let second_client = RemoteAccountAuthenticator::new(
+            base.clone(),
+            second.id.clone(),
+            second.username.clone(),
+        );
+
+        // Same IdP external id, different workspaces, different people.
+        let alice = first_client
+            .create_user("alice", Some("same-external-id"), true, "viewer")
+            .await
+            .expect("first alice");
+        let bob = second_client
+            .create_user("bob", Some("same-external-id"), true, "viewer")
+            .await
+            .expect("second bob");
+        assert_eq!(
+            first_client
+                .find_user(ScimFilterField::ExternalId, "same-external-id")
+                .await
+                .expect("first filter")
+                .expect("first user")
+                .id,
+            alice.id
+        );
+        assert_eq!(
+            second_client
+                .find_user(ScimFilterField::ExternalId, "same-external-id")
+                .await
+                .expect("second filter")
+                .expect("second user")
+                .id,
+            bob.id
+        );
+        assert_eq!(
+            scim_external_id(&base, &first.id, &alice.id)
+                .await
+                .expect("first mapping")
+                .as_deref(),
+            Some("same-external-id")
+        );
+        assert_eq!(
+            scim_external_id(&base, &second.id, &bob.id)
+                .await
+                .expect("second mapping")
+                .as_deref(),
+            Some("same-external-id")
+        );
+
+        let first_users = first_client.list_users().await.expect("first list");
+        assert_eq!(first_users.len(), 1);
+        assert_eq!(first_users[0].id, alice.id);
+        let second_users = second_client.list_users().await.expect("second list");
+        assert_eq!(second_users.len(), 1);
+        assert_eq!(second_users[0].id, bob.id);
+
+        // Uniqueness still holds within one workspace.
+        assert!(matches!(
+            first_client
+                .create_user("alice-two", Some("same-external-id"), true, "viewer")
+                .await,
+            Err(ProvisionError::Conflict(_))
+        ));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[tokio::test]
     async fn deleting_an_account_removes_its_scim_identity() {
         use ravenbot_remote::AccountProvisioner as _;
 
@@ -2866,11 +3106,11 @@ mod tests {
             .await
             .expect("create");
         delete_account(&base, "bob", false).await.expect("delete");
-        assert!(scim_external_id(&base, &bob.id)
+        assert!(scim_external_id(&base, &owner.id, &bob.id)
             .await
             .expect("identity")
             .is_none());
-        assert!(account_by_external_id(&base, "ext-bob")
+        assert!(account_by_external_id(&base, &owner.id, "ext-bob")
             .await
             .expect("lookup")
             .is_none());

@@ -55,6 +55,8 @@ id eq "6f1c..."
 
 The quoted value supports `\"` and `\\` escapes. Any other attribute, operator,
 bare value or trailing text returns `400` with `scimType: "invalidFilter"`.
+Filters are evaluated inside this workspace only; `externalId` is not a
+host-global identifier.
 
 `startIndex` is 1-based and defaults to `1`. `count` accepts `0`–`1000` and
 defaults to `100`; the response is a SCIM `ListResponse` with `totalResults`,
@@ -78,10 +80,11 @@ defaults to `100`; the response is a SCIM `ListResponse` with `totalResults`,
 }
 ```
 
-`externalId` is omitted when unset. `meta.location` is deliberately omitted: it
-would have to be derived from the request Host, which the listener does not
-trust. Emails, phone numbers, groups, passwords and enterprise attributes are
-never returned.
+`externalId` is omitted when unset. It is stored in a workspace-scoped mapping:
+the same `externalId` may identify different people in two workspaces with
+different IdPs. `meta.location` is deliberately omitted: it would have to be
+derived from the request Host, which the listener does not trust. Emails, phone
+numbers, groups, passwords and enterprise attributes are never returned.
 
 ### Create
 
@@ -164,10 +167,13 @@ Accounts that exist only in another workspace are never listed, returned,
 renamed, disabled or deleted. A cross-workspace id returns `404`, not a partial
 resource.
 
-The workspace **owner** is not SCIM-managed. The owner is excluded from lists,
-`GET` returns `404`, and creating the owner's username is refused with a
-`mutability` error. `PATCH`, `PUT` and `DELETE` cannot target the owner because
-the owner never resolves as a SCIM user.
+Both the workspace **owner** and the host/**global owner** are never
+SCIM-managed. Each is excluded from lists, `GET` returns `404`, and creating
+either owner's username is refused with a `mutability` error. `PATCH`, `PUT`
+and `DELETE` cannot target either owner: the provisioner rejects the workspace
+owner by workspace id and the global owner by `Account.is_owner`, independently.
+A global owner who holds a grant on someone else's workspace is therefore still
+invisible and immutable to that workspace's SCIM token.
 
 ### Shared accounts
 
@@ -257,7 +263,12 @@ requests as well.
 - **No auto-provisioning without SCIM.** OIDC SSO never creates an account or a
   grant; only a SCIM `POST` or a desktop action does. SCIM does not configure
   SSO.
-- **No owner management.** The workspace owner is invisible to SCIM.
+- **No owner management.** Both the workspace owner and the host/global owner
+  are invisible to SCIM and cannot be listed, fetched, renamed, disabled or
+  deleted.
+- **External ids are workspace-scoped.** `(workspace, externalId)` is unique,
+  not `externalId` globally, so two workspaces with different IdPs may reuse the
+  same value for different people.
 - **No hard delete.** `DELETE` is a soft deprovision and never purges data.
 - **No live-IdP evidence.** The test suite uses a loopback mock provisioner to
   prove HTTP, auth, filtering, pagination, audit and limits, and account-registry
