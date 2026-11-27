@@ -111,9 +111,11 @@ const OPERATOR_EXTRA: &[&str] = &[
     "export_otel_now",
     "test_otel_export",
     "get_otel_export_status",
-    // Recording import spends the workspace's STT budget, so it is work an
-    // operator may start; a viewer stays read-only.
+    // User-initiated STT/TTS actions spend the workspace's voice budget in a
+    // shared thread, so an operator may start them; a viewer stays read-only.
+    "transcribe_audio",
     "transcribe_meeting_file",
+    "synthesize_speech",
 ];
 
 fn is_read_command(command: &str) -> bool {
@@ -294,10 +296,16 @@ mod tests {
     }
 
     #[test]
-    fn meeting_recording_import_is_an_operator_action() {
-        assert!(role_allows("owner", "transcribe_meeting_file"));
-        assert!(role_allows("operator", "transcribe_meeting_file"));
-        assert!(!role_allows("viewer", "transcribe_meeting_file"));
+    fn voice_transcription_and_speech_are_operator_actions() {
+        for command in [
+            "transcribe_audio",
+            "transcribe_meeting_file",
+            "synthesize_speech",
+        ] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
     }
 
     #[test]
