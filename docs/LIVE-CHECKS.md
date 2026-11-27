@@ -97,32 +97,42 @@ Teams file delivery needs a real user click and an app manifest with
 Agent email is covered in CI by an in-process loopback SMTP server: creating a
 draft never connects, an allowlist rejection happens before any connection, and
 an explicit send through the path `send_email_draft` uses reaches the local
-server with the expected To, Cc, subject and plain-text body. A release should
-also exercise one real SMTP account:
+server with the expected To, Cc, subject and plain-text body. The Mail panel
+suite covers account save, confirmations, draft editing, status transitions and
+failed-send recovery. A release should also exercise one real SMTP account
+through **Settings → Mail**:
 
 1. Use a test mailbox and a test SMTP credential, not a production inbox.
-2. As the workspace owner, call `set_agent_email` with the host, port,
-   `starttls`, username, password, sender and a narrow allowlist (for example
-   one address). Confirm the returned view has `configured: true` and
-   `has_password: true`, and that the password is absent.
-3. Call `test_agent_email` for an allowlisted address. Confirm exactly one
-   plain-text test message arrives and no attachment or HTML part is present.
-4. Call it again for an address outside the allowlist. Confirm it fails with a
-   clear allowlist error and the SMTP log shows no connection.
+2. As the workspace owner, open **Settings → Mail**. Fill the host, port,
+   StartTLS, username, password and sender; set a narrow allowlist (for example
+   one address); then press **Save account**. Confirm the badge is
+   **Configured**, the password field is blank again, and the saved-password
+   hint is visible.
+3. Set **Test recipient** to an allowlisted address and press **Send test
+   email**. Confirm the confirmation appears before anything is sent, exactly
+   one plain-text test message arrives, and it has no attachment or HTML part.
+4. Change the test recipient to an address outside the allowlist and press the
+   button again. Confirm it fails with a clear allowlist error and the SMTP log
+   shows no connection.
 5. Ask an agent to use `email_draft` for an allowlisted address. Confirm the
    reply says the draft was saved and nothing was sent, and that the mailbox
    receives nothing.
-6. Call `list_email_drafts` and confirm the summary has no body. Call
-   `get_email_draft` and confirm the full body is present.
-7. Call `send_email_draft`. Confirm one message arrives, the draft status is
-   `sent` with `sent_at`, a second send attempt fails, and the audit viewer
-   shows `email_send` with only a draft id and recipient count.
-8. Configure a second draft with a deliberately bad SMTP password, attempt to
-   send, and confirm the draft stays `draft` with a short error that does not
-   contain the password or the body; then fix the configuration and retry.
+6. Open the draft in the Mail list. Confirm the row shows the status, To,
+   subject and created time; the editor shows the full body; the list response
+   itself has no body.
+7. Press **Send**, check the confirmation shows the recipients and subject,
+   then confirm. One message arrives, the draft becomes **Sent** with a sent
+   time, a second send is disabled, and the audit viewer shows `email_send`
+   with only a draft id and recipient count.
+8. Configure a second draft with a deliberately bad SMTP password, press
+   **Send**, and confirm the draft returns to **Draft** with a short error that
+   does not contain the password or the body; fix the account and retry.
+9. While a send is in flight, confirm the draft shows **Sending…** and its
+   edit/send/discard controls are disabled. A crashed send is recovered by the
+   next draft-list refresh after ten minutes with the verify-before-retry
+   warning.
 
-There is no Settings → Mail screen yet, so steps 2–7 use the owner-only Tauri
-commands directly. See [`AGENT-EMAIL.md`](AGENT-EMAIL.md).
+See [`AGENT-EMAIL.md`](AGENT-EMAIL.md).
 
 ## Manual enterprise export check
 

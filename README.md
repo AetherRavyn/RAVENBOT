@@ -416,11 +416,11 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 243 Tauri library tests
-  plus 7 cross-tenant isolation tests, 246 runtime tests, 210 skill tests, 110
-  database tests, 74 core tests, 39 vision tests, 35 memory tests, 33 MCP
+- **1,100+ Rust tests** across the workspace, including 251 Tauri library tests
+  plus 7 cross-tenant isolation tests, 246 runtime tests, 215 skill tests, 117
+  database tests, 79 core tests, 39 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **942 frontend tests** across 137 files. A gate rejects literal English
+- **953 frontend tests** across 138 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
@@ -475,9 +475,10 @@ limitations rather than finished features:
   agent can only create a plain-text draft, and a person must review and send
   it. A send atomically claims the draft before SMTP, so two clicks cannot send
   twice; a crashed send is recovered after ten minutes with a “verify with the
-  recipient” warning. There is no `email_send` tool, no auto-send, no inbound
-  mail/IMAP, no attachments or HTML, no provider OAuth, and the Settings → Mail
-  screen is not shipped yet. The password is keychain-backed, an address/domain
+  recipient” warning. The owner-only **Settings → Mail** panel configures the
+  account, lists drafts, and confirms every test, send and discard. There is no
+  `email_send` tool, no auto-send, no inbound mail/IMAP, no attachments or HTML,
+  and no provider OAuth. The password is keychain-backed, an address/domain
   allowlist is enforced at draft time, and a send audits only the draft id and
   recipient count. See [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md).
 - **No first-party telemetry.** Provider calls, an optional OIDC IdP, configured
@@ -506,7 +507,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/SERVICE.md`](docs/SERVICE.md) | systemd, launchd, and Windows logon service |
 | [`docs/RELEASE.md`](docs/RELEASE.md) | Signing, notarization, updater, checksums and SBOM |
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
-| [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md) | Outbound draft-only agent email: config, allowlist, storage, audit, limits |
+| [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md) | Draft-only agent email: Mail panel, config, allowlist, storage, audit, limits |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
 | [`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md) | The bundled OpenBot gallery, URL scheme, six work states, materials and fallbacks |
 | [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |

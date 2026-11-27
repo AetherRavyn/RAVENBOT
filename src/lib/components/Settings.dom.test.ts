@@ -227,6 +227,19 @@ function mockSettings() {
         return { provider: "ollama", model: "llama3.1" };
       case "get_default_agent":
         return null;
+      case "get_agent_email":
+        return {
+          configured: false,
+          host: "",
+          port: 587,
+          security: "starttls",
+          username: "",
+          from: "",
+          allowlist: [],
+          has_password: false,
+        };
+      case "list_email_drafts":
+        return [];
       default:
         return null;
     }
@@ -250,7 +263,7 @@ describe("Settings accessibility", () => {
   afterEach(cleanup);
 
   it("renders the provider key section without axe violations", async () => {
-    render(Settings, {
+    const { getByRole } = render(Settings, {
       props: {
         open: true,
         onClose: vi.fn(),
@@ -260,6 +273,7 @@ describe("Settings accessibility", () => {
     });
 
     await waitFor(() => expect(document.body.textContent).toContain("OpenAI"));
+    expect(getByRole("button", { name: "Mail" })).toBeTruthy();
     const violations = await a11yViolations(document.body);
     expect(violations, JSON.stringify(violations)).toEqual([]);
   });
@@ -414,6 +428,22 @@ describe("Settings accessibility", () => {
     expect(violations, JSON.stringify(violations)).toEqual([]);
   });
 
+  it("renders the owner-only Mail section without axe violations", async () => {
+    const { getByText } = render(Settings, {
+      props: {
+        open: true,
+        onClose: vi.fn(),
+        bots: [],
+        initialSection: "mail",
+      },
+    });
+    await waitFor(() => expect(getByText("Agent email")).toBeTruthy());
+    await waitFor(() => expect(getByText("No drafts yet.")).toBeTruthy());
+    expect(getByText("Not configured")).toBeTruthy();
+    const violations = await a11yViolations(document.body);
+    expect(violations, JSON.stringify(violations)).toEqual([]);
+  });
+
   it("renders the signed-in account and opens the team manager", async () => {
     const { getByText } = render(Settings, {
       props: {
@@ -453,6 +483,11 @@ describe("Settings accessibility", () => {
     expect(document.body.textContent).not.toContain("Model Manager");
     expect(document.body.textContent).not.toContain("Providers");
     expect(document.body.textContent).not.toContain("Manage team");
+    expect(
+      Array.from(document.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "Mail",
+      ),
+    ).toBe(false);
     const violations = await a11yViolations(document.body);
     expect(violations, JSON.stringify(violations)).toEqual([]);
   });

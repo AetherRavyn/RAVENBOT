@@ -4,18 +4,18 @@ RAVENBOT's agent email surface is deliberately narrow: **an agent may create a
 draft, and only a person may send it.** There is no `email_send` tool, no
 auto-send setting, and no background sender.
 
-This slice ships the backend and the agent-facing draft tool. The
-**Settings → Mail** screen is a follow-up; it is not part of this change. Until
-it ships, the owner-only commands below are the only way to configure the
-account, review drafts and send one.
+This slice ships the backend, the agent-facing draft tool and the owner-only
+**Settings → Mail** panel. The panel configures the SMTP account, lists drafts
+newest first, opens the full draft, and confirms every test, send and discard.
+No inbound mailbox exists.
 
 ## Product rule
 
 1. The agent calls `email_draft` and gets back a draft id. The tool cannot reach
    SMTP, HTTP or any other network.
 2. The draft is stored in `email_drafts` with status `draft`.
-3. A person reviews and edits it (through the follow-up Mail UI or the
-   commands). Only an owner can send or discard it.
+3. A person reviews and edits it in **Settings → Mail** (or through the
+   owner-only commands). Only an owner can send or discard it.
 4. `send_email_draft` is the only code path that opens an SMTP connection, and
    it is invoked by a person. A successful send records the audit event
    `email_send` with the draft id and recipient count — never the body or the
@@ -88,6 +88,53 @@ times out after 15 seconds) returns to `draft` with
 Recovery never touches `sent` or `discarded`. List responses use
 `EmailDraftSummary`, which has no `body` field at all.
 
+## Settings → Mail
+
+The Mail section is owner-only; the existing Settings navigation filter hides it
+from operators and viewers. It has two cards:
+
+### Account
+
+The account card shows a `Configured` / `Not configured` badge plus the host,
+port, security (`StartTLS` or `None (loopback only)`), username, write-only
+password, from address and comma-separated allowlist. The password field is
+blank on every load and says **“Leave blank to keep the saved password.”**
+Saving sends `set_agent_email` with the non-secret fields and omits the password
+when blank. **Remove account** confirms, then calls `clear_agent_email`;
+existing drafts are not deleted.
+
+The card explains that this account is separate from attention alert email,
+that STARTTLS is required except for loopback, and that there is no inbox, no
+IMAP, no HTML and no attachments.
+
+**Send test email** uses a test-recipient field that defaults to the from
+address. It confirms first, then calls `test_agent_email(to)`, which sends a
+fixed plain-text message through the same SMTP account. The test is a real
+email, which is why the confirmation is mandatory.
+
+### Drafts
+
+The drafts card lists up to 100 summaries newest first. Each row shows a status
+badge (`Draft`, `Sending`, `Sent`, `Discarded`), To, subject, created time, and
+the stored send error if there is one. An empty list says there are no drafts.
+There is no manual “new draft” control: drafts come from agents.
+
+Clicking a row calls `get_email_draft(id)` and opens the editor:
+
+- `draft` — To, Cc, Subject and Body are editable. **Save changes** calls
+  `update_email_draft`; **Send** shows a confirmation with the recipients and
+  subject before calling `send_email_draft`; **Discard** confirms before
+  calling `discard_email_draft`.
+- `sending` — read-only. The panel shows **Sending…** and disables edit, send
+  and discard. This is either another send in flight or a crashed send waiting
+  for stale-row recovery.
+- `sent` — read-only, with the sent time.
+- `discarded` — read-only.
+
+After save, send or discard the list is refreshed and the editor reloads the
+same draft when it still exists. A failed send reloads the row as a retryable
+draft and shows the sanitized backend error and stored `error` field.
+
 ## Commands
 
 All commands are owner-only at the IPC gate. The read-shaped ones are in
@@ -147,7 +194,7 @@ This slice does **not** provide:
 - automatic sending, scheduled sending, or an `email_send` agent tool;
 - provider OAuth (Gmail/Graph API); only plain SMTP with STARTTLS or a loopback
   test server;
-- a Mail/Settings UI (follow-up);
+- a manual draft composer, an inbox, or a list of sent mail beyond these rows;
 - per-agent SMTP accounts (one workspace account for now);
 - bounce handling, delivery receipts or retries beyond pressing Send again.
 
@@ -166,5 +213,10 @@ a draft may address; it is not a substitute for reviewing the draft.
   message, password redaction, owner-only access, allowlist rejection before a
   connection, and a loopback SMTP send through the helper the send command
   uses.
+- `npx vitest run` covers the Mail panel: account save with omitted password,
+  confirmed test/remove/send/discard, open/edit/save, list refresh, read-only
+  `sending`/`sent`/`discarded`, failed-send reload, load errors and the
+  no-inbox copy. The Settings suite keeps the owner/viewer navigation gate
+  green.
 - A real-provider SMTP check is manual; see
   [`LIVE-CHECKS.md`](LIVE-CHECKS.md).

@@ -4,7 +4,7 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
-### Agent email drafts (backend, no Mail UI yet)
+### Agent email drafts and Mail panel
 
 - **The agent can only draft.** `email_draft` (risk `Low`, no permissions)
   validates 1–20 To and 0–20 Cc addresses, a 1–200 character subject and a
@@ -38,8 +38,17 @@ All notable changes to RAVENBOT are documented here.
   `discard_email_draft` are guarded by `status = 'draft'`. All configuration,
   draft and send commands are owner-only; the read-shaped ones are in
   `VIEWER_DENY` so operators cannot read the SMTP account or drafts.
-- **No UI yet.** This slice is backend plus the agent tool. The Settings → Mail
-  screen is a follow-up; the commands above are the interim surface.
+- **Owner-only Settings → Mail.** A new Mail section configures the account
+  (host, port, StartTLS/loopback-only none, username, write-only password,
+  from, allowlist) with a configured badge, Save, confirmed real test email,
+  and confirmed account removal. It lists body-free draft summaries newest
+  first with status, To, subject, created time and send error; clicking one
+  opens the plain-text editor. Drafts can be saved, sent after a confirmation
+  showing recipients and subject, or discarded after a confirmation. `sending`
+  is read-only with **Sending…**; `sent` shows its time; `sent` and `discarded`
+  are terminal. A failed send reloads the retryable draft and shows the error.
+  The panel is covered by a DOM suite, and its copy ships in all twelve
+  locales. There is no composer, inbox, attachment or HTML surface.
 - **Deliberately out of scope.** No inbound mail/IMAP, attachments, HTML,
   auto-send, provider OAuth or per-agent SMTP accounts. See
   [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md); the real-SMTP release check is
