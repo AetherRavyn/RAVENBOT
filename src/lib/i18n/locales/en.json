@@ -3056,5 +3056,33 @@
     "replayRepairHint": "Repair hint",
     "replayRepairItem": "Step {{index}} matched by {{by}}",
     "recordingLost": "The recording stopped because its tab was closed."
+  },
+  "openbot": {
+    "title": "OpenBot character",
+    "description": "Small object characters with eyes, drawn locally.",
+    "character": "Character",
+    "colour": "Body colour",
+    "mood": "Mood",
+    "neutral": "Neutral",
+    "happy": "Happy",
+    "volume": "Volume",
+    "followPointer": "Follow the pointer",
+    "finish": "Finish",
+    "flat": "Flat",
+    "fluffy": "Fluffy",
+    "glass": "Glass",
+    "animate": "Animate previews (follows reduced motion)",
+    "states": "Work states",
+    "state": {
+      "idle": "Idle",
+      "thinking": "Thinking",
+      "working": "Working",
+      "waiting": "Waiting",
+      "blocked": "Blocked",
+      "done": "Done"
+    },
+    "apply": "Use character",
+    "close": "Close",
+    "galleryNote": "Bundled gallery. No download, no remote images."
   }
 }

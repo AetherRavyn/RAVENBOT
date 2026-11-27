@@ -1963,6 +1963,20 @@ html.sidebar-resizing .app-frame {
   }
 }
 
+/* OpenBot characters move inside their own canvas and carry their own six
+ * states, so the wrapper must not breathe or lean on top of them. The mood
+ * rings stay: they are the roster-level cue, not a second animation. */
+.raven-avatar[data-source="openbot"] {
+  background: transparent;
+  border-color: transparent;
+  animation: none;
+}
+
+.raven-avatar[data-source="openbot"] .openbot-avatar {
+  width: 100%;
+  height: 100%;
+}
+
 /* A still style has no cadence of its own, so the frame supplies one. Slower
  * than the generated face's, because a remote face that never changes is easier
  * to read as broken than one that visibly ticks. */
@@ -10434,3 +10448,276 @@ html.sidebar-resizing .app-frame {
 .local-skills__replay-repairs li {
   margin: 1px 0;
 }
+
+/* ── OpenBot avatars ───────────────────────────────────────────────────────── */
+
+/* OpenBotAvatar.svelte */
+.openbot-avatar {
+    display: block;
+    width: 100%;
+    height: 100%;
+    aspect-ratio: 1;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .openbot-avatar__host,
+  .openbot-avatar__fallback {
+    display: block;
+    width: 100%;
+    height: 100%;
+    aspect-ratio: 1;
+  }
+
+  .openbot-avatar__fallback {
+    object-fit: contain;
+  }
+
+/* OpenBotStudio.svelte */
+.openbot-studio {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    border: 1px solid var(--hairline);
+    border-radius: 0.9rem;
+    background: var(--surface-1);
+    overflow: hidden;
+    color: var(--text-primary);
+  }
+
+  .openbot-studio__bar,
+  .openbot-studio__foot {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.65rem 0.85rem;
+    border-bottom: 1px solid var(--hairline);
+  }
+
+  .openbot-studio__bar > :first-child {
+    flex: 1;
+  }
+
+  .openbot-studio__foot {
+    justify-content: flex-end;
+    border-bottom: 0;
+    border-top: 1px solid var(--hairline);
+  }
+
+  .openbot-studio__body {
+    display: grid;
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.75fr);
+    gap: 1rem;
+    padding: 0.85rem;
+    min-width: 0;
+  }
+
+  @media (max-width: 640px) {
+    .openbot-studio__body {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+
+  .openbot-studio__main,
+  .openbot-studio__controls {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    min-width: 0;
+  }
+
+  .openbot-studio__hero {
+    display: flex;
+    align-items: center;
+    gap: 0.9rem;
+    padding: 0.8rem;
+    border-radius: 0.8rem;
+    background: var(--surface-2);
+    border: 1px solid var(--hairline);
+  }
+
+  .openbot-studio__hero-frame {
+    width: 8rem;
+    height: 8rem;
+    flex-shrink: 0;
+    padding: 0.4rem;
+    border-radius: 0.7rem;
+    background: var(--surface-3);
+    border: 1px solid var(--hairline);
+  }
+
+  .openbot-studio__section {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    min-width: 0;
+  }
+
+  .openbot-studio__label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  .openbot-studio__states {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0.35rem;
+  }
+
+  .openbot-studio__state {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.3rem 0.2rem;
+    border-radius: 0.6rem;
+    border: 1px solid var(--hairline);
+    background: var(--surface-2);
+    cursor: pointer;
+    min-width: 0;
+  }
+
+  .openbot-studio__state--on {
+    border-color: var(--brand);
+    background: var(--brand-soft);
+    box-shadow: 0 0 0 1px var(--brand);
+  }
+
+  .openbot-studio__state-frame {
+    display: block;
+    width: 100%;
+    max-width: 3.5rem;
+    aspect-ratio: 1;
+  }
+
+  .openbot-studio__state-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .openbot-studio__gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(4.25rem, 1fr));
+    gap: 0.4rem;
+    max-height: 14rem;
+    overflow-y: auto;
+    padding-right: 0.2rem;
+  }
+
+  .openbot-studio__tile {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.2rem;
+    padding: 0.35rem;
+    border-radius: 0.6rem;
+    border: 1px solid var(--hairline);
+    background: var(--surface-2);
+    cursor: pointer;
+    min-width: 0;
+  }
+
+  .openbot-studio__tile--on {
+    border-color: var(--brand);
+    background: var(--brand-soft);
+    box-shadow: 0 0 0 1px var(--brand);
+  }
+
+  .openbot-studio__tile img {
+    width: 2.6rem;
+    height: 2.6rem;
+    display: block;
+  }
+
+  .openbot-studio__tile-name {
+    font-size: 11px;
+    color: var(--text-secondary);
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .openbot-studio__note {
+    font-size: 11px;
+    line-height: 1.45;
+    color: var(--text-muted);
+  }
+
+  .openbot-studio__swatches {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .openbot-studio__swatch {
+    width: 1.35rem;
+    height: 1.35rem;
+    border-radius: 999px;
+    border: 2px solid var(--surface-1);
+    box-shadow: 0 0 0 1px var(--hairline);
+    cursor: pointer;
+  }
+
+  .openbot-studio__swatch--on {
+    box-shadow: 0 0 0 2px var(--brand);
+  }
+
+  .openbot-studio__colour-input {
+    width: 1.75rem;
+    height: 1.5rem;
+    padding: 0;
+    border: 1px solid var(--hairline);
+    border-radius: 0.35rem;
+    background: var(--surface-2);
+    cursor: pointer;
+  }
+
+  .openbot-studio__segmented {
+    display: flex;
+    gap: 0.3rem;
+    flex-wrap: wrap;
+  }
+
+  .openbot-studio__segment {
+    padding: 0.3rem 0.55rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--hairline);
+    background: var(--surface-2);
+    color: var(--text-secondary);
+    font-size: 11px;
+    cursor: pointer;
+  }
+
+  .openbot-studio__segment--on {
+    border-color: var(--brand);
+    background: var(--brand-soft);
+    color: var(--text-primary);
+  }
+
+  .openbot-studio__range {
+    width: 100%;
+    accent-color: var(--brand);
+  }
+
+  .openbot-studio__check {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.4;
+  }
+
+  .openbot-studio__check input {
+    margin-top: 0.1rem;
+    accent-color: var(--brand);
+  }

@@ -11,9 +11,10 @@
   import { Label } from "$lib/components/ui/label";
   import { Textarea } from "$lib/components/ui/textarea";
   import { Badge } from "$lib/components/ui/badge";
-  import * as Avatar from "$lib/components/ui/avatar";
   import { Separator } from "$lib/components/ui/separator";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
+  import { openBotColourForName, openBotUrl, parseOpenBotStyle } from "$lib/openBotAvatar";
   import ConnectorIcon from "$lib/components/ConnectorIcon.svelte";
   import OfficeMemoryPanel from "$lib/components/OfficeMemoryPanel.svelte";
   import OfficeAlertSettings from "$lib/components/OfficeAlertSettings.svelte";
@@ -331,7 +332,7 @@
         name: name.trim() || room.name,
         description: description.trim(),
         office_template: officeTemplate,
-        avatar_url: avatarUrl || getDiceBearUrl(name || room.name, avatarStyle),
+        avatar_url: avatarUrl || previewUrl,
         avatar_style: avatarStyle,
         goal,
         policy,
@@ -402,7 +403,10 @@
 
   async function createAndAddBot() {
     if (!newBotName.trim()) return;
-    const url = getDiceBearUrl(newBotName, avatarStyle);
+    const openBotStyle = parseOpenBotStyle(avatarStyle);
+    const url = openBotStyle
+      ? openBotUrl(openBotStyle, openBotColourForName(newBotName))
+      : getDiceBearUrl(newBotName, avatarStyle);
     await invoke("create_bot_for_office", {
       name: newBotName.trim(),
       description: `Office member: ${newBotSpecialty}`,
@@ -448,7 +452,12 @@
     }
   }
 
-  let previewUrl = $derived(avatarUrl || getDiceBearUrl(name || room?.name || "office", avatarStyle));
+  let previewUrl = $derived(
+    avatarUrl ||
+      (parseOpenBotStyle(avatarStyle)
+        ? openBotUrl(parseOpenBotStyle(avatarStyle)!, openBotColourForName(name || room?.name || "office"))
+        : getDiceBearUrl(name || room?.name || "office", avatarStyle))
+  );
 
   // Template icon helper
   function getTemplateIcon(key: string) {
@@ -522,12 +531,13 @@
           <!-- Left: Avatar & Identity Meta -->
           <div class="flex items-center gap-3.5">
             <div class="relative group">
-              <Avatar.Root class="size-13 rounded-2xl ring-2 ring-[var(--brand)]/40 overflow-hidden bg-[var(--surface-3)]">
-                <Avatar.Image src={previewUrl} alt={name || room.name} class="size-full object-cover" />
-                <Avatar.Fallback class="bg-[var(--brand-soft)] text-[var(--brand-text)] font-bold text-sm">
-                  {(name || room.name).slice(0, 2).toUpperCase()}
-                </Avatar.Fallback>
-              </Avatar.Root>
+              <RavenAvatar
+                name={name || room.name}
+                style={avatarStyle}
+                imageUrl={avatarUrl}
+                decorative
+                class="size-13 rounded-2xl ring-2 ring-[var(--brand)]/40 overflow-hidden bg-[var(--surface-3)]"
+              />
               <button
                 type="button"
                 class="absolute inset-0 bg-[var(--scrim)] rounded-2xl opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-[11px] font-bold text-[var(--text-primary)] cursor-pointer"
@@ -619,10 +629,12 @@
 
               <div class="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
                 <div class="flex flex-col items-center justify-center p-4 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] gap-2">
-                  <img
-                    src={previewUrl}
-                    alt={name}
-                    class="size-20 rounded-2xl object-cover ring-2 ring-[var(--brand)]/40 shadow-lg"
+                  <RavenAvatar
+                    name={name || room?.name || "office"}
+                    style={avatarStyle}
+                    imageUrl={avatarUrl}
+                    decorative
+                    class="size-20 rounded-2xl ring-2 ring-[var(--brand)]/40 shadow-lg"
                   />
                   <span class="text-[11px] text-[var(--text-tertiary)] font-mono">Style: {avatarStyle}</span>
                 </div>
@@ -822,15 +834,13 @@
                     {#each members as m (m.bot_id)}
                       <div class="flex items-center justify-between p-3 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] gap-3 hover:border-[var(--hairline-strong)] transition-all">
                         <div class="flex items-center gap-3 min-w-0">
-                          <Avatar.Root class="size-9 rounded-xl ring-1 ring-[var(--brand)]/30 shrink-0">
-                            <Avatar.Image
-                              src={m.bot?.avatar_url || ""}
-                              alt={m.bot?.name || m.rank}
-                            />
-                            <Avatar.Fallback class="bg-[var(--brand-soft)] text-[var(--brand-text)] text-xs">
-                              {(m.bot?.name || m.rank).slice(0, 2)}
-                            </Avatar.Fallback>
-                          </Avatar.Root>
+                          <RavenAvatar
+                            name={m.bot?.name || m.rank}
+                            style={m.bot?.avatar_style}
+                            imageUrl={m.bot?.avatar_url}
+                            decorative
+                            class="size-9 rounded-xl ring-1 ring-[var(--brand)]/30 shrink-0"
+                          />
 
                           <div class="min-w-0">
                             <div class="flex items-center gap-2">
@@ -894,10 +904,13 @@
                         onclick={() => addExistingBot(b)}
                       >
                         <div class="flex items-center gap-2 min-w-0">
-                          <Avatar.Root class="size-6.5 rounded-lg shrink-0">
-                            <Avatar.Image src={b.avatar_url || getDiceBearUrl(b.name, b.avatar_style || DEFAULT_AVATAR_STYLE)} />
-                            <Avatar.Fallback class="text-[11px]">{b.name.slice(0, 2)}</Avatar.Fallback>
-                          </Avatar.Root>
+                          <RavenAvatar
+                            name={b.name}
+                            style={b.avatar_style}
+                            imageUrl={b.avatar_url}
+                            decorative
+                            class="size-6.5 rounded-lg shrink-0"
+                          />
                           <span class="text-xs font-bold text-[var(--text-primary)] truncate">{b.name}</span>
                         </div>
                         <span class="text-[11px] font-mono text-[var(--brand-text)] shrink-0 font-semibold">+ Assign</span>
@@ -1000,10 +1013,13 @@
                     <div class="p-3.5 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)] space-y-2.5">
                       <div class="flex items-center justify-between">
                         <div class="flex items-center gap-2.5">
-                          <Avatar.Root class="size-7 rounded-lg ring-1 ring-[var(--brand)]/30">
-                            <Avatar.Image src={m.bot?.avatar_url || getDiceBearUrl(m.bot?.name || m.rank, m.bot?.avatar_style || DEFAULT_AVATAR_STYLE)} />
-                            <Avatar.Fallback>{(m.bot?.name || m.rank).slice(0, 2)}</Avatar.Fallback>
-                          </Avatar.Root>
+                          <RavenAvatar
+                            name={m.bot?.name || m.rank}
+                            style={m.bot?.avatar_style}
+                            imageUrl={m.bot?.avatar_url}
+                            decorative
+                            class="size-7 rounded-lg ring-1 ring-[var(--brand)]/30"
+                          />
                           <div>
                             <span class="font-bold text-xs text-[var(--text-primary)]">{m.bot?.name || m.rank}</span>
                             <span class="text-[11px] text-[var(--brand-text)] font-mono ml-1.5">({m.rank})</span>
@@ -1172,10 +1188,13 @@
                   {#each members as m}
                     <div class="flex items-center justify-between p-2.5 rounded-xl border border-[var(--hairline)] bg-[var(--surface-2)]">
                       <div class="flex items-center gap-2.5">
-                        <Avatar.Root class="size-6.5 rounded-lg">
-                          <Avatar.Image src={m.bot?.avatar_url || getDiceBearUrl(m.rank, m.bot?.avatar_style || DEFAULT_AVATAR_STYLE)} />
-                          <Avatar.Fallback class="text-[11px]">{m.rank.slice(0, 2)}</Avatar.Fallback>
-                        </Avatar.Root>
+                        <RavenAvatar
+                          name={m.bot?.name || m.rank}
+                          style={m.bot?.avatar_style}
+                          imageUrl={m.bot?.avatar_url}
+                          decorative
+                          class="size-6.5 rounded-lg"
+                        />
                         <div>
                           <span class="font-bold text-xs text-[var(--text-primary)]">{m.bot?.name || m.rank}</span>
                           <span class="text-[11px] text-[var(--text-tertiary)] font-mono ml-1.5">— {m.rank}</span>

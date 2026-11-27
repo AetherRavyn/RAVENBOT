@@ -3056,5 +3056,33 @@
     "replayRepairHint": "修復のヒント",
     "replayRepairItem": "ステップ {{index}} は {{by}} で一致",
     "recordingLost": "タブが閉じられたため記録が停止しました。"
+  },
+  "openbot": {
+    "title": "OpenBotキャラクター",
+    "description": "目がついた小さな物のキャラクター。ローカルで描画されます。",
+    "character": "キャラクター",
+    "colour": "体の色",
+    "mood": "気分",
+    "neutral": "ニュートラル",
+    "happy": "ごきげん",
+    "volume": "ボリューム",
+    "followPointer": "ポインターを追う",
+    "finish": "仕上げ",
+    "flat": "フラット",
+    "fluffy": "ふわふわ",
+    "glass": "ガラス",
+    "animate": "プレビューをアニメーション（モーション軽減設定に従います）",
+    "states": "動作状態",
+    "state": {
+      "idle": "待機中",
+      "thinking": "思考中",
+      "working": "作業中",
+      "waiting": "待っています",
+      "blocked": "ブロック",
+      "done": "完了"
+    },
+    "apply": "このキャラクターを使う",
+    "close": "閉じる",
+    "galleryNote": "同梱ギャラリー。ダウンロードや外部画像はありません。"
   }
 }

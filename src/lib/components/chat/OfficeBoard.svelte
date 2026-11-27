@@ -21,6 +21,7 @@
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import PlanDag from "$lib/components/chat/PlanDag.svelte";
   import type { DagTask } from "$lib/chat/dag";
+  import type { AvatarMood } from "$lib/avatar";
   import {
     Workflow,
     ChevronDown,
@@ -85,6 +86,28 @@
 
   let { goal, nodes, members, runActive, todos, workItems, onSelect, variant = "wide" }: Props = $props();
   const rail = $derived(variant === "rail");
+
+  /**
+   * The board's node state as a roster mood.
+   *
+   * `done` becomes `responded` rather than `idle`: the node finished and its
+   * result has not been read, which is exactly what the done/celebration pose
+   * is for. `skipped` is idle — nothing to celebrate and nothing to chase.
+   */
+  function moodForState(state: BoardNode["state"]): AvatarMood {
+    switch (state) {
+      case "running":
+        return "working";
+      case "failed":
+        return "failed";
+      case "done":
+        return "responded";
+      case "pending":
+      case "skipped":
+      default:
+        return "idle";
+    }
+  }
 
   // A settled office opens with the board summarized; a live run expands it.
   // The three DONE cards can carry long previews, and the conversation should
@@ -304,7 +327,7 @@
                            so. -->
                       <RavenAvatar
                         name={nameFor(n.botId)}
-                        mood={n.state === "running" ? "working" : n.state === "failed" ? "failed" : "idle"}
+                        mood={moodForState(n.state)}
                         imageUrl={memberFor(n.botId)?.bot?.avatar_url}
                         style={memberFor(n.botId)?.bot?.avatar_style}
                         decorative
@@ -396,6 +419,7 @@
                     {/if}
                     <RavenAvatar
                       name={nameFor(row.node.botId)}
+                      mood={moodForState(row.node.state)}
                       imageUrl={memberFor(row.node.botId)?.bot?.avatar_url}
                       style={memberFor(row.node.botId)?.bot?.avatar_style}
                       decorative

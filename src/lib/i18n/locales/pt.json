@@ -3056,5 +3056,33 @@
     "replayRepairHint": "Dica de reparo",
     "replayRepairItem": "Passo {{index}} encontrado por {{by}}",
     "recordingLost": "A gravação parou porque a aba foi fechada."
+  },
+  "openbot": {
+    "title": "Personagem OpenBot",
+    "description": "Pequenos personagens-objeto com olhos, desenhados localmente.",
+    "character": "Personagem",
+    "colour": "Cor do corpo",
+    "mood": "Humor",
+    "neutral": "Neutro",
+    "happy": "Feliz",
+    "volume": "Volume",
+    "followPointer": "Seguir o ponteiro",
+    "finish": "Acabamento",
+    "flat": "Plano",
+    "fluffy": "Fofo",
+    "glass": "Vidro",
+    "animate": "Animar pré-visualizações (respeita o movimento reduzido)",
+    "states": "Estados de trabalho",
+    "state": {
+      "idle": "Ocioso",
+      "thinking": "Pensando",
+      "working": "Trabalhando",
+      "waiting": "Aguardando",
+      "blocked": "Bloqueado",
+      "done": "Concluído"
+    },
+    "apply": "Usar personagem",
+    "close": "Fechar",
+    "galleryNote": "Galeria incluída. Sem downloads nem imagens remotas."
   }
 }

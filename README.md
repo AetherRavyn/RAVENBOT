@@ -142,6 +142,19 @@ a pending question, a budget ceiling, a kill switch, or repeated no-progress
 cycles. Research answers keep their source chips in the office too, and a failed
 load is an error with a retry rather than an empty room.
 
+### Avatars that show the work
+
+Every agent has a face, and the face follows the fleet. The generated Raven
+face reacts to all seven roster moods, and an agent can instead pick a DiceBear
+style or one of **23 bundled OpenBot characters** — small object characters
+with eyes, drawn locally with no network request. The OpenBot studio previews
+all six work states (**Idle, Thinking, Working, Waiting, Blocked, Done**) before
+you apply, with body colour, volume, pointer-follow and flat, fluffy or glass
+finishes. Live state comes from fleet activity: a waiting agent looks waiting, a
+failed run looks blocked, and an unread reply celebrates. The studio selection
+is a preview only; reloads keep the chosen character and colour. See
+[`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md).
+
 ### Memory that is retrieved, not dumped
 
 Agent and office memories are stored in SQLite. Retrieval is hybrid: an FTS5
@@ -466,6 +479,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/RELEASE.md`](docs/RELEASE.md) | Signing, notarization, updater, checksums and SBOM |
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
+| [`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md) | The bundled OpenBot gallery, URL scheme, six work states, materials and fallbacks |
 | [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |
 | [`docs/LEARNING.md`](docs/LEARNING.md) | Learning from a run: synthesis, redaction, review, provenance, and limits |
 | [`docs/DEMONSTRATIONS.md`](docs/DEMONSTRATIONS.md) | Teach and replay a browser demonstration: capture, selectors, secrets, `demo.json`, repair reports, limits |

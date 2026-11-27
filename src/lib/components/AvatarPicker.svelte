@@ -5,9 +5,21 @@
   import { getDiceBearUrl, dicebearStyles, isNativeAvatarStyle } from "$lib/utils";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import AvatarStudio from "$lib/components/AvatarStudio.svelte";
+  import OpenBotStudio from "$lib/components/OpenBotStudio.svelte";
   import { DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
   import type { ColourId } from "$lib/avatar";
   import { avatarAllLabel, avatarCategoryLabel, avatarStyleDescription } from "$lib/catalogI18n";
+  import {
+    OPENBOT_GALLERY,
+    openBotColourForName,
+    openBotDefinition,
+    openBotDefinitionForName,
+    openBotStillUrl,
+    openBotStyleId,
+    openBotUrl,
+    parseOpenBotStyle,
+    parseOpenBotUrl,
+  } from "$lib/openBotAvatar";
   import { cn } from "$lib/utils.js";
   import { t } from "$lib/i18n";
   import { Sparkles, RefreshCw, Image, Wand2, Check, Palette, Dices } from "@lucide/svelte";
@@ -28,8 +40,44 @@
   // svelte-ignore state_referenced_locally
   let customImageUrl = $state(customUrl || "");
   // svelte-ignore state_referenced_locally
-  let useCustom = $state(Boolean(customUrl && !customUrl.includes("dicebear.com")));
+  let useCustom = $state(
+    Boolean(customUrl && !customUrl.includes("dicebear.com") && !customUrl.startsWith("openbot://")),
+  );
   let selectedCategory = $state("All");
+
+  /**
+   * The OpenBot character state.
+   *
+   * The style is the durable marker; the URL carries the colour. Both are
+   * read here so reopening the picker on an OpenBot agent starts on the same
+   * character instead of the name-derived default.
+   */
+  // svelte-ignore state_referenced_locally
+  const initialOpenBot =
+    openBotDefinition(parseOpenBotStyle(style)) ??
+    openBotDefinition(parseOpenBotUrl(customUrl)?.id) ??
+    openBotDefinitionForName(seed || "Agent");
+  let openBotId = $state(initialOpenBot.id);
+  // svelte-ignore state_referenced_locally
+  let openBotColour = $state(
+    parseOpenBotUrl(customUrl)?.colour ?? openBotColourForName(seed || "Agent"),
+  );
+  let openBotOpen = $state(false);
+  /**
+   * Whether the current selection is an OpenBot character.
+   *
+   * Kept explicitly rather than re-derived from `selectedStyle` plus the
+   * custom URL: choosing a DiceBear style after an OpenBot leaves the old
+   * `openbot://` URL in the custom field, and treating that as still-selected
+   * would silently send the wrong style on apply.
+   */
+  // svelte-ignore state_referenced_locally
+  let openBotMode = $state(Boolean(parseOpenBotStyle(style) || parseOpenBotUrl(customUrl)));
+  const openBotSelected = $derived(openBotMode);
+  const openBotCharacter = $derived(openBotDefinition(openBotId) ?? initialOpenBot);
+  const openBotPreview = $derived(
+    openBotStillUrl(openBotCharacter, openBotColour, "idle"),
+  );
 
   /**
    * The studio is open.
@@ -70,8 +118,16 @@
   }
 
   $effect(() => {
-    if (style && style !== selectedStyle && !useCustom) {
-      selectedStyle = style;
+    const nextStyle = style;
+    if (nextStyle && nextStyle !== selectedStyle && !useCustom) {
+      selectedStyle = nextStyle;
+      const id = parseOpenBotStyle(nextStyle);
+      if (id && openBotDefinition(id)) {
+        openBotId = id;
+        openBotMode = true;
+      } else {
+        openBotMode = false;
+      }
     }
   });
 
@@ -84,14 +140,32 @@
   $effect(() => {
     if (customUrl !== null && customUrl !== undefined) {
       customImageUrl = customUrl;
-      useCustom = Boolean(customUrl && !customUrl.includes("dicebear.com"));
+      const parts = parseOpenBotUrl(customUrl);
+      useCustom = Boolean(
+        customUrl && !customUrl.includes("dicebear.com") && !customUrl.startsWith("openbot://"),
+      );
+      if (parts) {
+        openBotMode = true;
+        openBotId = openBotDefinition(parts.id)?.id ?? openBotId;
+        if (parts.colour) openBotColour = parts.colour;
+      }
     }
   });
 
-  let previewUrl = $derived(
-    useCustom && customImageUrl.trim()
-      ? customImageUrl.trim()
-      : getDiceBearUrl(previewSeed || "Agent", selectedStyle)
+  /** The hero goes through RavenAvatar, so DiceBear, custom and OpenBot agree. */
+  const previewStyle = $derived(
+    useCustom
+      ? DEFAULT_AVATAR_STYLE
+      : openBotSelected
+        ? openBotStyleId(openBotCharacter.id)
+        : selectedStyle,
+  );
+  const previewImage = $derived(
+    useCustom
+      ? customImageUrl.trim() || null
+      : openBotSelected
+        ? openBotUrl(openBotCharacter.id, openBotColour)
+        : null,
   );
 
   const allStyles = dicebearStyles();
@@ -105,6 +179,11 @@
   );
 
   function pick(s: string) {
+    if (parseOpenBotStyle(s)) {
+      openOpenBot(s);
+      return;
+    }
+    openBotMode = false;
     selectedStyle = s;
     useCustom = false;
     // Picking the drawn face is a request to design it, so the studio opens.
@@ -119,6 +198,57 @@
     studioOpen = true;
   }
 
+  /** Open the OpenBot studio on the current character, without committing a look. */
+  function openOpenBot(styleValue?: string | null) {
+    const id = parseOpenBotStyle(styleValue) ?? openBotId;
+    if (openBotDefinition(id)) openBotId = id;
+    openBotOpen = true;
+    openBotMode = true;
+    studioOpen = false;
+    useCustom = false;
+    selectedStyle = openBotStyleId(openBotId);
+  }
+
+  /** Apply is the commit point for an OpenBot character. */
+  function applyOpenBot(url: string, styleValue: string) {
+    const id = parseOpenBotStyle(styleValue) ?? openBotId;
+    const parts = parseOpenBotUrl(url);
+    if (openBotDefinition(id)) openBotId = id;
+    if (parts?.colour) openBotColour = parts.colour;
+    selectedStyle = openBotStyleId(openBotId);
+    useCustom = false;
+    openBotMode = true;
+    customImageUrl = url;
+    openBotOpen = false;
+    onSelect(url, openBotStyleId(openBotId));
+  }
+
+  function onCustomInput() {
+    const value = customImageUrl.trim();
+    const parts = parseOpenBotUrl(value);
+    if (parts) {
+      useCustom = false;
+      openBotOpen = false;
+      openBotMode = true;
+      const id = openBotDefinition(parts.id)?.id;
+      if (id) openBotId = id;
+      if (parts.colour) openBotColour = parts.colour;
+      selectedStyle = openBotStyleId(openBotId);
+      return;
+    }
+    openBotMode = false;
+    useCustom = Boolean(value && !value.includes("dicebear.com"));
+  }
+
+  /** The custom-image toggle must not leave an `openbot://` URL in that field. */
+  function toggleCustom() {
+    if (!useCustom && parseOpenBotUrl(customImageUrl)) {
+      customImageUrl = "";
+      openBotMode = false;
+    }
+    useCustom = !useCustom;
+  }
+
   function randomizeSeed() {
     const randomSeeds = [
  "Apollo", "Nexus", "Quantum", "Cyber", "Valkyrie", "Aegis", "Titan", "Specter",
@@ -126,13 +256,17 @@
  "Krypton", "Apex", "Chronos", "Sentinel"
     ];
     previewSeed = randomSeeds[Math.floor(Math.random() * randomSeeds.length)] + "-" + Math.floor(Math.random() * 900 + 100);
-    if (!useCustom) {
+    if (!useCustom && !openBotSelected) {
       const url = getDiceBearUrl(previewSeed, selectedStyle);
       onSelect(url, selectedStyle);
     }
   }
 
   function confirm() {
+    if (openBotSelected && !useCustom) {
+      onSelect(openBotUrl(openBotCharacter.id, openBotColour), openBotStyleId(openBotCharacter.id));
+      return;
+    }
     if (useCustom && customImageUrl.trim()) {
       onSelect(customImageUrl.trim(), "custom");
     } else {
@@ -150,11 +284,13 @@
     <div class="flex items-center gap-4 relative z-10">
       <div class="relative group shrink-0">
         <div class="size-20 rounded-2xl p-1 ring-2 ring-[var(--brand)]/60 transition-all duration-300 group-hover:ring-[var(--brand)] group-hover:scale-105 bg-[var(--surface-2)] overflow-hidden">
-          <img
-            src={previewUrl}
-            alt={t("avatar.previewAlt")}
-            class="size-full rounded-xl object-cover"
-            loading="eager"
+          <RavenAvatar
+            name={previewSeed || "Agent"}
+            style={previewStyle}
+            imageUrl={previewImage}
+            animated={animate}
+            class="size-full rounded-xl"
+            decorative
           />
         </div>
         <div class="absolute -bottom-1.5 -right-1.5 size-6 rounded-full bg-[var(--brand)] text-[var(--text-on-light)] flex items-center justify-center shadow-lg ring-2 ring-[var(--surface-1)]">
@@ -165,7 +301,11 @@
       <div class="flex flex-col">
         <div class="flex items-center gap-2">
           <span class="font-bold text-sm text-[var(--text-primary)]">{t("avatar.preview")}</span>
-          {#if !useCustom}
+          {#if openBotSelected && !useCustom}
+            <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30">
+              {openBotCharacter.name}
+            </span>
+          {:else if !useCustom}
             <span class="text-[11px] font-mono px-2 py-0.5 rounded bg-[var(--brand-soft)] text-[var(--brand-text)] border border-[var(--brand)]/30">
               {selectedStyle}
             </span>
@@ -233,8 +373,53 @@
   </div>
 
   <!--
-    The studio. Opened by picking the drawn face, or by the button — which only
-    appears for that style, because there is nothing to arrange for a remote one.
+    OpenBot characters. One tile, not one canvas per character: the preview is
+    a still SVG data URL, and picking the tile opens the studio where all
+    definitions and the six states live.
+  -->
+  <section class="space-y-1.5" aria-label={t("openbot.title")}>
+    <div class="flex items-center justify-between gap-2">
+      <span class="text-[11px] font-bold uppercase tracking-wider text-[var(--text-tertiary)]">
+        {t("openbot.title")}
+      </span>
+      <span class="text-[11px] text-[var(--text-muted)]">{t("openbot.character")} · {OPENBOT_GALLERY.length}</span>
+    </div>
+    <button
+      type="button"
+      class={cn(
+        "w-full flex items-center gap-3 rounded-xl border p-2.5 text-left transition-all cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]/60",
+        openBotSelected && !useCustom
+          ? "border-[var(--brand)] bg-[var(--brand-soft)] ring-1 ring-[var(--brand)]/60"
+          : "border-[var(--hairline)] bg-[var(--surface-1)] hover:border-[var(--brand)]/40 hover:bg-[var(--surface-2)]",
+      )}
+      aria-pressed={openBotSelected && !useCustom}
+      onclick={() => openOpenBot()}
+    >
+      <span class="size-10 shrink-0 rounded-full overflow-hidden bg-[var(--surface-3)] ring-1 ring-border/50">
+        <img src={openBotPreview} alt="" loading="lazy" decoding="async" class="size-full object-contain" />
+      </span>
+      <span class="min-w-0 flex-1">
+        <span class="block text-xs font-semibold text-[var(--text-primary)] truncate">{openBotCharacter.name}</span>
+        <span class="block text-[11px] text-[var(--text-tertiary)] leading-snug">{t("openbot.galleryNote")}</span>
+      </span>
+      <Dices class="size-4 shrink-0 text-[var(--brand-text)]" />
+    </button>
+  </section>
+
+  {#if openBotOpen}
+    <OpenBotStudio
+      seed={previewSeed || "Agent"}
+      definitionId={openBotId}
+      colour={openBotColour}
+      onApply={applyOpenBot}
+      onClose={() => (openBotOpen = false)}
+    />
+  {/if}
+
+  <!--
+    The native studio. Opened by picking the drawn face, or by the button —
+    only appears for that style, because there is nothing to arrange for a
+    remote one.
   -->
   {#if studioOpen || isNativeAvatarStyle(selectedStyle)}
     <div class="flex items-center justify-between gap-2">
@@ -338,7 +523,7 @@
         placeholder={t("avatar.seedPh")}
         class="h-8 font-mono text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)]"
         oninput={() => {
-          if (!useCustom) onSelect(getDiceBearUrl(previewSeed || "Agent", selectedStyle), selectedStyle);
+          if (!useCustom && !openBotSelected) onSelect(getDiceBearUrl(previewSeed || "Agent", selectedStyle), selectedStyle);
         }}
       />
     </div>
@@ -359,7 +544,7 @@
           bind:value={customImageUrl}
           placeholder="https://.../photo.png"
           class="h-8 text-xs bg-[var(--surface-2)] border-[var(--hairline)] text-[var(--text-secondary)] flex-1"
-          oninput={() => (useCustom = Boolean(customImageUrl.trim()))}
+          oninput={onCustomInput}
         />
         <Button
           variant={useCustom ? "default" : "outline"}
@@ -367,7 +552,7 @@
           class="h-8 px-2.5 text-xs shrink-0 {useCustom ? 'bg-[var(--brand)] text-[var(--text-on-light)]' : 'bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)]'}"
           aria-label={t("avatar.customUrl")}
           aria-pressed={useCustom}
-          onclick={() => (useCustom = !useCustom)}
+          onclick={toggleCustom}
         >
           <Image class="size-3.5" />
         </Button>

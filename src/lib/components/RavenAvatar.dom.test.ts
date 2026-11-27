@@ -22,8 +22,8 @@
  * into a surface holding the IPC bridge. Both paths are pinned here as emitting
  * elements and text, never a string of markup.
  */
-import { describe, it, expect, afterEach } from "vitest";
-import { render, cleanup } from "@testing-library/svelte";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import { render, cleanup, waitFor } from "@testing-library/svelte";
 import { tick } from "svelte";
 import RavenAvatar from "./RavenAvatar.svelte";
 import RavenLogo from "./RavenLogo.svelte";
@@ -39,6 +39,28 @@ import {
   type AvatarMood,
 } from "$lib/avatar";
 import { DEFAULT_AVATAR_STYLE, currentDiceBearUrl, parseDiceBearUrl } from "$lib/diceStyles";
+
+const mountAvatar = vi.hoisted(() => vi.fn());
+vi.mock("open-bot-avatar/dom", () => ({ mountAvatar }));
+
+class FakeResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+beforeEach(() => {
+  mountAvatar.mockReset();
+  mountAvatar.mockImplementation(() => ({ update: vi.fn(), destroy: vi.fn() }));
+  vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+  vi.stubGlobal("CanvasRenderingContext2D", class {});
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as never);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 afterEach(cleanup);
 
@@ -538,6 +560,90 @@ describe("RavenAvatar — the sixteen expressions", () => {
       props: { name: "Ada", style: "raven-native", expression: "happy" },
     }).container.querySelector(".raven-avatar-face")!.innerHTML;
     expect(legacy).toBe(current);
+  });
+});
+
+describe("RavenAvatar — OpenBot characters", () => {
+  it("renders an OpenBot host from an image URL, not a custom image", async () => {
+    const { container } = render(RavenAvatar, {
+      props: { name: "Ada", imageUrl: "openbot://cat?color=%23ff6a1a" },
+    });
+    await waitFor(() => expect(mountAvatar).toHaveBeenCalled());
+
+    const frame = container.querySelector(".raven-avatar")!;
+    expect(frame.getAttribute("data-source")).toBe("openbot");
+    expect(frame.getAttribute("data-shape")).toBe("cat");
+    expect(frame.getAttribute("data-openbot-state")).toBe("idle");
+    expect(container.querySelector(".openbot-avatar__host")).not.toBeNull();
+    expect(container.querySelector("img")).toBeNull();
+    expect(mountAvatar.mock.calls[0][1].color).toBe("#ff6a1a");
+    expect(mountAvatar.mock.calls[0][1].definition.id).toBe("cat");
+  });
+
+  it("renders from a style alone, without an image URL", async () => {
+    const { container } = render(RavenAvatar, {
+      props: { name: "Ada", style: "openbot:ghost" },
+    });
+    await waitFor(() => expect(mountAvatar).toHaveBeenCalled());
+
+    const frame = container.querySelector(".raven-avatar")!;
+    expect(frame.getAttribute("data-source")).toBe("openbot");
+    expect(frame.getAttribute("data-shape")).toBe("ghost");
+    expect(mountAvatar.mock.calls[0][1].definition.id).toBe("ghost");
+  });
+
+  /**
+   * The roster uses one attribute to say what the character is doing; the
+   * three states that differ from the native vocabulary are the ones worth
+   * pinning, because mixing them up would still draw an avatar.
+   */
+  it("puts the live mood on data-openbot-state", async () => {
+    const cases = [
+      ["working", "working"],
+      ["waiting", "waiting"],
+      ["failed", "blocked"],
+      ["responded", "done"],
+      ["sleeping", "idle"],
+      ["thinking", "thinking"],
+    ] as const;
+    for (const [mood, expected] of cases) {
+      const { container, unmount } = render(RavenAvatar, {
+        props: { name: "Ada", style: "openbot:cat", mood },
+      });
+      await waitFor(() => expect(mountAvatar).toHaveBeenCalled());
+      const frame = container.querySelector(".raven-avatar")!;
+      expect(frame.getAttribute("data-openbot-state"), mood).toBe(expected);
+      expect(frame.getAttribute("data-state"), mood).toBe(expected);
+      unmount();
+    }
+  });
+
+  it("passes the still flag through when animation is off", async () => {
+    render(RavenAvatar, {
+      props: { name: "Ada", style: "openbot:cat", animated: false },
+    });
+    await waitFor(() => expect(mountAvatar).toHaveBeenCalled());
+    expect(mountAvatar.mock.calls[0][1].still).toBe(true);
+  });
+
+  it("leaves DiceBear, native and custom paths alone", async () => {
+    const dice = render(RavenAvatar, { props: { name: "Ada" } }).container;
+    expect(dice.querySelector(".raven-avatar")!.getAttribute("data-source")).toBe("dice");
+    expect(dice.querySelector("img")).not.toBeNull();
+
+    cleanup();
+    const native = render(RavenAvatar, {
+      props: { name: "Ada", style: "raven-native" },
+    }).container;
+    expect(native.querySelector(".raven-avatar")!.getAttribute("data-source")).toBe("generated");
+    expect(native.querySelector("svg")).not.toBeNull();
+
+    cleanup();
+    const custom = render(RavenAvatar, {
+      props: { name: "Ada", imageUrl: "https://example.com/me.png" },
+    }).container;
+    expect(custom.querySelector(".raven-avatar")!.getAttribute("data-source")).toBe("custom");
+    expect(custom.querySelector("img")!.getAttribute("src")).toBe("https://example.com/me.png");
   });
 });
 

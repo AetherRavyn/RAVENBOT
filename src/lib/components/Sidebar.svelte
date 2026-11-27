@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
   import { getDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/utils";
+  import { openBotColourForName, openBotUrl, parseOpenBotStyle } from "$lib/openBotAvatar";
   import { notify } from "$lib/toast";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { attention, awaitingBots, awaitingCount } from "$lib/attention.svelte";
@@ -232,7 +233,10 @@
   );
 
   let effectiveAvatarUrl = $derived(
-    newBotAvatarUrl || getDiceBearUrl(newBotName || "Agent", newBotAvatarStyle)
+    newBotAvatarUrl ||
+      (parseOpenBotStyle(newBotAvatarStyle)
+        ? openBotUrl(parseOpenBotStyle(newBotAvatarStyle)!, openBotColourForName(newBotName || "Agent"))
+        : getDiceBearUrl(newBotName || "Agent", newBotAvatarStyle))
   );
 
   async function createBot() {
@@ -739,10 +743,12 @@
           <div class="p-3.5 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] flex items-center justify-between">
             <div class="flex items-center gap-3.5">
               <div class="size-14 rounded-xl overflow-hidden bg-[var(--surface-3)] border-2 border-[var(--brand)]/60 p-0.5 shrink-0">
-                <img
-                  src={effectiveAvatarUrl}
-                  alt="Agent Avatar"
-                  class="size-full rounded-xl object-cover"
+                <RavenAvatar
+                  name={newBotName || "Agent"}
+                  style={newBotAvatarStyle}
+                  imageUrl={newBotAvatarUrl}
+                  decorative
+                  class="size-full rounded-xl"
                 />
               </div>
               <div class="flex flex-col">

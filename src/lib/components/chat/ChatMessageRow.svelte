@@ -415,7 +415,7 @@
 
   {#if isUser && userAvatar}
     <div class="size-8 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--hairline-strong)] shrink-0 mt-1 shadow-sm">
-      <img src={userAvatar} alt="You" class="size-full object-cover" />
+      <RavenAvatar name="You" imageUrl={userAvatar} decorative class="size-full" />
     </div>
   {/if}
 </div>

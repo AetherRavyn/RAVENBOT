@@ -11,8 +11,10 @@
   import { Textarea } from "$lib/components/ui/textarea";
   import { Badge } from "$lib/components/ui/badge";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import MemoryManager from "$lib/components/MemoryManager.svelte";
   import { getDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/utils";
+  import { openBotColourForName, openBotUrl, parseOpenBotStyle } from "$lib/openBotAvatar";
   import { notify } from "$lib/toast";
   import { open as openDialog } from "@tauri-apps/plugin-dialog";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
@@ -362,7 +364,10 @@
   });
 
   let currentAvatarUrl = $derived(
-    avatarUrl || getDiceBearUrl(name || bot?.name || "Agent", avatarStyle)
+    avatarUrl ||
+      (parseOpenBotStyle(avatarStyle)
+        ? openBotUrl(parseOpenBotStyle(avatarStyle)!, openBotColourForName(name || bot?.name || "Agent"))
+        : getDiceBearUrl(name || bot?.name || "Agent", avatarStyle))
   );
 
   async function browseWorkingFolder() {
@@ -612,10 +617,12 @@
               }}
               title={t("bot.changeAvatar")}
             >
-              <img
-                src={currentAvatarUrl}
-                alt={name || bot.name}
-                class="size-full rounded-xl object-cover"
+              <RavenAvatar
+                name={name || bot.name}
+                style={avatarStyle}
+                imageUrl={avatarUrl}
+                decorative
+                class="size-full rounded-xl"
               />
             </button>
             <div>
@@ -970,10 +977,12 @@
             <div class="p-3.5 rounded-2xl bg-[var(--surface-2)] border border-[var(--brand)]/25 flex items-center justify-between">
               <div class="flex items-center gap-3.5">
                 <div class="size-14 rounded-2xl overflow-hidden bg-[var(--surface-3)] border border-[var(--brand)]/40 p-0.5 shadow-md shrink-0">
-                  <img
-                    src={currentAvatarUrl}
-                    alt={t("bot.avatarAlt")}
-                    class="size-full rounded-xl object-cover"
+                  <RavenAvatar
+                    name={name || bot.name}
+                    style={avatarStyle}
+                    imageUrl={avatarUrl}
+                    decorative
+                    class="size-full rounded-xl"
                   />
                 </div>
                 <div class="flex flex-col">

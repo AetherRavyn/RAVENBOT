@@ -1,15 +1,25 @@
 <script lang="ts">
   import Sidebar from "$lib/components/Sidebar.svelte";
   import ChatRoomList from "$lib/components/ChatRoomList.svelte";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { t } from "$lib/i18n";
   import { workspace, RAIL_WIDTH } from "$lib/workspace.svelte";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { getDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/utils";
+  import { openBotColourForName, openBotUrl, parseOpenBotStyle } from "$lib/openBotAvatar";
   import { cn } from "$lib/utils.js";
   import { Settings } from "@lucide/svelte";
   import type { ThemeDefinition } from "$lib/theme";
 
   let { theme }: { theme: ThemeDefinition } = $props();
+
+  /** OpenBot styles never go to DiceBear: it would render a blank frame. */
+  function avatarFor(name: string, owner: any): string {
+    if (owner?.avatar_url) return owner.avatar_url;
+    const openBotStyle = parseOpenBotStyle(owner?.avatar_style);
+    if (openBotStyle) return openBotUrl(openBotStyle, openBotColourForName(name));
+    return getDiceBearUrl(name, owner?.avatar_style || DEFAULT_AVATAR_STYLE);
+  }
 
   const activityDot = (a: string) =>
     a === "working"
@@ -27,7 +37,7 @@
       ? workspace.chatrooms.map((r: any) => ({
           id: r.id,
           name: r.name || "",
-          avatar: r.avatar_url || getDiceBearUrl(r.name || "room", DEFAULT_AVATAR_STYLE),
+          avatar: avatarFor(r.name || "room", r),
           activity: "idle",
           selected: workspace.selectedRoomId === r.id,
           select: () => workspace.selectRoom(r.id),
@@ -35,7 +45,7 @@
       : workspace.bots.map((b: any) => ({
           id: b.id,
           name: b.name || "",
-          avatar: b.avatar_url || getDiceBearUrl(b.name || "bot", b.avatar_style || DEFAULT_AVATAR_STYLE),
+          avatar: avatarFor(b.name || "bot", b),
           activity: fleetActivity.get(b.id),
           selected: workspace.selectedBotId === b.id,
           select: () => workspace.selectBot(b.id),
@@ -46,10 +56,7 @@
   const isRooms = $derived(workspace.dest === "offices");
   const dockTarget = $derived(isRooms ? workspace.selectedRoom : workspace.selectedBot);
   const dockAvatar = $derived(
-    dockTarget
-      ? dockTarget.avatar_url ||
-          getDiceBearUrl(dockTarget.name || "chat", dockTarget.avatar_style || DEFAULT_AVATAR_STYLE)
-      : "",
+    dockTarget ? avatarFor(dockTarget.name || "chat", dockTarget) : "",
   );
   const dockActivity = $derived(
     dockTarget && !isRooms ? fleetActivity.get(dockTarget.id) : "idle",
@@ -84,7 +91,7 @@
           aria-label={it.name}
           aria-current={it.selected ? "true" : undefined}
         >
-          <img src={it.avatar} alt="" class="size-full object-cover" loading="lazy" />
+          <RavenAvatar name={it.name} imageUrl={it.avatar} decorative class="size-full" />
           {#if it.activity !== "idle"}
             <span class={cn("absolute bottom-0.5 right-0.5 size-2 rounded-full ring-2 ring-[var(--surface-0)]", activityDot(it.activity))}></span>
           {/if}
@@ -121,7 +128,7 @@
   <div class="shrink-0 h-10 px-2 border-t border-[var(--hairline-faint)] flex items-center gap-2">
     {#if dockTarget}
       <span class="relative size-6 shrink-0">
-        <img src={dockAvatar} alt="" class="size-6 rounded-lg object-cover border border-[var(--hairline)]" />
+        <RavenAvatar name={dockTarget.name || "chat"} imageUrl={dockAvatar} decorative class="size-6 rounded-lg border border-[var(--hairline)]" />
         {#if dockActivity !== "idle"}
           <span class={cn("absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-2 ring-[var(--surface-0)]", activityDot(dockActivity))}></span>
         {/if}

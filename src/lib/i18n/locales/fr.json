@@ -3056,5 +3056,33 @@
     "replayRepairHint": "Piste de réparation",
     "replayRepairItem": "Étape {{index}} trouvée par {{by}}",
     "recordingLost": "L’enregistrement s’est arrêté parce que son onglet a été fermé."
+  },
+  "openbot": {
+    "title": "Personnage OpenBot",
+    "description": "De petits personnages-objet avec des yeux, dessinés localement.",
+    "character": "Personnage",
+    "colour": "Couleur du corps",
+    "mood": "Humeur",
+    "neutral": "Neutre",
+    "happy": "Joyeux",
+    "volume": "Volume",
+    "followPointer": "Suivre le pointeur",
+    "finish": "Finition",
+    "flat": "Plat",
+    "fluffy": "Duveteux",
+    "glass": "Verre",
+    "animate": "Animer les aperçus (respecte la réduction des animations)",
+    "states": "États de travail",
+    "state": {
+      "idle": "Inactif",
+      "thinking": "Réflexion",
+      "working": "Travail",
+      "waiting": "En attente",
+      "blocked": "Bloqué",
+      "done": "Terminé"
+    },
+    "apply": "Utiliser le personnage",
+    "close": "Fermer",
+    "galleryNote": "Galerie intégrée. Aucun téléchargement ni image distante."
   }
 }

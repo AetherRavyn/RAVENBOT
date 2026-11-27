@@ -9,6 +9,7 @@
   import { Textarea } from "$lib/components/ui/textarea";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
   import { getDiceBearUrl, OFFICE_TEMPLATES, DEFAULT_AVATAR_STYLE, type OfficeTemplateKey } from "$lib/utils";
+  import { openBotColourForName, openBotUrl, parseOpenBotStyle } from "$lib/openBotAvatar";
   import { officeTemplateName, officeTemplateDesc } from "$lib/catalogI18n";
   import { cn } from "$lib/utils.js";
   import {
@@ -238,7 +239,7 @@
     isCreating = true;
     createError = null;
     try {
-      const url = roomAvatarUrl || getDiceBearUrl(name, roomAvatarStyle);
+      const url = roomPreviewUrl;
       // Prefer what the user typed; fall back to the charter the model wrote
       // from the name and mission. An office created from a name alone still
       // gets a real goal and binding policy.
@@ -310,7 +311,12 @@
     }
   }
 
-  let roomPreviewUrl = $derived(roomAvatarUrl || getDiceBearUrl(name || "office", roomAvatarStyle));
+  let roomPreviewUrl = $derived(
+    roomAvatarUrl ||
+      (parseOpenBotStyle(roomAvatarStyle)
+        ? openBotUrl(parseOpenBotStyle(roomAvatarStyle)!, openBotColourForName(name || "office"))
+        : getDiceBearUrl(name || "office", roomAvatarStyle))
+  );
 </script>
 
 <Dialog.Root {open} onOpenChange={(o) => !o && onClose()}>
@@ -373,7 +379,13 @@
           class="flex flex-col items-center gap-1.5 shrink-0 group focus:outline-none cursor-pointer"
         >
           <div class="size-16 rounded-full overflow-hidden bg-[var(--surface-3)] border border-[var(--brand)]/40 p-0.5 group-hover:scale-105 transition-transform">
-            <img src={roomPreviewUrl} alt={name || t("office.fallbackName")} class="size-full rounded-full object-cover" />
+            <RavenAvatar
+              name={name || t("office.fallbackName")}
+              style={roomAvatarStyle}
+              imageUrl={roomAvatarUrl}
+              decorative
+              class="size-full rounded-full"
+            />
           </div>
           <span class="text-[11px] text-[var(--brand-text)] flex items-center gap-1 group-hover:underline font-medium">
             <Sparkles class="size-3" />

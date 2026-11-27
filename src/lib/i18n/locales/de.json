@@ -3056,5 +3056,33 @@
     "replayRepairHint": "Reparaturhinweis",
     "replayRepairItem": "Schritt {{index}} gefunden über {{by}}",
     "recordingLost": "Die Aufzeichnung wurde beendet, weil ihr Tab geschlossen wurde."
+  },
+  "openbot": {
+    "title": "OpenBot-Charakter",
+    "description": "Kleine Objektfiguren mit Augen, lokal gezeichnet.",
+    "character": "Charakter",
+    "colour": "Körperfarbe",
+    "mood": "Stimmung",
+    "neutral": "Neutral",
+    "happy": "Fröhlich",
+    "volume": "Volumen",
+    "finish": "Oberfläche",
+    "flat": "Flach",
+    "fluffy": "Flauschig",
+    "glass": "Glas",
+    "followPointer": "Zeiger folgen",
+    "animate": "Vorschauen animieren (folgt der Bewegungsreduzierung)",
+    "states": "Arbeitszustände",
+    "state": {
+      "idle": "Untätig",
+      "thinking": "Denkt nach",
+      "working": "Arbeitet",
+      "waiting": "Wartet",
+      "blocked": "Blockiert",
+      "done": "Fertig"
+    },
+    "apply": "Charakter verwenden",
+    "close": "Schließen",
+    "galleryNote": "Mitgelieferte Galerie. Kein Download, keine externen Bilder."
   }
 }

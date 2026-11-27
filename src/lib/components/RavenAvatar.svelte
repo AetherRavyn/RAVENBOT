@@ -36,6 +36,14 @@
   } from "$lib/avatar";
   import { getDiceBearUrl, isNativeAvatarStyle } from "$lib/utils";
   import { styleAnimates, currentDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
+  import OpenBotAvatar from "$lib/components/OpenBotAvatar.svelte";
+  import {
+    openBotStateForMood,
+    parseOpenBotStyle,
+    parseOpenBotUrl,
+    resolveOpenBotColour,
+    resolveOpenBotDefinition,
+  } from "$lib/openBotAvatar";
 
   interface Props {
     /** The agent's name. The only thing the face is derived from. */
@@ -168,6 +176,39 @@
   const styleId = $derived((style ?? "").trim() || DEFAULT_AVATAR_STYLE);
 
   /**
+   * OpenBot characters.
+   *
+   * The style is the cheap, durable marker (`openbot:cat`) and the URL carries
+   * the same id plus the chosen body colour. Either one is enough: a surface
+   * that only stores `avatar_url` (the chat gutter does) must still render the
+   * character rather than treat the custom scheme as a broken image.
+   *
+   * This is checked before the DiceBear/custom branches because an
+   * `openbot://` URL is neither a remote image nor a DiceBear URL.
+   */
+  const openBotId = $derived(parseOpenBotStyle(styleId));
+  const openBotFromUrl = $derived(parseOpenBotUrl(imageUrl));
+  const isOpenBot = $derived(Boolean(openBotId || openBotFromUrl));
+  const openBotDefinition = $derived(
+    resolveOpenBotDefinition({ name, definitionId: openBotId, imageUrl }),
+  );
+  const openBotColour = $derived(resolveOpenBotColour({ name, imageUrl }));
+  const openBotState = $derived(openBotStateForMood(mood));
+  const openBotAnimated = $derived(animated !== false);
+
+  /**
+   * The state and identity the frame reports.
+   *
+   * A native face reports its fifteen-state motion and eight-shape geometry;
+   * an OpenBot reports the six-state pose and the definition id, because
+   * those are the vocabularies the renderer actually has. Keeping `data-state`
+   * meaningful for both lets the existing tests keep asserting on it.
+   */
+  const frameState = $derived(isOpenBot ? openBotState : motion);
+  const frameShape = $derived(isOpenBot ? openBotDefinition.id : shape);
+  const frameColour = $derived(isOpenBot ? openBotColour : colour);
+
+  /**
    * A stored DiceBear URL, brought up to date.
    *
    * The picker has always saved the whole URL on the agent, so anything created
@@ -188,13 +229,15 @@
    * style the face is drawn here.
    */
   const source = $derived(
-    upgraded
-      ? "dice"
-      : imageUrl
-        ? "custom"
-        : isNativeAvatarStyle(styleId)
-          ? "generated"
-          : "dice",
+    isOpenBot
+      ? "openbot"
+      : upgraded
+        ? "dice"
+        : imageUrl
+          ? "custom"
+          : isNativeAvatarStyle(styleId)
+            ? "generated"
+            : "dice",
   );
   const diceUrl = $derived(
     source === "dice" && upgraded
@@ -203,8 +246,9 @@
         ? getDiceBearUrl(name, styleId, "", animated)
         : "",
   );
-  const showImage = $derived(source !== "generated" && !imageFailed);
-  const showFace = $derived(!showImage);
+  const showImage = $derived(source !== "generated" && source !== "openbot" && !imageFailed);
+  const showFace = $derived(!showImage && source !== "openbot");
+  const showOpenBot = $derived(source === "openbot");
   /**
    * Whether the picture carries its own animation.
    *
@@ -443,17 +487,32 @@
 <span
   class="raven-avatar {customClass}"
   data-mood={mood}
-  data-state={motion}
-  data-shape={shape}
-  data-colour={colour}
+  data-state={frameState}
+  data-shape={frameShape}
+  data-colour={frameColour}
   data-source={source}
+  data-openbot-state={isOpenBot ? openBotState : undefined}
   data-animates={imageAnimates || undefined}
   style="--av-face: {vars.base}; --av-deep: {vars.deep}; --av-glow: {vars.glow}; --av-ink: {vars.face}; --av-breathe: {moodStyle.breathe}"
   role={decorative ? undefined : "img"}
   aria-label={decorative ? undefined : name}
   aria-hidden={decorative ? "true" : undefined}
 >
-  {#if showImage}
+  {#if showOpenBot}
+    <!--
+      The outer frame owns the accessible name; the OpenBot host is decorative
+      here so a screen reader does not hear the same agent twice.
+    -->
+    <OpenBotAvatar
+      {name}
+      {mood}
+      imageUrl={imageUrl}
+      definitionId={openBotId}
+      still={!openBotAnimated}
+      decorative
+      class="raven-avatar-openbot"
+    />
+  {:else if showImage}
     <!--
       One `<img>`, whether the source is a DiceBear style or a user's own image.
 

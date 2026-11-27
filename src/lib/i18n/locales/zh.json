@@ -3056,5 +3056,33 @@
     "replayRepairHint": "修复提示",
     "replayRepairItem": "第 {{index}} 步通过 {{by}} 匹配",
     "recordingLost": "标签页已关闭，录制已停止。"
+  },
+  "openbot": {
+    "title": "OpenBot 角色",
+    "description": "带眼睛的小物件角色，本地绘制。",
+    "character": "角色",
+    "colour": "身体颜色",
+    "mood": "情绪",
+    "neutral": "平静",
+    "happy": "开心",
+    "volume": "体积",
+    "followPointer": "跟随指针",
+    "finish": "质感",
+    "flat": "平面",
+    "fluffy": "毛绒",
+    "glass": "玻璃",
+    "animate": "预览动画（遵循减少动态效果设置）",
+    "states": "工作状态",
+    "state": {
+      "idle": "空闲",
+      "thinking": "思考中",
+      "working": "工作中",
+      "waiting": "等待中",
+      "blocked": "受阻",
+      "done": "完成"
+    },
+    "apply": "使用角色",
+    "close": "关闭",
+    "galleryNote": "内置画廊。无需下载，也无远程图片。"
   }
 }

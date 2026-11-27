@@ -107,6 +107,11 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
    surfaces. None of the compared products ship this breadth.
 6. **Breadth of local artifacts.** 1,497 skills, 135 MCP connectors and a
    2,530-app OpenAPI directory, with a skill versioning/install pipeline.
+7. **Agent identity that reads the room.** Native generated faces, DiceBear
+   styles and 23 bundled OpenBot characters share one storage shape. OpenBot
+   characters preview all six work states in a studio and then follow live fleet
+   activity — waiting, blocked and done are visible at a glance rather than
+   encoded in a label.
 
 ## 3. Where RAVENBOT is behind — and why it matters
 
@@ -235,7 +240,8 @@ testable acceptance bar.
 
 ### Do not build now
 
-- More connector counts or avatar states before task success is measured.
+- More connector counts, or a bespoke avatar system beyond the bundled OpenBot
+  gallery and its six states, before task success is measured.
 - A broad consumer shopping/commerce surface before spend controls and
   insurance.
 - “One shared computer for all agents.” Grok and Muse do it for convenience;

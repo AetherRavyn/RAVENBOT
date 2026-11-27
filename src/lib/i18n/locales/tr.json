@@ -3056,5 +3056,33 @@
     "replayRepairHint": "Onarım ipucu",
     "replayRepairItem": "Adım {{index}} {{by}} ile bulundu",
     "recordingLost": "Kayıt, sekmesi kapatıldığı için durdu."
+  },
+  "openbot": {
+    "title": "OpenBot karakteri",
+    "description": "Gözleri olan küçük nesne karakterleri, yerel olarak çizilir.",
+    "character": "Karakter",
+    "colour": "Gövde rengi",
+    "mood": "Ruh hâli",
+    "neutral": "Nötr",
+    "happy": "Neşeli",
+    "volume": "Hacim",
+    "followPointer": "İşaretçiyi takip et",
+    "finish": "Kaplama",
+    "flat": "Düz",
+    "fluffy": "Tüylü",
+    "glass": "Cam",
+    "animate": "Önizlemeleri canlandır (hareket azaltmayı izler)",
+    "states": "Çalışma durumları",
+    "state": {
+      "idle": "Boşta",
+      "thinking": "Düşünüyor",
+      "working": "Çalışıyor",
+      "waiting": "Bekliyor",
+      "blocked": "Engellendi",
+      "done": "Tamamlandı"
+    },
+    "apply": "Karakteri kullan",
+    "close": "Kapat",
+    "galleryNote": "Yerleşik galeri. İndirme veya uzak görsel yok."
   }
 }

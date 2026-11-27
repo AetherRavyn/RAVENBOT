@@ -9,6 +9,7 @@
   import { Separator } from "$lib/components/ui/separator";
   import { ScrollArea } from "$lib/components/ui/scroll-area";
   import { getDiceBearUrl, isUserMessage, OFFICE_TEMPLATES, DEFAULT_AVATAR_STYLE } from "$lib/utils";
+  import { openBotColourForName, openBotUrl, parseOpenBotStyle } from "$lib/openBotAvatar";
   import { cn } from "$lib/utils.js";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import { t } from "$lib/i18n";
@@ -172,6 +173,20 @@
   async function scrollToRoomMatch(index: number) {
     const key = roomSearchMatches[index];
     if (key) await revealMessage(key);
+  }
+
+  /**
+   * The URL to hand an avatar surface for a bot.
+   *
+   * OpenBot styles must never reach `getDiceBearUrl`: its style slug is not a
+   * DiceBear style and the request would render a blank frame. The same rule
+   * applies when the stored URL is missing but the style is present.
+   */
+  function avatarUrlFor(name: string, bot: any): string {
+    const openBotStyle = parseOpenBotStyle(bot?.avatar_style);
+    if (bot?.avatar_url) return bot.avatar_url;
+    if (openBotStyle) return openBotUrl(openBotStyle, openBotColourForName(name));
+    return getDiceBearUrl(name, bot?.avatar_style || DEFAULT_AVATAR_STYLE);
   }
 
   function onRoomSearchInput(event: Event) {
@@ -2844,7 +2859,7 @@
           {@const autonomousCycle = isUser && rawText.startsWith("[Autonomous cycle]")}
           {@const senderBot = msg.sender_bot_id ? bots.find((b: any) => b.id === msg.sender_bot_id) : null}
           {@const senderName = senderBot?.name || msg.sender_name || room.name}
-          {@const senderAvatar = senderBot?.avatar_url || getDiceBearUrl(senderName, senderBot?.avatar_style || DEFAULT_AVATAR_STYLE)}
+          {@const senderAvatar = avatarUrlFor(senderName, senderBot)}
           {@const messageAttachments = Array.isArray(msg.attachments) ? msg.attachments.filter((a: any) => a?.data) : []}
           {@const messageImages = messageAttachments.filter((a: any) => a.is_image)}
           {@const messageMedia = messageAttachments.filter((a: any) => !a.is_image && /^(audio|video)\//i.test(a.mime_type || ""))}
@@ -3079,7 +3094,7 @@
 
             {#snippet statusRow(name: string, avatar: string, color: string, toolName?: string)}
               <div class="flex items-center gap-2 px-1 min-w-0 animate-rise-in">
-                <img src={avatar} alt="" class="size-6 rounded-lg object-cover border border-[var(--hairline)] shrink-0" />
+                <RavenAvatar {name} imageUrl={avatar} decorative class="size-6 rounded-lg shrink-0" />
                 <span class="text-[11px] font-bold truncate" style={`color: ${color}`}>{name}</span>
                 {#if toolName}
                   <span class="font-mono text-[11px] px-1.5 py-0.5 rounded bg-info/10 border border-info/30 text-info inline-flex items-center gap-1 shrink-0">
@@ -3170,9 +3185,10 @@
             <!-- Active bots that haven't streamed a token yet (pre-first-delta) -->
             {#each activeMembers.filter((m: any) => !laneBotIds.has(m.bot?.id)) as m (m.bot?.id)}
               {@const name = m?.bot?.name || m.rank || "?"}
+              {@const avatar = avatarUrlFor(name, m?.bot)}
               {@render statusRow(
                 name,
-                m?.bot?.avatar_url || getDiceBearUrl(name, m?.bot?.avatar_style || DEFAULT_AVATAR_STYLE),
+                avatar,
                 `hsl(${authorHue(m.bot?.id || name)} 55% 68%)`,
                 agentTool[m.bot?.id],
               )}
