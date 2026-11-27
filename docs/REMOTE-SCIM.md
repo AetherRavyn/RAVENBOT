@@ -15,6 +15,9 @@ listener / reverse proxy). Responses use `application/scim+json`.
 
 | Method | Path | Behaviour |
 |---|---|---|
+| `GET` | `/scim/v2/ServiceProviderConfig` | Static capabilities: patch/filter supported; bulk/sort/ETag/change-password not |
+| `GET` | `/scim/v2/ResourceTypes` | Static ListResponse with the `User` resource type |
+| `GET` | `/scim/v2/ResourceTypes/` | Same as the resource-types path (trailing slash tolerated) |
 | `GET` | `/scim/v2/Users` | List workspace members with optional `filter`, `startIndex`, `count` |
 | `GET` | `/scim/v2/Users/` | Same as the collection path (trailing slash tolerated) |
 | `POST` | `/scim/v2/Users` | Create a member |
@@ -23,6 +26,10 @@ listener / reverse proxy). Responses use `application/scim+json`.
 | `PATCH` | `/scim/v2/Users/{id}` | Replace `active` / `userName` |
 | `PUT` | `/scim/v2/Users/{id}` | Minimal replace of `userName` and `active` |
 | `DELETE` | `/scim/v2/Users/{id}` | Soft deprovision (`active: false`) |
+
+`ServiceProviderConfig` and `ResourceTypes` are static discovery documents. They
+use the same SCIM bearer middleware, but they do not read the account registry
+or call the provisioner. There is no `/scim/v2/Schemas` endpoint.
 
 SCIM routes are mounted on the remote listener with their own bearer middleware.
 They are **not** reachable with a paired-device token, and they are not part of
@@ -282,7 +289,10 @@ requests as well.
 
 - **Users only.** No SCIM `Groups`, `EnterpriseUser`, bulk operations, sorting,
   `attributes`/`excludedAttributes`, ETags or `If-Match`. `externalId` is set on
-  create; `PATCH`/`PUT` do not change it.
+  create; `PATCH`/`PUT` do not change it. Discovery advertises exactly those
+  limits: patch and filter supported, bulk/sort/ETag/change-password not.
+- **No `/Schemas` endpoint.** Only `ServiceProviderConfig`, `ResourceTypes` and
+  `Users` are mounted.
 - **No group or role mapping.** No IdP group/claim grants a workspace or role.
 - **No auto-grant beyond the default role.** Existing accounts added out of band
   keep their existing grants; SCIM only creates the one default grant for a new

@@ -3983,6 +3983,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scim_discovery_reports_capabilities_without_a_provisioner() {
+        let (base_state, _, token) = scim_state().await;
+        // Discovery is static: a configured, authenticated listener must answer
+        // even when no AccountProvisioner is attached.
+        let state = Arc::new(RemoteState::new_with_services(
+            base_state.pool.clone(),
+            base_state.runtime.clone(),
+            None,
+            None,
+            base_state.scim.clone(),
+            None,
+        ));
+        let app = router(state.clone());
+
+        let response = app
+            .clone()
+            .oneshot(scim_request(
+                "GET",
+                "/scim/v2/ServiceProviderConfig",
+                Some(&token),
+                None,
+            ))
+            .await
+            .expect("service provider config");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            Some("application/scim+json")
+        );
+        let body = body_json(response).await;
+        assert_eq!(
+            body["schemas"][0],
+            "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig"
+        );
+        assert_eq!(body["patch"]["supported"], true);
+        assert_eq!(body["bulk"]["supported"], false);
+        assert_eq!(body["bulk"]["maxOperations"], 0);
+        assert_eq!(body["bulk"]["maxPayloadSize"], 0);
+        assert_eq!(body["filter"]["supported"], true);
+        assert_eq!(body["filter"]["maxResults"], SCIM_MAX_RESULTS);
+        assert_eq!(body["changePassword"]["supported"], false);
+        assert_eq!(body["sort"]["supported"], false);
+        assert_eq!(body["etag"]["supported"], false);
+        assert_eq!(body["authenticationSchemes"][0]["type"], "oauthbearertoken");
+        assert_eq!(body["authenticationSchemes"][0]["primary"], true);
+        assert_eq!(body["authenticationSchemes"].as_array().unwrap().len(), 1);
+
+        for uri in ["/scim/v2/ResourceTypes", "/scim/v2/ResourceTypes/"] {
+            let response = app
+                .clone()
+                .oneshot(scim_request("GET", uri, Some(&token), None))
+                .await
+                .expect("resource types");
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            let body = body_json(response).await;
+            assert_eq!(
+                body["schemas"][0],
+                "urn:ietf:params:scim:schemas:core:2.0:ListResponse"
+            );
+            assert_eq!(body["totalResults"], 1);
+            assert_eq!(body["itemsPerPage"], 1);
+            let user = &body["Resources"][0];
+            assert_eq!(
+                user["schemas"][0],
+                "urn:ietf:params:scim:schemas:core:2.0:ResourceType"
+            );
+            assert_eq!(user["id"], "User");
+            assert_eq!(user["name"], "User");
+            assert_eq!(user["endpoint"], "/scim/v2/Users");
+            assert_eq!(user["schema"], "urn:ietf:params:scim:schemas:core:2.0:User");
+            assert!(user.get("schemaExtensions").is_none());
+        }
+
+        // The same discovery routes still require the SCIM token.
+        for uri in ["/scim/v2/ServiceProviderConfig", "/scim/v2/ResourceTypes"] {
+            let response = app
+                .clone()
+                .oneshot(scim_request("GET", uri, Some("wrong-token"), None))
+                .await
+                .expect("wrong token");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{uri}");
+        }
+
+        let disabled = Arc::new(RemoteState::new_with_services(
+            state.pool.clone(),
+            state.runtime.clone(),
+            None,
+            None,
+            None,
+            None,
+        ));
+        for uri in ["/scim/v2/ServiceProviderConfig", "/scim/v2/ResourceTypes"] {
+            let response = router(disabled.clone())
+                .oneshot(scim_request("GET", uri, Some(&token), None))
+                .await
+                .expect("disabled");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{uri}");
+        }
+    }
+
+    #[tokio::test]
     async fn scim_rate_limit_returns_429() {
         let (state, _, token) = scim_state().await;
         let ip = IpAddr::from([127, 0, 0, 1]);

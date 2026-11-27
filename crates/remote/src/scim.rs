@@ -38,11 +38,20 @@ const SCIM_CONTENT_TYPE: &str = "application/scim+json";
 const USER_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:User";
 const LIST_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:ListResponse";
 const ERROR_SCHEMA: &str = "urn:ietf:params:scim:api:messages:2.0:Error";
+const SERVICE_PROVIDER_CONFIG_SCHEMA: &str =
+    "urn:ietf:params:scim:schemas:core:2.0:ServiceProviderConfig";
+const RESOURCE_TYPE_SCHEMA: &str = "urn:ietf:params:scim:schemas:core:2.0:ResourceType";
 
 /// Mount the SCIM routes with their own bearer middleware. They must never pass
 /// through the paired-device middleware: a SCIM token is not a device token.
 pub(super) fn router(state: Arc<RemoteState>) -> Router<Arc<RemoteState>> {
     Router::new()
+        .route(
+            "/scim/v2/ServiceProviderConfig",
+            get(service_provider_config),
+        )
+        .route("/scim/v2/ResourceTypes", get(resource_types))
+        .route("/scim/v2/ResourceTypes/", get(resource_types))
         .route("/scim/v2/Users", get(list_users).post(create_user))
         .route("/scim/v2/Users/", get(list_users).post(create_user))
         .route(
@@ -345,6 +354,59 @@ fn list_response(users: Vec<ScimUser>, start_index: usize, count: usize) -> Resp
             "startIndex": start_index,
             "itemsPerPage": page.len(),
             "Resources": page,
+        }),
+    )
+}
+
+/// SCIM discovery is static capability metadata. It is authenticated by the
+/// same workspace token but deliberately does not consult the provisioner.
+async fn service_provider_config() -> Response {
+    scim_json(
+        StatusCode::OK,
+        json!({
+            "schemas": [SERVICE_PROVIDER_CONFIG_SCHEMA],
+            "patch": { "supported": true },
+            "bulk": {
+                "supported": false,
+                "maxOperations": 0,
+                "maxPayloadSize": 0,
+            },
+            "filter": {
+                "supported": true,
+                "maxResults": SCIM_MAX_RESULTS,
+            },
+            "changePassword": { "supported": false },
+            "sort": { "supported": false },
+            "etag": { "supported": false },
+            "authenticationSchemes": [{
+                "type": "oauthbearertoken",
+                "name": "Bearer token",
+                "description": "Workspace-scoped SCIM bearer token",
+                "primary": true,
+            }],
+        }),
+    )
+}
+
+/// The only resource type this server implements. Groups and extensions are
+/// deliberately absent.
+async fn resource_types() -> Response {
+    let resource = json!({
+        "schemas": [RESOURCE_TYPE_SCHEMA],
+        "id": "User",
+        "name": "User",
+        "endpoint": "/scim/v2/Users",
+        "schema": USER_SCHEMA,
+        "meta": { "resourceType": "ResourceType" },
+    });
+    scim_json(
+        StatusCode::OK,
+        json!({
+            "schemas": [LIST_SCHEMA],
+            "totalResults": 1,
+            "startIndex": 1,
+            "itemsPerPage": 1,
+            "Resources": [resource],
         }),
     )
 }

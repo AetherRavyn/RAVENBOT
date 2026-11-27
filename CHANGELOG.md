@@ -12,6 +12,12 @@ All notable changes to RAVENBOT are documented here.
   `app_settings`; the plaintext is generated in the desktop and shown once. SCIM
   is off by default, returns `404` when disabled, and never opens the device API
   or appears in `/api/status`.
+- **Discovery.** `GET /scim/v2/ServiceProviderConfig` and
+  `GET /scim/v2/ResourceTypes` (with trailing slash) advertise patch and filter
+  support, disabled bulk/sort/ETag/change-password, one bearer authentication
+  scheme and the single `User` resource type. Discovery uses the same bearer
+  middleware but does not touch the provisioner. There is no `/Schemas`
+  endpoint.
 - **No privilege widening.** A SCIM-created member gets one grant: the
   configured default role `viewer` or `operator`, never `owner`. Groups, claims
   and roles from the IdP are ignored. Both the workspace owner and the host-level
@@ -47,8 +53,9 @@ All notable changes to RAVENBOT are documented here.
   `configure_remote_scim`, `create_remote_scim_token` and
   `revoke_remote_scim_token`, and `RemoteStatus.scim` never includes the hash.
 - Covered by remote-route tests with a mock provisioner (token/401/404/429,
-  filters, pagination, create/Location/conflicts/owner/inactive, get/patch/put/
-  delete idempotence, audit and last-used, device-route isolation),
+  discovery without a provisioner, filters, pagination, create/Location/
+  conflicts/owner/inactive, get/patch/put/delete idempotence, audit and
+  last-used, device-route isolation),
   account-registry tests (case-insensitive usernames, external-id conflicts and
   workspace scoping, cross-workspace isolation, workspace and host-owner
   protection, shared-account refusal, rollback, disable/revoke, re-enable and

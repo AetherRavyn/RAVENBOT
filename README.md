@@ -419,7 +419,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
 - **1,100+ Rust tests** across the workspace, including 243 Tauri library tests
   plus 7 cross-tenant isolation tests, 246 runtime tests, 210 skill tests, 110
   database tests, 74 core tests, 39 vision tests, 35 memory tests, 33 MCP
-  tests, and 39 remote-access tests.
+  tests, and 40 remote-access tests.
 - **942 frontend tests** across 137 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
