@@ -10,6 +10,7 @@
   import BrowserProfilesPanel from "$lib/components/BrowserProfilesPanel.svelte";
   import MemoryEmbeddingSettings from "$lib/components/MemoryEmbeddingSettings.svelte";
   import RemoteSsoCard from "$lib/components/RemoteSsoCard.svelte";
+  import RemoteScimCard from "$lib/components/RemoteScimCard.svelte";
   import * as Dialog from "$lib/components/ui/dialog";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -3057,6 +3058,11 @@
             <RemoteSsoCard
               sso={remoteStatus?.sso ?? null}
               enabled={Boolean(remoteStatus?.sso_enabled)}
+              onSaved={applyRemoteStatus}
+            />
+
+            <RemoteScimCard
+              scim={remoteStatus?.scim ?? null}
               onSaved={applyRemoteStatus}
             />
 

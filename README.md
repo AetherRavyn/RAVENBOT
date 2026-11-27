@@ -420,7 +420,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
   plus 7 cross-tenant isolation tests, 246 runtime tests, 210 skill tests, 110
   database tests, 74 core tests, 39 vision tests, 35 memory tests, 33 MCP
   tests, and 39 remote-access tests.
-- **866 frontend tests** across 129 files. A gate rejects literal English
+- **942 frontend tests** across 137 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
@@ -466,7 +466,8 @@ limitations rather than finished features:
   not contact the IdP, so the first check happens when a paired device signs in.
   There is no group mapping, auto-provisioning, client secret or OIDC logout.
   SCIM user provisioning is a separate, off-by-default surface with its own
-  workspace-scoped token; it can create a member with only the configured
+  workspace-scoped token, configured in **Settings → Remote → SCIM
+  provisioning**; it can create a member with only the configured
   `viewer`/`operator` grant and never manages the owner or a shared account.
   See [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md) and
   [`docs/REMOTE-SCIM.md`](docs/REMOTE-SCIM.md).

@@ -27,25 +27,35 @@ All notable changes to RAVENBOT are documented here.
   duplicate usernames are rejected.
 - **Soft deprovision.** `DELETE` sets `active: false` and revokes sessions but
   keeps the account, grants and external-id mapping for a later reactivation
-  (`PATCH`/`PUT`). It never purges the data root. A SCIM-created account gets a random 32-byte password
-  that is never shown or logged, so text/password login is unavailable until an
-  owner sets one; the intended path is OIDC SSO or a later owner-set password.
+  (`PATCH`/`PUT`). It never purges the data root. A SCIM-created account gets a
+  random 32-byte password that is never shown or logged, so text/password login
+  is unavailable until an owner sets one; the intended path is OIDC SSO or a
+  later owner-set password.
 - **Bounded.** 600 requests/min per IP and 3000/min globally, before database
   work; pages cap at 1000; only `userName eq`, `externalId eq` and `id eq`
   filters are accepted; no Groups, bulk, sort or full SCIM schema validation.
   Mutations and auth failures are audited with device name `SCIM`, and
   authenticated requests update `remote_scim_last_used_at`.
-- **Owner-only commands already shipped for the follow-up card:**
-  `configure_remote_scim`, `create_remote_scim_token` (the one-time plaintext),
-  and `revoke_remote_scim_token`, plus a safe `RemoteStatus.scim` summary that
-  never includes the hash. The desktop card itself is not part of this slice.
+- **Owner-only Settings card.** **Settings → Remote → SCIM provisioning** sits
+  after SSO and before pairing. It enables the feature, selects the
+  viewer/operator default role, generates or replaces the token, revokes it with
+  confirmation, shows the plaintext once with a copy button and never stores it,
+  displays the last-used time, and warns when the saved configuration is enabled
+  but not active or has no token. Saving calls `configure_remote_scim`, restarts
+  a running listener and does not contact the IdP. There is no fake test or
+  connection button; the backend commands remain
+  `configure_remote_scim`, `create_remote_scim_token` and
+  `revoke_remote_scim_token`, and `RemoteStatus.scim` never includes the hash.
 - Covered by remote-route tests with a mock provisioner (token/401/404/429,
   filters, pagination, create/Location/conflicts/owner/inactive, get/patch/put/
-  delete idempotence, audit and last-used, device-route isolation) and
+  delete idempotence, audit and last-used, device-route isolation),
   account-registry tests (case-insensitive usernames, external-id conflicts and
   workspace scoping, cross-workspace isolation, workspace and host-owner
   protection, shared-account refusal, rollback, disable/revoke, re-enable and
-  rename). A real-IdP SCIM pass remains a manual release check. See
+  rename), and a `RemoteScimCard` DOM suite (saved fields, exact camelCase save,
+  one-time generate/copy, replace/revoke confirmations, warning, error handling
+  and no test button) with all twelve locale dictionaries. A real-IdP SCIM pass
+  remains a manual release check. See
   [`docs/REMOTE-SCIM.md`](docs/REMOTE-SCIM.md).
 
 ### Remote single sign-on (OIDC)

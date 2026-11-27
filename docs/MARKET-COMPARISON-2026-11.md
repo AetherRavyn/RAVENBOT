@@ -134,7 +134,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Learning loop** | Hermes (self-created skills), Grok Bot (“show it once”) | A successful run becomes a reviewed, versioned skill; a recorded browser/desktop task becomes a replayable routine; failures repair rather than silently repeat. |
 | **Independent action reviewer** | Grok Auto Review | A second, independent model evaluates risky actions against the user's request, with deterministic policy underneath it. RAVENBOT's Review→Auto is deterministic and auditable, but not an independent reviewer. |
 | **Marketplace trust** | ClawHub scans, Grok marketplace, Hermes 1,000+ plugins | Signed manifests, per-operation scopes, sandboxed MCP, verified badges, rollback, and a live-tested “recommended” set. RAVENBOT has catalog breadth without the trust layer. |
-| **Enterprise controls** | Grok Bot | SSO/SCIM, egress allowlists, inference hooks, action recording/OTel, retention, data residency, admin API. RAVENBOT now has local roles/audit, optional OIDC SSO for the remote surface, SCIM 2.0 **Users** provisioning (workspace-scoped token, default viewer/operator grant, soft deprovision, no owner or shared-account control), and an opt-in OTLP/HTTP **logs** export of redacted metadata, but still no SCIM Groups/group mapping, metrics/traces, data-residency controls or hosted relay. |
+| **Enterprise controls** | Grok Bot | SSO/SCIM, egress allowlists, inference hooks, action recording/OTel, retention, data residency, admin API. RAVENBOT now has local roles/audit, optional OIDC SSO for the remote surface, SCIM 2.0 **Users** provisioning with an owner-only **Settings → Remote** card (workspace-scoped token shown once, default viewer/operator grant, soft deprovision, no owner or shared-account control), and an opt-in OTLP/HTTP **logs** export of redacted metadata, but still no SCIM Groups/group mapping, metrics/traces, data-residency controls or hosted relay. |
 | **Meetings, agent email, voice calls** | Grok Bot, Muse | Join a meeting and return notes/actions; own an email address; make/receive a call with approvals. RAVENBOT has STT/TTS but not the workflow. |
 | **Consumer integrations and commerce** | Muse, Grok Bot | Shopping, cards/wallets, travel, health, relationships. High trust risk; only worth entering with spend controls and insurance. |
 | **Release governance** | OpenClaw Foundation, Grok ISO certifications | A neutral steward, signed artifacts, public advisories, independent security review. MIT alone is not a security story. |
@@ -222,12 +222,13 @@ testable acceptance bar.
     SSO/OIDC, SCIM, egress allowlists, data residency, admin API. OIDC SSO for
     the paired-device remote surface now ships (public client, PKCE, RS256,
     existing accounts only; see `docs/REMOTE-SSO.md`), as does SCIM 2.0
-    **Users** provisioning (one workspace, hashed bearer token, default
-    viewer/operator grant, soft deprovision, no owner or shared-account control;
-    see `docs/REMOTE-SCIM.md`), and the OTLP/HTTP **logs** export of redacted
-    audit and run metadata (opt-in, cursor-based, keychain-backed headers; see
-    `docs/ENTERPRISE-EXPORT.md`). SCIM Groups, group mapping, metrics/traces,
-    data residency and a hosted relay remain open.
+    **Users** provisioning with an owner-only **Settings → Remote → SCIM
+    provisioning** card (one workspace, hash-only bearer token shown once,
+    default viewer/operator grant, soft deprovision, no owner or shared-account
+    control; see `docs/REMOTE-SCIM.md`), and the OTLP/HTTP **logs** export of
+    redacted audit and run metadata (opt-in, cursor-based, keychain-backed
+    headers; see `docs/ENTERPRISE-EXPORT.md`). SCIM Groups, group mapping,
+    metrics/traces, data residency and a hosted relay remain open.
     Acceptance: a 50-person pilot can be provisioned and audited without a
     shared local account.
 12. **Voice, meetings and agent email.**

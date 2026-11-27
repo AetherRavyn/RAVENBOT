@@ -227,12 +227,12 @@ private tunnel with a certificate the IdP trusts).
 
 1. Start remote access over HTTPS and confirm the IdP can reach
    `https://<host>/scim/v2/Users`. A loopback-only listener is not enough.
-2. Until the desktop card ships, generate the token from the owner's dev console
-   with `await window.__TAURI__.core.invoke("create_remote_scim_token")`, then
-   call `configure_remote_scim` with `enabled: true` and
-   `defaultRole: "viewer"`. Confirm the returned token is shown once and that
-   `get_remote_status` reports `scim.enabled` and `scim.active` true but never a
-   token or hash. Restart the app and confirm the same token still works.
+2. Open **Settings → Remote → SCIM provisioning** as the workspace owner. Choose
+   the default role, press **Generate token**, copy the one-time plaintext, then
+   enable SCIM and save. Confirm the token is shown only in the read-only field,
+   the status shows enabled/active, and no token or hash appears in the card.
+   Use **Replace token** and confirm the old bearer token now gets `401` while
+   the new one works. Restart the app and confirm the token still works.
 3. At the IdP, create a SCIM 2.0 **Users** integration with the listener base URL
    and bearer token. Do not enable Groups or bulk. Push one user whose
    `userName` follows RAVENBOT's rules (3–64 characters, starts alphanumeric,
@@ -257,11 +257,12 @@ private tunnel with a certificate the IdP trusts).
    workspace cannot see or change this workspace's members.
 9. Grant the same member to a second workspace. Confirm SCIM rename and delete
    now return `403` `mutability` and the host-level account is unchanged.
-10. Send a wrong token (expect `401` with `WWW-Authenticate: Bearer`), then
-    disable SCIM in settings (expect `404` for every `/scim/v2` path, even with
-    the old token). Confirm `remote_audit` has `SCIM` rows for create/patch/put/
-    delete and auth failures, and that `remote_scim_last_used_at` advances on an
-    authenticated read.
+10. Send a wrong token (expect `401` with `WWW-Authenticate: Bearer`). After a
+    successful read, confirm the card shows a **Last used** time. Press
+    **Revoke token**, confirm the warning, and expect every `/scim/v2` path to
+    return `404` even with the old token; the card shows no token and **Never
+    used**. Confirm `remote_audit` has `SCIM` rows for create/patch/put/delete
+    and auth failures.
 11. Confirm `/api/status` and the mobile page expose no SCIM fields and that a
     paired-device token cannot call `/scim/v2`.
 12. Record the provider, SCIM base URL, default role, audit rows, list/filter

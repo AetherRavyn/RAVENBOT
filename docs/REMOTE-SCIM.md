@@ -5,9 +5,8 @@ endpoint so an identity provider can provision and deprovision members of one
 workspace. SCIM is **off by default**, has its own bearer token, and never
 widens a role or creates a workspace grant beyond the configured default.
 
-This slice ships the backend, the SCIM API, and the account-registry write path.
-The desktop Settings card is a follow-up; the owner-only Tauri commands and the
-status fields it will use are already available.
+This ships the backend, the SCIM API, the account-registry write path and the
+desktop **Settings → Remote → SCIM provisioning** card.
 
 ## Endpoints
 
@@ -141,6 +140,35 @@ saved values (`enabled`, `token_configured`, `default_role`, `last_used_at`)
 plus `active`, which is true only when the running listener loaded a valid
 configuration. It never contains the token or its hash.
 
+### Desktop form
+
+**Settings → Remote → SCIM provisioning** appears after the OIDC card and before
+**Pair a device**. It is owner-only like the rest of Settings and has:
+
+- an enable checkbox and a default-role selector limited to **Viewer** and
+  **Operator**. Owner is never an option; the role applies only to accounts SCIM
+  creates.
+- a token block. With no token it says so and offers **Generate token**. With a
+  token it shows **Replace token** and **Revoke token**. Replacing or revoking
+  asks for confirmation because the old token stops working immediately.
+- **Generate token** shows the 64-character plaintext once in a read-only field
+  with **Copy token** and a warning that it will not be shown again. The
+  plaintext exists only in component state: it is not saved to the status, a
+  store or the database. It is cleared on replace, revoke or unmount.
+- the last-used time in the local date/time format, or **Never used**.
+- a warning when the saved checkbox is on but the listener has not loaded a
+  valid configuration or no token is configured. Repair the configuration or
+  generate a token before the IdP can authenticate.
+- a save button and a concise security block covering HTTPS, Users-only scope,
+  no Groups/bulk/sorting, no role/group mapping, owner protection, shared-account
+  protection, soft delete, the random password/SSO requirement, and the listener
+  restart.
+
+Saving writes the checkbox and default role, restarts a running remote listener
+and returns the updated status. **Saving does not contact the IdP.** The first
+SCIM request is the IdP's own list/create call, so the provider must be able to
+reach the listener. There is deliberately no test-connection button.
+
 ### Owner-only commands
 
 | Command | Effect |
@@ -151,11 +179,9 @@ configuration. It never contains the token or its hash.
 
 `create_remote_scim_token` is the only time the plaintext exists. Generating a
 new token invalidates the previous one immediately. Creating a token does not
-enable SCIM; call `configure_remote_scim` afterwards. The commands are
-owner-only in the same Tauri IPC gate as `configure_remote_sso`.
-
-The desktop Settings card is **not part of this slice**; these commands and
-fields are its backend contract.
+enable SCIM; use the enable checkbox (or `configure_remote_scim`) afterwards.
+The commands are owner-only in the same Tauri IPC gate as
+`configure_remote_sso`; the Settings card calls the same commands.
 
 ## Security model
 
@@ -240,8 +266,9 @@ requests as well.
 1. Enable remote access and put the listener behind HTTPS (direct TLS or a
    reverse proxy). An IdP must be able to reach the listener; a loopback-only
    listener is not reachable from a hosted IdP.
-2. Create a SCIM token in the desktop and configure `remote_scim_enabled=1`
-   with the intended `remote_scim_default_role`.
+2. In **Settings → Remote → SCIM provisioning**, choose the default role,
+   generate a token, copy it, then enable SCIM and save. The card shows the
+   last-used time and warns if the saved configuration is not active.
 3. At the IdP, use the base URL `https://your-host/scim/v2` and the bearer
    token. Enable **Users** provisioning only.
 4. Map the IdP username to a RAVENBOT-valid `userName`: 3–64 characters,
