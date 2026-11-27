@@ -4132,11 +4132,25 @@ async fn test_agent_email(state: State<'_, AppState>, to: String) -> Result<(), 
     })
 }
 
+/// SMTP has a 15-second timeout, so a row left in `sending` for ten minutes is
+/// not an active send. Recovery is deliberately conservative: it returns the
+/// row to `draft` with a warning to verify delivery.
+const EMAIL_SEND_STALE_SECS: i64 = 600;
+
 #[tauri::command]
 async fn list_email_drafts(
     state: State<'_, AppState>,
 ) -> Result<Vec<ravenbot_db::queries::EmailDraftSummary>, String> {
-    ravenbot_db::queries::EmailDraftQueries::list(state.db.pool(), 100)
+    let pool = state.db.pool();
+    if let Err(error) = ravenbot_db::queries::EmailDraftQueries::recover_interrupted_sends(
+        pool,
+        EMAIL_SEND_STALE_SECS,
+    )
+    .await
+    {
+        tracing::warn!(%error, "Could not recover interrupted email sends");
+    }
+    ravenbot_db::queries::EmailDraftQueries::list(pool, 100)
         .await
         .map_err(|error| error.to_string())
 }
@@ -4204,12 +4218,6 @@ async fn send_email_draft(state: State<'_, AppState>, id: String) -> Result<(), 
         .await
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "The draft no longer exists.".to_string())?;
-    if draft.status != "draft" {
-        return Err(format!(
-            "This email draft is {}; only a draft can be sent.",
-            draft.status
-        ));
-    }
     let config = load_agent_email_config(state.db.pool()).await?;
     if config.host.is_empty() || config.from.is_empty() {
         return Err(
@@ -4224,6 +4232,20 @@ async fn send_email_draft(state: State<'_, AppState>, id: String) -> Result<(), 
     let subject = ravenbot_core::email::validate_subject(&draft.subject)?;
     let body = ravenbot_core::email::validate_body(&draft.body)?;
 
+    // Claim the row atomically before opening SMTP. Validation above is
+    // deliberately complete first: a bad config or allowlist must not leave a
+    // row in `sending`. A second concurrent invocation loses here and never
+    // reaches the network.
+    if !ravenbot_db::queries::EmailDraftQueries::begin_send(state.db.pool(), &draft.id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        return Err(
+            "This email draft is already being sent, has already been sent, or is no longer a draft. Refresh the draft list and check its status."
+                .to_string(),
+        );
+    }
+
     let recipient_count = draft.to_addresses.len() + draft.cc_addresses.len();
     let password_for_errors = config.password.clone();
     let send_config = config.clone();
@@ -4232,12 +4254,18 @@ async fn send_email_draft(state: State<'_, AppState>, id: String) -> Result<(), 
     let send_result = tauri::async_runtime::spawn_blocking(move || {
         send_agent_email_blocking(&send_config, &to, &cc, &subject, &body)
     })
-    .await
-    .map_err(|error| format!("The email task failed: {error}"))?;
+    .await;
 
-    if let Err(error) = send_result {
+    let send_error = match send_result {
+        Err(error) => Some(format!("The email task failed: {error}")),
+        Ok(Err(error)) => Some(error),
+        Ok(Ok(())) => None,
+    };
+    if let Some(error) = send_error {
+        // A failed send is retryable: put the row back to `draft` before
+        // returning, so no normal failure leaves it stuck in `sending`.
         let sanitized = sanitize_agent_email_error(&error, password_for_errors.as_deref());
-        let _ = ravenbot_db::queries::EmailDraftQueries::record_error(
+        let _ = ravenbot_db::queries::EmailDraftQueries::mark_failed(
             state.db.pool(),
             &draft.id,
             &sanitized,
@@ -4246,14 +4274,36 @@ async fn send_email_draft(state: State<'_, AppState>, id: String) -> Result<(), 
         return Err(format!("Could not send the draft: {sanitized}"));
     }
 
-    if !ravenbot_db::queries::EmailDraftQueries::mark_sent(state.db.pool(), &draft.id)
-        .await
-        .map_err(|error| error.to_string())?
-    {
-        return Err(
-            "The email was sent, but the draft was no longer a draft. Review the draft list before retrying."
-                .to_string(),
-        );
+    match ravenbot_db::queries::EmailDraftQueries::mark_sent(state.db.pool(), &draft.id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            // The message left the machine but the row could not be recorded as
+            // sent. Release it with an explicit warning rather than leaving it
+            // in `sending`; recovery would eventually do the same.
+            let message = "The email may have been sent, but the draft could not be marked sent. Verify with the recipient before retrying.";
+            let _ = ravenbot_db::queries::EmailDraftQueries::mark_failed(
+                state.db.pool(),
+                &draft.id,
+                message,
+            )
+            .await;
+            return Err(message.to_string());
+        }
+        Err(error) => {
+            let message = sanitize_agent_email_error(
+                &format!(
+                    "The email may have been sent, but the draft could not be marked sent: {error}. Verify with the recipient before retrying."
+                ),
+                password_for_errors.as_deref(),
+            );
+            let _ = ravenbot_db::queries::EmailDraftQueries::mark_failed(
+                state.db.pool(),
+                &draft.id,
+                &message,
+            )
+            .await;
+            return Err(message);
+        }
     }
 
     let mut entry = ravenbot_core::AuditEntry::new(

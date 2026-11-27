@@ -473,11 +473,13 @@ limitations rather than finished features:
   [`docs/REMOTE-SCIM.md`](docs/REMOTE-SCIM.md).
 - **Agent email is draft-only.** An owner may configure one SMTP account; an
   agent can only create a plain-text draft, and a person must review and send
-  it. There is no `email_send` tool, no auto-send, no inbound mail/IMAP, no
-  attachments or HTML, no provider OAuth, and the Settings → Mail screen is not
-  shipped yet. The password is keychain-backed, an address/domain allowlist is
-  enforced at draft time, and a send audits only the draft id and recipient
-  count. See [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md).
+  it. A send atomically claims the draft before SMTP, so two clicks cannot send
+  twice; a crashed send is recovered after ten minutes with a “verify with the
+  recipient” warning. There is no `email_send` tool, no auto-send, no inbound
+  mail/IMAP, no attachments or HTML, no provider OAuth, and the Settings → Mail
+  screen is not shipped yet. The password is keychain-backed, an address/domain
+  allowlist is enforced at draft time, and a send audits only the draft id and
+  recipient count. See [`docs/AGENT-EMAIL.md`](docs/AGENT-EMAIL.md).
 - **No first-party telemetry.** Provider calls, an optional OIDC IdP, configured
   MCP servers, optional remote alerts, an optional SCIM IdP, an optional agent
   SMTP account, and the opt-in enterprise export are the only outbound traffic

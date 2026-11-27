@@ -5081,9 +5081,15 @@ fn email_draft_from_row(row: EmailDraftRow) -> EmailDraft {
     }
 }
 
-/// Outbound email drafts. Every status transition is guarded by
-/// `status = 'draft'` in SQL, so two clicks cannot send or discard the same
-/// draft twice.
+/// The error written when a process died between claiming a draft for sending
+/// and recording the outcome. The text tells the person to verify delivery
+/// before retrying, because the message may already have left the machine.
+pub const SEND_INTERRUPTED_ERROR: &str =
+    "The send was interrupted. Verify with the recipient before retrying.";
+
+/// Outbound email drafts. Every status transition is guarded in SQL: a draft is
+/// claimed atomically before SMTP, a claimed row can only become sent or return
+/// to draft, and two clicks cannot send the same draft twice.
 pub struct EmailDraftQueries;
 
 impl EmailDraftQueries {
@@ -5224,14 +5230,33 @@ impl EmailDraftQueries {
         Ok(result.rows_affected() == 1)
     }
 
-    /// Mark a draft sent. The status guard makes a retry after a successful
-    /// send a no-op instead of a second message.
+    /// Atomically claim a draft for sending.
+    ///
+    /// Only one caller can move `draft` to `sending`. The winner is the only
+    /// caller allowed to open SMTP; a concurrent invocation loses here instead
+    /// of sending a second copy.
+    pub async fn begin_send(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().to_rfc3339();
+        let result = sqlx::query(
+            "UPDATE email_drafts
+                SET status = 'sending', error = NULL, sent_at = NULL, updated_at = ?
+              WHERE id = ? AND status = 'draft'",
+        )
+        .bind(now)
+        .bind(id)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    /// Mark a claimed draft sent. Only a row still in `sending` can transition;
+    /// a draft, a failed send or a second success cannot become sent again.
     pub async fn mark_sent(pool: &SqlitePool, id: &str) -> Result<bool, sqlx::Error> {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE email_drafts
                 SET status = 'sent', sent_at = ?, error = NULL, updated_at = ?
-              WHERE id = ? AND status = 'draft'",
+              WHERE id = ? AND status = 'sending'",
         )
         .bind(&now)
         .bind(&now)
@@ -5255,9 +5280,10 @@ impl EmailDraftQueries {
         Ok(result.rows_affected() == 1)
     }
 
-    /// Record a sanitized send error and leave the row a draft so it can be
-    /// retried. The caller must never pass an SMTP password or the body.
-    pub async fn record_error(
+    /// Return a claimed draft to `draft` after a normal send failure, so it can
+    /// be retried. The caller must pass a sanitized error and never the password
+    /// or body.
+    pub async fn mark_failed(
         pool: &SqlitePool,
         id: &str,
         error: &str,
@@ -5265,8 +5291,8 @@ impl EmailDraftQueries {
         let now = Utc::now().to_rfc3339();
         let result = sqlx::query(
             "UPDATE email_drafts
-                SET error = ?, updated_at = ?
-              WHERE id = ? AND status = 'draft'",
+                SET status = 'draft', error = ?, sent_at = NULL, updated_at = ?
+              WHERE id = ? AND status = 'sending'",
         )
         .bind(error)
         .bind(now)
@@ -5274,6 +5300,32 @@ impl EmailDraftQueries {
         .execute(pool)
         .await?;
         Ok(result.rows_affected() == 1)
+    }
+
+    /// Recover rows claimed for sending by a process that died before recording
+    /// the outcome.
+    ///
+    /// SMTP has a 15-second timeout, so a row in `sending` for ten minutes is
+    /// not an active send. It is reset to `draft` with an explicit warning:
+    /// the message may have been delivered, so the person must verify before
+    /// retrying. Returns the number of rows recovered.
+    pub async fn recover_interrupted_sends(
+        pool: &SqlitePool,
+        older_than_secs: i64,
+    ) -> Result<u64, sqlx::Error> {
+        let now = Utc::now();
+        let cutoff = now - chrono::Duration::seconds(older_than_secs.max(0));
+        let result = sqlx::query(
+            "UPDATE email_drafts
+                SET status = 'draft', error = ?, sent_at = NULL, updated_at = ?
+              WHERE status = 'sending' AND datetime(updated_at) < datetime(?)",
+        )
+        .bind(SEND_INTERRUPTED_ERROR)
+        .bind(now.to_rfc3339())
+        .bind(cutoff.to_rfc3339())
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 }
 
@@ -13875,18 +13927,30 @@ mod email_draft_tests {
     async fn only_a_draft_can_be_edited_or_transitioned() {
         let pool = db().await;
         let sent = create(&pool, "send me").await;
+        assert!(
+            !EmailDraftQueries::mark_sent(&pool, &sent.id)
+                .await
+                .expect("mark sent before claim"),
+            "mark_sent must require a sending row"
+        );
+        assert!(EmailDraftQueries::begin_send(&pool, &sent.id)
+            .await
+            .expect("begin"));
         assert!(EmailDraftQueries::mark_sent(&pool, &sent.id)
             .await
             .expect("sent"));
         assert!(!EmailDraftQueries::mark_sent(&pool, &sent.id)
             .await
             .expect("second send"));
+        assert!(!EmailDraftQueries::begin_send(&pool, &sent.id)
+            .await
+            .expect("claim sent"));
+        assert!(!EmailDraftQueries::mark_failed(&pool, &sent.id, "boom")
+            .await
+            .expect("fail sent"));
         assert!(!EmailDraftQueries::mark_discarded(&pool, &sent.id)
             .await
             .expect("discard sent"));
-        assert!(!EmailDraftQueries::record_error(&pool, &sent.id, "boom")
-            .await
-            .expect("error sent"));
         assert!(!EmailDraftQueries::update_content(
             &pool,
             &sent.id,
@@ -13905,22 +13969,26 @@ mod email_draft_tests {
         assert_eq!(loaded.status, "sent");
         assert_eq!(loaded.subject, "send me");
         assert!(loaded.sent_at.is_some());
+        assert!(loaded.error.is_none());
 
         let discarded = create(&pool, "throw away").await;
         assert!(EmailDraftQueries::mark_discarded(&pool, &discarded.id)
             .await
             .expect("discard"));
+        assert!(!EmailDraftQueries::begin_send(&pool, &discarded.id)
+            .await
+            .expect("claim discarded"));
         assert!(!EmailDraftQueries::mark_sent(&pool, &discarded.id)
             .await
             .expect("send discarded"));
+        assert!(
+            !EmailDraftQueries::mark_failed(&pool, &discarded.id, "boom")
+                .await
+                .expect("fail discarded")
+        );
         assert!(!EmailDraftQueries::mark_discarded(&pool, &discarded.id)
             .await
             .expect("discard twice"));
-        assert!(
-            !EmailDraftQueries::record_error(&pool, &discarded.id, "boom")
-                .await
-                .expect("error discarded")
-        );
         assert!(!EmailDraftQueries::update_content(
             &pool,
             &discarded.id,
@@ -13937,6 +14005,55 @@ mod email_draft_tests {
             .expect("row");
         assert_eq!(loaded.status, "discarded");
         assert!(loaded.sent_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_sending_draft_is_not_editable_discardable_or_re_claimable() {
+        let pool = db().await;
+        let draft = create(&pool, "in flight").await;
+        assert!(EmailDraftQueries::begin_send(&pool, &draft.id)
+            .await
+            .expect("begin"));
+
+        let loaded = EmailDraftQueries::get(&pool, &draft.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(loaded.status, "sending");
+        assert!(!EmailDraftQueries::begin_send(&pool, &draft.id)
+            .await
+            .expect("second claim"));
+        assert!(!EmailDraftQueries::mark_discarded(&pool, &draft.id)
+            .await
+            .expect("discard sending"));
+        assert!(!EmailDraftQueries::update_content(
+            &pool,
+            &draft.id,
+            &["other@example.com".to_string()],
+            &[],
+            "changed",
+            "changed body",
+        )
+        .await
+        .expect("edit sending"));
+    }
+
+    #[tokio::test]
+    async fn two_concurrent_claims_only_one_wins() {
+        let pool = db().await;
+        let draft = create(&pool, "only once").await;
+
+        let (first, second) = tokio::join!(
+            EmailDraftQueries::begin_send(&pool, &draft.id),
+            EmailDraftQueries::begin_send(&pool, &draft.id),
+        );
+        let wins = u8::from(first.expect("first claim")) + u8::from(second.expect("second claim"));
+        assert_eq!(wins, 1, "exactly one sender may win the draft");
+        let loaded = EmailDraftQueries::get(&pool, &draft.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(loaded.status, "sending");
     }
 
     #[tokio::test]
@@ -13963,10 +14080,13 @@ mod email_draft_tests {
         assert_eq!(loaded.to_addresses, vec!["new@example.com"]);
         assert!(loaded.cc_addresses.is_empty());
 
+        assert!(EmailDraftQueries::begin_send(&pool, &draft.id)
+            .await
+            .expect("begin"));
         assert!(
-            EmailDraftQueries::record_error(&pool, &draft.id, "SMTP rejected the message")
+            EmailDraftQueries::mark_failed(&pool, &draft.id, "SMTP rejected the message")
                 .await
-                .expect("error")
+                .expect("fail")
         );
         let loaded = EmailDraftQueries::get(&pool, &draft.id)
             .await
@@ -13974,24 +14094,100 @@ mod email_draft_tests {
             .expect("row");
         assert_eq!(loaded.status, "draft", "a failed send must stay a draft");
         assert_eq!(loaded.error.as_deref(), Some("SMTP rejected the message"));
+        assert!(EmailDraftQueries::begin_send(&pool, &draft.id)
+            .await
+            .expect("retry claim"));
 
-        assert!(EmailDraftQueries::update_content(
-            &pool,
-            &draft.id,
-            &loaded.to_addresses,
-            &loaded.cc_addresses,
-            "fixed",
-            "fixed body",
-        )
-        .await
-        .expect("retry edit"));
+        assert!(EmailDraftQueries::mark_sent(&pool, &draft.id)
+            .await
+            .expect("sent"));
         let loaded = EmailDraftQueries::get(&pool, &draft.id)
             .await
             .expect("get")
             .expect("row");
-        assert!(loaded.error.is_none(), "editing clears the old error");
-        assert!(EmailDraftQueries::mark_sent(&pool, &draft.id)
+        assert_eq!(loaded.status, "sent");
+        assert!(loaded.error.is_none());
+    }
+
+    async fn set_updated_at(pool: &SqlitePool, id: &str, seconds_ago: i64) {
+        let timestamp = (Utc::now() - chrono::Duration::seconds(seconds_ago)).to_rfc3339();
+        sqlx::query("UPDATE email_drafts SET updated_at = ? WHERE id = ?")
+            .bind(timestamp)
+            .bind(id)
+            .execute(pool)
             .await
-            .expect("sent"));
+            .expect("set updated_at");
+    }
+
+    #[tokio::test]
+    async fn interrupted_sends_are_recovered_only_after_the_threshold() {
+        let pool = db().await;
+        let old = create(&pool, "old claim").await;
+        let recent = create(&pool, "recent claim").await;
+        let finished = create(&pool, "finished").await;
+        assert!(EmailDraftQueries::begin_send(&pool, &old.id)
+            .await
+            .expect("old begin"));
+        assert!(EmailDraftQueries::begin_send(&pool, &recent.id)
+            .await
+            .expect("recent begin"));
+        assert!(EmailDraftQueries::begin_send(&pool, &finished.id)
+            .await
+            .expect("finished begin"));
+        assert!(EmailDraftQueries::mark_sent(&pool, &finished.id)
+            .await
+            .expect("finished sent"));
+        set_updated_at(&pool, &old.id, 3600).await;
+        set_updated_at(&pool, &finished.id, 3600).await;
+
+        assert_eq!(
+            EmailDraftQueries::recover_interrupted_sends(&pool, 600)
+                .await
+                .expect("recover"),
+            1
+        );
+        let recovered = EmailDraftQueries::get(&pool, &old.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(recovered.status, "draft");
+        assert_eq!(recovered.error.as_deref(), Some(SEND_INTERRUPTED_ERROR));
+        assert!(recovered.sent_at.is_none());
+
+        let still_sending = EmailDraftQueries::get(&pool, &recent.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(still_sending.status, "sending");
+        assert!(still_sending.error.is_none());
+
+        let untouched_sent = EmailDraftQueries::get(&pool, &finished.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(untouched_sent.status, "sent", "sent is terminal");
+
+        // A second pass at the same threshold finds nothing.
+        assert_eq!(
+            EmailDraftQueries::recover_interrupted_sends(&pool, 600)
+                .await
+                .expect("second recover"),
+            0
+        );
+
+        // Once the recent claim is old enough it is recovered too.
+        set_updated_at(&pool, &recent.id, 3600).await;
+        assert_eq!(
+            EmailDraftQueries::recover_interrupted_sends(&pool, 600)
+                .await
+                .expect("late recover"),
+            1
+        );
+        let recovered = EmailDraftQueries::get(&pool, &recent.id)
+            .await
+            .expect("get")
+            .expect("row");
+        assert_eq!(recovered.status, "draft");
+        assert_eq!(recovered.error.as_deref(), Some(SEND_INTERRUPTED_ERROR));
     }
 }

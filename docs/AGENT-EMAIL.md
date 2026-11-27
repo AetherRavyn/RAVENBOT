@@ -68,14 +68,25 @@ Migration `079_agent_email_drafts.sql` adds `email_drafts`:
 | `bot_id`, `thread_id`, `run_id` | The run that created the draft. |
 | `to_addresses`, `cc_addresses` | JSON arrays of validated strings. |
 | `subject`, `body` | Plain-text content. |
-| `status` | `draft`, `sent` or `discarded`. |
+| `status` | `draft`, `sending`, `sent` or `discarded`. |
 | `error` | Sanitized last send error while the row stays `draft`. |
 | `created_at`, `updated_at`, `sent_at` | RFC 3339 timestamps. |
 
-Every transition (`update_content`, `mark_sent`, `mark_discarded`,
-`record_error`) includes `WHERE status = 'draft'`. A failed send therefore stays
-retryable, and a second send or discard cannot act on a finished row. List
-responses use `EmailDraftSummary`, which has no `body` field at all.
+A send claims the row atomically with `begin_send`: only
+`WHERE status = 'draft'` can become `sending`, so two concurrent invocations
+cannot both open SMTP. The winner then records `sent` (only `sending -> sent`)
+or returns the row to `draft` with a sanitized error (`sending -> draft`).
+`update_content` and `mark_discarded` remain `draft`-only, and `sent` and
+`discarded` are terminal. A failed send therefore stays retryable, and a second
+send or discard cannot act on a finished or in-flight row.
+
+If the process dies between claiming a draft and recording the outcome, the row
+is left in `sending`. `list_email_drafts` first calls
+`recover_interrupted_sends(600)`: any `sending` row older than ten minutes (SMTP
+times out after 15 seconds) returns to `draft` with
+**“The send was interrupted. Verify with the recipient before retrying.”**
+Recovery never touches `sent` or `discarded`. List responses use
+`EmailDraftSummary`, which has no `body` field at all.
 
 ## Commands
 
@@ -88,11 +99,11 @@ All commands are owner-only at the IPC gate. The read-shaped ones are in
 | `set_agent_email(input)` | Validate and save the account; write/keep/clear the password; return the view. |
 | `clear_agent_email` | Remove the configuration and password. |
 | `test_agent_email(to)` | Validate the recipient and allowlist, then send a fixed plain-text test in `spawn_blocking`. |
-| `list_email_drafts` | Up to 100 summaries, newest first, no bodies. |
+| `list_email_drafts` | Recovers interrupted sends older than ten minutes, then returns up to 100 summaries, newest first, no bodies. |
 | `get_email_draft(id)` | The full draft, including its body. |
 | `update_email_draft(id, to, cc, subject, body)` | Revalidate limits and allowlist; only while `draft`. |
 | `discard_email_draft(id)` | Only while `draft`. |
-| `send_email_draft(id)` | Only while `draft`; revalidate allowlist; send plain text; mark sent; audit. |
+| `send_email_draft(id)` | Only while `draft`; revalidate allowlist; claim `sending`; send plain text; mark sent; audit. Failures return the row to `draft`. |
 
 ## Tool contract
 
@@ -145,8 +156,9 @@ a draft may address; it is not a substitute for reviewing the draft.
 
 ## Evidence
 
-- `cargo test -p ravenbot-db` covers create/list/get, body-free summaries, and
-  every `status = 'draft'` transition guard.
+- `cargo test -p ravenbot-db` covers create/list/get, body-free summaries, the
+  atomic `draft -> sending` claim (including two concurrent callers), failed
+  sends returning to draft, `sent` as terminal, and stale-send recovery.
 - `cargo test -p ravenbot-skills` covers draft creation with run context,
   missing database, recipient/subject/body limits, allowlist rejection and a
   listener that proves `email_draft` opens no SMTP connection.

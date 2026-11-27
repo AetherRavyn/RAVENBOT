@@ -1,9 +1,10 @@
 -- Agent email drafts.
 --
 -- A draft is the only thing an agent may create. Sending is a separate,
--- owner-only command a person invokes after reviewing the row here. Bodies and
--- recipient addresses stay in this table; audit rows carry only the draft id
--- and recipient count.
+-- owner-only command a person invokes after reviewing the row here. A send
+-- claims `draft -> sending` atomically before SMTP, then records `sent` or
+-- returns to `draft` with a sanitized error. Bodies and recipient addresses
+-- stay in this table; audit rows carry only the draft id and recipient count.
 CREATE TABLE IF NOT EXISTS email_drafts (
   id TEXT PRIMARY KEY NOT NULL,
   bot_id TEXT NOT NULL,
@@ -13,7 +14,7 @@ CREATE TABLE IF NOT EXISTS email_drafts (
   cc_addresses TEXT NOT NULL,
   subject TEXT NOT NULL,
   body TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'draft',
+  status TEXT NOT NULL DEFAULT 'draft', -- draft|sending|sent|discarded
   error TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
