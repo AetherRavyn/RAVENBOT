@@ -92,6 +92,55 @@ Teams file delivery needs a real user click and an app manifest with
    the file was not sent.
 5. Confirm a second click on an old card cannot upload the same file again.
 
+## Manual enterprise export check
+
+The export loop is covered by an in-process collector in CI. A release should
+also exercise the real Settings card against a collector you control. Nothing is
+sent until the card is enabled or **Export now** / **Test connection** is pressed.
+
+1. Start a throwaway collector that records OTLP bodies:
+
+   ```sh
+   python3 - <<'PY'
+   from http.server import BaseHTTPRequestHandler, HTTPServer
+
+   class Handler(BaseHTTPRequestHandler):
+       def do_POST(self):
+           body = self.rfile.read(int(self.headers.get("content-length", 0)))
+           with open("/tmp/otlp-body.json", "ab") as out:
+               out.write(body + b"\n")
+           self.send_response(200)
+           self.end_headers()
+
+       def log_message(self, *args):
+           pass
+
+   HTTPServer(("127.0.0.1", 4318), Handler).serve_forever()
+   PY
+   ```
+
+2. In Audit log → **Enterprise export**, set the endpoint to
+   `http://127.0.0.1:4318`, add a header such as
+   `Authorization: Bearer test-token`, and press **Test connection**. Confirm the
+   card reports success and `/tmp/otlp-body.json` contains `ravenbot.export.test`.
+3. Trigger a tool call, then press **Export now**. Confirm the audit record has
+   the kind, bot, tool name and ids, and that the request contains no prompt,
+   thread title, approval note, tool arguments, URL query string or run
+   result/error text.
+4. Stop the collector and press **Export now**. Confirm the card shows an error,
+   neither cursor advanced, and no header value appears in the error.
+5. Start the collector again and press **Export now**. Confirm the same event is
+   delivered. A crash between the two cursor writes can duplicate a batch;
+   deduplicate on `audit.id` / `run.id`.
+6. Clear and save the headers. Confirm the card says headers are not configured
+   and the collector receives no `Authorization` header.
+7. If the OS keychain is unavailable, confirm the card still reports whether
+   headers exist and delivery either uses the sealed-vault fallback or fails
+   honestly.
+
+Record the collector version (or the script above), the exported counts and
+whether the exclusion checks passed in the release notes.
+
 ## Platform contracts
 
 Linux CI runs `systemd-analyze verify` against the generated hardened unit and

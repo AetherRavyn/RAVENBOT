@@ -188,6 +188,10 @@ Frontend evidence is `AuditExportPanel.dom.test.ts`, which saves configuration,
 saves and clears write-only headers, exercises Test connection and Export now,
 and asserts a saved header value is never rendered back.
 
+The manual acceptance pass against a real collector, including payload
+exclusions and cursor behaviour on failure, is in
+[`docs/LIVE-CHECKS.md`](LIVE-CHECKS.md#manual-enterprise-export-check).
+
 ## Limits
 
 - Logs only; no OTLP metrics or traces, and no metrics dashboards.
