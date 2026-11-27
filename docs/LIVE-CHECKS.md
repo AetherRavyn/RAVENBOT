@@ -175,6 +175,47 @@ runner; those remain manual checks:
 Record the OS build, the command output and whether the daemon survived a
 crash/restart in the release notes.
 
+## Manual OIDC SSO check
+
+The remote SSO suite uses a loopback mock IdP. That is CI evidence, not proof
+against a real provider. Run this pass before calling remote SSO live-verified.
+Use a test workspace, a public/native OIDC client and a throwaway account.
+
+1. Register `https://<host>/api/sso/callback` as a public client with
+   authorization-code + PKCE and no client secret. Confirm the provider issues
+   RS256 ID tokens and exposes `issuer`, `authorization_endpoint`,
+   `token_endpoint` and `jwks_uri` in discovery.
+2. Configure the host with the exact issuer (no trailing slash), client id,
+   redirect URL, `openid profile email` and the claim that holds the local
+   RAVENBOT username. Until the desktop Settings form ships, use the SQL in
+   [`REMOTE-SSO.md`](REMOTE-SSO.md#configuration); the owner-only
+   `configure_remote_sso` command is the supported IPC path.
+3. Start remote access over HTTPS or a private tunnel. Pair a phone. Confirm the
+   login page shows **Sign in with SSO** and that the username/password form is
+   still visible and can sign in.
+4. Press SSO, authenticate at the provider, and confirm the browser returns to
+   the redirect origin with `?sso=ok`, enters the chat, and `/api/status` reports
+   the mapped local account. Confirm the query is removed from the address bar.
+5. Confirm a `remote_audit` row has method `SSO`, path `/api/sso/callback`,
+   status `200`, the device name, account name and effective role. Confirm no
+   authorization code, access token, ID token, nonce or verifier appears in the
+   audit table, database text columns or logs.
+6. Re-load the callback URL from step 4. Confirm it shows the generic error and
+   does not bind again (state replay).
+7. Cancel at the provider. Confirm the page shows the generic error, not the
+   provider's `error_description`.
+8. Sign in with an IdP identity that has no RAVENBOT account, then with an
+   account that is disabled, then with an account whose workspace grant was
+   revoked. Each must show the same generic `reason=account` error and leave the
+   device unbound.
+9. With a paired device, alter `remote_sso_redirect_url` to a different origin
+   that still ends in `/api/sso/callback`, restart remote access, and repeat a
+   callback while spoofing `Host`. Confirm the `Location` origin follows the
+   configured URL, not `Host`.
+10. Record the provider, issuer, claim, account roles, audit rows and the
+    browser/OS build in the release notes. Do not claim SCIM, group mapping,
+    auto-provisioning, OIDC logout or a desktop SSO form.
+
 ## Manual OpenBot avatar check
 
 CI renders the still fallback in jsdom. Canvas, materials and live transitions

@@ -240,6 +240,20 @@ mod tests {
     }
 
     #[test]
+    fn remote_sso_configuration_is_owner_only_like_remote_access() {
+        for command in ["configure_remote_access", "configure_remote_sso"] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(!role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
+        // The status summary (including the non-secret SSO issuer, client id
+        // and redirect URL) follows the existing owner-only remote status gate.
+        assert!(role_allows("owner", "get_remote_status"));
+        assert!(!role_allows("operator", "get_remote_status"));
+        assert!(!role_allows("viewer", "get_remote_status"));
+    }
+
+    #[test]
     fn an_unknown_role_is_denied() {
         assert!(!role_allows("guest", "list_messages"));
     }

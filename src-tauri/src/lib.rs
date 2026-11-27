@@ -22254,6 +22254,10 @@ struct RemoteStatus {
     allow_lan: bool,
     tls: bool,
     fingerprint: Option<String>,
+    /// Whether a valid OIDC configuration is loaded. The mobile page only sees
+    /// this boolean; the desktop owner also gets the non-secret summary.
+    sso_enabled: bool,
+    sso: Option<ravenbot_remote::SsoConfig>,
     devices: Vec<ravenbot_db::queries::RemoteDevice>,
     audit: Vec<ravenbot_db::queries::RemoteAuditEntry>,
 }
@@ -22287,6 +22291,51 @@ async fn remote_config_from_settings(pool: &sqlx::SqlitePool) -> ravenbot_remote
         .ok()
         .flatten()
         .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    let sso_enabled = ravenbot_db::queries::AppSettingsQueries::get(pool, "remote_sso_enabled")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
+    let sso = if sso_enabled {
+        let setting = |key: &'static str, default: &'static str| async move {
+            ravenbot_db::queries::AppSettingsQueries::get(pool, key)
+                .await
+                .ok()
+                .flatten()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| default.to_string())
+        };
+        let issuer = setting("remote_sso_issuer", "").await;
+        let client_id = setting("remote_sso_client_id", "").await;
+        let redirect_url = setting("remote_sso_redirect_url", "").await;
+        let scopes = setting(
+            "remote_sso_scopes",
+            ravenbot_remote::SsoConfig::DEFAULT_SCOPES,
+        )
+        .await;
+        let username_claim = setting(
+            "remote_sso_username_claim",
+            ravenbot_remote::SsoConfig::DEFAULT_USERNAME_CLAIM,
+        )
+        .await;
+        match ravenbot_remote::SsoConfig::new(
+            &issuer,
+            &client_id,
+            &redirect_url,
+            &scopes,
+            &username_claim,
+        ) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                // A bad saved value must not stop the listener. SSO is simply
+                // off until the owner saves a valid configuration.
+                tracing::warn!(%error, "Invalid remote SSO settings; SSO is disabled");
+                None
+            }
+        }
+    } else {
+        None
+    };
     ravenbot_remote::RemoteConfig {
         port: if port < 1024 {
             ravenbot_remote::DEFAULT_PORT
@@ -22296,7 +22345,35 @@ async fn remote_config_from_settings(pool: &sqlx::SqlitePool) -> ravenbot_remote
         allow_lan,
         tls,
         tls_dir: None,
+        sso,
     }
+}
+
+async fn save_remote_sso_settings(
+    pool: &sqlx::SqlitePool,
+    enabled: bool,
+    issuer: &str,
+    client_id: &str,
+    redirect_url: &str,
+    scopes: &str,
+    username_claim: &str,
+) -> Result<(), String> {
+    for (key, value) in [
+        (
+            "remote_sso_enabled",
+            if enabled { "1" } else { "0" }.to_string(),
+        ),
+        ("remote_sso_issuer", issuer.to_string()),
+        ("remote_sso_client_id", client_id.to_string()),
+        ("remote_sso_redirect_url", redirect_url.to_string()),
+        ("remote_sso_scopes", scopes.to_string()),
+        ("remote_sso_username_claim", username_claim.to_string()),
+    ] {
+        ravenbot_db::queries::AppSettingsQueries::set(pool, key, &value)
+            .await
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 async fn save_remote_settings(
@@ -22362,6 +22439,8 @@ async fn remote_status(state: &AppState) -> Result<RemoteStatus, String> {
         allow_lan: config.allow_lan,
         tls: tls || (!running && config.tls),
         fingerprint,
+        sso_enabled: config.sso.is_some(),
+        sso: config.sso,
         devices,
         audit,
     })
@@ -22423,6 +22502,8 @@ async fn configure_remote_access(
         allow_lan,
         tls,
         tls_dir: None,
+        // Changing the listener's transport must not silently drop SSO.
+        sso: remote_config_from_settings(state.db.pool()).await.sso,
     };
     stop_remote_listener(&state).await;
     if enabled {
@@ -22440,6 +22521,67 @@ async fn configure_remote_access(
         save_remote_settings(state.db.pool(), false, &config).await?;
         remote_status(&state).await
     }
+}
+
+/// Owner-only OIDC configuration. Nothing here is secret: the client is public
+/// and uses PKCE, so there is deliberately no client-secret argument.
+#[tauri::command]
+async fn configure_remote_sso(
+    state: State<'_, AppState>,
+    enabled: bool,
+    issuer: String,
+    client_id: String,
+    redirect_url: String,
+    scopes: String,
+    username_claim: String,
+) -> Result<RemoteStatus, String> {
+    let was_running = state.remote.lock().await.is_some();
+    if enabled {
+        let config = ravenbot_remote::SsoConfig::new(
+            &issuer,
+            &client_id,
+            &redirect_url,
+            &scopes,
+            &username_claim,
+        )?;
+        save_remote_sso_settings(
+            state.db.pool(),
+            true,
+            &config.issuer,
+            &config.client_id,
+            &config.redirect_url,
+            &config.scopes,
+            &config.username_claim,
+        )
+        .await?;
+    } else {
+        // Disabling must work even when the stored values are blank or stale;
+        // the loader only builds a configuration while the flag is on.
+        save_remote_sso_settings(
+            state.db.pool(),
+            false,
+            issuer.trim(),
+            client_id.trim(),
+            redirect_url.trim(),
+            if scopes.trim().is_empty() {
+                ravenbot_remote::SsoConfig::DEFAULT_SCOPES
+            } else {
+                scopes.trim()
+            },
+            if username_claim.trim().is_empty() {
+                ravenbot_remote::SsoConfig::DEFAULT_USERNAME_CLAIM
+            } else {
+                username_claim.trim()
+            },
+        )
+        .await?;
+    }
+    if was_running {
+        // The running listener owns an immutable snapshot of the config.
+        stop_remote_listener(&state).await;
+        start_remote_listener(&state).await?;
+    }
+    remote_status(&state).await
 }
 
 #[tauri::command]
@@ -23669,6 +23811,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         open_main_window,
         get_remote_status,
         configure_remote_access,
+        configure_remote_sso,
         start_remote_access,
         stop_remote_access,
         create_remote_pairing,
@@ -24464,6 +24607,65 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         })
         .run(context)
         .expect("error while running ravenbot");
+}
+
+#[cfg(test)]
+mod remote_sso_settings_tests {
+    use super::*;
+
+    async fn pool() -> sqlx::SqlitePool {
+        let path =
+            std::env::temp_dir().join(format!("ravenbot-sso-settings-{}.db", Uuid::new_v4()));
+        let db = ravenbot_db::Database::new(&path).await.expect("temp db");
+        db.pool().clone()
+    }
+
+    #[tokio::test]
+    async fn valid_sso_settings_load_and_an_invalid_saved_value_disables_sso() {
+        let pool = pool().await;
+        save_remote_sso_settings(
+            &pool,
+            true,
+            "https://idp.example.com/",
+            "ravenbot-remote",
+            "https://bot.example.com/api/sso/callback",
+            "openid profile email",
+            "preferred_username",
+        )
+        .await
+        .expect("save");
+        let config = remote_config_from_settings(&pool).await;
+        let sso = config.sso.expect("valid SSO config");
+        assert_eq!(sso.issuer, "https://idp.example.com");
+        assert_eq!(sso.client_id, "ravenbot-remote");
+
+        // A direct database edit can bypass the command's validation. Loading
+        // must disable SSO instead of crashing or starting a bad flow.
+        ravenbot_db::queries::AppSettingsQueries::set(
+            &pool,
+            "remote_sso_issuer",
+            "http://idp.example.com",
+        )
+        .await
+        .expect("bad issuer");
+        assert!(
+            remote_config_from_settings(&pool).await.sso.is_none(),
+            "an invalid saved issuer must disable SSO"
+        );
+
+        save_remote_sso_settings(
+            &pool,
+            false,
+            "",
+            "",
+            "",
+            ravenbot_remote::SsoConfig::DEFAULT_SCOPES,
+            ravenbot_remote::SsoConfig::DEFAULT_USERNAME_CLAIM,
+        )
+        .await
+        .expect("disable");
+        assert!(remote_config_from_settings(&pool).await.sso.is_none());
+    }
 }
 
 #[cfg(test)]

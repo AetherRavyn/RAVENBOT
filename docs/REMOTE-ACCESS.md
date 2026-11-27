@@ -115,7 +115,9 @@ All authenticated routes require `Authorization: Bearer <token>`.
 | `GET` | `/api/health` | public | liveness |
 | `POST` | `/api/pair` | public | exchange a one-time code for a token |
 | `POST` | `/api/login` | paired device | bind the device to a local account |
-| `GET` | `/api/status` | paired device | device, account, login state and counts |
+| `POST` | `/api/sso/start` | paired device | start an optional OIDC flow and return the authorization URL |
+| `GET` | `/api/sso/callback` | public | provider callback; consumes state and binds on success |
+| `GET` | `/api/status` | paired device | device, account, login and SSO state, and counts |
 | `GET` | `/api/bots` | viewer | agents |
 | `GET` | `/api/threads?bot_id=` | viewer | conversations |
 | `GET` | `/api/threads/:id/messages?limit=` | viewer | latest messages |
@@ -136,13 +138,19 @@ minutes. If the conversation already has a non-terminal run, the request is
 rejected with `409`.
 
 When account sign-in is enabled, a paired but unbound device can reach only
-`GET /api/status`, `POST /api/login` and `POST /api/device/revoke`; every other
-protected route returns `401` with `code: "login_required"`. `GET /api/status`
-reports `{device, account, login_required}`; `POST /api/login` takes
+`GET /api/status`, `POST /api/login`, `POST /api/sso/start` and
+`POST /api/device/revoke`; every other protected route returns `401` with
+`code: "login_required"`. `GET /api/status` reports
+`{device, account, login_required, sso_enabled}`; `POST /api/login` takes
 `{username, password}` and returns the effective `role`. A revoked account
 returns `401` with `code: "account_revoked"` and the page asks for credentials
 again. Sign-in attempts have their own per-IP and global rate limits, separate
 from pairing.
+
+When the owner configures an OIDC provider, the login page also shows
+**Sign in with SSO**. The flow is optional and never replaces the password form.
+See [`REMOTE-SSO.md`](REMOTE-SSO.md) for the flow, configuration, account
+mapping and limits. The mobile status exposes only the `sso_enabled` boolean.
 
 Approvals and questions still obey the agent's own approval mode. A remote
 operator can answer them; a viewer can see them and is told to use the host.
@@ -150,21 +158,30 @@ operator can answer them; a viewer can see them and is told to use the host.
 ## Storage
 
 Migration 51 adds the three remote tables; migration 77 adds the account
-binding:
+binding; migration 78 adds pending OIDC attempts:
 
 - `remote_devices` — name, role, token hash, account id/name/workspace role,
   created/last-seen/revoked
 - `remote_pairings` — one-time code hash, role, expiry, used timestamp
 - `remote_audit` — device attribution, effective role, account name, method,
   path, status, timestamp
+- `remote_sso_attempts` — hashed state, device id, nonce, PKCE verifier,
+  discovered endpoints, claim name, expiry; deleted on use or expiry
 
-No plaintext token, pairing code or password is stored.
+No plaintext token, pairing code or password is stored. The SSO verifier and
+nonce are the two short-lived values that must be recoverable at the callback;
+they are deleted when the attempt is consumed or expires. Authorization codes,
+access tokens and ID tokens are never stored.
 
 ## Limits
 
 - Remote access is tied to one account workspace. Pairing picks the device
   ceiling; signing in picks the person. It does not create separate desktop
   profiles or a shared-host relay.
+- Remote SSO is optional, uses existing accounts only, and supports RS256 ID
+  tokens from a provider reachable by the host. It does not add SCIM, group
+  mapping, auto-provisioning, client secrets or OIDC logout. The desktop
+  Settings form is pending.
 - No WebSocket/SSE streaming yet; the mobile page polls.
 - No attachment upload, voice capture, or settings management over the API.
 - The self-signed certificate is generated locally; there is no ACME/Let's

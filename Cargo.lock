@@ -5437,8 +5437,11 @@ version = "0.2.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64 0.22.1",
  "chrono",
  "http-body-util",
+ "jsonwebtoken",
+ "rand 0.8.8",
  "ravenbot-core",
  "ravenbot-db",
  "ravenbot-runtime",
@@ -5454,6 +5457,7 @@ dependencies = [
  "tokio-rustls",
  "tower",
  "tracing",
+ "url",
  "uuid",
 ]
 

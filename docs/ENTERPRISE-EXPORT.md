@@ -8,6 +8,8 @@ transcript.
 
 This slice ships **logs only**. It does not ship SSO/OIDC, SCIM, OTLP metrics
 or traces, metrics dashboards, a hosted relay, or data-residency controls.
+Remote OIDC SSO is a separate, opt-in surface documented in
+[`REMOTE-SSO.md`](REMOTE-SSO.md); it is not part of the export plane.
 
 ## What is exported
 
@@ -195,7 +197,8 @@ exclusions and cursor behaviour on failure, is in
 ## Limits
 
 - Logs only; no OTLP metrics or traces, and no metrics dashboards.
-- No SSO/OIDC, SCIM, egress allowlists, data-residency controls or admin API.
+- No SSO/OIDC in this export plane (remote SSO is separate), no SCIM, egress
+  allowlists, data-residency controls or admin API.
 - No hosted relay; the collector must be reachable from the machine running
   RAVENBOT.
 - No prompts, messages, tool arguments, file contents, thread titles, reasons,

@@ -250,8 +250,10 @@ read/write client with viewer, operator, or admin roles, hashed tokens, device
 revocation, and an audit trail. On an account workspace the device must also
 sign in with a local RAVENBOT account, and the effective role is the lower of
 the paired role and the account's workspace grant; disabling the account or
-revoking its grant fails closed within a minute. There are no shell, filesystem,
-or settings endpoints on the remote listener.
+revoking its grant fails closed within a minute. An optional OIDC public-client
+flow (authorization code + PKCE, RS256 only) can replace the password step for
+an existing account; it never creates one. There are no shell, filesystem, or
+settings endpoints on the remote listener.
 
 ## Quick start
 
@@ -456,11 +458,16 @@ limitations rather than finished features:
   "engine not linked" error instead of pretending to run.
 - **Remote access is off by default.** It is a local listener with pairing and
   RBAC, not a hosted cloud service.
-- **No first-party telemetry.** Provider calls, configured MCP servers, optional
-  remote alerts, and the opt-in enterprise export are the only outbound traffic
-  the app initiates. The enterprise export sends logs only; SSO/OIDC, SCIM,
-  OTLP metrics/traces, data-residency controls and a hosted relay are not
-  shipped. See [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md).
+- **Remote SSO is optional and deliberately narrow.** OIDC authorization code +
+  PKCE with RS256 ID tokens can sign in an **existing** local account. There is
+  no SCIM, group mapping, auto-provisioning, client secret, OIDC logout or
+  account creation from the IdP, and the desktop Settings form is still
+  pending. See [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md).
+- **No first-party telemetry.** Provider calls, an optional OIDC IdP, configured
+  MCP servers, optional remote alerts, and the opt-in enterprise export are the
+  only outbound traffic the app initiates. The enterprise export sends logs
+  only; SCIM, OTLP metrics/traces, data-residency controls and a hosted relay
+  are not shipped. See [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md).
 
 The roadmap is tracked in [`ROADMAP.md`](ROADMAP.md). The code-level audit and
 remaining trust gaps are in
@@ -476,6 +483,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/COMPUTER-USE.md`](docs/COMPUTER-USE.md) | Desktop actions, platform matrix, approvals and honest limits |
 | [`docs/ACCOUNTS.md`](docs/ACCOUNTS.md) | Local accounts, sessions, and workspace roles |
 | [`docs/REMOTE-ACCESS.md`](docs/REMOTE-ACCESS.md) | Pairing, RBAC, and the remote listener |
+| [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md) | OIDC single sign-on: flow, configuration, account mapping, audit, limits |
 | [`docs/SERVICE.md`](docs/SERVICE.md) | systemd, launchd, and Windows logon service |
 | [`docs/RELEASE.md`](docs/RELEASE.md) | Signing, notarization, updater, checksums and SBOM |
 | [`docs/CHAT-APPS.md`](docs/CHAT-APPS.md) | Telegram, Slack, Discord, WhatsApp, and Teams |

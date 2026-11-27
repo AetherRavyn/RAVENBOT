@@ -41,7 +41,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Multi-agent / teams** | ● offices with roles, DAG, review gates, task ledger and claims | ● shared multiplayer gateway, roles, shared sessions, subagents | ● team of bots, group chats, handoffs | ● subagents, Bot Mode/group chats, profiles | ○ one agent per user |
 | **Computer use** | ◐ real mouse/keyboard/window control, drag, app launch and clipboard on Linux; app launch and clipboard on macOS/Windows, no synthetic input there | ● host, browser, nodes | ● cloud computer + optional local macOS/Windows execution | ◐ terminal/browser; Linux desktop-control MCP | ● cloud VM + macOS app control |
 | **Approval / oversight** | ● Review→Auto, per-tool approvals, kill switch, budgets, signed audit, tenant isolation | ● policy-as-code, approvals, sandbox optional | ● Auto Review model + approvals, network policy, inference hooks | ● smart/manual/off approvals, hardline blocklist, deny rules, fail-closed | ◐ approvals + read/write permissions; privacy incidents |
-| **Enterprise admin** | ◐ local accounts/roles/audit, opt-in OTLP/HTTP log export of redacted metadata; no SSO/SCIM/metrics/traces/data-residency controls | ● roles, proxy SSO, OTel/Prometheus, signed releases; self-managed | ● SSO/SCIM, network/egress, inference hooks, action recording, OTel, retention, ISO 27001/42001 | ◐ business/enterprise portal, approvals | ◐ business offering, consumer trust issues |
+| **Enterprise admin** | ◐ local accounts/roles/audit, optional OIDC SSO for the remote surface, opt-in OTLP/HTTP log export of redacted metadata; no SCIM/group mapping/metrics/traces/data-residency controls | ● roles, proxy SSO, OTel/Prometheus, signed releases; self-managed | ● SSO/SCIM, network/egress, inference hooks, action recording, OTel, retention, ISO 27001/42001 | ◐ business/enterprise portal, approvals | ◐ business offering, consumer trust issues |
 | **Ecosystem** | 135 MCP connectors, 2,530-app OpenAPI directory, 1,497 skills, 30 jobs | ClawHub skills/plugins with scans; MCP, A2A, ACP | Bot marketplace, app connectors, MCP/API | 1,000+ plugins, Skills Hub, MCP | App connectors, can build tools |
 | **Public task-success evidence** | ○ no public benchmark | ● ShellBench | ◐ vendor examples, no public benchmark | ◐ trajectory research, no public success suite | ◐ vendor examples |
 | **Voice** | ◐ STT→send→TTS via provider key | ● voice nodes, Talk mode, realtime | ● voice notes and calls | ◐ voice memo transcription | ● voice mode |
@@ -134,7 +134,7 @@ Legend: **●** strong, **◐** partial, **○** absent/weak.
 | **Learning loop** | Hermes (self-created skills), Grok Bot (“show it once”) | A successful run becomes a reviewed, versioned skill; a recorded browser/desktop task becomes a replayable routine; failures repair rather than silently repeat. |
 | **Independent action reviewer** | Grok Auto Review | A second, independent model evaluates risky actions against the user's request, with deterministic policy underneath it. RAVENBOT's Review→Auto is deterministic and auditable, but not an independent reviewer. |
 | **Marketplace trust** | ClawHub scans, Grok marketplace, Hermes 1,000+ plugins | Signed manifests, per-operation scopes, sandboxed MCP, verified badges, rollback, and a live-tested “recommended” set. RAVENBOT has catalog breadth without the trust layer. |
-| **Enterprise controls** | Grok Bot | SSO/SCIM, egress allowlists, inference hooks, action recording/OTel, retention, data residency, admin API. RAVENBOT now has local roles/audit plus an opt-in OTLP/HTTP **logs** export of redacted metadata, but still no SSO/SCIM, metrics/traces, data-residency controls or hosted relay. |
+| **Enterprise controls** | Grok Bot | SSO/SCIM, egress allowlists, inference hooks, action recording/OTel, retention, data residency, admin API. RAVENBOT now has local roles/audit, optional OIDC SSO for the remote surface, and an opt-in OTLP/HTTP **logs** export of redacted metadata, but still no SCIM/group mapping, metrics/traces, data-residency controls or hosted relay. |
 | **Meetings, agent email, voice calls** | Grok Bot, Muse | Join a meeting and return notes/actions; own an email address; make/receive a call with approvals. RAVENBOT has STT/TTS but not the workflow. |
 | **Consumer integrations and commerce** | Muse, Grok Bot | Shopping, cards/wallets, travel, health, relationships. High trust risk; only worth entering with spend controls and insurance. |
 | **Release governance** | OpenClaw Foundation, Grok ISO certifications | A neutral steward, signed artifacts, public advisories, independent security review. MIT alone is not a security story. |
@@ -219,10 +219,12 @@ testable acceptance bar.
 ### P2 — expansion (180–365 days)
 
 11. **Enterprise identity and export plane.**
-    SSO/OIDC, SCIM, egress allowlists, data residency, admin API. The OTLP/HTTP
-    **logs** export of redacted audit and run metadata now ships (opt-in,
-    cursor-based, keychain-backed headers; see `docs/ENTERPRISE-EXPORT.md`);
-    metrics/traces, SSO/SCIM, data residency and a hosted relay remain open.
+    SSO/OIDC, SCIM, egress allowlists, data residency, admin API. OIDC SSO for
+    the paired-device remote surface now ships (public client, PKCE, RS256,
+    existing accounts only; see `docs/REMOTE-SSO.md`), as does the OTLP/HTTP
+    **logs** export of redacted audit and run metadata (opt-in, cursor-based,
+    keychain-backed headers; see `docs/ENTERPRISE-EXPORT.md`). SCIM, group
+    mapping, metrics/traces, data residency and a hosted relay remain open.
     Acceptance: a 50-person pilot can be provisioned and audited without a
     shared local account.
 12. **Voice, meetings and agent email.**

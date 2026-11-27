@@ -42,10 +42,13 @@ use tokio_rustls::TlsAcceptor;
 use uuid::Uuid;
 
 use ravenbot_db::queries::{
-    ApprovalQueries, MessageQueries, QuestionQueries, RemoteAccessQueries, RunQueries,
-    ThreadQueries, ThreadShareQueries,
+    ApprovalQueries, MessageQueries, NewRemoteSsoAttempt, QuestionQueries, RemoteAccessQueries,
+    RemoteSsoQueries, RunQueries, ThreadQueries, ThreadShareQueries,
 };
 use ravenbot_runtime::Runtime;
+
+mod sso;
+pub use sso::SsoConfig;
 
 pub const DEFAULT_PORT: u16 = 8790;
 const MAX_PAIRING_ATTEMPTS_PER_MINUTE: usize = 5;
@@ -54,6 +57,11 @@ const MAX_GLOBAL_PAIRING_ATTEMPTS_PER_MINUTE: usize = 30;
 /// device, and failed credentials must not consume pairing attempts.
 const MAX_LOGIN_ATTEMPTS_PER_MINUTE: usize = 5;
 const MAX_GLOBAL_LOGIN_ATTEMPTS_PER_MINUTE: usize = 30;
+/// A callback is a public GET, so it has its own counters. Thirty per minute
+/// per IP leaves room for a person retrying a broken IdP, while the global cap
+/// keeps a spray from filling the database or the provider's logs.
+const MAX_SSO_CALLBACKS_PER_MINUTE: usize = 30;
+const MAX_GLOBAL_SSO_CALLBACKS_PER_MINUTE: usize = 300;
 /// Bounds how long a revoked account can keep using a device. Revalidation is
 /// cheap but goes to the account registry, so it is not done per poll.
 const ACCOUNT_REVALIDATE_INTERVAL: Duration = Duration::from_secs(60);
@@ -145,6 +153,10 @@ pub struct RemoteConfig {
     /// `~/RAVENBOT/config/remote-tls`.
     #[serde(skip)]
     pub tls_dir: Option<PathBuf>,
+    /// OIDC single sign-on for the mobile sign-in page. `None` leaves the
+    /// username/password form as the only account path.
+    #[serde(default)]
+    pub sso: Option<SsoConfig>,
 }
 
 impl Default for RemoteConfig {
@@ -154,6 +166,7 @@ impl Default for RemoteConfig {
             allow_lan: false,
             tls: false,
             tls_dir: None,
+            sso: None,
         }
     }
 }
@@ -207,6 +220,12 @@ pub trait AccountAuthenticator: Send + Sync {
     ) -> Result<Option<RemoteAccount>, String>;
 
     async fn revalidate(&self, account_id: &str) -> Result<Option<RemoteAccount>, String>;
+
+    /// Resolve a verified SSO identity (usually `preferred_username`) to an
+    /// existing local account on this workspace, case-insensitively. `Ok(None)`
+    /// covers an unknown, disabled or grant-less account, exactly like a bad
+    /// password: the HTTP layer must not distinguish them.
+    async fn account_by_identity(&self, identity: &str) -> Result<Option<RemoteAccount>, String>;
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -487,16 +506,38 @@ pub async fn start_with_authenticator(
     config: RemoteConfig,
     authenticator: Option<Arc<dyn AccountAuthenticator>>,
 ) -> Result<RemoteServer, String> {
-    // Bound the pairing and audit tables before the listener accepts traffic.
+    // Bound the pairing, audit and SSO attempt tables before the listener
+    // accepts traffic.
     if let Err(error) = RemoteAccessQueries::prune(&pool).await {
         tracing::warn!(%error, "Could not prune remote access tables");
     }
+    if let Err(error) = RemoteSsoQueries::prune_expired(&pool).await {
+        tracing::warn!(%error, "Could not prune remote SSO attempts");
+    }
     let port = config.normalized_port();
     let bind = format!("{}:{}", config.bind_addr(), port);
+    // An invalid saved config disables SSO instead of stopping the listener.
+    // Without an account authenticator no identity can be mapped, so SSO stays
+    // off too rather than showing a button that can never complete.
+    let sso = match config.sso.clone() {
+        Some(config) => match (config.validate(), authenticator.is_some()) {
+            (Ok(()), true) => Some(config),
+            (Ok(()), false) => {
+                tracing::warn!("Remote SSO is configured without an account authenticator");
+                None
+            }
+            (Err(error), _) => {
+                tracing::warn!(%error, "Invalid remote SSO settings; SSO is disabled");
+                None
+            }
+        },
+        None => None,
+    };
     let state = Arc::new(RemoteState::new_with_authenticator(
         pool,
         runtime,
         authenticator,
+        sso,
     ));
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
@@ -569,14 +610,22 @@ struct CachedGrant {
     checked_at: Instant,
 }
 
+struct ActiveSso {
+    config: SsoConfig,
+    client: reqwest::Client,
+}
+
 pub struct RemoteState {
     pool: SqlitePool,
     runtime: Arc<Runtime>,
     authenticator: Option<Arc<dyn AccountAuthenticator>>,
+    sso: Option<ActiveSso>,
     pairing_attempts: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
     global_pairing_attempts: Mutex<VecDeque<Instant>>,
     login_attempts: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
     global_login_attempts: Mutex<VecDeque<Instant>>,
+    sso_attempts: Mutex<HashMap<IpAddr, VecDeque<Instant>>>,
+    global_sso_attempts: Mutex<VecDeque<Instant>>,
     grants: Mutex<HashMap<String, CachedGrant>>,
     last_touch: Mutex<HashMap<String, Instant>>,
 }
@@ -584,22 +633,33 @@ pub struct RemoteState {
 impl RemoteState {
     #[cfg(test)]
     fn new(pool: SqlitePool, runtime: Arc<Runtime>) -> Self {
-        Self::new_with_authenticator(pool, runtime, None)
+        Self::new_with_authenticator(pool, runtime, None, None)
     }
 
     fn new_with_authenticator(
         pool: SqlitePool,
         runtime: Arc<Runtime>,
         authenticator: Option<Arc<dyn AccountAuthenticator>>,
+        sso: Option<SsoConfig>,
     ) -> Self {
+        let sso = sso.and_then(|config| match sso::http_client() {
+            Ok(client) => Some(ActiveSso { config, client }),
+            Err(error) => {
+                tracing::warn!(%error, "Could not build the SSO HTTP client; SSO is disabled");
+                None
+            }
+        });
         Self {
             pool,
             runtime,
             authenticator,
+            sso,
             pairing_attempts: Mutex::new(HashMap::new()),
             global_pairing_attempts: Mutex::new(VecDeque::new()),
             login_attempts: Mutex::new(HashMap::new()),
             global_login_attempts: Mutex::new(VecDeque::new()),
+            sso_attempts: Mutex::new(HashMap::new()),
+            global_sso_attempts: Mutex::new(VecDeque::new()),
             grants: Mutex::new(HashMap::new()),
             last_touch: Mutex::new(HashMap::new()),
         }
@@ -622,6 +682,16 @@ impl RemoteState {
             ip,
             MAX_LOGIN_ATTEMPTS_PER_MINUTE,
             MAX_GLOBAL_LOGIN_ATTEMPTS_PER_MINUTE,
+        )
+    }
+
+    fn sso_callback_allowed(&self, ip: IpAddr) -> bool {
+        rate_limit_allowed(
+            &self.sso_attempts,
+            &self.global_sso_attempts,
+            ip,
+            MAX_SSO_CALLBACKS_PER_MINUTE,
+            MAX_GLOBAL_SSO_CALLBACKS_PER_MINUTE,
         )
     }
 
@@ -716,11 +786,13 @@ pub fn router(state: Arc<RemoteState>) -> Router {
         .route("/app.js", get(app_js))
         .route("/api/health", get(health))
         .route("/api/pair", post(pair))
+        .route("/api/sso/callback", get(sso_callback))
         .route("/share/{token}", get(share_page));
 
     let protected = Router::new()
         .route("/api/status", get(status))
         .route("/api/login", post(login))
+        .route("/api/sso/start", post(sso_start))
         .route("/api/bots", get(bots))
         .route("/api/threads", get(threads))
         .route(
@@ -895,6 +967,7 @@ async fn authenticate(
     // These stay reachable before the device is bound: sign in, leave, and
     // discover that sign-in is required.
     let is_login = path == "/api/login";
+    let is_sso_start = path == "/api/sso/start";
     let self_revoke = path == "/api/device/revoke";
     let device_role = RemoteRole::parse(&device.role);
     let mut account = None;
@@ -943,7 +1016,7 @@ async fn authenticate(
             }
             None => {
                 login_required = true;
-                if !(is_login || self_revoke || path == "/api/status") {
+                if !(is_login || is_sso_start || self_revoke || path == "/api/status") {
                     return ApiError::login_required().into_response();
                 }
             }
@@ -959,6 +1032,7 @@ async fn authenticate(
         && method != Method::HEAD
         && !self_revoke
         && !is_login
+        && !is_sso_start
         && !role.can_write()
     {
         return ApiError::forbidden().into_response();
@@ -1452,6 +1526,356 @@ async fn login(
     }
 }
 
+/// Begin an OIDC authorization-code flow for this paired device. The device
+/// bearer token is required, so a state can only be minted for a device the
+/// host already knows. The session is not bound until the public callback
+/// verifies a provider-issued ID token and maps it to a local account.
+async fn sso_start(
+    State(state): State<Arc<RemoteState>>,
+    Extension(auth): Extension<AuthDevice>,
+) -> ApiResult<Response> {
+    let Some(active) = state.sso.as_ref() else {
+        return Err(ApiError::conflict(
+            "Single sign-on is not configured on this host.",
+        ));
+    };
+    if state.authenticator.is_none() {
+        return Err(ApiError::conflict(
+            "Single sign-on is not configured on this host.",
+        ));
+    }
+    if let Err(error) = RemoteSsoQueries::prune_expired(&state.pool).await {
+        return Err(ApiError::internal("prune remote SSO attempts", error));
+    }
+    let outstanding = RemoteSsoQueries::outstanding_for_device(&state.pool, &auth.id)
+        .await
+        .map_err(|error| ApiError::internal("count remote SSO attempts", error))?;
+    let total = RemoteSsoQueries::outstanding_total(&state.pool)
+        .await
+        .map_err(|error| ApiError::internal("count remote SSO attempts", error))?;
+    if outstanding >= sso::MAX_ATTEMPTS_PER_DEVICE || total >= sso::MAX_GLOBAL_ATTEMPTS {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many sign-in attempts. Wait ten minutes and try again.",
+        ));
+    }
+    let provider = sso::discover(&active.client, &active.config)
+        .await
+        .map_err(|failure| {
+            tracing::warn!(
+                reason = failure.reason(),
+                "Remote SSO discovery failed while starting a flow"
+            );
+            ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "Single sign-on could not start. Ask the host owner to check the identity provider settings.",
+            )
+        })?;
+    let secrets = sso::generate_secrets();
+    let created = RemoteSsoQueries::create(
+        &state.pool,
+        &NewRemoteSsoAttempt {
+            state_hash: &hash_secret(&secrets.state),
+            device_id: &auth.id,
+            nonce: &secrets.nonce,
+            verifier: &secrets.verifier,
+            issuer: &active.config.issuer,
+            client_id: &active.config.client_id,
+            redirect_url: &active.config.redirect_url,
+            token_endpoint: &provider.token_endpoint,
+            jwks_uri: &provider.jwks_uri,
+            username_claim: &active.config.username_claim,
+            ttl_secs: sso::ATTEMPT_TTL_SECS,
+        },
+        sso::MAX_ATTEMPTS_PER_DEVICE,
+        sso::MAX_GLOBAL_ATTEMPTS,
+    )
+    .await
+    .map_err(|error| ApiError::internal("store remote SSO attempt", error))?;
+    if !created {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many sign-in attempts. Wait ten minutes and try again.",
+        ));
+    }
+    let url = sso::authorization_url(&active.config, &provider, &secrets).map_err(|failure| {
+        tracing::warn!(
+            reason = failure.reason(),
+            "Remote SSO authorization URL could not be built"
+        );
+        ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "Single sign-on could not start. Ask the host owner to check the identity provider settings.",
+        )
+    })?;
+    Ok((
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
+        Json(json!({ "url": url })),
+    )
+        .into_response())
+}
+
+#[derive(Debug, Deserialize)]
+struct SsoCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+fn sso_redirect(active: &ActiveSso, failure: Option<sso::SsoFailure>) -> Response {
+    let Ok(origin) = active.config.redirect_origin() else {
+        return ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Single sign-on is misconfigured on this host.",
+        )
+        .into_response();
+    };
+    let location = match failure {
+        None => format!("{origin}/?sso=ok"),
+        Some(failure) => format!("{origin}/?sso=error&reason={}", failure.reason()),
+    };
+    (
+        [
+            (header::LOCATION, location),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+            (header::REFERRER_POLICY, "no-referrer".to_string()),
+        ],
+        StatusCode::SEE_OTHER,
+    )
+        .into_response()
+}
+
+async fn sso_failed(
+    state: &RemoteState,
+    active: &ActiveSso,
+    attempt: Option<&ravenbot_db::queries::RemoteSsoAttempt>,
+    failure: sso::SsoFailure,
+    audit_status: i64,
+) -> Response {
+    let device = match attempt {
+        Some(attempt) => RemoteAccessQueries::device_by_id(&state.pool, &attempt.device_id)
+            .await
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    let _ = RemoteAccessQueries::audit(
+        &state.pool,
+        device
+            .as_ref()
+            .map(|device| device.id.as_str())
+            .or_else(|| attempt.map(|attempt| attempt.device_id.as_str())),
+        device.as_ref().map(|device| device.name.as_str()),
+        None,
+        None,
+        "SSO",
+        "/api/sso/callback",
+        audit_status,
+    )
+    .await;
+    tracing::warn!(reason = failure.reason(), "Remote SSO callback failed");
+    sso_redirect(active, Some(failure))
+}
+
+/// Public OIDC callback. Every outcome is a redirect to the origin of the
+/// configured redirect URL, never to the request's Host header. Provider error
+/// text, codes, tokens, nonces and verifiers are never reflected or logged.
+async fn sso_callback(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<PeerAddr>,
+    Query(query): Query<SsoCallbackQuery>,
+) -> Response {
+    let Some(active) = state.sso.as_ref() else {
+        return ApiError::not_found("Not found.").into_response();
+    };
+    if !state.sso_callback_allowed(peer.0.ip()) {
+        return ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many sign-in attempts. Wait a minute and try again.",
+        )
+        .into_response();
+    }
+    let _ = RemoteSsoQueries::prune_expired(&state.pool).await;
+
+    // A provider error is a user-facing authorization failure. Consume any
+    // state that is present so it cannot be replayed, then redirect with a
+    // fixed reason and never forward error_description.
+    if query.error.is_some() {
+        let attempt = match query.state.as_deref() {
+            Some(value) if !value.is_empty() && value.len() <= 128 => {
+                RemoteSsoQueries::consume(&state.pool, &hash_secret(value))
+                    .await
+                    .ok()
+                    .flatten()
+            }
+            _ => None,
+        };
+        return sso_failed(
+            &state,
+            active,
+            attempt.as_ref(),
+            sso::SsoFailure::Provider,
+            401,
+        )
+        .await;
+    }
+
+    let Some(state_value) = query.state.as_deref().filter(|value| !value.is_empty()) else {
+        return sso_failed(&state, active, None, sso::SsoFailure::State, 401).await;
+    };
+    if state_value.len() > 128 {
+        return sso_failed(&state, active, None, sso::SsoFailure::State, 401).await;
+    }
+    let attempt = match RemoteSsoQueries::consume(&state.pool, &hash_secret(state_value)).await {
+        Ok(Some(attempt)) => attempt,
+        Ok(None) => {
+            return sso_failed(&state, active, None, sso::SsoFailure::State, 401).await;
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Remote SSO attempt lookup failed");
+            return sso_failed(&state, active, None, sso::SsoFailure::Exchange, 500).await;
+        }
+    };
+    let Some(code) = query.code.as_deref().filter(|value| !value.is_empty()) else {
+        return sso_failed(
+            &state,
+            active,
+            Some(&attempt),
+            sso::SsoFailure::Exchange,
+            500,
+        )
+        .await;
+    };
+    let id_token = match sso::exchange_code(
+        &active.client,
+        &attempt.token_endpoint,
+        &attempt.client_id,
+        &attempt.redirect_url,
+        &attempt.verifier,
+        code,
+    )
+    .await
+    {
+        Ok(token) => token,
+        Err(failure) => {
+            return sso_failed(
+                &state,
+                active,
+                Some(&attempt),
+                failure,
+                failure.audit_status(),
+            )
+            .await
+        }
+    };
+    let identity = match sso::verify_id_token(
+        &active.client,
+        &attempt.jwks_uri,
+        &id_token,
+        &attempt.issuer,
+        &attempt.client_id,
+        &attempt.nonce,
+        &attempt.username_claim,
+    )
+    .await
+    {
+        Ok(identity) => identity,
+        Err(failure) => {
+            return sso_failed(
+                &state,
+                active,
+                Some(&attempt),
+                failure,
+                failure.audit_status(),
+            )
+            .await
+        }
+    };
+    let Some(authenticator) = state.authenticator.clone() else {
+        return sso_failed(&state, active, Some(&attempt), sso::SsoFailure::Config, 500).await;
+    };
+    let account = match authenticator.account_by_identity(&identity).await {
+        Ok(Some(account)) => account,
+        Ok(None) => {
+            return sso_failed(
+                &state,
+                active,
+                Some(&attempt),
+                sso::SsoFailure::Account,
+                401,
+            )
+            .await
+        }
+        Err(error) => {
+            tracing::warn!(%error, "Remote SSO account lookup failed");
+            return sso_failed(
+                &state,
+                active,
+                Some(&attempt),
+                sso::SsoFailure::Account,
+                500,
+            )
+            .await;
+        }
+    };
+    let bound = match RemoteAccessQueries::bind_account(
+        &state.pool,
+        &attempt.device_id,
+        &account.id,
+        &account.username,
+        &account.role,
+    )
+    .await
+    {
+        Ok(bound) => bound,
+        Err(error) => {
+            tracing::warn!(%error, "Remote SSO account binding failed");
+            return sso_failed(
+                &state,
+                active,
+                Some(&attempt),
+                sso::SsoFailure::Account,
+                500,
+            )
+            .await;
+        }
+    };
+    if !bound {
+        // The device was revoked between start and callback.
+        return sso_failed(
+            &state,
+            active,
+            Some(&attempt),
+            sso::SsoFailure::Account,
+            401,
+        )
+        .await;
+    }
+    state.cache_account(&attempt.device_id, &account);
+    let device = RemoteAccessQueries::device_by_id(&state.pool, &attempt.device_id)
+        .await
+        .ok()
+        .flatten();
+    let role = device
+        .as_ref()
+        .map(|device| RemoteRole::parse(&device.role).capped_by(&account.role));
+    let _ = RemoteAccessQueries::audit(
+        &state.pool,
+        Some(&attempt.device_id),
+        device.as_ref().map(|device| device.name.as_str()),
+        role.map(|role| role.as_str()),
+        Some(&account.username),
+        "SSO",
+        "/api/sso/callback",
+        200,
+    )
+    .await;
+    sso_redirect(active, None)
+}
+
 async fn status(
     State(state): State<Arc<RemoteState>>,
     Extension(auth): Extension<AuthDevice>,
@@ -1484,6 +1908,7 @@ async fn status(
         "device": { "id": auth.id, "name": auth.name, "role": auth.role },
         "account": account,
         "login_required": auth.login_required,
+        "sso_enabled": state.sso.is_some(),
         "bots": bots,
         "active_runs": active_runs,
         "pending_approvals": pending_approvals,
@@ -1941,6 +2366,18 @@ mod tests {
                 .clone()
                 .filter(|account| account.id == account_id))
         }
+
+        async fn account_by_identity(
+            &self,
+            identity: &str,
+        ) -> Result<Option<RemoteAccount>, String> {
+            Ok(self
+                .account
+                .lock()
+                .expect("account lock")
+                .clone()
+                .filter(|account| account.username.eq_ignore_ascii_case(identity.trim())))
+        }
     }
 
     async fn state_with_authenticator(
@@ -1959,6 +2396,7 @@ mod tests {
             pool,
             Arc::new(Runtime::new(db)),
             Some(authenticator),
+            None,
         ))
     }
 
@@ -2352,7 +2790,9 @@ mod tests {
     #[tokio::test]
     async fn protected_routes_require_a_token() {
         let state = state().await;
-        let response = router(state)
+        let app = router(state);
+        let response = app
+            .clone()
             .oneshot(
                 HttpRequest::builder()
                     .uri("/api/status")
@@ -2361,6 +2801,17 @@ mod tests {
             )
             .await
             .expect("response");
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let response = app
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/api/sso/start")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("sso start response");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -2396,6 +2847,7 @@ mod tests {
                 allow_lan: false,
                 tls: true,
                 tls_dir: Some(dir.clone()),
+                sso: None,
             },
         )
         .await
@@ -2435,6 +2887,7 @@ mod tests {
                 allow_lan: false,
                 tls: false,
                 tls_dir: None,
+                sso: None,
             },
         )
         .await
@@ -2463,7 +2916,10 @@ mod tests {
             .get("content-security-policy")
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.contains("default-src 'self'")));
-        assert!(page.text().await.unwrap().contains("Pair this device"));
+        let page = page.text().await.unwrap();
+        assert!(page.contains("Pair this device"));
+        assert!(page.contains("Sign in with SSO"));
+        assert!(page.contains("login-username") && page.contains("login-password"));
 
         // A loopback listener is not reachable through a LAN bind assumption;
         // the URL still names the actual port.
@@ -2957,6 +3413,88 @@ mod tests {
             .expect("failed revalidation");
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(body_json(response).await["code"], "account_revoked");
+    }
+
+    async fn insert_sso_attempt(
+        pool: &SqlitePool,
+        device_id: &str,
+        state_value: &str,
+        ttl_secs: i64,
+    ) -> bool {
+        RemoteSsoQueries::create(
+            pool,
+            &NewRemoteSsoAttempt {
+                state_hash: &hash_secret(state_value),
+                device_id,
+                nonce: "nonce",
+                verifier: "verifier",
+                issuer: "https://idp.example.com",
+                client_id: "client",
+                redirect_url: "https://bot.example.com/api/sso/callback",
+                token_endpoint: "https://idp.example.com/token",
+                jwks_uri: "https://idp.example.com/jwks",
+                username_claim: "preferred_username",
+                ttl_secs,
+            },
+            sso::MAX_ATTEMPTS_PER_DEVICE,
+            sso::MAX_GLOBAL_ATTEMPTS,
+        )
+        .await
+        .expect("insert attempt")
+    }
+
+    #[tokio::test]
+    async fn sso_attempts_are_single_use_and_expired_rows_are_pruned() {
+        let state = state().await;
+        assert!(insert_sso_attempt(&state.pool, "device-a", "state-one", 600).await);
+        let consumed = RemoteSsoQueries::consume(&state.pool, &hash_secret("state-one"))
+            .await
+            .expect("consume")
+            .expect("attempt");
+        assert_eq!(consumed.device_id, "device-a");
+        assert!(
+            RemoteSsoQueries::consume(&state.pool, &hash_secret("state-one"))
+                .await
+                .expect("replay")
+                .is_none(),
+            "a state is single-use"
+        );
+
+        assert!(insert_sso_attempt(&state.pool, "device-a", "state-expired", -1).await);
+        assert!(
+            RemoteSsoQueries::consume(&state.pool, &hash_secret("state-expired"))
+                .await
+                .expect("expired")
+                .is_none(),
+            "an expired state must not be consumable"
+        );
+        RemoteSsoQueries::prune_expired(&state.pool)
+            .await
+            .expect("prune");
+        let remaining: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM remote_sso_attempts")
+            .fetch_one(&state.pool)
+            .await
+            .expect("count");
+        assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn sso_attempts_are_capped_per_device() {
+        let state = state().await;
+        for index in 0..sso::MAX_ATTEMPTS_PER_DEVICE {
+            assert!(
+                insert_sso_attempt(&state.pool, "device-a", &format!("state-{index}"), 600).await,
+                "attempt {index}"
+            );
+        }
+        assert!(
+            !insert_sso_attempt(&state.pool, "device-a", "state-over", 600).await,
+            "a sixth outstanding attempt must be rejected"
+        );
+        assert!(
+            insert_sso_attempt(&state.pool, "device-b", "state-b", 600).await,
+            "one device's cap must not block another"
+        );
     }
 
     #[tokio::test]

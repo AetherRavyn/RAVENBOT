@@ -1024,6 +1024,24 @@ impl ravenbot_remote::AccountAuthenticator for RemoteAccountAuthenticator {
         };
         self.workspace_account(account).await
     }
+
+    /// The OIDC claim is only an identity lookup: the account must already
+    /// exist, be enabled and hold a grant on this workspace. An unknown,
+    /// disabled or grant-less account is indistinguishable from a failed
+    /// password at this layer.
+    async fn account_by_identity(
+        &self,
+        identity: &str,
+    ) -> Result<Option<ravenbot_remote::RemoteAccount>, String> {
+        let identity = identity.trim();
+        if identity.is_empty() {
+            return Ok(None);
+        }
+        let Some(account) = account_by_username(&self.base, identity).await? else {
+            return Ok(None);
+        };
+        self.workspace_account(account).await
+    }
 }
 
 /// A member of one workspace, as the Team panel shows them.
@@ -1871,6 +1889,21 @@ mod tests {
         assert_eq!(signed_in.username, "member");
         assert_eq!(signed_in.role, "operator");
 
+        // An OIDC identity maps case-insensitively to the same local account,
+        // but only while the account exists, is enabled and keeps its grant.
+        let by_identity = authenticator
+            .account_by_identity("  MEMBER ")
+            .await
+            .expect("identity lookup")
+            .expect("granted identity");
+        assert_eq!(by_identity.id, member.id);
+        assert_eq!(by_identity.role, "operator");
+        assert!(authenticator
+            .account_by_identity("nobody")
+            .await
+            .expect("unknown identity")
+            .is_none());
+
         // Wrong credentials are indistinguishable from no grant at this layer.
         assert!(authenticator
             .authenticate("member", "wrong password")
@@ -1896,6 +1929,14 @@ mod tests {
             .await
             .expect("revalidate")
             .is_none());
+        assert!(
+            authenticator
+                .account_by_identity("member")
+                .await
+                .expect("identity lookup")
+                .is_none(),
+            "a grant-less account must not map from an IdP identity"
+        );
 
         grant_workspace(&base, "owner", "member", "viewer")
             .await
@@ -1906,6 +1947,14 @@ mod tests {
             .await
             .expect("revalidate")
             .is_none());
+        assert!(
+            authenticator
+                .account_by_identity("member")
+                .await
+                .expect("identity lookup")
+                .is_none(),
+            "a disabled account must not map from an IdP identity"
+        );
         set_disabled(&base, "member", false).await.expect("enable");
         delete_account(&base, "member", false)
             .await
@@ -1915,6 +1964,14 @@ mod tests {
             .await
             .expect("revalidate")
             .is_none());
+        assert!(
+            authenticator
+                .account_by_identity("member")
+                .await
+                .expect("identity lookup")
+                .is_none(),
+            "a deleted account must not map from an IdP identity"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 

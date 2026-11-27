@@ -5,11 +5,14 @@
   const TOKEN_KEY = "ravenbot.remote.token";
   const NAME_KEY = "ravenbot.remote.name";
   const POLL_MS = 3000;
+  const SSO_ERROR =
+    "Single sign-on could not be completed. Use your RAVENBOT username and password, or try again.";
 
   const state = {
     token: localStorage.getItem(TOKEN_KEY) || "",
     me: null,
     account: null,
+    ssoEnabled: false,
     mode: "pair",
     bots: [],
     bot: null,
@@ -45,10 +48,18 @@
     $("login-view").classList.toggle("hidden", mode !== "login");
     $("chat-view").classList.toggle("hidden", mode !== "chat");
     $("logout").classList.toggle("hidden", mode === "pair");
+    renderSso();
     if (mode !== "chat" && state.timer) {
       clearInterval(state.timer);
       state.timer = null;
     }
+  }
+
+  /// The SSO button is additive: username/password stays visible and usable.
+  function renderSso() {
+    const visible = state.mode === "login" && state.ssoEnabled;
+    $("sso-button").classList.toggle("hidden", !visible);
+    $("sso-divider").classList.toggle("hidden", !visible);
   }
 
   function showPair(message) {
@@ -95,7 +106,9 @@
   function applyStatus(status) {
     state.me = status.device || null;
     state.account = status.account || null;
+    state.ssoEnabled = Boolean(status.sso_enabled);
     renderHeader();
+    renderSso();
     return Boolean(status.login_required);
   }
 
@@ -521,12 +534,10 @@
       state.me = { name: data.name, role: data.role };
       state.account = null;
       renderHeader();
-      if (data.account_login) {
-        // The device token is not enough; ask for the local account now.
-        showLogin("");
-      } else {
-        await enterChat();
-      }
+      // `enterChat` fetches status first, so the login view can discover
+      // whether the host also offers SSO. When account login is off it simply
+      // enters the chat.
+      await enterChat();
     } catch (error) {
       $("pair-error").textContent = error.message;
     } finally {
@@ -560,6 +571,25 @@
       $("login-error").textContent = error.message;
       if (state.mode === "login") $("login-password").select();
     } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function ssoSignIn() {
+    const button = $("sso-button");
+    $("login-error").textContent = "";
+    button.disabled = true;
+    try {
+      const data = await api("/api/sso/start", { method: "POST" });
+      if (!data.url) {
+        throw new Error("Single sign-on is not available.");
+      }
+      // A top-level navigation to the configured provider. The device token
+      // stays in localStorage; no token is ever put in a URL.
+      location.href = data.url;
+      return;
+    } catch (error) {
+      $("login-error").textContent = error.message;
       button.disabled = false;
     }
   }
@@ -616,6 +646,7 @@
 
   $("pair-form").addEventListener("submit", pair);
   $("login-form").addEventListener("submit", signIn);
+  $("sso-button").addEventListener("click", ssoSignIn);
   $("send-form").addEventListener("submit", send);
   $("back").addEventListener("click", back);
   $("logout").addEventListener("click", async () => {
@@ -633,9 +664,29 @@
     if (!document.hidden && state.token && state.mode === "chat") refresh();
   });
 
+  /// The callback redirects to the configured redirect URI's origin with
+  /// `?sso=ok` or `?sso=error&reason=...`. Remove it before anything else so a
+  /// refresh cannot replay the notice, and never show the reason text.
+  function takeSsoOutcome() {
+    const url = new URL(location.href);
+    const outcome = url.searchParams.get("sso");
+    if (outcome !== "ok" && outcome !== "error") return null;
+    url.searchParams.delete("sso");
+    url.searchParams.delete("reason");
+    history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    return outcome;
+  }
+
   async function start() {
+    const ssoOutcome = takeSsoOutcome();
     if (!state.token) {
-      showPair("");
+      if (ssoOutcome === "error") {
+        showPair(SSO_ERROR);
+      } else if (ssoOutcome === "ok") {
+        showPair("Single sign-on is complete, but this browser is not paired. Pair it to continue.");
+      } else {
+        showPair("");
+      }
       return;
     }
     // Keep the device token while the server tells us whether sign-in is
@@ -643,6 +694,12 @@
     showChat();
     try {
       await enterChat();
+      if (ssoOutcome === "ok" && state.mode === "chat") {
+        toast("Signed in with SSO");
+      }
+      if (ssoOutcome === "error" && state.mode === "login") {
+        $("login-error").textContent = SSO_ERROR;
+      }
     } catch (error) {
       if (state.token && state.mode !== "login") {
         showChat();

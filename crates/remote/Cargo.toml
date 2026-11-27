@@ -11,11 +11,16 @@ ravenbot-db = { path = "../db" }
 ravenbot-runtime = { path = "../runtime" }
 axum = "0.8"
 async-trait = "0.1"
+base64.workspace = true
+jsonwebtoken = { version = "12", features = ["rust_crypto"] }
+rand.workspace = true
+reqwest.workspace = true
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+url = "2"
 uuid.workspace = true
 chrono.workspace = true
 sha2 = "0.10"

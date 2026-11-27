@@ -4555,6 +4555,41 @@ impl RemoteAccessQueries {
         Ok(id)
     }
 
+    pub async fn device_by_id(
+        pool: &SqlitePool,
+        id: &str,
+    ) -> Result<Option<RemoteDevice>, sqlx::Error> {
+        let row: Option<(
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = sqlx::query_as(
+            "SELECT id, name, role, account_id, account_name, account_role,
+                    created_at, last_seen_at, revoked_at
+                 FROM remote_devices WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+        Ok(row.map(|row| RemoteDevice {
+            id: row.0,
+            name: row.1,
+            role: row.2,
+            account_id: row.3,
+            account_name: row.4,
+            account_role: row.5,
+            created_at: row.6,
+            last_seen_at: row.7,
+            revoked_at: row.8,
+        }))
+    }
+
     pub async fn device_for_token(
         pool: &SqlitePool,
         token_hash: &str,
@@ -4766,6 +4801,194 @@ impl RemoteAccessQueries {
                 created_at: row.7,
             })
             .collect())
+    }
+}
+
+/// The recoverable part of a pending OIDC authorization-code flow.
+///
+/// The nonce and PKCE verifier are needed at the callback, so they are stored
+/// in plaintext for the short attempt lifetime. Authorization codes, access
+/// tokens and ID tokens are never stored.
+#[derive(Debug, Clone)]
+pub struct RemoteSsoAttempt {
+    pub id: String,
+    pub device_id: String,
+    pub nonce: String,
+    pub verifier: String,
+    pub issuer: String,
+    pub client_id: String,
+    pub redirect_url: String,
+    pub token_endpoint: String,
+    pub jwks_uri: String,
+    pub username_claim: String,
+}
+
+/// The values written when an SSO flow starts. The state is already hashed.
+#[derive(Debug, Clone)]
+pub struct NewRemoteSsoAttempt<'a> {
+    pub state_hash: &'a str,
+    pub device_id: &'a str,
+    pub nonce: &'a str,
+    pub verifier: &'a str,
+    pub issuer: &'a str,
+    pub client_id: &'a str,
+    pub redirect_url: &'a str,
+    pub token_endpoint: &'a str,
+    pub jwks_uri: &'a str,
+    pub username_claim: &'a str,
+    pub ttl_secs: i64,
+}
+
+/// Pending remote SSO attempts. Rows are single-use and expire with their
+/// authorization flow.
+pub struct RemoteSsoQueries;
+
+impl RemoteSsoQueries {
+    /// Insert an attempt unless the device or the host already has too many
+    /// outstanding flows. Expired rows are pruned first, so a stale tab cannot
+    /// consume a device's allowance forever.
+    pub async fn create(
+        pool: &SqlitePool,
+        attempt: &NewRemoteSsoAttempt<'_>,
+        max_per_device: i64,
+        max_global: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let now = Utc::now().timestamp();
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM remote_sso_attempts WHERE expires_at <= ?")
+            .bind(now)
+            .execute(&mut *tx)
+            .await?;
+        let device_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM remote_sso_attempts
+             WHERE device_id = ? AND expires_at > ?",
+        )
+        .bind(attempt.device_id)
+        .bind(now)
+        .fetch_one(&mut *tx)
+        .await?;
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM remote_sso_attempts WHERE expires_at > ?")
+                .bind(now)
+                .fetch_one(&mut *tx)
+                .await?;
+        if device_count >= max_per_device.max(0) || total >= max_global.max(0) {
+            tx.rollback().await?;
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO remote_sso_attempts
+               (id, state_hash, device_id, nonce, verifier, issuer, client_id,
+                redirect_url, token_endpoint, jwks_uri, username_claim,
+                created_at, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(attempt.state_hash)
+        .bind(attempt.device_id)
+        .bind(attempt.nonce)
+        .bind(attempt.verifier)
+        .bind(attempt.issuer)
+        .bind(attempt.client_id)
+        .bind(attempt.redirect_url)
+        .bind(attempt.token_endpoint)
+        .bind(attempt.jwks_uri)
+        .bind(attempt.username_claim)
+        .bind(now)
+        .bind(now + attempt.ttl_secs)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Atomically consume a state. A second callback with the same state gets
+    /// `None`, and an expired row is never returned.
+    pub async fn consume(
+        pool: &SqlitePool,
+        state_hash: &str,
+    ) -> Result<Option<RemoteSsoAttempt>, sqlx::Error> {
+        let now = Utc::now().timestamp();
+        let mut tx = pool.begin().await?;
+        let row: Option<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+        )> = sqlx::query_as(
+            "SELECT id, device_id, nonce, verifier, issuer, client_id,
+                    redirect_url, token_endpoint, jwks_uri, username_claim
+               FROM remote_sso_attempts
+              WHERE state_hash = ? AND expires_at > ?",
+        )
+        .bind(state_hash)
+        .bind(now)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let Some(row) = row else {
+            tx.rollback().await?;
+            return Ok(None);
+        };
+        let deleted = sqlx::query("DELETE FROM remote_sso_attempts WHERE id = ?")
+            .bind(&row.0)
+            .execute(&mut *tx)
+            .await?;
+        if deleted.rows_affected() != 1 {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+        tx.commit().await?;
+        Ok(Some(RemoteSsoAttempt {
+            id: row.0,
+            device_id: row.1,
+            nonce: row.2,
+            verifier: row.3,
+            issuer: row.4,
+            client_id: row.5,
+            redirect_url: row.6,
+            token_endpoint: row.7,
+            jwks_uri: row.8,
+            username_claim: row.9,
+        }))
+    }
+
+    /// Number of live attempts for one device, used before discovery so a
+    /// capped device cannot hammer the identity provider.
+    pub async fn outstanding_for_device(
+        pool: &SqlitePool,
+        device_id: &str,
+    ) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM remote_sso_attempts
+             WHERE device_id = ? AND expires_at > ?",
+        )
+        .bind(device_id)
+        .bind(Utc::now().timestamp())
+        .fetch_one(pool)
+        .await
+    }
+
+    pub async fn outstanding_total(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM remote_sso_attempts WHERE expires_at > ?")
+            .bind(Utc::now().timestamp())
+            .fetch_one(pool)
+            .await
+    }
+
+    /// Drop expired attempts. Called when the listener starts and whenever a
+    /// flow starts or finishes.
+    pub async fn prune_expired(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+        sqlx::query("DELETE FROM remote_sso_attempts WHERE expires_at <= ?")
+            .bind(Utc::now().timestamp())
+            .execute(pool)
+            .await?;
+        Ok(())
     }
 }
 

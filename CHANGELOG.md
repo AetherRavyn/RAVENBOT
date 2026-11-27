@@ -4,6 +4,39 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Remote single sign-on (OIDC)
+
+- **Optional SSO on the paired-device login page.** A host with a valid OIDC
+  configuration shows **Sign in with SSO** beside the username/password form.
+  The flow is a public client with authorization code + PKCE S256; there is no
+  client secret.
+- **RS256 only, verified against the provider JWKS.** `none`, HMAC and every
+  other algorithm are rejected, and the ID token's `iss`, `aud`, `exp`, optional
+  `nbf`, `sub` and `nonce` are checked with at most 60 seconds of leeway.
+- **Existing accounts only.** The configured claim (default
+  `preferred_username`) is mapped case-insensitively to a local account that is
+  enabled and holds a workspace grant. An unknown, disabled or grant-less
+  account gets a generic `reason=account`; SSO never creates an account, role or
+  grant. There is no SCIM, group mapping or auto-provisioning.
+- **Bounded and private.** Discovery/JWKS/token requests have a 10 s timeout,
+  256 KiB response cap and at most two revalidated redirects; the callback is
+  limited to 30/min per IP and 300/min globally, with 5 outstanding attempts per
+  device and 500 per host. State is single-use and stored hashed. The nonce and
+  PKCE verifier live only for the ten-minute attempt and are deleted on use. No
+  authorization code, access token or ID token is stored or logged, and provider
+  error text is never reflected.
+- **Owner-only configuration.** `configure_remote_sso` validates and saves the
+  non-secret settings and restarts a running listener. `RemoteStatus` carries
+  `sso_enabled` plus the safe summary; the mobile `/api/status` carries only the
+  boolean. The desktop Settings form is a follow-up UI-only change.
+- Covered by config/URL/secrets unit tests, attempt expiry/pruning/cap tests, a
+  loopback axum IdP suite with a committed test-only RSA key (start URL, bind,
+  audit, replay, wrong nonce/issuer/audience/signature/expiry, `none`/HS256,
+  bad PKCE, revoked device, unknown account, spoofed Host, provider error text,
+  password login), account-mapping tests and an owner-only access test. See
+  [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md). A real-IdP release check remains
+  manual; the loopback mock is CI evidence, not live-IdP evidence.
+
 ### Enterprise export plane (OTLP/HTTP logs)
 
 - **Opt-in audit and run metadata stream.** The Audit log gains an **Enterprise
@@ -31,9 +64,10 @@ All notable changes to RAVENBOT are documented here.
   (payload, exclusions, cursors, batch limit, retry, header redaction, synthetic
   test log), access-role tests, a DOM suite that proves header values are never
   rendered back, and all twelve locale dictionaries. See
-  [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md). SSO/OIDC, SCIM, OTLP
-  metrics/traces, dashboards and a hosted relay remain open, and no live
-  customer collector test is claimed.
+  [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md). Remote OIDC SSO is
+  documented separately in [`docs/REMOTE-SSO.md`](docs/REMOTE-SSO.md); SCIM,
+  group mapping, OTLP metrics/traces, dashboards and a hosted relay remain open,
+  and no live customer collector test is claimed.
 
 ### Teach a browser workflow
 
