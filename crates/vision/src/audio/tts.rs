@@ -70,13 +70,22 @@ fn ensure_tts_script() -> Result<std::path::PathBuf, TtsError> {
     Ok(path)
 }
 
-/// The Piper executable. `PIPER_BIN` wins, then the normal PATH lookup.
+/// The Piper executable. `PIPER_BIN` wins, then `~/.local/bin/piper` (common
+/// for `pip install --user`), then the normal PATH lookup.
 fn piper_binary() -> String {
-    std::env::var("PIPER_BIN")
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "piper".to_string())
+    if let Ok(value) = std::env::var("PIPER_BIN") {
+        let value = value.trim().to_string();
+        if !value.is_empty() {
+            return value;
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        let local = home.join(".local/bin/piper");
+        if local.is_file() {
+            return local.to_string_lossy().to_string();
+        }
+    }
+    "piper".to_string()
 }
 
 /// Resolve the Piper voice model.

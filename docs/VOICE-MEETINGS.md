@@ -132,9 +132,9 @@ source produces silence, and the transcript will be empty or noise.
 Voice input does not require TTS. Text-to-speech needs one of:
 
 - **Piper (free, offline, recommended):** the `piper-tts` Python package plus an
-  ONNX voice. RAVENBOT looks for `piper` on `PATH` (or `PIPER_BIN`) and the
-  default voice at `~/RAVENBOT/cache/piper/en_US-lessac-medium.onnx` (or
-  `PIPER_VOICE`). Setup:
+  ONNX voice. RAVENBOT looks for `piper` at `PIPER_BIN`, `~/.local/bin/piper`,
+  then `PATH`, and for the default voice at
+  `~/RAVENBOT/cache/piper/en_US-lessac-medium.onnx` (or `PIPER_VOICE`). Setup:
   ```sh
   python3 -m pip install --user piper-tts
   mkdir -p ~/RAVENBOT/cache/piper
