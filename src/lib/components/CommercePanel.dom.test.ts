@@ -130,7 +130,7 @@ describe("CommercePanel", () => {
   it("approves a pending request without opening checkout automatically", async () => {
     const { getByRole } = renderPanel();
     await waitFor(() => expect(document.body.textContent).toContain("Replacement SSD"));
-    await fireEvent.click(getByRole("button", { name: /^approve$/i }));
+    await fireEvent.click(getByRole("button", { name: /^approve/i }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("approve_spend_request", {
         id: "spend-1",
@@ -157,7 +157,7 @@ describe("CommercePanel", () => {
   it("denies a pending request", async () => {
     const view = renderPanel();
     await waitFor(() => expect(document.body.textContent).toContain("Replacement SSD"));
-    await fireEvent.click(view.getByRole("button", { name: /^deny$/i }));
+    await fireEvent.click(view.getByRole("button", { name: /^deny/i }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("deny_spend_request", { id: "spend-1" }),
     );
@@ -183,7 +183,7 @@ describe("CommercePanel", () => {
       request({ status: "approved", decided_by: "owner", decided_at: "2026-11-27T11:00:00Z" }),
     );
     await waitFor(() => expect(document.body.textContent).toContain("Approved"));
-    await fireEvent.click(getByRole("button", { name: /^cancel$/i }));
+    await fireEvent.click(getByRole("button", { name: /^cancel/i }));
     await waitFor(() =>
       expect(invokeMock).toHaveBeenCalledWith("cancel_spend_request", { id: "spend-1" }),
     );

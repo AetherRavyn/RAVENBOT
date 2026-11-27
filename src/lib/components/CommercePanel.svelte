@@ -403,6 +403,7 @@
                   type="button"
                   class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--success-border)] bg-[var(--success-soft)] px-2.5 text-[11px] font-semibold text-[var(--success-text)] disabled:opacity-50"
                   onclick={() => void approve(row)}
+                  aria-label={`${t("commerce.approve")} — ${row.title}`}
                   disabled={busyId === row.id}
                 >
                   <Check class="size-3.5" /> {t("commerce.approve")}
@@ -411,6 +412,7 @@
                   type="button"
                   class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--danger-border)] bg-[var(--danger-soft)] px-2.5 text-[11px] font-semibold text-[var(--danger-text)] disabled:opacity-50"
                   onclick={() => void deny(row)}
+                  aria-label={`${t("commerce.deny")} — ${row.title}`}
                   disabled={busyId === row.id}
                 >
                   <Ban class="size-3.5" /> {t("commerce.deny")}
@@ -420,6 +422,7 @@
                   type="button"
                   class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--brand)]/40 bg-[var(--brand-soft)] px-2.5 text-[11px] font-semibold text-[var(--brand-text)]"
                   onclick={() => void openCheckout(row)}
+                  aria-label={`${t("commerce.openCheckout")} — ${row.title}`}
                 >
                   <ExternalLink class="size-3.5" /> {t("commerce.openCheckout")}
                 </button>
@@ -427,6 +430,7 @@
                   type="button"
                   class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--success-border)] bg-[var(--success-soft)] px-2.5 text-[11px] font-semibold text-[var(--success-text)] disabled:opacity-50"
                   onclick={() => void markPurchased(row)}
+                  aria-label={`${t("commerce.markPurchased")} — ${row.title}`}
                   disabled={busyId === row.id}
                 >
                   <PackageCheck class="size-3.5" /> {t("commerce.markPurchased")}
@@ -436,6 +440,7 @@
                 type="button"
                 class="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-[var(--hairline-strong)] px-2.5 text-[11px] font-semibold text-[var(--text-tertiary)] hover:text-[var(--text-primary)] disabled:opacity-50"
                 onclick={() => void cancel(row)}
+                aria-label={`${t("commerce.cancel")} — ${row.title}`}
                 disabled={busyId === row.id}
               >
                 <X class="size-3.5" /> {t("commerce.cancel")}
