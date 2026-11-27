@@ -489,7 +489,7 @@
     "remoteTlsHint": "Bağlantıyı şifreler. Kendinden imzalı sertifikayı kabul edene kadar tarayıcı uyarır.",
     "remoteFingerprint": "Sertifika parmak izi (SHA-256)",
     "remoteSsoTitle": "Tek oturum açma (OIDC)",
-    "remoteSsoDescription": "Uzak oturum açma sayfası için OIDC yapılandırır. Sağlayıcı kimliği kanıtlar, ancak kişinin bu çalışma alanında mevcut bir RAVENBOT hesabı olması gerekir. Kaydedilen bir değer geçersizse ana makine SSO’yu kapatır ve form boş açılır; onarmak için değerleri yeniden girin.",
+    "remoteSsoDescription": "Uzak oturum açma sayfası için OIDC yapılandırır. Sağlayıcı kimliği kanıtlar, ancak kişinin bu çalışma alanında mevcut bir RAVENBOT hesabı olması gerekir. Kaydedilen bir değer geçersizse ana makine, siz düzeltene kadar SSO’yu kapalı tutar.",
     "remoteSsoEnabled": "Tek oturum açmayı etkinleştir",
     "remoteSsoIssuer": "Sağlayıcı URL’si",
     "remoteSsoIssuerHint": "Sağlayıcının tam veren adresi, sonunda eğik çizgi olmadan. HTTPS gerekir; loopback HTTP yalnızca test içindir.",

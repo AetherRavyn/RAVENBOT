@@ -118,8 +118,10 @@ the keychain.
 
 An invalid saved configuration disables SSO and logs a warning; it never stops
 the remote listener. The mobile `/api/status` exposes only `sso_enabled`. The
-desktop `RemoteStatus` also exposes the safe summary (`issuer`, `client_id`,
-`redirect_url`, `scopes`, `username_claim`).
+desktop `RemoteStatus` returns the saved summary (`issuer`, `client_id`,
+`redirect_url`, `scopes`, `username_claim`) even while SSO is disabled or the
+values are invalid, so the owner can see and repair them. `sso_enabled` is the
+live, validated flag, not merely the saved checkbox.
 
 ### Desktop form
 

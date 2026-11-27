@@ -489,7 +489,7 @@
     "remoteTlsHint": "加密连接。在您接受自签名证书之前，浏览器会显示警告。",
     "remoteFingerprint": "证书指纹（SHA-256）",
     "remoteSsoTitle": "单点登录（OIDC）",
-    "remoteSsoDescription": "为远程登录页面配置 OIDC。提供商证明身份，但用户仍需在此工作区拥有现有的 RAVENBOT 账户。如果已保存的值无效，主机会禁用 SSO，表单会以空白打开；请重新输入这些值来修复。",
+    "remoteSsoDescription": "为远程登录页面配置 OIDC。提供商证明身份，但用户仍需在此工作区拥有现有的 RAVENBOT 账户。如果已保存的值无效，主机会保持 SSO 关闭，直到你修正它。",
     "remoteSsoEnabled": "启用单点登录",
     "remoteSsoIssuer": "颁发者 URL",
     "remoteSsoIssuerHint": "提供商的准确颁发者，末尾不带斜杠。必须使用 HTTPS；回环 HTTP 仅供测试。",

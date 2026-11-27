@@ -489,7 +489,7 @@
     "remoteTlsHint": "Verschlüsselt die Verbindung. Der Browser warnt, bis Sie das selbstsignierte Zertifikat akzeptieren.",
     "remoteFingerprint": "Zertifikat-Fingerabdruck (SHA-256)",
     "remoteSsoTitle": "Einmalanmeldung (OIDC)",
-    "remoteSsoDescription": "Konfiguriert OIDC für die Remote-Anmeldeseite. Der Anbieter bestätigt die Identität, die Person braucht aber weiterhin ein vorhandenes RAVENBOT-Konto in diesem Arbeitsbereich. War ein gespeicherter Wert ungültig, hat der Host SSO deaktiviert und das Formular startet leer; gib die Werte erneut ein, um es zu reparieren.",
+    "remoteSsoDescription": "Konfiguriert OIDC für die Remote-Anmeldeseite. Der Anbieter bestätigt die Identität, die Person braucht aber weiterhin ein vorhandenes RAVENBOT-Konto in diesem Arbeitsbereich. Ist ein gespeicherter Wert ungültig, bleibt SSO ausgeschaltet, bis du ihn korrigierst.",
     "remoteSsoEnabled": "Einmalanmeldung aktivieren",
     "remoteSsoIssuer": "Aussteller-URL",
     "remoteSsoIssuerHint": "Exakter Aussteller des Anbieters ohne abschließenden Schrägstrich. HTTPS ist erforderlich; Loopback-HTTP nur für Tests.",

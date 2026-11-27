@@ -22270,6 +22270,50 @@ async fn remote_enabled_setting(pool: &sqlx::SqlitePool) -> bool {
         .is_some_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
+/// Read one saved SSO value. A missing or unreadable setting is empty here;
+/// validation happens where the value is used, so the form can still show a
+/// saved configuration that is currently invalid.
+async fn remote_sso_setting(pool: &sqlx::SqlitePool, key: &str) -> String {
+    ravenbot_db::queries::AppSettingsQueries::get(pool, key)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default()
+}
+
+/// The saved SSO values, independent of whether they validate.
+///
+/// `RemoteStatus.sso` is what the owner's form shows. It must survive a
+/// disabled flag or an invalid value, otherwise disabling SSO (or a bad saved
+/// issuer) would make the configuration disappear and force a retype. The
+/// listener still uses the validated `RemoteConfig.sso`; `sso_enabled` says
+/// which one is active.
+async fn saved_remote_sso(pool: &sqlx::SqlitePool) -> Option<ravenbot_remote::SsoConfig> {
+    let issuer = remote_sso_setting(pool, "remote_sso_issuer").await;
+    let client_id = remote_sso_setting(pool, "remote_sso_client_id").await;
+    let redirect_url = remote_sso_setting(pool, "remote_sso_redirect_url").await;
+    if issuer.trim().is_empty() && client_id.trim().is_empty() && redirect_url.trim().is_empty() {
+        return None;
+    }
+    let scopes = remote_sso_setting(pool, "remote_sso_scopes").await;
+    let username_claim = remote_sso_setting(pool, "remote_sso_username_claim").await;
+    Some(ravenbot_remote::SsoConfig {
+        issuer: issuer.trim().trim_end_matches('/').to_string(),
+        client_id: client_id.trim().to_string(),
+        redirect_url: redirect_url.trim().to_string(),
+        scopes: if scopes.trim().is_empty() {
+            ravenbot_remote::SsoConfig::DEFAULT_SCOPES.to_string()
+        } else {
+            scopes.split_whitespace().collect::<Vec<_>>().join(" ")
+        },
+        username_claim: if username_claim.trim().is_empty() {
+            ravenbot_remote::SsoConfig::DEFAULT_USERNAME_CLAIM.to_string()
+        } else {
+            username_claim.trim().to_string()
+        },
+    })
+}
+
 async fn remote_config_from_settings(pool: &sqlx::SqlitePool) -> ravenbot_remote::RemoteConfig {
     let default_port = std::env::var("RAVENBOT_REMOTE_PORT")
         .ok()
@@ -22428,6 +22472,10 @@ async fn remote_status(state: &AppState) -> Result<RemoteStatus, String> {
     let audit = ravenbot_db::queries::RemoteAccessQueries::recent_audit(state.db.pool(), 50)
         .await
         .map_err(|error| error.to_string())?;
+    // Return the saved values even when they are disabled or invalid. The
+    // owner needs to see what is stored in order to correct it; `sso_enabled`
+    // distinguishes a live configuration from a saved one.
+    let sso = saved_remote_sso(state.db.pool()).await;
     Ok(RemoteStatus {
         enabled,
         running,
@@ -22440,7 +22488,7 @@ async fn remote_status(state: &AppState) -> Result<RemoteStatus, String> {
         tls: tls || (!running && config.tls),
         fingerprint,
         sso_enabled: config.sso.is_some(),
-        sso: config.sso,
+        sso,
         devices,
         audit,
     })
@@ -24652,6 +24700,32 @@ mod remote_sso_settings_tests {
             remote_config_from_settings(&pool).await.sso.is_none(),
             "an invalid saved issuer must disable SSO"
         );
+        let saved = saved_remote_sso(&pool)
+            .await
+            .expect("the invalid saved values must still reach the form");
+        assert_eq!(saved.issuer, "http://idp.example.com");
+
+        // Disabling keeps the values so the owner can re-enable without a
+        // retype; only the validated config is absent.
+        save_remote_sso_settings(
+            &pool,
+            false,
+            "https://idp.example.com",
+            "ravenbot-remote",
+            "https://bot.example.com/api/sso/callback",
+            ravenbot_remote::SsoConfig::DEFAULT_SCOPES,
+            ravenbot_remote::SsoConfig::DEFAULT_USERNAME_CLAIM,
+        )
+        .await
+        .expect("disable");
+        assert!(remote_config_from_settings(&pool).await.sso.is_none());
+        assert_eq!(
+            saved_remote_sso(&pool)
+                .await
+                .expect("disabled values must remain visible")
+                .issuer,
+            "https://idp.example.com"
+        );
 
         save_remote_sso_settings(
             &pool,
@@ -24663,8 +24737,9 @@ mod remote_sso_settings_tests {
             ravenbot_remote::SsoConfig::DEFAULT_USERNAME_CLAIM,
         )
         .await
-        .expect("disable");
+        .expect("clear");
         assert!(remote_config_from_settings(&pool).await.sso.is_none());
+        assert!(saved_remote_sso(&pool).await.is_none());
     }
 }
 

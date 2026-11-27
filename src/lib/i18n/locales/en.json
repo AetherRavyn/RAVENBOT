@@ -489,7 +489,7 @@
     "remoteTlsHint": "Encrypts the connection. Your browser will warn until you accept the self-signed certificate.",
     "remoteFingerprint": "Certificate fingerprint (SHA-256)",
     "remoteSsoTitle": "Single sign-on (OIDC)",
-    "remoteSsoDescription": "Configure OIDC for the remote login page. The provider proves identity, but the person still needs an existing RAVENBOT account on this workspace. If a saved value was invalid, the host disabled SSO and the form starts empty; re-enter the values to repair it.",
+    "remoteSsoDescription": "Configure OIDC for the remote login page. The provider proves identity, but the person still needs an existing RAVENBOT account on this workspace. If a saved value is invalid, the host keeps SSO off until you correct it.",
     "remoteSsoEnabled": "Enable single sign-on",
     "remoteSsoIssuer": "Issuer URL",
     "remoteSsoIssuerHint": "Exact provider issuer without a trailing slash. HTTPS is required; loopback HTTP is only for tests.",

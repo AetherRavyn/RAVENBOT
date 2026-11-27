@@ -489,7 +489,7 @@
     "remoteTlsHint": "接続を暗号化します。自己署名証明書を承認するまでブラウザに警告が表示されます。",
     "remoteFingerprint": "証明書フィンガープリント（SHA-256）",
     "remoteSsoTitle": "シングルサインオン（OIDC）",
-    "remoteSsoDescription": "リモートログインページ用に OIDC を設定します。プロバイダーは本人確認を行いますが、このワークスペースの既存 RAVENBOT アカウントは引き続き必要です。保存された値が無効だった場合、ホストは SSO を無効にし、フォームは空で開きます。値を再入力して修復してください。",
+    "remoteSsoDescription": "リモートログインページ用に OIDC を設定します。プロバイダーは本人確認を行いますが、このワークスペースの既存 RAVENBOT アカウントは引き続き必要です。保存された値が無効な場合、ホストは修正されるまで SSO をオフのままにします。",
     "remoteSsoEnabled": "シングルサインオンを有効にする",
     "remoteSsoIssuer": "発行者 URL",
     "remoteSsoIssuerHint": "プロバイダーの正確な発行者。末尾のスラッシュは付けません。HTTPS が必要です。ループバック HTTP はテスト専用です。",

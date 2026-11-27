@@ -489,7 +489,7 @@
     "remoteTlsHint": "연결을 암호화해요. 자체 서명 인증서를 허용할 때까지 브라우저에 경고가 표시돼요.",
     "remoteFingerprint": "인증서 지문 (SHA-256)",
     "remoteSsoTitle": "싱글 사인온(OIDC)",
-    "remoteSsoDescription": "원격 로그인 페이지용 OIDC를 구성합니다. 공급자는 신원을 증명하지만 사용자는 이 워크스페이스의 기존 RAVENBOT 계정이 여전히 필요합니다. 저장된 값이 유효하지 않으면 호스트가 SSO를 비활성화하고 양식은 비어 있게 열립니다. 값을 다시 입력해 복구하세요.",
+    "remoteSsoDescription": "원격 로그인 페이지용 OIDC를 구성합니다. 공급자는 신원을 증명하지만 사용자는 이 워크스페이스의 기존 RAVENBOT 계정이 여전히 필요합니다. 저장된 값이 유효하지 않으면 호스트는 수정할 때까지 SSO를 꺼 둡니다.",
     "remoteSsoEnabled": "싱글 사인온 사용",
     "remoteSsoIssuer": "발급자 URL",
     "remoteSsoIssuerHint": "공급자의 정확한 발급자이며 끝에 슬래시를 붙이지 않습니다. HTTPS가 필요하며 루프백 HTTP는 테스트 전용입니다.",

@@ -489,7 +489,7 @@
     "remoteTlsHint": "Criptografa a conexão. Seu navegador exibirá um aviso até você aceitar o certificado autoassinado.",
     "remoteFingerprint": "Impressão digital do certificado (SHA-256)",
     "remoteSsoTitle": "Início de sessão único (OIDC)",
-    "remoteSsoDescription": "Configura OIDC para a página de início de sessão remota. O fornecedor prova a identidade, mas a pessoa continua a precisar de uma conta RAVENBOT existente neste espaço de trabalho. Se um valor guardado era inválido, o anfitrião desativou o SSO e o formulário começa vazio; volte a introduzir os valores para o reparar.",
+    "remoteSsoDescription": "Configura OIDC para a página de início de sessão remota. O fornecedor prova a identidade, mas a pessoa continua a precisar de uma conta RAVENBOT existente neste espaço de trabalho. Se um valor guardado for inválido, o anfitrião mantém o SSO desativado até o corrigires.",
     "remoteSsoEnabled": "Ativar início de sessão único",
     "remoteSsoIssuer": "URL do emissor",
     "remoteSsoIssuerHint": "Emissor exato do fornecedor sem barra final. HTTPS é obrigatório; HTTP em loopback apenas para testes.",
