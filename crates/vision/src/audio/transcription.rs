@@ -240,7 +240,31 @@ model_size = os.environ.get("WHISPER_MODEL", "base")
 model = WhisperModel(model_size, device="cpu", compute_type="int8")
 
 audio_path = sys.argv[1]
-segments, info = model.transcribe(audio_path, beam_size=5)
+# PyAV 19 removed the `metadata_errors` argument that faster-whisper 1.2.x
+# still passes. Fall back to decoding with ffmpeg into a float32 numpy array,
+# which also skips PyAV entirely for WAV/MP3/OGG/M4A/WebM/FLAC input.
+def transcribe_path(path):
+    try:
+        return model.transcribe(path, beam_size=5)
+    except TypeError as exc:
+        if "metadata_errors" not in str(exc):
+            raise
+        import subprocess
+        import numpy as np
+        ffmpeg = os.environ.get("FFMPEG_BIN", "ffmpeg")
+        proc = subprocess.run(
+            [ffmpeg, "-v", "error", "-i", path, "-f", "f32le", "-ac", "1", "-ar", "16000", "-"],
+            capture_output=True,
+        )
+        if proc.returncode != 0:
+            detail = proc.stderr.decode("utf-8", "replace").strip()[:500]
+            raise RuntimeError("ffmpeg could not decode the recording: " + detail)
+        audio = np.frombuffer(proc.stdout, dtype=np.float32)
+        if audio.size == 0:
+            raise RuntimeError("ffmpeg decoded no audio samples from the recording")
+        return model.transcribe(audio, beam_size=5)
+
+segments, info = transcribe_path(audio_path)
 text = " ".join(seg.text for seg in segments)
 result = {"text": text.strip(), "language": info.language, "duration": info.duration}
 with open(sys.argv[2], "w") as f:
@@ -335,6 +359,17 @@ mod tests {
         let second = session_dir("ravenbot_stt");
         assert_ne!(first, second);
         assert!(first.to_string_lossy().contains("ravenbot_stt-"));
+    }
+
+    #[test]
+    fn local_stt_script_keeps_the_pyav_19_ffmpeg_fallback() {
+        // faster-whisper 1.2.x still passes `metadata_errors` to av.open, which
+        // PyAV 19 removed. The embedded helper must detect that TypeError and
+        // decode with ffmpeg instead of failing the whole transcription path.
+        let source = include_str!("transcription.rs");
+        assert!(source.contains("metadata_errors"));
+        assert!(source.contains("-f\", \"f32le\""));
+        assert!(source.contains("ffmpeg could not decode the recording"));
     }
 
     #[derive(Clone)]

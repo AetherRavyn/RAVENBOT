@@ -9965,6 +9965,7 @@ async fn list_tts_voices(state: State<'_, AppState>) -> Result<serde_json::Value
             .map(|v| !v.trim().is_empty())
             .unwrap_or(false)
     });
+    let has_piper = ravenbot_vision::audio::tts::piper_available();
 
     let mut voices = vec![serde_json::json!({
         "id": "default",
@@ -9982,7 +9983,7 @@ async fn list_tts_voices(state: State<'_, AppState>) -> Result<serde_json::Value
     }
 
     Ok(serde_json::json!({
-        "engine": if has_openai { "openai" } else if has_hf { "huggingface" } else { "local" },
+        "engine": if has_openai { "openai" } else if has_hf { "huggingface" } else if has_piper { "piper" } else { "local" },
         "multi_voice": has_openai,
         "voices": voices,
     }))

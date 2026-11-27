@@ -1,13 +1,21 @@
 //! Text-to-speech synthesis — REAL engines, honest errors.
 //!
 //! Priority:
-//!   1. Hugging Face Inference API (if the model has a hosted endpoint)
-//!   2. Local Python inference with the downloaded SanoTTTS model
-//!   3. Clear error telling the user exactly what to install/set
+//!   1. OpenAI speech (when a key is configured)
+//!   2. Hugging Face Inference API (if the model has a hosted endpoint)
+//!   3. Piper, a free local ONNX engine (when installed)
+//!   4. Local Python inference with the downloaded SanoTTTS model
+//!   5. Clear error telling the user exactly what to install/set
 
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use std::process::Stdio;
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
+
+/// The default Piper voice downloaded by the documented setup command.
+pub const PIPER_DEFAULT_VOICE: &str = "en_US-lessac-medium";
 
 #[derive(Error, Debug)]
 pub enum TtsError {
@@ -60,6 +68,53 @@ fn ensure_tts_script() -> Result<std::path::PathBuf, TtsError> {
             .map_err(|error| TtsError::Failed(format!("Cannot write TTS script: {error}")))?;
     }
     Ok(path)
+}
+
+/// The Piper executable. `PIPER_BIN` wins, then the normal PATH lookup.
+fn piper_binary() -> String {
+    std::env::var("PIPER_BIN")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "piper".to_string())
+}
+
+/// Resolve the Piper voice model.
+///
+/// `PIPER_VOICE` may be an absolute path or a voice name. A name is looked up
+/// in `RAVENBOT_HOME/cache/piper/<name>.onnx` (default `~/RAVENBOT/cache`).
+/// The default is the documented English voice.
+fn piper_model_path() -> Option<PathBuf> {
+    let cache = ravenbot_core::cache_dir().join("piper");
+    if let Ok(raw) = std::env::var("PIPER_VOICE") {
+        let raw = raw.trim();
+        if !raw.is_empty() {
+            let direct = PathBuf::from(raw);
+            if direct.is_file() {
+                return Some(direct);
+            }
+            let named = cache.join(format!("{raw}.onnx"));
+            if named.is_file() {
+                return Some(named);
+            }
+        }
+    }
+    let default = cache.join(format!("{PIPER_DEFAULT_VOICE}.onnx"));
+    default.is_file().then_some(default)
+}
+
+/// Is a Piper model present and is the executable runnable?
+pub fn piper_available() -> bool {
+    if piper_model_path().is_none() {
+        return false;
+    }
+    std::process::Command::new(piper_binary())
+        .arg("--help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 pub struct TextToSpeech {
@@ -129,12 +184,81 @@ impl TextToSpeech {
             }
         }
 
-        // 3. Fall back to local Python inference with the downloaded model.
+        // 3. Piper — free local ONNX inference, no Python or GPU required.
+        if piper_available() {
+            if let Ok(audio) = self.synthesize_piper(text).await {
+                if !audio.is_empty() {
+                    return Ok((audio, "piper"));
+                }
+            }
+        }
+
+        // 4. Fall back to local Python inference with the downloaded model.
         match self.synthesize_local(text).await {
             Ok(audio) if !audio.is_empty() => Ok((audio, "local")),
             Ok(_) => Err(TtsError::NoEngine),
             Err(e) => Err(e),
         }
+    }
+
+    /// Piper CLI inference. The text goes over stdin and Piper writes a WAV.
+    async fn synthesize_piper(&self, text: &str) -> Result<Vec<u8>, TtsError> {
+        let model = piper_model_path().ok_or(TtsError::NoEngine)?;
+        let output_dir = ravenbot_core::cache_dir().join("tts");
+        std::fs::create_dir_all(&output_dir)
+            .map_err(|e| TtsError::Failed(format!("Cannot create TTS cache dir: {e}")))?;
+        let output_path = output_dir.join(format!("piper-{}.wav", uuid::Uuid::new_v4()));
+        let length_scale = 1.0 / self.default_options.rate.clamp(0.5, 2.0);
+
+        let mut child = tokio::process::Command::new(piper_binary())
+            .arg("--model")
+            .arg(&model)
+            .arg("--output_file")
+            .arg(&output_path)
+            .arg("--length_scale")
+            .arg(format!("{length_scale:.3}"))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                TtsError::Failed(format!(
+                    "Could not start Piper ({}). Install piper-tts or set PIPER_BIN: {e}",
+                    piper_binary()
+                ))
+            })?;
+
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(text.as_bytes())
+                .await
+                .map_err(|e| TtsError::Failed(format!("Could not send text to Piper: {e}")))?;
+            stdin
+                .shutdown()
+                .await
+                .map_err(|e| TtsError::Failed(format!("Could not close Piper stdin: {e}")))?;
+        }
+
+        let output = child
+            .wait_with_output()
+            .await
+            .map_err(|e| TtsError::Failed(format!("Piper failed: {e}")))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(TtsError::Failed(format!(
+                "Piper exited {}: {}",
+                output.status.code().unwrap_or(-1),
+                stderr.chars().take(300).collect::<String>()
+            )));
+        }
+
+        let audio = std::fs::read(&output_path)
+            .map_err(|e| TtsError::Failed(format!("Failed to read Piper audio: {e}")))?;
+        let _ = std::fs::remove_file(&output_path);
+        if audio.len() < 100 {
+            return Err(TtsError::Failed("Piper returned empty audio".to_string()));
+        }
+        Ok(audio)
     }
 
     /// OpenAI `/v1/audio/speech` — honours the selected voice and rate.
@@ -364,12 +488,43 @@ fn normalize_openai_voice(voice: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::TTS_SCRIPT;
+    use super::{piper_available, TextToSpeech, TTS_SCRIPT};
 
     #[test]
     fn the_tts_script_is_embedded_for_bundled_builds() {
         assert!(TTS_SCRIPT.contains("infer_sano_tts.py"));
         assert!(TTS_SCRIPT.contains("argparse"));
         assert!(TTS_SCRIPT.len() > 1000);
+    }
+
+    #[tokio::test]
+    async fn piper_synthesizes_a_wav_when_installed() {
+        // CI has no Piper voice; the test is a real check on machines where the
+        // documented free local engine is installed.
+        if !piper_available() {
+            return;
+        }
+        let audio = TextToSpeech::new()
+            .synthesize_piper("Hello from RAVENBOT.")
+            .await
+            .expect("piper should synthesize");
+        assert_eq!(&audio[..4], b"RIFF");
+        assert!(audio.len() > 1_000);
+    }
+
+    #[tokio::test]
+    async fn piper_is_used_as_the_free_local_provider() {
+        let has_paid_key = std::env::var("OPENAI_API_KEY").is_ok()
+            || std::env::var("HUGGINGFACE_INFERENCE_TOKEN").is_ok()
+            || std::env::var("HF_TOKEN").is_ok();
+        if !piper_available() || has_paid_key {
+            return;
+        }
+        let (audio, provider) = TextToSpeech::new()
+            .synthesize_with_provider("Hello from RAVENBOT.")
+            .await
+            .expect("piper should be selected");
+        assert_eq!(provider, "piper");
+        assert_eq!(&audio[..4], b"RIFF");
     }
 }

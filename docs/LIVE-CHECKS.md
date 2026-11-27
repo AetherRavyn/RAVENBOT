@@ -83,11 +83,19 @@ through a gateway or proxy.
 
 This needs a real microphone and a graphical session:
 
+0. On Linux/PipeWire, confirm the default source is not muted:
+   `wpctl status`, then `wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0` if needed.
+   A muted source records silence even though capture succeeds.
 1. Open a thread, grant microphone permission, and enable voice mode.
 2. Say a short phrase and stop speaking. Confirm the recorder stops after about
    1.5 s of silence (or at the 25 s cap) and the phrase appears as your message.
-3. Confirm the agent replies and the reply is spoken, then confirm listening
-   resumes without another click.
+   With no OpenAI key, this uses local faster-whisper; if PyAV 19 is installed,
+   the embedded script decodes through ffmpeg.
+3. Confirm the agent replies. If Piper, Hugging Face, OpenAI or the local
+   SanoTTS model is configured, confirm the reply is spoken and listening
+   resumes without another click. With no TTS engine, confirm the text reply
+   still appears and the missing-engine error is logged instead of pretending
+   to speak.
 4. Turn voice mode off with the composer control; confirm the active recording
    stops, any playback stops, and the microphone indicator goes away.
 5. Deny microphone permission and try again; confirm the app reports that voice

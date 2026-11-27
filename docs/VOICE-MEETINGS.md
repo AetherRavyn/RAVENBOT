@@ -105,6 +105,52 @@ If none of those work, the command returns the engine's honest error. The
 command never falls back to a fake transcript or an empty success. API keys are
 not included in returned errors.
 
+### Local STT requirements and the PyAV fallback
+
+The local path needs Python 3, `faster-whisper`, and a downloaded Whisper model
+(cached under `~/.cache/huggingface`). The first run may download the model.
+
+`faster-whisper` 1.2.x calls `av.open(..., metadata_errors=...)`, which PyAV 19
+removed. When that TypeError is detected, the embedded script decodes the file
+with `ffmpeg` into 16 kHz mono float32 samples and passes the array directly to
+the model. This still uses the same local Whisper model and does not contact a
+provider. `ffmpeg` is therefore required for that compatibility path; without
+it, the command returns an explicit decode error rather than a fake transcript.
+
+On Linux, check the OS capture state before blaming the app:
+
+```sh
+wpctl status          # the default source must not be MUTED
+wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0
+```
+
+RAVENBOT can only record what PipeWire/PulseAudio delivers. A muted default
+source produces silence, and the transcript will be empty or noise.
+
+### Spoken replies (TTS)
+
+Voice input does not require TTS. Text-to-speech needs one of:
+
+- **Piper (free, offline, recommended):** the `piper-tts` Python package plus an
+  ONNX voice. RAVENBOT looks for `piper` on `PATH` (or `PIPER_BIN`) and the
+  default voice at `~/RAVENBOT/cache/piper/en_US-lessac-medium.onnx` (or
+  `PIPER_VOICE`). Setup:
+  ```sh
+  python3 -m pip install --user piper-tts
+  mkdir -p ~/RAVENBOT/cache/piper
+  python3 -m piper.download_voices --download-dir ~/RAVENBOT/cache/piper en_US-lessac-medium
+  ```
+- a saved OpenAI provider key (OpenAI `tts-1`, a paid provider call);
+- `HUGGINGFACE_INFERENCE_TOKEN`/`HF_TOKEN` for the HF Inference API;
+- local PyTorch + transformers + the SanoTTS model (a large local install).
+
+Piper is tried after OpenAI/HF and before the larger SanoTTS path, so it works
+without a GPU, API key or network after the one-time voice download. With none
+of those, `synthesize_speech` returns the documented No TTS engine error. Voice
+mode still transcribes and sends the message; the spoken reply is skipped and
+the error is logged, not faked. The per-message speaker button shows the failure
+the same way. This is an engine gap, not a paywall in RAVENBOT itself.
+
 ### The meeting prompt
 
 `src/lib/meeting.ts` builds the agent instruction:

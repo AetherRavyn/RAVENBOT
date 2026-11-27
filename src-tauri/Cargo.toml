@@ -37,8 +37,8 @@ ravenbot-remote = { path = "../crates/remote" }
 tauri = { version = "2", features = ["unstable", "protocol-asset", "tray-icon"] }
 tauri-plugin-autostart = "2"
 notify-rust = "4"
-tauri-plugin-dialog = "2"
-tauri-plugin-opener = "2"
+tauri-plugin-dialog = "=2.7.3"
+tauri-plugin-opener = "=2.5.4"
 tauri-plugin-updater = "2"
 # SMTP attention alerts. Default features include STARTTLS + native-tls.
 lettre = "0.11"

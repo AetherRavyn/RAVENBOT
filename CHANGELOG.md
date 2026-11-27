@@ -20,7 +20,9 @@ All notable changes to RAVENBOT are documented here.
   OpenAI key saved in Settings, falls back to `OPENAI_API_KEY`, and then lets
   `AudioTranscriber` try Whisper or local faster-whisper. Missing engines and
   failed calls return the engine's error instead of a fake transcript, and keys
-  are not echoed back.
+  are not echoed back. The local script now detects the PyAV 19
+  `metadata_errors` incompatibility in faster-whisper 1.2.x and decodes with
+  ffmpeg into 16 kHz float32 samples, still using the same local model.
 - **Transcript-backed meeting notes prompt.** `src/lib/meeting.ts` adds
   `MEETING_TRANSCRIPT_LIMIT`, `meetingFileName` for POSIX/Windows paths, and
   `buildMeetingPrompt`. The prompt labels the transcript untrusted data rather
@@ -34,6 +36,12 @@ All notable changes to RAVENBOT are documented here.
   character count and truncation/engine errors, and inserts the built prompt into
   the composer for review. It saves the thread draft and focuses the composer but
   never sends; `sendMessage` is not called by the dialog.
+- **Free local TTS fallback.** When OpenAI/HF are not configured, TTS now tries
+  Piper (`piper-tts` plus an ONNX voice at `~/RAVENBOT/cache/piper/` or
+  `PIPER_VOICE`, executable from `PATH` or `PIPER_BIN`) before the larger
+  PyTorch/SanoTTS path. This keeps spoken replies usable offline without a paid
+  key. `list_tts_voices` reports `piper` when it is available; failures still
+  return an honest engine error.
 - **Honest scope.** No live meeting join, platform/calendar integration,
   diarization, video import, phone calls or automatic sending of notes. Whisper
   is a paid provider call; local faster-whisper remains the offline path. See
@@ -128,6 +136,17 @@ All notable changes to RAVENBOT are documented here.
 - **Deliberately out of scope.** No payment rail, card storage, automated
   checkout, orders, invoices, receipts, tax, shipping, refunds, subscriptions,
   multi-currency conversion or agent auto-approval.
+- **No paywall or built-in payment path.** The app stays MIT with no trial,
+  activation key, plan gate or billing code. Removed the unused
+  `src-tauri/replydesk` scaffold (six config files, no source, no references)
+  because it declared Stripe, Supabase, Anthropic and Resend dependencies. The
+  Stripe/PayPal entries that remain in the MCP and OpenAPI catalogs are opt-in
+  third-party connector metadata, not RAVENBOT billing. A `check:no-payments`
+  gate now fails if a payment SDK dependency appears in any `package.json`.
+- **Packaging unblocked.** Pinned the Rust `tauri-plugin-dialog` 2.7.3 and
+  `tauri-plugin-opener` 2.5.4 crates to the JS binding versions, so
+  `tauri build` no longer stops at its plugin version check. A release
+  `--no-bundle` build completes.
 
 ### Remote SCIM 2.0 user provisioning (Users only)
 

@@ -431,7 +431,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
 - **1,100+ Rust tests** across the workspace, including 262 Tauri library tests
   plus 7 cross-tenant isolation tests, 246 runtime tests, 223 skill tests, 122
-  database tests, 89 core tests, 39 vision tests, 35 memory tests, 33 MCP
+  database tests, 89 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
 - **999 frontend tests** across 142 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
@@ -517,6 +517,13 @@ limitations rather than finished features:
   the app initiates. The enterprise export sends logs only; SCIM Groups, OTLP
   metrics/traces, data-residency controls and a hosted relay are not shipped.
   See [`docs/ENTERPRISE-EXPORT.md`](docs/ENTERPRISE-EXPORT.md).
+- **No paywall, license gate or built-in payment rail.** The app is MIT, has no
+  trial, activation key, plan limit or feature paywall, and does not process
+  cards or charge anyone. Optional model providers, Hugging Face inference and
+  MCP connectors can bill you directly if you configure them; the Stripe and
+  PayPal entries are catalog metadata for opt-in third-party connectors, not
+  RAVENBOT billing. Commerce is owner-approved spend requests with an external
+  browser checkout only. See [`docs/COMMERCE.md`](docs/COMMERCE.md).
 
 The roadmap is tracked in [`ROADMAP.md`](ROADMAP.md). The code-level audit and
 remaining trust gaps are in
