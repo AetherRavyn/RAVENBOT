@@ -22,7 +22,7 @@
   } from "$lib/openBotAvatar";
   import { cn } from "$lib/utils.js";
   import { t } from "$lib/i18n";
-  import { Sparkles, RefreshCw, Image, Wand2, Check, Palette, Dices } from "@lucide/svelte";
+  import { Sparkles, RefreshCw, Image, Wand2, Check, Palette, Dices, Upload, Trash2 } from "@lucide/svelte";
 
   interface Props {
     seed: string;
@@ -32,6 +32,107 @@
   }
 
   let { seed = "Agent", style = DEFAULT_AVATAR_STYLE, customUrl = null, onSelect }: Props = $props();
+
+  /** OpenBot accepts a local photo; keep the same 512 KB cap. */
+  const AVATAR_IMAGE_MAX_BYTES = 512 * 1024;
+  let uploadError = $state("");
+  let fileInput = $state<HTMLInputElement | null>(null);
+
+  /** Validate the file by signature, not by the browser-supplied MIME type. */
+  function imageKind(bytes: Uint8Array): "png" | "jpeg" | "webp" | "gif" | null {
+    if (
+      bytes.length >= 8 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47 &&
+      bytes[4] === 0x0d &&
+      bytes[5] === 0x0a &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0x0a
+    ) {
+      return "png";
+    }
+    if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+      return "jpeg";
+    }
+    if (
+      bytes.length >= 4 &&
+      bytes[0] === 0x47 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x38
+    ) {
+      return "gif";
+    }
+    if (
+      bytes.length >= 12 &&
+      bytes[0] === 0x52 &&
+      bytes[1] === 0x49 &&
+      bytes[2] === 0x46 &&
+      bytes[3] === 0x46 &&
+      bytes[8] === 0x57 &&
+      bytes[9] === 0x45 &&
+      bytes[10] === 0x42 &&
+      bytes[11] === 0x50
+    ) {
+      return "webp";
+    }
+    return null;
+  }
+
+  function readAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () =>
+        typeof reader.result === "string"
+          ? resolve(reader.result)
+          : reject(new Error("The image reader returned no data."));
+      reader.onerror = () => reject(reader.error ?? new Error("The image could not be read."));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function pickAvatarFile() {
+    if (!fileInput) return;
+    fileInput.value = "";
+    fileInput.click();
+  }
+
+  async function onAvatarFile(event: Event) {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    uploadError = "";
+    if (file.size > AVATAR_IMAGE_MAX_BYTES) {
+      uploadError = t("avatar.uploadTooLarge");
+      return;
+    }
+    try {
+      const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
+      if (!imageKind(head)) {
+        uploadError = t("avatar.uploadType");
+        return;
+      }
+      customImageUrl = await readAsDataUrl(file);
+      useCustom = true;
+      openBotMode = false;
+      openBotOpen = false;
+      studioOpen = false;
+    } catch {
+      uploadError = t("avatar.uploadFailed");
+    }
+  }
+
+  /** Clear the uploaded image and return to a generated/DiceBear look. */
+  function removeCustomImage() {
+    customImageUrl = "";
+    useCustom = false;
+    openBotMode = false;
+    uploadError = "";
+    selectedStyle = DEFAULT_AVATAR_STYLE;
+  }
 
   // svelte-ignore state_referenced_locally
   let selectedStyle = $state(style || DEFAULT_AVATAR_STYLE);
@@ -246,6 +347,7 @@
   }
 
   function onCustomInput() {
+    uploadError = "";
     const value = customImageUrl.trim();
     const parts = parseOpenBotUrl(value);
     if (parts) {
@@ -264,6 +366,7 @@
 
   /** The custom-image toggle must not leave an `openbot://` URL in that field. */
   function toggleCustom() {
+    uploadError = "";
     if (!useCustom && parseOpenBotUrl(customImageUrl)) {
       customImageUrl = "";
       openBotMode = false;
@@ -583,8 +686,45 @@
         >
           <Image class="size-3.5" />
         </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          class="h-8 px-2.5 text-xs shrink-0 bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--text-secondary)]"
+          aria-label={t("avatar.uploadImage")}
+          title={t("avatar.uploadImage")}
+          onclick={pickAvatarFile}
+        >
+          <Upload class="size-3.5" />
+        </Button>
+        {#if useCustom}
+          <Button
+            variant="outline"
+            size="sm"
+            class="h-8 px-2.5 text-xs shrink-0 bg-[var(--surface-3)] border-[var(--hairline)] text-[var(--danger-text)]"
+            aria-label={t("avatar.removeImage")}
+            title={t("avatar.removeImage")}
+            onclick={removeCustomImage}
+          >
+            <Trash2 class="size-3.5" />
+          </Button>
+        {/if}
       </div>
-    </div>
+      <input
+        bind:this={fileInput}
+        type="file"
+        accept="image/png,image/jpeg,image/webp,image/gif"
+        class="hidden"
+        tabindex="-1"
+        aria-hidden="true"
+        onchange={onAvatarFile}
+      />
+      {#if uploadError}
+        <p class="text-[11px] leading-snug text-[var(--danger-text)]" role="alert">
+          {uploadError}
+        </p>
+      {:else}
+        <p class="text-[11px] leading-snug text-[var(--text-muted)]">{t("avatar.uploadHint")}</p>
+      {/if}    </div>
   </div>
 
   <!-- Confirm / Save Selection -->

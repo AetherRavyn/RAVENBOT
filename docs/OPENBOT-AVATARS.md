@@ -25,9 +25,28 @@ They are bundled at build time:
 `src/lib/openBotGalleryData.ts` holds the definitions verbatim.
 `src/lib/openBotAvatar.ts` validates each with the package's `validateAvatar`
 and drops invalid entries (the test fails if anything was dropped). There is no
-network fetch, no user-provided definition path, and no uploaded image flow.
-The upstream editor, generator and import tools are **not** integrated; only the
-bundled gallery and runtime are.
+network fetch and no user-provided definition path. The upstream editor,
+generator and definition import tools are **not** integrated; only the bundled
+gallery and runtime are. A person can upload a **photo** as their own custom
+avatar (see below); that is an image identity, never an OpenBot definition.
+
+## Custom photos
+
+The picker accepts a local PNG, JPEG, WebP or GIF up to **512 KB**:
+
+- the file is validated by magic bytes, not only `File.type`, so a renamed SVG
+  or text file is refused;
+- the bytes become a `data:` URL and are stored in the existing `avatar_url`
+  column with `avatar_style = "custom"`;
+- the preview updates immediately, and **Use Selected Avatar** commits it;
+- **Remove image** clears it and returns to a generated/DiceBear choice;
+- a corrupt or undecodable image falls back to the generated face through the
+  existing `RavenAvatar` broken-image path;
+- no network request is made for the photo.
+
+The 512 KB cap is deliberate: the data URL travels in the bot-list payload.
+Moving larger photos to `~/RAVENBOT/cache/avatars/` with an `asset:` URL is a
+future change only if a real fleet shows payload pressure.
 
 ## URL scheme and storage
 
@@ -160,11 +179,16 @@ updates only the options that changed. It supports:
   buttons, and the applied URL/style.
 - `src/lib/components/AvatarPicker.openbot.dom.test.ts` — the picker's OpenBot
   tile and commit shape.
+- `src/lib/components/AvatarPicker.upload.dom.test.ts` — valid upload, forged
+  bytes, over-512 KB, remove and generated fallback.
 
 ## Limits
 
-- Only the bundled 23 definitions are available. There is no import, upload,
-  editor, or generated-definition flow in the app.
+- Only the bundled 23 definitions are available. There is no OpenBot definition
+  import, generator or editor flow. Local photos are supported through the
+  separate custom-image path above.
+- A custom photo is limited to 512 KB and PNG/JPEG/WebP/GIF; the renderer gets
+  the resulting `data:` URL, never markup or a script.
 - The renderer receives a definition object and a hex colour; no remote assets,
   scripts, or CSS colours from user input reach it.
 - Fluffy and glass degrade to flat without WebGL2. The CSS 3D scene renderer is

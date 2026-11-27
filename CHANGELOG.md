@@ -4,6 +4,18 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Avatar photo upload and platform gap plan
+
+- **Local avatar photos.** The avatar picker now accepts PNG, JPEG, WebP or GIF
+  up to 512 KB, validates the bytes by signature, stores the photo as a `data:`
+  URL with `avatar_style = "custom"`, and supports replace and remove. Remove
+  returns to a generated/DiceBear look; a corrupt image falls back to the
+  generated face. The file never leaves the machine.
+- **Plan.** [`docs/PLATFORM-GAP-PLAN.md`](docs/PLATFORM-GAP-PLAN.md) records the
+  visual-rendering and tool gaps from `nightly-labs/openbot` 0.80.0, the
+  clean-room/licence guardrails, release gates, and the ordered slices. OpenBot
+  is PolyForm Noncommercial; no code is copied.
+
 ### Meeting recording import
 
 - **Import an existing recording, not a live meeting.** The new

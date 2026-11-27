@@ -153,7 +153,9 @@ you apply, with body colour, volume, pointer-follow and flat, fluffy or glass
 finishes. Live state comes from fleet activity: a waiting agent looks waiting, a
 failed run looks blocked, and an unread reply celebrates. The studio selection
 is a preview only; reloads keep the chosen character, colour, volume,
-pointer-follow and finish. See
+pointer-follow and finish. A person can also upload a PNG, JPEG, WebP or GIF
+photo up to 512 KB as a custom avatar, replace it, or remove it without leaving
+a broken image. See
 [`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md).
 
 ### Memory that is retrieved, not dumped
@@ -433,7 +435,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
   plus 7 cross-tenant isolation tests, 246 runtime tests, 223 skill tests, 122
   database tests, 89 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **999 frontend tests** across 142 files. A gate rejects literal English
+- **1,003 frontend tests** across 143 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,
@@ -549,6 +551,7 @@ market comparison against OpenClaw, Grok Bot, Hermes and Muse is in
 | [`docs/VOICE-MEETINGS.md`](docs/VOICE-MEETINGS.md) | Hands-free voice mode, recording import, formats/limits, STT cost, honest limits |
 | [`docs/design-system.md`](docs/design-system.md) | Tokens, layout grammar, and component contracts |
 | [`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md) | The bundled OpenBot gallery, URL scheme, six work states, materials and fallbacks |
+| [`docs/PLATFORM-GAP-PLAN.md`](docs/PLATFORM-GAP-PLAN.md) | Visual/tool gap plan from OpenBot 0.80.0, clean-room guardrails, phases, tests and release gates |
 | [`docs/LOCALIZATION.md`](docs/LOCALIZATION.md) | Twelve locales, provenance, placeholder rules, and how to add one |
 | [`docs/LEARNING.md`](docs/LEARNING.md) | Learning from a run: synthesis, redaction, review, provenance, and limits |
 | [`docs/DEMONSTRATIONS.md`](docs/DEMONSTRATIONS.md) | Teach and replay a browser demonstration: capture, selectors, secrets, `demo.json`, repair reports, limits |
