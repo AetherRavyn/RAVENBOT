@@ -47,13 +47,13 @@ Every slice must satisfy all of these before it is called done:
 | 3 | Proactive messaging tools | High | M | Medium | shipped |
 | 4 | Browser action depth | Medium | M | Medium | shipped |
 | 5 | Secure API-key request | Medium | M | Medium | shipped |
-| 6 | Activity-aware avatars | Medium | S/M | Low | planned |
-| 7 | Chat backdrop (image/video) | Medium | M | Medium | planned |
-| 8 | Avatar-aware attention island | Medium | S | Low | planned |
+| 6 | Activity-aware avatars | Medium | S/M | Low | shipped |
+| 7 | Chat backdrop (image/video) | Medium | M | Medium | shipped |
+| 8 | Avatar-aware attention island | Medium | S | Low | shipped |
 | 9 | Agent tasks and event waits | High | L | High | shipped |
 | 10 | Agent/profile/routine tools | Medium | M | High | shipped |
-| 11 | Theme palette files | Low | S | Low | planned |
-| 12 | Avatar candidate shuffle | Low | S | Low | planned |
+| 11 | Theme palette files | Low | S | Low | shipped |
+| 12 | Avatar candidate shuffle | Low | S | Low | shipped |
 | — | Full agent dock, crew pile, server plush | Low for us | L | Low | deferred |
 | — | Hosted sites, CRM, credits/media, workflow canvas | Out of scope | — | — | deferred |
 
@@ -111,36 +111,62 @@ now; if a real fleet shows payload pressure, move the bytes to
 
 **Shipped evidence:** `AvatarPicker.upload.dom.test.ts` covers a valid PNG,
 forged bytes, a >512 KB file, remove and the generated fallback; the six keys
-exist in all twelve locales; the full frontend suite passes at 1,017 tests.
+exist in all twelve locales; the full frontend suite passes at 1,060 tests.
 
-### 1.2 Activity-aware avatars — `planned`
+### 1.2 Activity-aware avatars — `shipped`
 
-- Pass the current tool activity (`searching`, `browsing`, `reading`, `running`,
-  `editing`, `delegating`, `reviewing`) from `ThreadView` into the OpenBot
-  avatar.
-- Only apply an activity face while the mood is `working`; hold it for ~1.4 s
-  so rapid tool calls do not flicker.
-- Add a pure mapping in `src/lib/openBotAvatar.ts` and test it.
-- Reduced motion forces a still, attentive face.
-- If the renderer cannot express a distinct face for an activity, reuse the
-  nearest state and document the limitation instead of pretending.
+- `fleetActivity` records the current tool activity from `agent-stream`
+  (`tool_started.name`) in a separate activity map, with a 1.4 s hold so rapid
+  tool calls do not flicker the face.
+- `openBotActivityForTool` maps tool names onto `searching`, `browsing`,
+  `reading`, `running`, `editing`, `delegating` and `reviewing`; `RavenAvatar`
+  only applies the face while the mood is `working`.
+- The six-pose renderer cannot draw seven distinct activities, so the mapping
+  reuses the nearest pose: searching/browsing/reading → `thinking`,
+  editing/running/delegating → `working`, reviewing → `waiting`. The limitation
+  is documented on `openBotStateForActivity`.
+- `ThreadView` passes `activity` into the header and streaming avatars and
+  disables motion when `prefersReducedMotion()` is set, leaving a still,
+  attentive pose.
 
-### 1.3 Avatar candidate shuffle — `planned`
+**Shipped evidence:** `openBotAvatar.test.ts` pins every tool family and the
+nearest-pose table; `fleetActivity.test.ts` covers the derived activity and the
+1.4 s hold; `RavenAvatar.dom.test.ts` verifies activity only applies while
+working.
 
-- Add **Surprise me** to `OpenBotStudio`: choose a character and curated colour
-  that differ from the current one, keep depth/follow/finish, update the hero.
-- Never commit until Apply.
-- Test that two consecutive clicks change the selection and that Apply sends the
-  chosen URL.
+### 1.3 Avatar candidate shuffle — `shipped`
 
-### 1.4 Theme palette files — `planned`
+- **Surprise me** in `OpenBotStudio` picks a different character and its curated
+  colour, updates the hero and leaves depth, pointer-follow, finish, mood and
+  animation untouched. It never calls `onApply`.
+- The picker excludes the current character, so every click is visible; Apply
+  remains the only commit path.
 
-- Read validated `<name>.json` files from `~/RAVENBOT/themes/`, list them under
-  Settings → Appearance, hot-reload on rename/write.
-- Validate `#rrggbb`/`#rrggbbaa`, `light|dark`, required tokens, filename id.
-- Invalid files are ignored with a console warning and never replace the saved
-  theme.
-- No remote theme download.
+**Shipped evidence:** `OpenBotStudio.dom.test.ts` clicks Surprise me twice,
+asserts both changes and the preserved render choices, then applies and checks
+the emitted URL; `openBotAvatar.test.ts` covers the deterministic shuffle.
+
+### 1.4 Theme palette files — `shipped`
+
+- Validated `<name>.json` files under `~/RAVENBOT/themes/` appear in
+  Settings → Appearance with a **LOCAL** badge. The filename is the theme id and
+  must be a lowercase slug; a declared `id` must match it.
+- Schema: `name`, `mode` (`light` or `dark`), and a required `tokens` object with
+  `background`, `card`, `border`, `primary`, `accent`, `text` and `muted`.
+  Optional tokens are `secondaryAccent`, `button` and `buttonForeground`. Every
+  colour is `#rrggbb` or `#rrggbbaa`.
+- The directory is read on mount and polled every two seconds, with an
+  immediate refresh on window focus; rename, write and delete therefore appear
+  without a restart. A file that is mid-save keeps its previous good definition
+  instead of blanking the active theme, and a genuinely removed theme falls back
+  to a built-in.
+- Invalid files are ignored with a single console warning per file/reason; they
+  never replace the saved theme. There is no remote download or stylesheet.
+
+**Shipped evidence:** `themePalette.test.ts` covers the schema, 8-digit hex,
+filename ids, built-in collisions, rename/write reloads and invalid-file
+retention; `Settings.dom.test.ts` renders a local palette, shows its `LOCAL`
+badge and applies it.
 
 ---
 
@@ -172,24 +198,44 @@ stripping; `Visuals.dom.test.ts` covers compose, context, clear, oversize and
 non-string messages. `visuals.md` tells the agent the API exists.
 **Shipped evidence:** the full frontend suite passes; the page still cannot send.
 
-### 2.2 Chat backdrop — `planned`
+### 2.2 Chat backdrop — `shipped`
 
-- Per-thread backdrop: none, built-in image, uploaded image or muted looping
-  video (≤100 MB), with a clear/undo action.
-- Store the choice in a thread/app setting; keep files local.
-- Backdrop sits behind the transcript, respects theme/readability and does not
-  intercept pointer events.
-- Start with image/video; a sandboxed HTML backdrop is a later slice because it
-  needs its own storage and permission model.
+- Per-thread backdrop: none, one of four bundled images, an uploaded image or a
+  muted looping video. Clear and one-step Undo are persistent across restarts.
+- Uploaded files are copied into `~/RAVENBOT/backdrops/` after an extension,
+  magic-byte and 100 MB check; SVG and unknown formats are refused. The stored
+  setting is a local path, never a remote URL. Replacing or clearing a backdrop
+  deletes the file that falls out of the current/previous pair, so repeated
+  changes do not accumulate copies.
+- The backdrop sits behind the transcript, is `pointer-events-none` and
+  `aria-hidden`, and carries a scrim mixed from the active theme's canvas colour.
+  It does not affect selection, scrolling or virtualisation.
+- Stored in `app_settings` as `thread_backdrop:<thread-id>` with the previous
+  value in `thread_backdrop:previous:<thread-id>`.
+- Sandboxed HTML backdrops remain deferred; they need their own storage and
+  permission model.
 
-### 2.3 Avatar-aware attention island — `planned`
+**Shipped evidence:** `backdrop.test.ts` covers parsing, local-source resolution
+and backend arguments; `ThreadBackdropPicker.dom.test.ts` covers built-ins,
+uploads, clear/undo and refusals; `ThreadBackdrop.dom.test.ts` checks the
+image/video renderer and theme scrim; `theme_file_tests` in the Tauri library
+checks the browser only reads bounded `.json` files and that backdrop magic
+bytes are strict.
 
-- Extend the attention summary with the latest item's agent id, name and avatar
-  URL/style.
-- The island shows the agent's real avatar and state dot instead of only text.
-- Per-agent colour/shape comes from the same avatar resolver as the roster.
-- No new window; reuse `AttentionIsland`.
-- Test the summary mapping and the rendered avatar.
+### 2.3 Avatar-aware attention island — `shipped`
+
+- `get_attention_summary` now returns the newest item's agent id, name, avatar
+  URL/style and state alongside the label and detail; the query is still bounded
+  and sorted newest-first.
+- The existing `AttentionIsland` renders the same `RavenAvatar` resolver as the
+  roster, so an OpenBot/photo/DiceBear identity looks identical there. A state
+  dot is overlaid on the avatar and the agent's name leads the detail line.
+- No new window or store was added.
+
+**Shipped evidence:** `attentionIsland.test.ts` pins the newest-item mapping,
+mood and dot precedence; `AttentionIsland.dom.test.ts` verifies the resolved
+shape/colour, state dot and accessible name; `cargo test` covers the summary
+serialization through the command.
 
 ### 2.4 Full agent dock — `deferred`
 

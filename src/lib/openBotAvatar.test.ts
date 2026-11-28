@@ -6,17 +6,21 @@ import {
   OPENBOT_GALLERY,
   OPENBOT_INVALID_DEFINITIONS,
   OPENBOT_STATES,
+  openBotActivityForTool,
   openBotColourForName,
   openBotDefinition,
   openBotDefinitionForName,
+  openBotStateForActivity,
   openBotStateForMood,
   openBotStillUrl,
   openBotStyleId,
   openBotUrl,
+  OPENBOT_ACTIVITIES,
   parseOpenBotStyle,
   parseOpenBotUrl,
   resolveOpenBotColour,
   resolveOpenBotDefinition,
+  surpriseOpenBotId,
 } from "./openBotAvatar";
 import { OPENBOT_GALLERY_SOURCE } from "./openBotGalleryData";
 import type { AvatarMood } from "./avatar";
@@ -273,6 +277,50 @@ describe("RAVENBOT mood → OpenBot state", () => {
   });
 });
 
+describe("OpenBot tool activity", () => {
+  it("maps the common tool-name shapes onto the activity vocabulary", () => {
+    const cases: Array<[string, string]> = [
+      ["web_search", "searching"],
+      ["grep", "searching"],
+      ["browser_dom", "browsing"],
+      ["web_fetch", "browsing"],
+      ["file_read", "reading"],
+      ["read_file", "reading"],
+      ["list_dir", "reading"],
+      ["file_write", "editing"],
+      ["apply_patch", "editing"],
+      ["spawn_agent", "delegating"],
+      ["run_tests", "reviewing"],
+      ["git_diff", "reviewing"],
+      ["shell_exec", "running"],
+      ["terminal", "running"],
+      ["some_new_tool", "running"],
+    ];
+    for (const [tool, expected] of cases) {
+      expect(openBotActivityForTool(tool), tool).toBe(expected);
+      expect(OPENBOT_ACTIVITIES).toContain(expected);
+    }
+    expect(openBotActivityForTool("")).toBeNull();
+    expect(openBotActivityForTool(null)).toBeNull();
+  });
+
+  it("uses the nearest of the six renderer poses and documents the sharing", () => {
+    const cases = [
+      ["searching", "thinking"],
+      ["browsing", "thinking"],
+      ["reading", "thinking"],
+      ["editing", "working"],
+      ["running", "working"],
+      ["delegating", "working"],
+      ["reviewing", "waiting"],
+    ] as const;
+    for (const [activity, state] of cases) {
+      expect(openBotStateForActivity(activity), activity).toBe(state);
+    }
+    expect(openBotStateForActivity(null)).toBe("working");
+  });
+});
+
 describe("OpenBot stills", () => {
   it("is a percent-encoded SVG data URL with geometry", () => {
     const url = openBotStillUrl("cat", "#f8a01c", "working", "happy");
@@ -294,5 +342,31 @@ describe("OpenBot stills", () => {
     const url = openBotStillUrl("cat", "f8a01c");
     const svg = decodeURIComponent(url);
     expect(svg).toContain('fill="#f8a01c"');
+  });
+});
+
+describe("OpenBot surprise shuffle", () => {
+  it("never picks the current character", () => {
+    for (const definition of OPENBOT_GALLERY) {
+      const next = surpriseOpenBotId(definition.id, () => 0);
+      expect(next).not.toBe(definition.id);
+      expect(openBotDefinition(next)).not.toBeNull();
+    }
+  });
+
+  it("is deterministic for an injected roll and clamps the edges", () => {
+    const notCurrent = OPENBOT_GALLERY.filter((definition) => definition.id !== "cat");
+    expect(surpriseOpenBotId("cat", () => 0)).toBe(notCurrent[0].id);
+    expect(surpriseOpenBotId("cat", () => 0.999999)).toBe(
+      notCurrent[notCurrent.length - 1].id,
+    );
+    expect(surpriseOpenBotId("cat", () => 1)).toBe(
+      notCurrent[notCurrent.length - 1].id,
+    );
+  });
+
+  it("treats a missing or unknown current id as no exclusion", () => {
+    expect(surpriseOpenBotId(null, () => 0)).toBe(OPENBOT_GALLERY[0].id);
+    expect(surpriseOpenBotId("not-a-character", () => 0)).toBe(OPENBOT_GALLERY[0].id);
   });
 });

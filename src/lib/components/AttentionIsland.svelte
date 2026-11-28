@@ -3,24 +3,18 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { onMount } from "svelte";
   import { t } from "$lib/i18n";
+  import RavenAvatar from "$lib/components/RavenAvatar.svelte";
+  import {
+    islandAgentName,
+    islandDotTone,
+    islandMood,
+    latestIslandItem,
+    type IslandAttentionSummary,
+    type IslandDotTone,
+  } from "$lib/attentionIsland";
   import { ArrowUpRight, X } from "@lucide/svelte";
 
-  interface AttentionItem {
-    kind: "approval" | "question";
-    label: string;
-    detail: string;
-    thread_id: string;
-    risk?: string;
-  }
-
-  interface AttentionSummary {
-    approvals: number;
-    questions: number;
-    active_runs: number;
-    items: AttentionItem[];
-  }
-
-  let summary = $state<AttentionSummary>({
+  let summary = $state<IslandAttentionSummary>({
     approvals: 0,
     questions: 0,
     active_runs: 0,
@@ -29,22 +23,22 @@
   let error = $state("");
   let timer: ReturnType<typeof setInterval> | null = null;
 
+  const DOT_CLASS: Record<IslandDotTone, string> = {
+    danger: "bg-[var(--danger-text)]",
+    warning: "bg-warning",
+    info: "bg-info",
+    success: "bg-success",
+  };
+
   let waiting = $derived(summary.approvals + summary.questions);
-  let latest = $derived(summary.items[0]);
-  let urgent = $derived(
-    summary.items.some((item) => item.risk === "high" || item.risk === "critical"),
-  );
-  let dotTone = $derived(
-    urgent
-      ? "bg-[var(--danger-text)]"
-      : waiting > 0
-        ? "bg-warning"
-        : "bg-success",
-  );
+  let latest = $derived(latestIslandItem(summary.items));
+  let agentName = $derived(islandAgentName(latest));
+  let mood = $derived(islandMood(latest));
+  let dotTone = $derived(islandDotTone(latest, waiting));
 
   async function load() {
     try {
-      summary = await invoke<AttentionSummary>("get_attention_summary");
+      summary = await invoke<IslandAttentionSummary>("get_attention_summary");
       error = "";
     } catch (cause) {
       error = String(cause);
@@ -97,7 +91,30 @@
   role="region"
   aria-label={t("island.title")}
 >
-  <span class="size-2.5 shrink-0 rounded-full {dotTone}" aria-hidden="true"></span>
+  {#if latest}
+    <span class="relative inline-flex shrink-0" data-island-avatar>
+      <RavenAvatar
+        name={agentName || "RAVENBOT"}
+        imageUrl={latest.avatar_url}
+        style={latest.avatar_style}
+        {mood}
+        class="size-8"
+        decorative
+      />
+      <span
+        class="absolute -bottom-0.5 -right-0.5 size-2.5 rounded-full ring-2 ring-[var(--surface-1)] {DOT_CLASS[dotTone]}"
+        data-island-dot={dotTone}
+        data-island-state={latest.state ?? "pending"}
+        aria-hidden="true"
+      ></span>
+    </span>
+  {:else}
+    <span
+      class="ml-1 size-2.5 shrink-0 rounded-full {DOT_CLASS[dotTone]}"
+      data-island-dot={dotTone}
+      aria-hidden="true"
+    ></span>
+  {/if}
   <div class="min-w-0 flex-1">
     <p class="truncate text-[11px] font-bold text-[var(--text-primary)]" aria-live="polite">
       {#if error}
@@ -109,7 +126,14 @@
       {/if}
     </p>
     <p class="truncate text-[11px] leading-4 text-[var(--text-tertiary)]" title={latest?.detail || ""}>
-      {latest ? latest.label : t("island.hint")}
+      {#if latest}
+        {#if agentName}
+          <span class="font-semibold text-[var(--text-secondary)]">{agentName}</span>
+          <span aria-hidden="true"> · </span>
+        {/if}{latest.label}
+      {:else}
+        {t("island.hint")}
+      {/if}
     </p>
   </div>
   {#if summary.active_runs > 0}

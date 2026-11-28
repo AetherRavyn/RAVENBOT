@@ -13,7 +13,10 @@ import { tick } from "svelte";
 import OpenBotStudio from "./OpenBotStudio.svelte";
 import { OPENBOT_GALLERY, OPENBOT_STATES, openBotCuratedColour, openBotStyleId, openBotUrl } from "$lib/openBotAvatar";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 function studio(props: Record<string, unknown> = {}) {
   const onApply = vi.fn();
@@ -144,6 +147,56 @@ describe("OpenBotStudio", () => {
         finish: "flat",
       }),
       openBotStyleId("rocket"),
+    );
+  });
+
+  it("surprises a new character and colour without committing or losing render choices", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const { onApply } = studio();
+    const hero = () => document.querySelector(".openbot-studio__hero") as HTMLElement;
+
+    // Choose the options Surprise me must preserve.
+    const range = document.querySelector("#openbot-volume") as HTMLInputElement;
+    await fireEvent.input(range, { target: { value: "12" } });
+    await fireEvent.click(screen.getByRole("checkbox", { name: /Follow the pointer/i }));
+    await fireEvent.click(screen.getByRole("button", { name: "Fluffy" }));
+    expect(hero().dataset.heroId).toBe("cat");
+
+    await fireEvent.click(screen.getByRole("button", { name: "Surprise me" }));
+    await tick();
+    const first = hero().dataset.heroId!;
+    expect(first).not.toBe("cat");
+    expect(hero().dataset.heroColour).toBe(openBotCuratedColour(first));
+    expect(onApply).not.toHaveBeenCalled();
+
+    // A second click must move again, not settle on the same candidate.
+    await fireEvent.click(screen.getByRole("button", { name: "Surprise me" }));
+    await tick();
+    const second = hero().dataset.heroId!;
+    expect(second).not.toBe(first);
+    expect(second).not.toBe("cat");
+    expect(hero().dataset.heroColour).toBe(openBotCuratedColour(second));
+    expect(onApply).not.toHaveBeenCalled();
+
+    expect((document.querySelector("#openbot-volume") as HTMLInputElement).value).toBe("12");
+    expect(
+      (screen.getByRole("checkbox", { name: /Follow the pointer/i }) as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    expect(screen.getByRole("button", { name: "Fluffy" }).getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+
+    await fireEvent.click(screen.getByRole("button", { name: "Use character" }));
+    expect(onApply).toHaveBeenCalledWith(
+      openBotUrl(second, {
+        colour: openBotCuratedColour(second),
+        depth: 12,
+        followPointer: true,
+        finish: "fluffy",
+      }),
+      openBotStyleId(second),
     );
   });
 

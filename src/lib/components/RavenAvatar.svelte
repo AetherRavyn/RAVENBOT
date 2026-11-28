@@ -38,11 +38,13 @@
   import { styleAnimates, currentDiceBearUrl, DEFAULT_AVATAR_STYLE } from "$lib/diceStyles";
   import OpenBotAvatar from "$lib/components/OpenBotAvatar.svelte";
   import {
+    openBotStateForActivity,
     openBotStateForMood,
     parseOpenBotStyle,
     parseOpenBotUrl,
     resolveOpenBotColour,
     resolveOpenBotDefinition,
+    type OpenBotActivity,
   } from "$lib/openBotAvatar";
 
   interface Props {
@@ -50,6 +52,15 @@
     name: string;
     /** What the agent is doing. Defaults to idle. */
     mood?: AvatarMood;
+    /**
+     * The current tool activity, drawn only while the mood is `working`.
+     *
+     * Kept separate from `mood` because urgency and activity are different
+     * questions: a blocked agent is not "reading" even if its last tool was a
+     * read, and the six-state OpenBot renderer only has faces for the nearest
+     * activity (see `openBotStateForActivity`).
+     */
+    activity?: OpenBotActivity | null;
     /** A custom image URL, used instead of any style. */
     imageUrl?: string | null;
     /**
@@ -107,6 +118,7 @@
   let {
     name,
     mood = "idle",
+    activity = null,
     imageUrl = null,
     style = DEFAULT_AVATAR_STYLE,
     shape: shapeProp,
@@ -193,7 +205,11 @@
     resolveOpenBotDefinition({ name, definitionId: openBotId, imageUrl }),
   );
   const openBotColour = $derived(resolveOpenBotColour({ name, imageUrl }));
-  const openBotState = $derived(openBotStateForMood(mood));
+  const openBotState = $derived(
+    mood === "working" && activity
+      ? openBotStateForActivity(activity)
+      : openBotStateForMood(mood),
+  );
   const openBotAnimated = $derived(animated !== false);
 
   /**

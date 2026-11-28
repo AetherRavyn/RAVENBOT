@@ -108,6 +108,28 @@ finished node beside a failed one shows both truths. The studio's selected state
 is a preview only; Apply stores the definition and colour, never the preview
 state.
 
+### Tool activity
+
+When the mood is `working`, `ThreadView` also passes the current tool activity.
+`fleetActivity` derives it from `tool_started.name`, holds it for 1.4 seconds so
+rapid calls do not flicker, and clears it on done/error. `openBotActivityForTool`
+maps tool families onto seven names: `searching`, `browsing`, `reading`,
+`running`, `editing`, `delegating` and `reviewing`.
+
+The renderer has six poses, not seven activities, so the nearest pose is used:
+
+| Activity | OpenBot state |
+|---|---|
+| `searching`, `browsing`, `reading` | `thinking` |
+| `editing`, `running`, `delegating` | `working` |
+| `reviewing` | `waiting` |
+
+This is a deliberate limitation, not a claim that the renderer draws seven
+distinct faces. The activity is still carried separately from the urgency mood,
+so a future renderer or label can distinguish them. Activity is ignored unless
+the mood is `working`; a waiting or blocked agent keeps its own face. With
+reduced motion the pose is still applied and the character stops animating.
+
 `RavenAvatar` exposes `data-openbot-state` with the mapped live state, so a DOM
 test (or a stylesheet) can distinguish working from waiting from blocked from
 done. It also reports the definition id in `data-shape`, the hex in
@@ -131,10 +153,12 @@ done. It also reports the definition id in `data-shape`, the hex in
   swatches plus a native colour input), neutral/happy, volume 0–14,
   follow-pointer, flat/fluffy/glass, an animation toggle, and the six-state
   strip in the reference order: Idle, Thinking, Working, Waiting, Blocked,
-  Done. Apply stores the character, colour, volume, pointer-follow and finish
-  in `avatar_url`; reopening the studio reads them back. The neutral/happy
-  toggle and the animation checkbox affect the preview only — the live tone
-  follows the run state, and the picker owns the global animation preference.
+  Done. **Surprise me** picks a different character and its curated colour
+  without touching those render choices. Apply stores the character, colour,
+  volume, pointer-follow and finish in `avatar_url`; reopening the studio reads
+  them back. The neutral/happy toggle and the animation checkbox affect the
+  preview only — the live tone follows the run state, and the picker owns the
+  global animation preference.
 
 ## Rendering and materials
 
@@ -168,15 +192,19 @@ updates only the options that changed. It supports:
 - `src/lib/openBotAvatar.test.ts` — gallery validation and unique ids, URL and
   style round-trips (including depth/follow/finish/renderer and invalid-value
   rejection), colour fallbacks, stable name defaults, the full mood mapping,
-  and still-data-URL safety.
+  the seven activity names and nearest-pose table, the deterministic surprise
+  shuffle, and still-data-URL safety.
 - `src/lib/components/OpenBotAvatar.dom.test.ts` — mount/update/destroy,
   decorative vs labelled semantics, the six states, and both fallback paths
   (mocked `open-bot-avatar/dom`).
 - `src/lib/components/RavenAvatar.dom.test.ts` — OpenBot URL and style
-  rendering, `data-openbot-state`, and the unchanged DiceBear/native/custom
-  paths.
+  rendering, `data-openbot-state`, activity only while working, and the
+  unchanged DiceBear/native/custom paths.
+- `src/lib/fleetActivity.test.ts` — tool activity derivation, the 1.4-second
+  hold, and clearing on done/error.
 - `src/lib/components/OpenBotStudio.dom.test.ts` — gallery, six native state
-  buttons, and the applied URL/style.
+  buttons, the two-click Surprise me flow, preserved render choices, and the
+  applied URL/style.
 - `src/lib/components/AvatarPicker.openbot.dom.test.ts` — the picker's OpenBot
   tile and commit shape.
 - `src/lib/components/AvatarPicker.upload.dom.test.ts` — valid upload, forged

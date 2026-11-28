@@ -56,15 +56,27 @@ export interface ThemeDefinition {
   mutedTextColor?: string;
   description: string;
   brand: ThemeBrandIdentity;
+  /** `palette` for a user file under `~/RAVENBOT/themes/`; absent for built-ins. */
+  source?: "palette";
+  /** The palette file's base name, for the Settings hint. */
+  file?: string;
 }
 
 /* ── Colour helpers (flat, no gradients) ──────────────────────────────── */
 
 function hexToRgb(hex: string): [number, number, number] {
   let h = hex.replace("#", "").trim();
+  // An optional alpha pair is valid palette input; the derived ramp is built
+  // from the RGB channels, while the raw token keeps the alpha for CSS.
+  if (h.length === 8) h = h.slice(0, 6);
   if (h.length === 3) h = h.split("").map((c) => c + c).join("");
   const n = parseInt(h, 16);
   return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+/** `#rrggbb` or `#rrggbbaa`; the only colour syntax a palette file may use. */
+export function isHexColor(value: unknown): value is string {
+  return typeof value === "string" && /^#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(value);
 }
 
 function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
@@ -90,7 +102,15 @@ function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
 /** Convert a hex colour to a bare `H S% L%` triplet for `hsl(var(--x))`. */
 export function hexToHslTriplet(hex: string): string {
   const [h, s, l] = rgbToHsl(...hexToRgb(hex));
-  return `${Math.round(h)} ${Math.round(s)}% ${Math.round(l)}%`;
+  const triplet = `${Math.round(h)} ${Math.round(s)}% ${Math.round(l)}%`;
+  // Preserve an 8-digit palette token's alpha in the HSL form, because
+  // `hsl(210 50% 13% / 0.27)` is valid CSS and the raw token may rely on it.
+  const raw = hex.replace("#", "").trim();
+  if (raw.length === 8) {
+    const alpha = parseInt(raw.slice(6, 8), 16) / 255;
+    return alpha < 1 ? `${triplet} / ${alpha.toFixed(3)}` : triplet;
+  }
+  return triplet;
 }
 
 function luminance(hex: string): number {
@@ -172,7 +192,7 @@ function mixHex(a: string, b: string, amount: number): string {
 }
 
 /** Shared flat brand identity so palette themes stay short and consistent. */
-function flatBrand(
+export function flatBrand(
   brandTitle: string,
   brandAccent: string,
   badgeLabel: string,
@@ -446,6 +466,78 @@ export const THEMES: ThemeDefinition[] = [
   },
 ];
 
+/**
+ * User palettes loaded from `~/RAVENBOT/themes/`.
+ *
+ * Kept beside the built-in catalogue rather than mixed into it, so a hot reload
+ * can replace the file-backed set without ever mutating the compiled themes.
+ */
+let paletteThemes: ThemeDefinition[] = [];
+let paletteSignature = "[]";
+const catalogueListeners = new Set<(themes: ThemeDefinition[]) => void>();
+
+/** Built-ins followed by the currently loaded palette files. */
+export function getThemes(): ThemeDefinition[] {
+  return [...THEMES, ...paletteThemes];
+}
+
+/** Built-ins plus palette files, for callers that need to inspect the loaded set. */
+export function getPaletteThemes(): ThemeDefinition[] {
+  return [...paletteThemes];
+}
+
+/** Look up a built-in or file-backed theme by id. */
+export function themeById(id: string | null | undefined): ThemeDefinition | null {
+  if (!id) return null;
+  return (
+    THEMES.find((theme) => theme.id === id) ??
+    paletteThemes.find((theme) => theme.id === id) ??
+    null
+  );
+}
+
+/**
+ * Replace the file-backed catalogue after a reload.
+ *
+ * Returns whether anything changed. A poll that finds the same files must not
+ * rewrite every design token or wake every subscriber, and a palette that
+ * disappears (or becomes invalid) must fall back to a real theme rather than
+ * leaving the app on tokens for a theme that no longer exists.
+ */
+export function setPaletteThemes(themes: ThemeDefinition[]): boolean {
+  const builtInIds = new Set(THEMES.map((theme) => theme.id));
+  const seen = new Set(builtInIds);
+  const next: ThemeDefinition[] = [];
+  for (const theme of themes) {
+    if (!theme?.id || seen.has(theme.id)) continue;
+    seen.add(theme.id);
+    next.push(theme);
+  }
+  const signature = JSON.stringify(next);
+  if (signature === paletteSignature) return false;
+
+  paletteSignature = signature;
+  paletteThemes = next;
+  const catalogue = getThemes();
+  catalogueListeners.forEach((fn) => fn(catalogue));
+
+  if (typeof document !== "undefined") {
+    // Re-read the saved id rather than `activeThemeId`: on first launch the
+    // palette files arrive after the window mounted, before the stored theme
+    // has been applied. Falling back to the in-memory id there would overwrite
+    // a saved custom theme with OpenBot.
+    applySavedTheme();
+  }
+  return true;
+}
+
+/** Subscribe to palette catalogue reloads; fires immediately with the list. */
+export function subscribeThemeCatalogue(fn: (themes: ThemeDefinition[]) => void) {
+  catalogueListeners.add(fn);
+  fn(getThemes());
+  return () => catalogueListeners.delete(fn);
+}
+
 let activeThemeId = "openbot";
 const listeners = new Set<(theme: ThemeDefinition) => void>();
 
@@ -463,16 +555,32 @@ export function getStoredTheme(): ThemeDefinition {
   if (typeof window === "undefined") return THEMES[0];
   const saved = localStorage.getItem("raven-theme");
   if (!saved) return THEMES[0];
-  return THEMES.find((t) => t.id === saved) || THEMES[0];
+  return themeById(saved) ?? THEMES[0];
 }
 
-export function applyTheme(themeId: string) {
-  const theme = THEMES.find((t) => t.id === themeId) || THEMES[0];
+/**
+ * Apply the id in `localStorage`, or a built-in fallback.
+ *
+ * A saved id that is no longer available (its palette file was deleted or is
+ * invalid on this launch) falls back for display but is *not* overwritten: the
+ * person's choice stays in storage, so fixing the file restores it next launch
+ * instead of silently switching them to OpenBot.
+ */
+export function applySavedTheme() {
+  if (typeof document === "undefined") return;
+  const saved = localStorage.getItem("raven-theme");
+  const theme = themeById(saved);
+  if (theme) applyTheme(theme.id);
+  else applyTheme(THEMES[0].id, { persist: !saved });
+}
+
+export function applyTheme(themeId: string, options: { persist?: boolean } = {}) {
+  const theme = themeById(themeId) ?? THEMES[0];
   activeThemeId = theme.id;
 
   if (typeof document !== "undefined") {
     document.documentElement.setAttribute("data-theme", theme.id);
-    localStorage.setItem("raven-theme", theme.id);
+    if (options.persist !== false) localStorage.setItem("raven-theme", theme.id);
 
     const root = document.documentElement;
     const bg = theme.bgHex;

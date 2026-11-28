@@ -244,6 +244,38 @@ system, so shadcn primitives cannot fall back to dark variants in a light
 theme. Theme preview cards paint their own text colour, because a Paper Light
 card in a dark settings page would otherwise be white on white.
 
+### Local palette files
+
+Themes can also come from `~/RAVENBOT/themes/<name>.json`. The filename is the
+theme id (lowercase slug) and the file is data only: no CSS, no URL, no script.
+`src/lib/themePalette.ts` validates every file and the theme engine consumes the
+result through the same `ThemeDefinition` path as the built-ins.
+
+```json
+{
+  "name": "Midnight Bloom",
+  "mode": "dark",
+  "tokens": {
+    "background": "#0b0b12",
+    "card": "#14141f",
+    "border": "#2a2a3d",
+    "primary": "#8b5cf6",
+    "accent": "#22d3ee",
+    "text": "#e8e8f0",
+    "muted": "#9a9ab0"
+  }
+}
+```
+
+`background`, `card`, `border`, `primary`, `accent`, `text` and `muted` are
+required; `secondaryAccent`, `button` and `buttonForeground` are optional.
+Colours accept `#rrggbb` or `#rrggbbaa`; `mode` is `light` or `dark`. A declared
+`id` must match the filename, and a filename may not shadow a built-in id.
+Invalid documents are ignored with one console warning per file and reason, and
+a file caught mid-save keeps its previous good definition. The directory is read
+on startup, polled every two seconds and refreshed on window focus, so rename,
+write and delete apply without a restart. Nothing is downloaded.
+
 ## Verification
 
 - `scripts/check-ui-foundation.mjs` — hard-fails raw hex colors in Svelte
@@ -261,6 +293,10 @@ card in a dark settings page would otherwise be white on white.
 - `interactionSummary.test.ts` — command/path/query selection and clipping.
 - `theme.test.ts` — catalogue contrast, light canvas, and runtime
   `color-scheme`/role tokens.
+- `themePalette.test.ts` — palette schema, filename ids, 8-digit hex, hot
+  reload, and last-good retention for a mid-save file.
+- `chat/backdrop.test.ts` and `ThreadBackdrop*.dom.test.ts` — local backdrop
+  parsing, image/video rendering and clear/undo.
 - `ChatMessageRow.dom.test.ts` — persisted reaction chips, palette choice, and
   search-hit state.
 - `search.test.ts` — text extraction, case-insensitive matching, stable keys,

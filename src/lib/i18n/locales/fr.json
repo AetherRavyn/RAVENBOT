@@ -363,6 +363,7 @@
     "language": "Langue",
     "languageDesc": "Langue de l'interface.",
     "themesDesc": "Choisissez votre style visuel.",
+    "paletteFilesHint": "Palettes locales : enregistrez `<name>.json` dans ~/RAVENBOT/themes/. Les fichiers valides apparaissent ici et se rechargent à l'enregistrement ; les fichiers invalides sont ignorés.",
     "active": "Actif",
     "localDesc": "Exécutez l'IA entièrement sur votre appareil. Aucun cloud, aucune donnée ne quitte votre machine.",
     "ollamaEndpoint": "Point de terminaison Ollama",
@@ -3128,10 +3129,24 @@
     "replayRepairItem": "Étape {{index}} trouvée par {{by}}",
     "recordingLost": "L’enregistrement s’est arrêté parce que son onglet a été fermé."
   },
+  "backdrop": {
+    "title": "Fond de conversation",
+    "description": "Une image locale ou une vidéo en sourdine derrière cette conversation. Elle ne quitte jamais votre machine.",
+    "builtin": "Intégré",
+    "upload": "Importer",
+    "uploadImage": "Importer une image",
+    "uploadVideo": "Importer une vidéo",
+    "uploadHint": "PNG, JPEG ou WebP ; vidéo MP4 ou WebM. Jusqu'à 100 Mo.",
+    "clear": "Retirer",
+    "undo": "Annuler",
+    "none": "Aucun",
+    "error": "Impossible de définir le fond : {{error}}"
+  },
   "openbot": {
     "title": "Personnage OpenBot",
     "description": "De petits personnages-objet avec des yeux, dessinés localement.",
     "character": "Personnage",
+    "surprise": "Surprends-moi",
     "colour": "Couleur du corps",
     "mood": "Humeur",
     "neutral": "Neutre",

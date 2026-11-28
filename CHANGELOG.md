@@ -4,6 +4,38 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Conversation backdrops, local palettes and activity-aware avatars
+
+- **Per-conversation backdrops.** Four bundled images plus uploaded PNG/JPEG/
+  WebP or muted looping MP4/WebM up to 100 MB, stored under
+  `~/RAVENBOT/backdrops/` with extension, magic-byte and size checks. The
+  transcript sits above a theme-aware scrim; Clear and one-step Undo are
+  persistent, and the file that falls out of history is deleted. No remote URL
+  is accepted and no sandboxed HTML backdrop is shipped.
+- **Local theme palettes.** Validated `<name>.json` files in
+  `~/RAVENBOT/themes/` are listed in Settings → Appearance with a LOCAL badge
+  and hot-reload on write, rename or delete. The filename is the id; `mode` is
+  `light` or `dark`; required tokens are `background`, `card`, `border`,
+  `primary`, `accent`, `text` and `muted`, with optional accents/button tokens.
+  Colours accept `#rrggbb` or `#rrggbbaa`. Invalid files warn once and are
+  ignored; a mid-save file keeps its last good definition.
+- **Activity-aware faces.** `fleetActivity` derives the current tool activity
+  (searching, browsing, reading, running, editing, delegating, reviewing) from
+  `agent-stream`, holds it for 1.4 s, and passes it through the header and
+  streaming avatars only while the mood is working. The six-pose renderer reuses
+  the nearest pose; reduced motion keeps the pose and stops the animation.
+- **Surprise me.** The OpenBot studio can shuffle the character and its curated
+  colour without touching depth, pointer-follow or finish, and without
+  committing until Apply.
+- **Avatar-aware attention island.** The island summary now carries the newest
+  item's agent id, name and avatar URL/style, and renders it through the same
+  roster avatar resolver with a state dot. No new window or inbox.
+- **Tests.** New coverage for the palette schema/reload/retention, backdrop
+  parsing and picker flows, image/video rendering, attention mapping and island
+  avatar, activity mapping and hold, shuffle determinism and two-click Apply,
+  plus Rust checks for bounded palette reads and backdrop magic bytes. All
+  twelve locales keep key parity.
+
 ### Avatar photo upload and platform gap plan
 
 - **Local avatar photos.** The avatar picker now accepts PNG, JPEG, WebP or GIF

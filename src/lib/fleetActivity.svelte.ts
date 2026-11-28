@@ -20,6 +20,10 @@
  */
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computeMoods, type AvatarMood } from "$lib/avatar";
+import {
+  openBotActivityForTool,
+  type OpenBotActivity,
+} from "$lib/openBotAvatar";
 import { handoffs } from "$lib/handoffs.svelte";
 
 export type Activity = "working" | "attention" | "responded" | "idle";
@@ -28,12 +32,23 @@ export type Activity = "working" | "attention" | "responded" | "idle";
 const RESPONDED_HOLD_MS = 3000;
 /** How long a failure face holds, so it is readable but not a permanent scar. */
 const FAILED_HOLD_MS = 8000;
+/**
+ * The minimum time an activity face stays on screen.
+ *
+ * A model that calls three tools in a second would otherwise flicker through
+ * three faces. The next distinct activity is accepted once this window passes;
+ * the label still updates independently, so no information is lost.
+ */
+const ACTIVITY_HOLD_MS = 1400;
 
 class FleetActivity {
   states = $state<Record<string, Activity>>({});
   moods = $state<Record<string, AvatarMood>>({});
+  /** The current tool activity, distinct from the urgency badge. */
+  activities = $state<Record<string, OpenBotActivity>>({});
 
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private activityHoldUntil = new Map<string, number>();
   private unlisten: UnlistenFn | null = null;
   private refs = 0;
   private listening = false;
@@ -57,6 +72,11 @@ class FleetActivity {
   mood(botId: string): AvatarMood {
     if (handoffs.targets[botId]) return "working";
     return this.moods[botId] ?? "idle";
+  }
+
+  /** The current tool activity, or null when the agent is not using one. */
+  activity(botId: string): OpenBotActivity | null {
+    return this.activities[botId] ?? null;
   }
 
   /** How many agents need a person right now. Drives the rail badge. */
@@ -117,6 +137,8 @@ class FleetActivity {
     this.timers.clear();
     this.states = {};
     this.moods = {};
+    this.activities = {};
+    this.activityHoldUntil.clear();
     handoffs.clear();
   }
 
@@ -131,11 +153,17 @@ class FleetActivity {
 
     switch (p.kind) {
       case "run_started":
-      case "delta":
-      case "tool_started":
-      case "tool_finished":
+        this.clearActivity(botId);
         // A new run supersedes an old failure: the agent is no longer sitting
         // on a failure, it is working.
+        this.set(botId, "working");
+        break;
+      case "delta":
+      case "tool_finished":
+        this.set(botId, "working");
+        break;
+      case "tool_started":
+        this.setActivity(botId, p?.name);
         this.set(botId, "working");
         break;
 
@@ -168,7 +196,34 @@ class FleetActivity {
     this.moods[botId] = mood ?? defaultMood(next);
   }
 
+  /**
+   * Remember a tool activity, but do not let rapid calls flicker the face.
+   *
+   * The first tool of a run applies immediately. A different tool inside the
+   * hold window is ignored; once the window closes, the next event applies.
+   */
+  private setActivity(botId: string, toolName: unknown): void {
+    const activity = openBotActivityForTool(
+      typeof toolName === "string" ? toolName : null,
+    );
+    if (!activity) return;
+    const now = Date.now();
+    const holdUntil = this.activityHoldUntil.get(botId) ?? 0;
+    if (now < holdUntil && this.activities[botId]) return;
+    this.activities[botId] = activity;
+    this.activityHoldUntil.set(botId, now + ACTIVITY_HOLD_MS);
+  }
+
+  private clearActivity(botId: string): void {
+    if (!(botId in this.activities)) return;
+    const next = { ...this.activities };
+    delete next[botId];
+    this.activities = next;
+    this.activityHoldUntil.delete(botId);
+  }
+
   private replied(botId: string): void {
+    this.clearActivity(botId);
     this.set(botId, "responded", "responded");
     this.expire(botId, RESPONDED_HOLD_MS, "idle");
   }
@@ -180,6 +235,7 @@ class FleetActivity {
    * but still temporary — a permanently sad face stops meaning anything.
    */
   private fail(botId: string): void {
+    this.clearActivity(botId);
     this.set(botId, "responded", "failed");
     this.expire(botId, FAILED_HOLD_MS, "idle");
   }

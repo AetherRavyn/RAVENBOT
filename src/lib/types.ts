@@ -266,6 +266,9 @@ export interface AttentionItem {
   kind: AttentionKind;
   bot_id: string | null;
   bot_name: string;
+  /** The agent's stored avatar, resolved by the shared roster avatar. */
+  avatar_url?: string | null;
+  avatar_style?: string | null;
   thread_id: string | null;
   office_id: string | null;
   office_name: string | null;

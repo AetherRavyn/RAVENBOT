@@ -625,6 +625,25 @@ describe("RavenAvatar — OpenBot characters", () => {
     }
   });
 
+  it("uses a tool activity face only while the mood is working", async () => {
+    const cases = [
+      ["working", "reading", "thinking"],
+      ["working", "editing", "working"],
+      ["working", "reviewing", "waiting"],
+      ["waiting", "reading", "waiting"],
+      ["idle", "reading", "idle"],
+    ] as const;
+    for (const [mood, activity, expected] of cases) {
+      const { container, unmount } = render(RavenAvatar, {
+        props: { name: "Ada", style: "openbot:cat", mood, activity },
+      });
+      await waitFor(() => expect(mountAvatar).toHaveBeenCalled());
+      const frame = container.querySelector(".raven-avatar")!;
+      expect(frame.getAttribute("data-openbot-state"), `${mood}/${activity}`).toBe(expected);
+      unmount();
+    }
+  });
+
   it("passes the still flag through when animation is off", async () => {
     render(RavenAvatar, {
       props: { name: "Ada", style: "openbot:cat", animated: false },

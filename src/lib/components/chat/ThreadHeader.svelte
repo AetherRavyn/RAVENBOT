@@ -8,6 +8,7 @@
    */
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
   import type { AvatarMood } from "$lib/avatar";
+  import type { OpenBotActivity } from "$lib/openBotAvatar";
   import ModelPicker from "$lib/components/ModelPicker.svelte";
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import ThreadSearch from "./ThreadSearch.svelte";
@@ -26,6 +27,7 @@
     GitBranch,
     Hash,
     History,
+    Image,
     MessageSquare,
     Monitor,
     MoreHorizontal,
@@ -57,6 +59,10 @@
     avatarStyle?: string | null;
     /** The live fleet mood, so the header face matches the roster. */
     mood?: AvatarMood;
+    /** The current tool activity, when the renderer can show it. */
+    activity?: OpenBotActivity | null;
+    /** Reduced motion (or an explicit preference) forces a still pose. */
+    animated?: boolean;
     statusDot: string;
     engine?: string | null;
     paused?: boolean;
@@ -130,6 +136,7 @@
     onOpenIntelligence: () => void;
     onToggleThreadDrawer: () => void;
     onOpenComputer: () => void;
+    onOpenBackdrop: () => void;
     onChannelChange: (id: string | null) => void;
     onOpenChannels: () => void;
     onOpenTeamImport: () => void;
@@ -148,6 +155,8 @@
     avatarUrl = null,
     avatarStyle = null,
     mood = "idle",
+    activity = null,
+    animated = true,
     statusDot,
     engine = null,
     paused = false,
@@ -211,6 +220,7 @@
     onOpenIntelligence,
     onToggleThreadDrawer,
     onOpenComputer,
+    onOpenBackdrop,
     onChannelChange,
     onOpenChannels,
     onOpenTeamImport,
@@ -229,7 +239,14 @@
     <!-- Left: Bot Avatar & Info + Thread Switcher Dropdown -->
     <div class="flex items-center gap-3 min-w-0 flex-1">
       <div class="relative size-8 rounded-xl overflow-hidden bg-[var(--surface-2)] border border-[var(--hairline)] p-0.5 shrink-0 shadow-sm">
-        <RavenAvatar name={botName} mood={mood} imageUrl={avatarUrl} style={avatarStyle} />
+        <RavenAvatar
+          name={botName}
+          mood={mood}
+          activity={activity}
+          animated={animated}
+          imageUrl={avatarUrl}
+          style={avatarStyle}
+        />
         <span class="absolute bottom-0 right-0 size-2 rounded-full ring-1 ring-[var(--surface-0)] {statusDot}"></span>
       </div>
 
@@ -678,6 +695,18 @@
             >
               <Monitor class="size-3.5 text-[var(--brand-text)]" />
               {t("thread.computer")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-[var(--text-secondary)] hover:bg-[var(--surface-2)] hover:text-[var(--text-primary)] cursor-pointer"
+              onclick={() => {
+                onCloseMoreMenu();
+                onOpenBackdrop();
+              }}
+            >
+              <Image class="size-3.5 text-[var(--brand-text)]" />
+              {t("backdrop.title")}
             </button>
             <button
               type="button"

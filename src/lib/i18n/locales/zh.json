@@ -363,6 +363,7 @@
     "language": "语言",
     "languageDesc": "界面语言。",
     "themesDesc": "选择你的视觉风格。",
+    "paletteFilesHint": "本地调色板：将 `<name>.json` 保存到 ~/RAVENBOT/themes/。有效文件会显示在此处并在保存后重新加载；无效文件会被忽略。",
     "active": "使用中",
     "localDesc": "完全在本机运行 AI。无云端，数据不出设备。",
     "ollamaEndpoint": "Ollama 端点",
@@ -3128,10 +3129,24 @@
     "replayRepairItem": "第 {{index}} 步通过 {{by}} 匹配",
     "recordingLost": "标签页已关闭，录制已停止。"
   },
+  "backdrop": {
+    "title": "对话背景",
+    "description": "此对话背后的本地图片或静音循环视频。它永远不会离开你的电脑。",
+    "builtin": "内置",
+    "upload": "上传",
+    "uploadImage": "上传图片",
+    "uploadVideo": "上传视频",
+    "uploadHint": "PNG、JPEG 或 WebP；MP4 或 WebM 视频。最大 100 MB。",
+    "clear": "清除",
+    "undo": "撤销",
+    "none": "无",
+    "error": "无法设置背景：{{error}}"
+  },
   "openbot": {
     "title": "OpenBot 角色",
     "description": "带眼睛的小物件角色，本地绘制。",
     "character": "角色",
+    "surprise": "给我惊喜",
     "colour": "身体颜色",
     "mood": "情绪",
     "neutral": "平静",

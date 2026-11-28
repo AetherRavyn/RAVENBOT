@@ -22,11 +22,12 @@
     openBotStyleId,
     openBotUrl,
     parseOpenBotUrl,
+    surpriseOpenBotId,
     type OpenBotFinish,
     type OpenBotState,
     type OpenBotTone,
   } from "$lib/openBotAvatar";
-  import { X } from "@lucide/svelte";
+  import { Shuffle, X } from "@lucide/svelte";
 
   type Finish = OpenBotFinish;
 
@@ -95,6 +96,21 @@
     chosenColour = openBotCuratedColour(id);
   }
 
+  /**
+   * Change the character and its curated colour, nothing else.
+   *
+   * This is a preview edit, exactly like clicking a gallery tile: depth,
+   * pointer-follow, finish, mood and animation are the user's choices and stay
+   * put, and nothing is stored until Apply. The helper excludes the current
+   * character, so a click is always visible.
+   */
+  function surprise() {
+    const id = surpriseOpenBotId(definition.id);
+    if (id === definition.id) return;
+    chosenId = id;
+    chosenColour = openBotCuratedColour(id);
+  }
+
   function finishLabel(option: Finish): string {
     if (option === "flat") return t("openbot.flat");
     if (option === "fluffy") return t("openbot.fluffy");
@@ -140,7 +156,7 @@
   <div class="openbot-studio__body">
     <div class="openbot-studio__main">
       <!-- The live hero: the chosen character in the previewed state. -->
-      <div class="openbot-studio__hero">
+      <div class="openbot-studio__hero" data-hero-id={definition.id} data-hero-colour={bodyColour}>
         <div class="openbot-studio__hero-frame">
           <OpenBotAvatar
             name={definition.name}
@@ -203,9 +219,19 @@
 
       <!-- Gallery: every bundled definition, as a still data URL. -->
       <section class="openbot-studio__section" aria-label={t("openbot.character")}>
-        <span class="openbot-studio__label">
-          {t("openbot.character")} · {OPENBOT_GALLERY.length}
-        </span>
+        <div class="flex items-center justify-between gap-2">
+          <span class="openbot-studio__label">
+            {t("openbot.character")} · {OPENBOT_GALLERY.length}
+          </span>
+          <button
+            type="button"
+            class="inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-semibold text-[var(--brand-text)] hover:bg-[var(--brand-soft)] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--brand)] cursor-pointer"
+            onclick={surprise}
+          >
+            <Shuffle class="size-3" />
+            {t("openbot.surprise")}
+          </button>
+        </div>
         <div class="openbot-studio__gallery">
           {#each OPENBOT_GALLERY as character (character.id)}
             {@const selected = character.id === definition.id}

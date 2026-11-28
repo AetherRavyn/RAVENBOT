@@ -72,6 +72,9 @@
   import ThreadHITL from "$lib/components/chat/ThreadHITL.svelte";
   import ThreadComposer from "$lib/components/chat/ThreadComposer.svelte";
   import ThreadHeader from "$lib/components/chat/ThreadHeader.svelte";
+  import ThreadBackdropPicker from "$lib/components/chat/ThreadBackdropPicker.svelte";
+  import ThreadBackdrop from "$lib/components/chat/ThreadBackdrop.svelte";
+  import { loadThreadBackdrop, type ThreadBackdropState } from "$lib/chat/backdrop";
   import type { PendingApproval, PendingQuestion } from "$lib/chat/pending";
   import ImageGallery from "$lib/components/chat/ImageGallery.svelte";
   import ImageGeneration from "$lib/components/chat/ImageGeneration.svelte";
@@ -151,6 +154,34 @@
   let threads = $state<any[]>([]);
   let selectedThreadId = $state<string | null>(null);
   let messages = $state<any[]>([]);
+
+  /**
+   * The selected conversation's backdrop, including the one-step undo slot.
+   *
+   * Loaded per thread rather than stored on the bot: two conversations with the
+   * same agent can have different scenes. A stale response for a thread the
+   * user already left is discarded by the sequence token.
+   */
+  let backdropState = $state<ThreadBackdropState>({ current: null, previous: null });
+  let backdropOpen = $state(false);
+  let backdropSeq = 0;
+  let currentBackdrop = $derived(backdropState.current);
+  $effect(() => {
+    const threadId = selectedThreadId;
+    backdropOpen = false;
+    const seq = ++backdropSeq;
+    if (!threadId) {
+      backdropState = { current: null, previous: null };
+      return;
+    }
+    void loadThreadBackdrop(threadId)
+      .then((next) => {
+        if (seq === backdropSeq) backdropState = next;
+      })
+      .catch(() => {
+        if (seq === backdropSeq) backdropState = { current: null, previous: null };
+      });
+  });
   /** The persistent 1:1 goal attached to the selected thread. */
   let threadGoal = $state<any | null>(null);
   let goalOpen = $state(false);
@@ -2620,6 +2651,8 @@
     avatarUrl={bot.avatar_url}
     avatarStyle={bot.avatar_style}
     mood={fleetActivity.mood(bot.id)}
+    activity={fleetActivity.activity(bot.id)}
+    animated={!prefersReducedMotion()}
     statusDot={botStatusTheme.dot}
     engine={bot?.config?.engine ?? null}
     paused={bot.status === "paused"}
@@ -2695,6 +2728,7 @@
     onOpenIntelligence={() => (showIntelligence = true)}
     onToggleThreadDrawer={() => (showThreadDrawer = !showThreadDrawer)}
     onOpenComputer={() => (showComputer = true)}
+    onOpenBackdrop={() => (backdropOpen = true)}
     onChannelChange={(id) => (activeChannelId = id || null)}
     onOpenChannels={() => (showChannels = true)}
     onOpenTeamImport={() => (showTeamImport = true)}
@@ -2876,7 +2910,8 @@
     <div class="flex flex-1 overflow-hidden bg-[var(--surface-0)]">
       <div class="flex flex-1 flex-col overflow-hidden">
       <div class="relative flex-1 min-h-0">
-      <div bind:this={messagesContainer} onscroll={handleFeedScroll} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" class="virtual-scroll h-full overflow-y-auto px-3 pt-2 pb-6 {staticEntries ? 'entries-static' : ''}">
+      <ThreadBackdrop backdrop={currentBackdrop} />
+      <div bind:this={messagesContainer} onscroll={handleFeedScroll} aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown" class="virtual-scroll relative z-10 h-full overflow-y-auto px-3 pt-2 pb-6 {staticEntries ? 'entries-static' : ''}">
         <div class="max-w-[720px] mx-auto">
           {#if hiddenBefore > 0 || hasEarlier}
             <div class="load-earlier-row">
@@ -3232,6 +3267,8 @@
                       <RavenAvatar
                         name={bot.name}
                         mood={fleetActivity.mood(bot.id)}
+                        activity={fleetActivity.activity(bot.id)}
+                        animated={!prefersReducedMotion()}
                         imageUrl={bot.avatar_url}
                         style={bot.avatar_style}
                       />
@@ -3939,5 +3976,14 @@
       <RoutinesPanel bot={bot} />
     </div>
   </div>
+{/if}
+
+{#if backdropOpen && selectedThreadId}
+  <ThreadBackdropPicker
+    threadId={selectedThreadId}
+    initial={backdropState}
+    onStateChange={(next) => (backdropState = next)}
+    onClose={() => (backdropOpen = false)}
+  />
 {/if}
 

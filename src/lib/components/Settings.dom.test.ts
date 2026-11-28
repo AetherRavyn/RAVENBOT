@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { invoke } from "@tauri-apps/api/core";
 import Settings from "$lib/components/Settings.svelte";
+import { setPaletteThemes } from "$lib/theme";
+import { paletteThemeFromJson } from "$lib/themePalette";
 import { setLocale } from "$lib/i18n";
 import { a11yViolations } from "$lib/test/a11y";
 
@@ -261,7 +263,10 @@ describe("Settings accessibility", () => {
     mockSettings();
   });
 
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    setPaletteThemes([]);
+  });
 
   it("renders the provider key section without axe violations", async () => {
     const { getByRole } = render(Settings, {
@@ -277,6 +282,44 @@ describe("Settings accessibility", () => {
     expect(getByRole("button", { name: "Mail" })).toBeTruthy();
     const violations = await a11yViolations(document.body);
     expect(violations, JSON.stringify(violations)).toEqual([]);
+  });
+
+  it("lists a validated local palette under Appearance and applies it on click", async () => {
+    const parsed = paletteThemeFromJson("midnight-bloom", {
+      name: "Midnight Bloom",
+      mode: "dark",
+      tokens: {
+        background: "#0b0b12",
+        card: "#14141f",
+        border: "#2a2a3d",
+        primary: "#8b5cf6",
+        accent: "#22d3ee",
+        text: "#e8e8f0",
+        muted: "#9a9ab0",
+      },
+    });
+    if (!("theme" in parsed)) throw new Error(parsed.reason);
+    setPaletteThemes([parsed.theme]);
+
+    render(Settings, {
+      props: {
+        open: true,
+        onClose: vi.fn(),
+        bots: [],
+        initialSection: "themes",
+      },
+    });
+
+    await waitFor(() =>
+      expect(document.body.textContent).toContain("Midnight Bloom"),
+    );
+    expect(document.body.textContent).toContain("LOCAL DARK");
+    expect(document.body.textContent).toContain("~/RAVENBOT/themes/");
+
+    const card = screen.getByRole("button", { name: /Midnight Bloom/ });
+    await fireEvent.click(card);
+    expect(card.getAttribute("aria-pressed")).toBe("true");
+    expect(localStorage.getItem("raven-theme")).toBe("midnight-bloom");
   });
 
   it("installs the service and offers the handoff", async () => {

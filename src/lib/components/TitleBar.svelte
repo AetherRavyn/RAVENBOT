@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { THEMES, getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition } from "$lib/theme";
+  import { getThemes, getStoredTheme, applyTheme, subscribeTheme, subscribeThemeCatalogue, type ThemeDefinition } from "$lib/theme";
   import { t } from "$lib/i18n";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import ThemeLogo from "$lib/components/ThemeLogo.svelte";
@@ -25,12 +25,16 @@
 
   let isMaximized = $state(false);
   let currentTheme = $state<ThemeDefinition>(getStoredTheme());
+  let themes = $state<ThemeDefinition[]>(getThemes());
   let showThemeDropdown = $state(false);
   let isTauriEnv = $state(false);
 
   onMount(() => {
     const unsubTheme = subscribeTheme((t) => {
       currentTheme = t;
+    });
+    const unsubCatalogue = subscribeThemeCatalogue((list) => {
+      themes = list;
     });
 
     let unlisten: (() => void) | undefined;
@@ -52,6 +56,7 @@
 
     return () => {
       unsubTheme();
+      unsubCatalogue();
       if (unlisten) unlisten();
     };
   });
@@ -177,11 +182,11 @@
               <Palette class="size-3.5" style="color: {currentTheme.primaryColor}" />
               {t("titlebar.visualWorld")}
             </span>
-            <span class="text-[11px] text-[var(--text-muted)] font-mono">{t("titlebar.worlds", { n: THEMES.length })}</span>
+            <span class="text-[11px] text-[var(--text-muted)] font-mono">{t("titlebar.worlds", { n: themes.length })}</span>
           </div>
 
           <div class="space-y-1 max-h-72 overflow-y-auto pr-0.5">
-            {#each THEMES as t}
+            {#each themes as t}
               {@const isSelected = currentTheme.id === t.id}
               <button
                 type="button"

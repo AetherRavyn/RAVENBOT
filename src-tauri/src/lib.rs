@@ -17139,6 +17139,8 @@ struct AttentionItem {
     kind: String,
     bot_id: Option<String>,
     bot_name: String,
+    avatar_url: Option<String>,
+    avatar_style: Option<String>,
     thread_id: Option<String>,
     office_id: Option<String>,
     office_name: Option<String>,
@@ -17169,6 +17171,8 @@ struct AttentionApprovalRow {
     risk: String,
     created_at: String,
     bot_name: String,
+    avatar_url: Option<String>,
+    avatar_style: Option<String>,
     office_id: Option<String>,
     office_name: Option<String>,
 }
@@ -17183,6 +17187,8 @@ struct AttentionQuestionRow {
     kind: String,
     created_at: String,
     bot_name: String,
+    avatar_url: Option<String>,
+    avatar_style: Option<String>,
     office_id: Option<String>,
     office_name: Option<String>,
 }
@@ -17329,6 +17335,7 @@ async fn collect_attention(db: &ravenbot_db::Database) -> Result<Vec<AttentionIt
     let approvals: Vec<AttentionApprovalRow> = sqlx::query_as(
         "SELECT a.id, a.bot_id, a.thread_id, a.tool_name, a.tool_label, a.arguments,
                 a.risk, a.created_at, b.name AS bot_name,
+                b.avatar_url, b.avatar_style,
                 COALESCE(ct.chatroom_id, cot.chatroom_id) AS office_id,
                 c.name AS office_name
          FROM approvals a
@@ -17346,7 +17353,7 @@ async fn collect_attention(db: &ravenbot_db::Database) -> Result<Vec<AttentionIt
 
     let questions: Vec<AttentionQuestionRow> = sqlx::query_as(
         "SELECT q.id, q.bot_id, q.thread_id, q.header, q.question, q.kind, q.created_at,
-                b.name AS bot_name,
+                b.name AS bot_name, b.avatar_url, b.avatar_style,
                 COALESCE(ct.chatroom_id, cot.chatroom_id) AS office_id,
                 c.name AS office_name
          FROM questions q
@@ -17382,6 +17389,8 @@ async fn collect_attention(db: &ravenbot_db::Database) -> Result<Vec<AttentionIt
             kind: "approval".to_string(),
             bot_id: Some(row.bot_id),
             bot_name: row.bot_name,
+            avatar_url: row.avatar_url,
+            avatar_style: row.avatar_style,
             thread_id: Some(row.thread_id),
             office_id: row.office_id,
             office_name: row.office_name,
@@ -17407,6 +17416,8 @@ async fn collect_attention(db: &ravenbot_db::Database) -> Result<Vec<AttentionIt
             kind: "question".to_string(),
             bot_id: Some(row.bot_id),
             bot_name: row.bot_name,
+            avatar_url: row.avatar_url,
+            avatar_style: row.avatar_style,
             thread_id: Some(row.thread_id),
             office_id: row.office_id,
             office_name: row.office_name,
@@ -17444,6 +17455,8 @@ async fn collect_attention(db: &ravenbot_db::Database) -> Result<Vec<AttentionIt
             kind: "queue".to_string(),
             bot_id: None,
             bot_name: String::new(),
+            avatar_url: None,
+            avatar_style: None,
             thread_id: None,
             office_id: Some(row.chatroom_id),
             office_name: Some(row.office_name),
@@ -17493,6 +17506,8 @@ async fn collect_attention(db: &ravenbot_db::Database) -> Result<Vec<AttentionIt
                     kind: "alert".to_string(),
                     bot_id: None,
                     bot_name: String::new(),
+                    avatar_url: None,
+                    avatar_style: None,
                     thread_id: None,
                     office_id: Some(office_id),
                     office_name: Some(office_name.unwrap_or_else(|| "Office".to_string())),
@@ -24981,6 +24996,366 @@ async fn open_main_window(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// A palette file as the frontend sees it: name and raw JSON.
+///
+/// Validation deliberately lives in the frontend, where the theme engine and
+/// its tests already are. The backend only guarantees the directory boundary,
+/// the `.json` filter, and a size cap.
+#[derive(Debug, Clone, serde::Serialize)]
+struct ThemeFilePayload {
+    file_name: String,
+    contents: String,
+}
+
+const MAX_THEME_FILE_BYTES: u64 = 64 * 1024;
+const MAX_THEME_FILES: usize = 200;
+
+fn read_theme_files(dir: &std::path::Path) -> Result<Vec<ThemeFilePayload>, String> {
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    let entries = std::fs::read_dir(dir).map_err(|error| error.to_string())?;
+    let mut files = Vec::new();
+    for entry in entries.flatten() {
+        if files.len() >= MAX_THEME_FILES {
+            break;
+        }
+        let path = entry.path();
+        if path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| !value.eq_ignore_ascii_case("json"))
+            .unwrap_or(true)
+        {
+            continue;
+        }
+        // `file_type` does not follow symlinks, so a theme folder cannot be
+        // used to read an arbitrary JSON file elsewhere on the machine.
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if metadata.len() > MAX_THEME_FILE_BYTES {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        files.push(ThemeFilePayload {
+            file_name: entry.file_name().to_string_lossy().into_owned(),
+            contents,
+        });
+    }
+    files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
+    Ok(files)
+}
+
+/// Read the local palette directory. Missing directories are created empty.
+#[tauri::command]
+async fn list_theme_files() -> Result<Vec<ThemeFilePayload>, String> {
+    let dir = ravenbot_core::paths::themes_dir();
+    tauri::async_runtime::spawn_blocking(move || read_theme_files(&dir))
+        .await
+        .map_err(|error| error.to_string())?
+}
+
+/// A conversation backdrop, stored per thread.
+///
+/// `builtin` names one bundled image; `image` and `video` point at a copied
+/// file under `~/RAVENBOT/backdrops`. Nothing here can name a remote URL.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+struct ThreadBackdrop {
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize)]
+struct ThreadBackdropState {
+    current: Option<ThreadBackdrop>,
+    previous: Option<ThreadBackdrop>,
+}
+
+const BACKDROP_BUILTINS: &[&str] = &["aurora", "dunes", "grid", "bloom"];
+const MAX_BACKDROP_BYTES: u64 = 100 * 1024 * 1024;
+
+fn backdrop_key(thread_id: Uuid, previous: bool) -> String {
+    if previous {
+        format!("thread_backdrop:previous:{thread_id}")
+    } else {
+        format!("thread_backdrop:{thread_id}")
+    }
+}
+
+fn valid_backdrop(backdrop: &ThreadBackdrop) -> bool {
+    match backdrop.kind.as_str() {
+        "builtin" => backdrop
+            .id
+            .as_deref()
+            .map(|id| BACKDROP_BUILTINS.contains(&id))
+            .unwrap_or(false),
+        "image" | "video" => {
+            let Some(path) = backdrop.path.as_deref() else {
+                return false;
+            };
+            let path = std::path::Path::new(path);
+            let dir = ravenbot_core::paths::backdrops_dir();
+            // Lexical parent, not canonicalize: the stored path is one this
+            // process generated, and refusing anything outside the folder
+            // keeps a tampered settings row from pointing at another file.
+            path.parent() == Some(dir.as_path()) && path.is_file()
+        }
+        _ => false,
+    }
+}
+
+fn backdrop_magic_ok(prefix: &[u8], format: &str) -> bool {
+    match format {
+        "png" => prefix.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpg" => prefix.starts_with(&[0xFF, 0xD8, 0xFF]),
+        "webp" => prefix.len() >= 12 && &prefix[0..4] == b"RIFF" && &prefix[8..12] == b"WEBP",
+        "mp4" => prefix.len() >= 8 && &prefix[4..8] == b"ftyp",
+        "webm" => prefix.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
+        _ => false,
+    }
+}
+
+fn backdrop_format(ext: &str) -> Option<(&'static str, &'static str)> {
+    match ext {
+        "png" => Some(("image", "png")),
+        "jpg" | "jpeg" => Some(("image", "jpg")),
+        "webp" => Some(("image", "webp")),
+        "mp4" => Some(("video", "mp4")),
+        "webm" => Some(("video", "webm")),
+        _ => None,
+    }
+}
+
+fn read_file_prefix(path: &std::path::Path, length: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|error| error.to_string())?;
+    let mut prefix = vec![0u8; length];
+    let read = file.read(&mut prefix).map_err(|error| error.to_string())?;
+    prefix.truncate(read);
+    Ok(prefix)
+}
+
+fn remove_backdrop_file(backdrop: &ThreadBackdrop) {
+    let Some(path) = backdrop.path.as_deref() else {
+        return;
+    };
+    let path = std::path::Path::new(path);
+    let dir = ravenbot_core::paths::backdrops_dir();
+    if path.parent() == Some(dir.as_path()) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+async fn read_stored_backdrop(
+    pool: &sqlx::SqlitePool,
+    thread_id: Uuid,
+    previous: bool,
+) -> Option<ThreadBackdrop> {
+    let raw =
+        ravenbot_db::queries::AppSettingsQueries::get(pool, &backdrop_key(thread_id, previous))
+            .await
+            .ok()??;
+    if raw.trim().is_empty() {
+        return None;
+    }
+    let backdrop: ThreadBackdrop = serde_json::from_str(&raw).ok()?;
+    valid_backdrop(&backdrop).then_some(backdrop)
+}
+
+async fn write_stored_backdrop(
+    pool: &sqlx::SqlitePool,
+    thread_id: Uuid,
+    previous: bool,
+    backdrop: Option<&ThreadBackdrop>,
+) -> Result<(), String> {
+    let encoded = match backdrop {
+        Some(backdrop) => serde_json::to_string(backdrop).map_err(|error| error.to_string())?,
+        None => String::new(),
+    };
+    ravenbot_db::queries::AppSettingsQueries::set(
+        pool,
+        &backdrop_key(thread_id, previous),
+        &encoded,
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
+
+async fn backdrop_state(
+    pool: &sqlx::SqlitePool,
+    thread_id: Uuid,
+) -> Result<ThreadBackdropState, String> {
+    Ok(ThreadBackdropState {
+        current: read_stored_backdrop(pool, thread_id, false).await,
+        previous: read_stored_backdrop(pool, thread_id, true).await,
+    })
+}
+
+/// Rotate to a new current backdrop, keeping exactly one undo step.
+///
+/// The file for the step that falls out of history is deleted, so repeatedly
+/// changing a 100 MB video cannot accumulate hundreds of copies.
+async fn commit_backdrop(
+    pool: &sqlx::SqlitePool,
+    thread_id: Uuid,
+    next: Option<ThreadBackdrop>,
+) -> Result<ThreadBackdropState, String> {
+    let current = read_stored_backdrop(pool, thread_id, false).await;
+    let previous = read_stored_backdrop(pool, thread_id, true).await;
+    if next == current {
+        return Ok(ThreadBackdropState { current, previous });
+    }
+    if let Some(old_previous) = previous.as_ref() {
+        if Some(old_previous) != current.as_ref() && Some(old_previous) != next.as_ref() {
+            remove_backdrop_file(old_previous);
+        }
+    }
+    write_stored_backdrop(pool, thread_id, true, current.as_ref()).await?;
+    write_stored_backdrop(pool, thread_id, false, next.as_ref()).await?;
+    Ok(ThreadBackdropState {
+        current: next,
+        previous: current,
+    })
+}
+
+#[tauri::command]
+async fn get_thread_backdrop(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+) -> Result<ThreadBackdropState, String> {
+    backdrop_state(state.db.pool(), thread_id).await
+}
+
+#[tauri::command]
+async fn set_thread_backdrop_builtin(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+    builtin_id: String,
+) -> Result<ThreadBackdropState, String> {
+    let id = builtin_id.trim().to_ascii_lowercase();
+    if !BACKDROP_BUILTINS.contains(&id.as_str()) {
+        return Err("unknown built-in backdrop".to_string());
+    }
+    commit_backdrop(
+        state.db.pool(),
+        thread_id,
+        Some(ThreadBackdrop {
+            kind: "builtin".to_string(),
+            id: Some(id),
+            path: None,
+            name: None,
+        }),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn import_thread_backdrop(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+    source_path: String,
+) -> Result<ThreadBackdropState, String> {
+    let source = std::path::PathBuf::from(source_path.trim());
+    let metadata = std::fs::metadata(&source).map_err(|error| error.to_string())?;
+    if !metadata.is_file() {
+        return Err("choose a file, not a folder".to_string());
+    }
+    if metadata.len() == 0 {
+        return Err("the file is empty".to_string());
+    }
+    if metadata.len() > MAX_BACKDROP_BYTES {
+        return Err("backdrops must be 100 MB or smaller".to_string());
+    }
+    let ext = source
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let (kind, format) =
+        backdrop_format(&ext).ok_or_else(|| "use PNG, JPEG, WebP, MP4 or WebM".to_string())?;
+    let prefix = read_file_prefix(&source, 12)?;
+    if !backdrop_magic_ok(&prefix, format) {
+        return Err("the file contents do not match its extension".to_string());
+    }
+
+    let dir = ravenbot_core::paths::backdrops_dir();
+    std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
+    let stored = dir.join(format!("{}.{}", Uuid::new_v4(), format));
+    std::fs::copy(&source, &stored).map_err(|error| error.to_string())?;
+    match std::fs::metadata(&stored) {
+        Ok(metadata) if metadata.len() > 0 && metadata.len() <= MAX_BACKDROP_BYTES => {}
+        _ => {
+            let _ = std::fs::remove_file(&stored);
+            return Err("the copied backdrop was empty or too large".to_string());
+        }
+    }
+    let name = source
+        .file_name()
+        .map(|value| {
+            value
+                .to_string_lossy()
+                .chars()
+                .take(200)
+                .collect::<String>()
+        })
+        .filter(|value| !value.trim().is_empty());
+
+    let next = ThreadBackdrop {
+        kind: kind.to_string(),
+        id: None,
+        path: Some(stored.to_string_lossy().into_owned()),
+        name,
+    };
+    match commit_backdrop(state.db.pool(), thread_id, Some(next)).await {
+        Ok(state) => Ok(state),
+        Err(error) => {
+            let _ = std::fs::remove_file(&stored);
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+async fn clear_thread_backdrop(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+) -> Result<ThreadBackdropState, String> {
+    commit_backdrop(state.db.pool(), thread_id, None).await
+}
+
+#[tauri::command]
+async fn undo_thread_backdrop(
+    state: State<'_, AppState>,
+    thread_id: Uuid,
+) -> Result<ThreadBackdropState, String> {
+    let current = read_stored_backdrop(state.db.pool(), thread_id, false).await;
+    let previous = read_stored_backdrop(state.db.pool(), thread_id, true).await;
+    let Some(previous) = previous else {
+        return Ok(ThreadBackdropState {
+            current,
+            previous: None,
+        });
+    };
+    write_stored_backdrop(state.db.pool(), thread_id, false, Some(&previous)).await?;
+    write_stored_backdrop(state.db.pool(), thread_id, true, current.as_ref()).await?;
+    Ok(ThreadBackdropState {
+        current: Some(previous),
+        previous: current,
+    })
+}
+
 /// Counts and the newest items for the island. Bounded; the island is a
 /// glance, not a second inbox.
 #[tauri::command]
@@ -24991,33 +25366,70 @@ async fn get_attention_summary(state: State<'_, AppState>) -> Result<serde_json:
     let questions = ravenbot_db::queries::QuestionQueries::list_pending_all(state.db.pool(), 5)
         .await
         .map_err(|error| error.to_string())?;
+    let approvals_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM approvals WHERE status = 'pending'")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap_or(approvals.len() as i64);
+    let questions_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM questions WHERE status = 'pending'")
+            .fetch_one(state.db.pool())
+            .await
+            .unwrap_or(questions.len() as i64);
     let active_runs: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM runs WHERE state NOT IN ('completed','failed','cancelled')",
     )
     .fetch_one(state.db.pool())
     .await
     .map_err(|error| error.to_string())?;
+    let bots: std::collections::HashMap<Uuid, ravenbot_core::Bot> =
+        ravenbot_db::queries::BotQueries::list(state.db.pool())
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|bot| (bot.id, bot))
+            .collect();
     let mut items: Vec<serde_json::Value> = Vec::new();
     for approval in approvals.iter().take(3) {
+        let bot = bots.get(&approval.bot_id);
         items.push(serde_json::json!({
             "kind": "approval",
             "label": approval.tool_label,
             "detail": approval.tool_name,
+            "bot_id": approval.bot_id,
+            "bot_name": bot.map(|bot| bot.name.clone()).unwrap_or_default(),
+            "avatar_url": bot.and_then(|bot| bot.avatar_url.clone()),
+            "avatar_style": bot.and_then(|bot| bot.avatar_style.clone()),
             "thread_id": approval.thread_id,
             "risk": approval.risk,
+            "state": "pending",
+            "created_at": approval.created_at,
         }));
     }
     for question in questions.iter().take(3) {
+        let bot = bots.get(&question.bot_id);
         items.push(serde_json::json!({
             "kind": "question",
             "label": question.header,
             "detail": question.question,
+            "bot_id": question.bot_id,
+            "bot_name": bot.map(|bot| bot.name.clone()).unwrap_or_default(),
+            "avatar_url": bot.and_then(|bot| bot.avatar_url.clone()),
+            "avatar_style": bot.and_then(|bot| bot.avatar_style.clone()),
             "thread_id": question.thread_id,
+            "state": "pending",
+            "created_at": question.created_at,
         }));
     }
+    items.sort_by(|left, right| {
+        right["created_at"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(left["created_at"].as_str().unwrap_or_default())
+    });
     Ok(serde_json::json!({
-        "approvals": approvals.len(),
-        "questions": questions.len(),
+        "approvals": approvals_count,
+        "questions": questions_count,
         "active_runs": active_runs,
         "items": items,
     }))
@@ -25256,6 +25668,12 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         set_background_service_linger,
         handoff_to_background_service,
         get_attention_summary,
+        list_theme_files,
+        get_thread_backdrop,
+        set_thread_backdrop_builtin,
+        import_thread_backdrop,
+        clear_thread_backdrop,
+        undo_thread_backdrop,
         show_attention_island_command,
         get_telegram_status,
         set_telegram_config,
@@ -31613,5 +32031,46 @@ mod meeting_transcription_tests {
         let (text, truncated) = cap_meeting_transcript(multibyte);
         assert_eq!(text.chars().count(), MEETING_TRANSCRIPT_LIMIT);
         assert!(truncated);
+    }
+}
+
+#[cfg(test)]
+mod theme_file_tests {
+    use super::*;
+
+    #[test]
+    fn palette_reads_only_bounded_json_files() {
+        let dir = std::env::temp_dir().join(format!("ravenbot-themes-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("nested.json")).unwrap();
+        std::fs::write(dir.join("valid.json"), r#"{"name":"Valid"}"#).unwrap();
+        std::fs::write(dir.join("notes.txt"), "not a palette").unwrap();
+        std::fs::write(
+            dir.join("large.json"),
+            "x".repeat((MAX_THEME_FILE_BYTES + 1) as usize),
+        )
+        .unwrap();
+
+        let files = read_theme_files(&dir).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].file_name, "valid.json");
+        assert_eq!(files[0].contents, r#"{"name":"Valid"}"#);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backdrop_formats_and_magic_are_strict() {
+        assert_eq!(backdrop_format("jpeg"), Some(("image", "jpg")));
+        assert_eq!(backdrop_format("webm"), Some(("video", "webm")));
+        assert_eq!(backdrop_format("svg"), None);
+        assert_eq!(backdrop_format("html"), None);
+
+        assert!(backdrop_magic_ok(b"\x89PNG\r\n\x1a\n", "png"));
+        assert!(!backdrop_magic_ok(b"<svg>", "png"));
+        assert!(backdrop_magic_ok(&[0xFF, 0xD8, 0xFF, 0xE0], "jpg"));
+        assert!(backdrop_magic_ok(b"RIFF\0\0\0\0WEBP", "webp"));
+        assert!(!backdrop_magic_ok(b"RIFF\0\0\0\0WAVE", "webp"));
+        assert!(backdrop_magic_ok(b"\0\0\0\x18ftypisom", "mp4"));
+        assert!(backdrop_magic_ok(&[0x1A, 0x45, 0xDF, 0xA3], "webm"));
     }
 }

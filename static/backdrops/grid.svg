@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" role="img" aria-label="Grid">
+  <defs>
+    <linearGradient id="grid-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#030712"/>
+      <stop offset=".7" stop-color="#061225"/>
+      <stop offset="1" stop-color="#0a1a30"/>
+    </linearGradient>
+    <linearGradient id="grid-glow" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity=".22"/>
+      <stop offset="1" stop-color="#22d3ee" stop-opacity="0"/>
+    </linearGradient>
+    <pattern id="grid-lines" width="64" height="64" patternUnits="userSpaceOnUse">
+      <path d="M64 0H0V64" fill="none" stroke="#38bdf8" stroke-opacity=".12" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1600" height="900" fill="url(#grid-bg)"/>
+  <rect width="1600" height="900" fill="url(#grid-lines)" opacity=".55"/>
+  <path d="M0 0 H1600 V900 H0 Z" fill="url(#grid-glow)"/>
+  <g fill="none" stroke="#22d3ee" stroke-opacity=".22">
+    <path d="M800 320 L1120 500 L800 680 L480 500 Z" stroke-width="1.5"/>
+    <path d="M800 390 L1030 510 L800 630 L570 510 Z" stroke-width="1"/>
+    <path d="M800 460 L940 520 L800 580 L660 520 Z"/>
+  </g>
+  <g fill="#67e8f9" opacity=".55">
+    <circle cx="800" cy="320" r="2.4"/>
+    <circle cx="1120" cy="500" r="2.4"/>
+    <circle cx="800" cy="680" r="2.4"/>
+    <circle cx="480" cy="500" r="2.4"/>
+  </g>
+  <rect width="1600" height="900" fill="#030712" opacity=".18"/>
+</svg>

@@ -153,10 +153,29 @@ you apply, with body colour, volume, pointer-follow and flat, fluffy or glass
 finishes. Live state comes from fleet activity: a waiting agent looks waiting, a
 failed run looks blocked, and an unread reply celebrates. The studio selection
 is a preview only; reloads keep the chosen character, colour, volume,
-pointer-follow and finish. A person can also upload a PNG, JPEG, WebP or GIF
-photo up to 512 KB as a custom avatar, replace it, or remove it without leaving
-a broken image. See
+pointer-follow and finish. **Surprise me** shuffles the character and its
+curated colour without touching those render choices, and nothing is stored
+until Apply. While an agent is working, its tool activity selects the nearest
+of the six poses (search/read → thinking, edit/run/delegate → working, review →
+waiting) with a 1.4-second hold so rapid calls do not flicker; reduced motion
+keeps the pose and removes the animation. A person can also upload a PNG, JPEG,
+WebP or GIF photo up to 512 KB as a custom avatar, replace it, or remove it
+without leaving a broken image. The attention island uses the same resolver, so
+the newest waiting agent's real face and state dot appear there too. See
 [`docs/OPENBOT-AVATARS.md`](docs/OPENBOT-AVATARS.md).
+
+### Backdrops and palettes that stay local
+
+A conversation can carry its own backdrop: four bundled images, an uploaded
+PNG/JPEG/WebP, or a muted looping MP4/WebM up to 100 MB. Files are copied into
+`~/RAVENBOT/backdrops/`, the transcript gets a theme-aware scrim, and Clear and
+Undo keep one step of history without accumulating copies. Palettes are small
+validated JSON files in `~/RAVENBOT/themes/`; valid files appear in Settings →
+Appearance and hot-reload into the same theme engine as the built-ins. Invalid
+files are ignored with a console warning, and neither feature downloads
+anything or accepts remote URLs. The schemas and checks are in
+[`docs/design-system.md`](docs/design-system.md) and
+[`docs/PLATFORM-GAP-PLAN.md`](docs/PLATFORM-GAP-PLAN.md).
 
 ### Memory that is retrieved, not dumped
 
@@ -457,11 +476,11 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 273 Tauri library tests
+- **1,300+ Rust tests** across the workspace, including 275 Tauri library tests
   plus 7 cross-tenant isolation tests, 255 runtime tests, 244 skill tests, 142
   database tests, 103 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **1,017 frontend tests** across 144 files. A gate rejects literal English
+- **1,060 frontend tests** across 150 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

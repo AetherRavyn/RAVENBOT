@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fleetActivity } from "./fleetActivity.svelte";
 import type { Activity } from "./fleetActivity.svelte";
 import { handoffs } from "./handoffs.svelte";
@@ -105,6 +105,33 @@ describe("activity derivation", () => {
     fleetActivity.stop();
     expect(Object.keys(fleetActivity.states)).toHaveLength(0);
     expect(Object.keys(fleetActivity.moods)).toHaveLength(0);
+    expect(Object.keys(fleetActivity.activities)).toHaveLength(0);
+  });
+
+  it("derives tool activity separately from the urgency badge", () => {
+    feed("run_started");
+    expect(fleetActivity.activity("b1")).toBeNull();
+    feed("tool_started", "b1", { name: "web_search" });
+    expect(fleetActivity.activity("b1")).toBe("searching");
+    expect(fleetActivity.get("b1")).toBe("working");
+    feed("done");
+    expect(fleetActivity.activity("b1")).toBeNull();
+  });
+
+  it("holds an activity for 1.4s so rapid tools do not flicker", () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    feed("run_started");
+    feed("tool_started", "b1", { name: "file_read" });
+    expect(fleetActivity.activity("b1")).toBe("reading");
+
+    now.mockReturnValue(1_000_500);
+    feed("tool_started", "b1", { name: "shell_exec" });
+    expect(fleetActivity.activity("b1")).toBe("reading");
+
+    now.mockReturnValue(1_002_000);
+    feed("tool_started", "b1", { name: "shell_exec" });
+    expect(fleetActivity.activity("b1")).toBe("running");
+    now.mockRestore();
   });
 });
 

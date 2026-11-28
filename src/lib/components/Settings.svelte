@@ -21,7 +21,7 @@
   import { matchesQuery } from "$lib/search/highlight";
   import { getDiceBearUrl, cn } from "$lib/utils";
   import { rememberFocus } from "$lib/a11y";
-  import { getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition, THEMES } from "$lib/theme";
+  import { getThemes, getStoredTheme, applyTheme, subscribeTheme, subscribeThemeCatalogue, type ThemeDefinition } from "$lib/theme";
   import { setLocale, getAvailableLocales, localeState, type Locale } from "$lib/i18n";
   import { t } from "$lib/i18n";
   import { openExternal } from "$lib/external";
@@ -176,6 +176,7 @@
 
   // ── Profile state ───────────────────────────────────────────────────────────
   let currentTheme = $state<ThemeDefinition>(getStoredTheme());
+  let availableThemes = $state<ThemeDefinition[]>(getThemes());
   let userAvatarUrl = $state<string | null>(null);
   let userAvatarStyle = $state("micah");
   let showUserAvatarPicker = $state(false);
@@ -302,9 +303,16 @@
 
   onMount(() => {
     void loadLspConfig();
-    return subscribeTheme((t) => {
+    const unsubTheme = subscribeTheme((t) => {
       currentTheme = t;
     });
+    const unsubCatalogue = subscribeThemeCatalogue((list) => {
+      availableThemes = list;
+    });
+    return () => {
+      unsubTheme();
+      unsubCatalogue();
+    };
   });
 
   // ── Custom providers (P8) ─────────────────────────────────────────────────
@@ -3362,16 +3370,25 @@
               </h3>
               <p class="text-sm text-[var(--text-tertiary)] mt-1">{t("settings.themesDesc")}</p>
             </div>
+            <div class="rounded-xl border bg-[var(--surface-2)] px-3 py-2.5" style="border-color: {currentTheme.borderHex};">
+              <p class="text-xs text-[var(--text-secondary)]">
+                {t("settings.paletteFilesHint")}
+              </p>
+              <code class="mt-1 block font-mono text-[11px] text-[var(--text-tertiary)]">~/RAVENBOT/themes/&lt;name&gt;.json</code>
+            </div>
             <div class="grid grid-cols-2 gap-4">
-              {#each THEMES as theme}
+              {#each availableThemes as theme}
                 {@const isSelected = currentTheme.id === theme.id}
                 <button type="button" class="flex flex-col text-left p-4 rounded-2xl border transition-all {isSelected ? 'shadow-xl ring-2 scale-[1.02]' : 'hover:scale-[1.01]'}" style="{isSelected ? `background-color: ${theme.cardHex}; border-color: ${theme.primaryColor};` : `background-color: ${theme.cardHex}90; border-color: ${theme.borderHex};`} color: ${theme.textColor};" onclick={() => pickTheme(theme)} aria-pressed={isSelected}>
                   <div class="flex items-center gap-3 mb-2">
                     <ThemeLogo theme={theme} size="sm" class="!size-10" />
-                    <div>
-                      <span class="font-bold text-sm block" style="color: {theme.textColor}">{theme.name}</span>
+                    <div class="min-w-0">
+                      <span class="font-bold text-sm block truncate" style="color: {theme.textColor}">{theme.name}</span>
                       <span class="text-[11px] font-mono" style="color: {theme.mutedTextColor}">{theme.brand.badgeLabel}</span>
                     </div>
+                    {#if theme.source === "palette"}
+                      <span class="ml-auto shrink-0 rounded-full border px-1.5 py-0.5 font-mono text-[11px] font-bold" style="border-color: {theme.primaryColor}66; color: {theme.primaryColor};" title={theme.file ?? ""}>LOCAL</span>
+                    {/if}
                   </div>
                   <p class="text-xs" style="color: {theme.mutedTextColor}">{theme.description}</p>
                   <div class="flex items-center gap-1 mt-2.5">

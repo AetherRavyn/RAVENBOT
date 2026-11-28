@@ -363,6 +363,7 @@
     "language": "言語",
     "languageDesc": "表示言語。",
     "themesDesc": "ビジュアルスタイルを選択。",
+    "paletteFilesHint": "ローカルパレット: `<name>.json` を ~/RAVENBOT/themes/ に保存します。有効なファイルはここに表示され、保存時に再読み込みされます。無効なファイルは無視されます。",
     "active": "使用中",
     "localDesc": "AI を完全にデバイス上で実行。クラウドなし、データは外に出ません。",
     "ollamaEndpoint": "Ollama エンドポイント",
@@ -3128,10 +3129,24 @@
     "replayRepairItem": "ステップ {{index}} は {{by}} で一致",
     "recordingLost": "タブが閉じられたため記録が停止しました。"
   },
+  "backdrop": {
+    "title": "会話の背景",
+    "description": "この会話の背後に表示するローカル画像またはミュート動画。マシンの外には出ません。",
+    "builtin": "組み込み",
+    "upload": "アップロード",
+    "uploadImage": "画像をアップロード",
+    "uploadVideo": "動画をアップロード",
+    "uploadHint": "PNG、JPEG、WebP、または MP4/WebM 動画。最大 100 MB。",
+    "clear": "解除",
+    "undo": "元に戻す",
+    "none": "なし",
+    "error": "背景を設定できませんでした: {{error}}"
+  },
   "openbot": {
     "title": "OpenBotキャラクター",
     "description": "目がついた小さな物のキャラクター。ローカルで描画されます。",
     "character": "キャラクター",
+    "surprise": "おまかせ",
     "colour": "体の色",
     "mood": "気分",
     "neutral": "ニュートラル",

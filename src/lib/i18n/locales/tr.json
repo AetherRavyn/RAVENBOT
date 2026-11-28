@@ -363,6 +363,7 @@
     "language": "Dil",
     "languageDesc": "Arayüz dili.",
     "themesDesc": "Görsel stilini seç.",
+    "paletteFilesHint": "Yerel paletler: `<name>.json` dosyasını ~/RAVENBOT/themes/ içine kaydedin. Geçerli dosyalar burada görünür ve kaydedince yeniden yüklenir; geçersiz dosyalar yok sayılır.",
     "active": "Etkin",
     "localDesc": "Yapay zekayı tamamen cihazında çalıştır. Bulut yok, veri makinenden çıkmaz.",
     "ollamaEndpoint": "Ollama uç noktası",
@@ -3128,10 +3129,24 @@
     "replayRepairItem": "Adım {{index}} {{by}} ile bulundu",
     "recordingLost": "Kayıt, sekmesi kapatıldığı için durdu."
   },
+  "backdrop": {
+    "title": "Sohbet arka planı",
+    "description": "Bu sohbetin arkasında yerel bir görsel veya sessiz döngüde video. Makinenizden asla çıkmaz.",
+    "builtin": "Yerleşik",
+    "upload": "Yükle",
+    "uploadImage": "Görsel yükle",
+    "uploadVideo": "Video yükle",
+    "uploadHint": "PNG, JPEG veya WebP; MP4 veya WebM video. En fazla 100 MB.",
+    "clear": "Kaldır",
+    "undo": "Geri al",
+    "none": "Yok",
+    "error": "Arka plan ayarlanamadı: {{error}}"
+  },
   "openbot": {
     "title": "OpenBot karakteri",
     "description": "Gözleri olan küçük nesne karakterleri, yerel olarak çizilir.",
     "character": "Karakter",
+    "surprise": "Beni şaşırt",
     "colour": "Gövde rengi",
     "mood": "Ruh hâli",
     "neutral": "Nötr",

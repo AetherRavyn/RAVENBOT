@@ -363,6 +363,7 @@
     "language": "Language",
     "languageDesc": "Interface language.",
     "themesDesc": "Choose your visual style.",
+    "paletteFilesHint": "Local palettes: save `<name>.json` in ~/RAVENBOT/themes/. Valid files appear here and reload when saved; invalid files are ignored.",
     "active": "Active",
     "localDesc": "Run AI entirely on your device. No cloud, no data leaves your machine.",
     "ollamaEndpoint": "Ollama Endpoint",
@@ -3128,10 +3129,24 @@
     "replayRepairItem": "Step {{index}} matched by {{by}}",
     "recordingLost": "The recording stopped because its tab was closed."
   },
+  "backdrop": {
+    "title": "Conversation backdrop",
+    "description": "A local image or muted video behind this conversation. It never leaves your machine.",
+    "builtin": "Built-in",
+    "upload": "Upload",
+    "uploadImage": "Upload image",
+    "uploadVideo": "Upload video",
+    "uploadHint": "PNG, JPEG or WebP; MP4 or WebM video. Up to 100 MB.",
+    "clear": "Clear",
+    "undo": "Undo",
+    "none": "None",
+    "error": "Could not set the backdrop: {{error}}"
+  },
   "openbot": {
     "title": "OpenBot character",
     "description": "Small object characters with eyes, drawn locally.",
     "character": "Character",
+    "surprise": "Surprise me",
     "colour": "Body colour",
     "mood": "Mood",
     "neutral": "Neutral",

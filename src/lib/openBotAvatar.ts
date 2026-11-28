@@ -171,6 +171,30 @@ export function openBotCuratedColour(id: string): string {
   return CURATED_COLOUR[id] ?? DEFAULT_OPENBOT_COLOUR;
 }
 
+/**
+ * Pick a different character for the studio's "Surprise me".
+ *
+ * The current character is excluded so a click always changes what is on
+ * screen; if the gallery somehow holds only that one, it is the only legal
+ * answer. `random` is injectable so the two-click test does not depend on
+ * wall-clock luck.
+ */
+export function surpriseOpenBotId(
+  currentId: string | null | undefined,
+  random: () => number = Math.random,
+): string {
+  const current = openBotDefinition(currentId)?.id;
+  const candidates = OPENBOT_GALLERY.filter((definition) => definition.id !== current);
+  const pool = candidates.length > 0 ? candidates : OPENBOT_GALLERY;
+  if (pool.length === 0) return current ?? "";
+  const roll = random();
+  const index = Math.min(
+    pool.length - 1,
+    Math.max(0, Math.floor((Number.isFinite(roll) ? roll : 0) * pool.length)),
+  );
+  return pool[index].id;
+}
+
 /** `openbot:cat`, the value stored in `avatar_style`. */
 export function openBotStyleId(id: string): string {
   return `${OPENBOT_STYLE}:${id.trim().toLowerCase()}`;
@@ -400,6 +424,98 @@ export function openBotStateForMood(mood: AvatarMood | null | undefined): OpenBo
       return "idle";
   }
 }
+
+/**
+ * What an agent is doing with a tool, at the vocabulary the UI can name.
+ *
+ * The names are broader than any one tool: `file_read`, `read_file` and
+ * `cat` are all `reading`, because the point is what the face should say, not
+ * a registry of every tool.
+ */
+export type OpenBotActivity =
+  | "searching"
+  | "browsing"
+  | "reading"
+  | "running"
+  | "editing"
+  | "delegating"
+  | "reviewing";
+
+export const OPENBOT_ACTIVITIES: readonly OpenBotActivity[] = Object.freeze([
+  "searching",
+  "browsing",
+  "reading",
+  "running",
+  "editing",
+  "delegating",
+  "reviewing",
+]);
+
+function toolTokens(name: string): Set<string> {
+  return new Set(name.toLowerCase().replace(/[^a-z0-9]+/g, "_").split("_").filter(Boolean));
+}
+
+/**
+ * Map a tool name onto one of the seven activity faces.
+ *
+ * Ordered from specific to general: `web_search` is searching, not browsing,
+ * and `file_read` is reading, not running. An unknown tool is `running` rather
+ * than null, because something is happening and a neutral face would be a lie.
+ */
+export function openBotActivityForTool(
+  toolName: string | null | undefined,
+): OpenBotActivity | null {
+  if (typeof toolName !== "string" || !toolName.trim()) return null;
+  const tokens = toolTokens(toolName);
+  const has = (...names: string[]) => names.some((name) => tokens.has(name));
+
+  if (has("search", "grep", "glob", "find", "rg", "lookup")) return "searching";
+  if (has("browser", "fetch", "http", "url", "navigate", "dom", "screenshot", "web")) {
+    return "browsing";
+  }
+  if (has("read", "cat", "list", "ls", "view", "inspect")) return "reading";
+  if (has("edit", "write", "patch", "create", "replace", "apply", "insert")) {
+    return "editing";
+  }
+  if (has("delegate", "spawn", "handoff", "subagent", "agent", "task")) {
+    return "delegating";
+  }
+  if (has("test", "tests", "lint", "review", "diff", "check", "verify")) {
+    return "reviewing";
+  }
+  return "running";
+}
+
+/**
+ * The renderer state for an activity.
+ *
+ * Two limits are honest here rather than hidden. The package has six poses, not
+ * seven activities, so several activities intentionally share a pose:
+ * searching/browsing/reading use `thinking`, editing/running/delegating use
+ * `working`, and reviewing uses `waiting` (the attentive face). The activity is
+ * still carried separately so the label and any future renderer can distinguish
+ * them; this function is the nearest expressible face, not a claim of seven
+ * unique drawings.
+ */
+export function openBotStateForActivity(
+  activity: OpenBotActivity | null | undefined,
+): OpenBotState {
+  switch (activity) {
+    case "searching":
+    case "browsing":
+    case "reading":
+      return "thinking";
+    case "editing":
+    case "running":
+    case "delegating":
+      return "working";
+    case "reviewing":
+      return "waiting";
+    default:
+      return "working";
+  }
+}
+
 
 /** The renderer's two-mood axis, from a RAVENBOT mood. */
 export function openBotToneForMood(mood: AvatarMood | null | undefined): OpenBotTone {

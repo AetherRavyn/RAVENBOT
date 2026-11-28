@@ -141,6 +141,19 @@ pub fn cache_dir() -> PathBuf {
     under_root("cache")
 }
 
+/// Where user palette files live: `~/RAVENBOT/themes/<name>.json`.
+///
+/// Local-only by design. Nothing downloads a theme, and an invalid file is
+/// ignored rather than applied.
+pub fn themes_dir() -> PathBuf {
+    under_root("themes")
+}
+
+/// Where uploaded conversation backdrops live.
+pub fn backdrops_dir() -> PathBuf {
+    under_root("backdrops")
+}
+
 /// The parent of every office workspace.
 ///
 /// `RAVENBOT_PROJECTS_DIR` relocates just this subtree, for a user who wants

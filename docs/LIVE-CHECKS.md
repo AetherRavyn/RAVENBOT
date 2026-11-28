@@ -567,6 +567,53 @@ need a real display, so a release should check them by hand:
 Record the display/WebKit version, the states observed, and whether reduced
 motion and the material fallback behaved.
 
+## Manual activity-aware avatar check
+
+1. Run a conversation that reads a file, searches the web and runs a shell
+   command. Confirm the header and pre-token avatar switch between the thinking,
+   working and waiting poses while the status text keeps naming the real tool.
+2. Trigger two different tools within 1.4 seconds. Confirm the face does not
+   flicker more than once; the activity label may still change.
+3. Turn on the OS reduced-motion setting and repeat. Confirm the pose still
+   follows the work but the character does not animate.
+
+## Manual backdrop check
+
+1. Open a thread's **More** menu and choose **Conversation backdrop**. Apply
+   Aurora; confirm it sits behind the transcript, text stays readable, and
+   clicking/scrolling/selecting still works.
+2. Upload a PNG, then a WebM video. Confirm the image covers the pane, the video
+   is muted and loops without controls, and both survive a reload.
+3. Apply another backdrop, then **Undo**; confirm the previous backdrop returns.
+   Clear it and Undo again.
+4. Try an SVG and a file over 100 MB. Confirm both are refused with a message and
+   the current backdrop is unchanged.
+5. Change to Paper Light. Confirm the scrim follows the light canvas and the
+   transcript remains readable.
+
+## Manual theme palette check
+
+1. Create `~/RAVENBOT/themes/midnight-bloom.json` with the schema in
+   `docs/design-system.md` and confirm **Midnight Bloom** appears under
+   Settings → Appearance with a LOCAL badge.
+2. Apply it, edit `primary` and save. Confirm the UI re-tints without reopening
+   Settings. Rename the file and confirm the old id disappears and the new one
+   appears.
+3. Save invalid JSON, then an invalid colour. Confirm a console warning names the
+   file/reason, the invalid entry is absent and the active theme does not change.
+4. Confirm no network request is made and that deleting the active file falls
+   back to a built-in theme.
+
+## Manual attention-island check
+
+1. Trigger an approval from an agent with a custom OpenBot/photo avatar.
+2. Open the attention island and confirm it shows that agent's real avatar,
+   state dot, name and newest item rather than text alone.
+3. Apply a second agent's approval/question and confirm the island switches to
+   the newest item's avatar and state.
+
+Record the display/WebKit build, the files used and any refused input.
+
 ## Browser Teach and Replay
 
 The recorder and replay assets run in jsdom in CI, but the WebKit dock needs a

@@ -40,7 +40,8 @@
   import { initI18n, t } from "$lib/i18n";
   import { sessionRole } from "$lib/sessionRole.svelte";
   import { prefersReducedMotion, keyboardShortcuts } from "$lib/a11y";
-  import { getStoredTheme, applyTheme, subscribeTheme, type ThemeDefinition } from "$lib/theme";
+  import { getStoredTheme, subscribeTheme, type ThemeDefinition } from "$lib/theme";
+  import { startThemePaletteSync } from "$lib/themePalette";
   import { resolveTargetBotId } from "$lib/workspace/targetBot";
   import { needsDefaultAgentSetup } from "$lib/workspace/setup";
 
@@ -181,7 +182,10 @@
 
   onMount(() => {
     sessionRole.load();
-    applyTheme(getStoredTheme().id);
+    // The palette directory is read before the stored theme can be applied:
+    // a saved custom theme is not in `THEMES`, so applying first would write
+    // "openbot" back to localStorage and lose the selection.
+    const stopThemePalette = startThemePaletteSync();
     const unsubTheme = subscribeTheme((theme) => (currentTheme = theme));
 
     workspace.init();
@@ -254,6 +258,7 @@
       fleetActivity.stop();
       attention.stop();
       stopWorkflowScheduler();
+      stopThemePalette();
       unsubTheme();
       unsubK();
       unsubComma();
