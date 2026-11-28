@@ -5479,6 +5479,7 @@ dependencies = [
  "ravenbot-models",
  "ravenbot-plugins",
  "ravenbot-sandbox",
+ "ravenbot-scheduler",
  "ravenbot-skills",
  "ravenbot-vision",
  "serde",

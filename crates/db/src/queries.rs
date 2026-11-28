@@ -1568,6 +1568,28 @@ impl RunProgressQueries {
         Ok(exists.is_some())
     }
 
+    /// Active, non-paused runs for one agent. Used by `interrupt_agent`; a
+    /// paused run is deliberately not included because there is no live work
+    /// to stop until someone resumes it.
+    pub async fn active_ids_for_bot(
+        pool: &SqlitePool,
+        bot_id: Uuid,
+    ) -> Result<Vec<Uuid>, sqlx::Error> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT id FROM runs
+             WHERE bot_id = ?
+               AND state IN ('planning','acting','observing','reflecting','waiting_on_user')
+             ORDER BY created_at ASC",
+        )
+        .bind(bot_id.to_string())
+        .fetch_all(pool)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|(id,)| Uuid::parse_str(&id).ok())
+            .collect())
+    }
+
     /// Every non-terminal run currently attached to one thread.
     ///
     /// Used when a user stops a 1:1 goal: scheduling alone would leave the

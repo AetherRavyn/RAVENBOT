@@ -231,6 +231,14 @@ voice, and computer control. It also supports:
   hanging. Interrupted tasks fail with a cause on restart, and task threads are
   never resumed as ordinary chats. See
   [`docs/AGENT-TASKS.md`](docs/AGENT-TASKS.md).
+- **Agent and routine administration tools.** Agents can list/read the roster
+  and manage schedules through ten explicit tools that follow the desktop IPC
+  role boundary: reads for every workspace role, interrupt/test for
+  owner/operator, create/update/delete for the owner only. A run with no actor
+  is read-only; delegation, tasks and routine tests copy the caller's actor.
+  Tool-created agents start with no permissions, no delegation, no host control,
+  Ask approvals and a minimal skill set; `create_routine` starts paused unless
+  explicitly armed. See [`docs/AGENT-ADMIN.md`](docs/AGENT-ADMIN.md).
 
 ### Output people can open
 
@@ -449,8 +457,8 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 272 Tauri library tests
-  plus 7 cross-tenant isolation tests, 254 runtime tests, 240 skill tests, 141
+- **1,100+ Rust tests** across the workspace, including 273 Tauri library tests
+  plus 7 cross-tenant isolation tests, 255 runtime tests, 244 skill tests, 142
   database tests, 103 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
 - **1,017 frontend tests** across 144 files. A gate rejects literal English

@@ -130,6 +130,9 @@ outside world:
   owner-entered secure card and `list_api_keys` returns metadata);
 - every background-task tool: `start_task`, `message_task`, `close_task`,
   `await_event`, `list_waits`, `close_wait`;
+- every agent/routine administration tool: `list_agents`, `read_agent`,
+  `create_agent`, `update_agent`, `interrupt_agent`, `list_routines`,
+  `create_routine`, `update_routine`, `delete_routine`, `test_routine`;
 - `file_write`, `file_edit`, `code_edit`;
 - write-like MCP tools (names containing write/create/update/delete/send/…);
 - non-read `http_request` methods.

@@ -21,6 +21,10 @@ pub struct NewAgentTask<'a> {
     pub target_bot_id: Uuid,
     pub owner_thread_id: Option<Uuid>,
     pub owner_run_id: Option<Uuid>,
+    pub actor_id: Option<&'a str>,
+    pub actor_name: Option<&'a str>,
+    pub actor_role: Option<&'a str>,
+    pub actor_workspace_id: Option<&'a str>,
     pub thread_id: Option<Uuid>,
     pub office_id: Option<Uuid>,
     pub title: &'a str,
@@ -59,6 +63,10 @@ struct TaskRow {
     target_bot_id: String,
     owner_thread_id: Option<String>,
     owner_run_id: Option<String>,
+    actor_id: Option<String>,
+    actor_name: Option<String>,
+    actor_role: Option<String>,
+    actor_workspace_id: Option<String>,
     thread_id: Option<String>,
     run_id: Option<String>,
     office_id: Option<String>,
@@ -108,6 +116,10 @@ impl TaskRow {
                 .owner_run_id
                 .as_deref()
                 .and_then(|value| Uuid::parse_str(value).ok()),
+            actor_id: self.actor_id,
+            actor_name: self.actor_name,
+            actor_role: self.actor_role,
+            actor_workspace_id: self.actor_workspace_id,
             thread_id: self
                 .thread_id
                 .as_deref()
@@ -141,9 +153,9 @@ impl TaskRow {
 }
 
 const TASK_COLUMNS: &str = "id, owner_bot_id, target_bot_id, owner_thread_id, owner_run_id, \
-     thread_id, run_id, office_id, title, instruction, expected_result, state, resources, \
-     depends_on, workspace, depth, auto_allow, approval_policy, result, error, \
-     created_at, started_at, completed_at, updated_at";
+     actor_id, actor_name, actor_role, actor_workspace_id, thread_id, run_id, office_id, title, \
+     instruction, expected_result, state, resources, depends_on, workspace, depth, auto_allow, \
+     approval_policy, result, error, created_at, started_at, completed_at, updated_at";
 
 pub struct AgentTaskQueries;
 
@@ -172,18 +184,23 @@ impl AgentTaskQueries {
             serde_json::to_string(new.depends_on).map_err(|error| error.to_string())?;
         sqlx::query(
             "INSERT INTO agent_tasks
-             (id, owner_bot_id, target_bot_id, owner_thread_id, owner_run_id, thread_id,
-              run_id, office_id, title, instruction, expected_result, state, resources,
-              depends_on, workspace, depth, auto_allow, approval_policy, result, error,
-              created_at, started_at, completed_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?,
-                     NULL, NULL, ?, NULL, NULL, ?)",
+             (id, owner_bot_id, target_bot_id, owner_thread_id, owner_run_id, actor_id,
+              actor_name, actor_role, actor_workspace_id, thread_id, run_id, office_id, title,
+              instruction, expected_result, state, resources, depends_on, workspace, depth,
+              auto_allow, approval_policy, result, error, created_at, started_at, completed_at,
+              updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'queued', ?, ?, ?, ?,
+                     ?, ?, NULL, NULL, ?, NULL, NULL, ?)",
         )
         .bind(id.to_string())
         .bind(new.owner_bot_id.to_string())
         .bind(new.target_bot_id.to_string())
         .bind(new.owner_thread_id.map(|id| id.to_string()))
         .bind(new.owner_run_id.map(|id| id.to_string()))
+        .bind(new.actor_id)
+        .bind(new.actor_name)
+        .bind(new.actor_role)
+        .bind(new.actor_workspace_id)
         .bind(new.thread_id.map(|id| id.to_string()))
         .bind(new.office_id.map(|id| id.to_string()))
         .bind(&title)
@@ -930,6 +947,10 @@ mod tests {
             target_bot_id: target,
             owner_thread_id: Some(Uuid::new_v4()),
             owner_run_id: Some(Uuid::new_v4()),
+            actor_id: None,
+            actor_name: None,
+            actor_role: None,
+            actor_workspace_id: None,
             thread_id: Some(thread_id),
             office_id: None,
             title,
@@ -970,6 +991,51 @@ mod tests {
             .expect("claim")
             .claimed
             .expect("a task")
+    }
+
+    #[tokio::test]
+    async fn actor_metadata_round_trips_with_a_task() {
+        let pool = db().await;
+        let (owner, target) = bots(&pool).await;
+        let thread = ravenbot_core::Thread::new_task(target, "Actor task");
+        crate::queries::ThreadQueries::create(&pool, &thread)
+            .await
+            .expect("thread");
+        let task = AgentTaskQueries::create(
+            &pool,
+            NewAgentTask {
+                id: Uuid::new_v4(),
+                owner_bot_id: owner,
+                target_bot_id: target,
+                owner_thread_id: None,
+                owner_run_id: None,
+                actor_id: Some("chat-1"),
+                actor_name: Some("Chat user"),
+                actor_role: Some("chat"),
+                actor_workspace_id: Some("workspace-1"),
+                thread_id: Some(thread.id),
+                office_id: None,
+                title: "Actor task",
+                instruction: "Do not become the owner.",
+                expected_result: "",
+                resources: &[],
+                depends_on: &[],
+                workspace: None,
+                depth: 1,
+                auto_allow: false,
+                approval_policy: None,
+            },
+        )
+        .await
+        .expect("task");
+        assert_eq!(task.actor_id.as_deref(), Some("chat-1"));
+        assert_eq!(task.actor_role.as_deref(), Some("chat"));
+        assert_eq!(task.actor_workspace_id.as_deref(), Some("workspace-1"));
+        let loaded = AgentTaskQueries::get(&pool, task.id)
+            .await
+            .unwrap()
+            .expect("loaded");
+        assert_eq!(loaded.actor_name.as_deref(), Some("Chat user"));
     }
 
     #[tokio::test]

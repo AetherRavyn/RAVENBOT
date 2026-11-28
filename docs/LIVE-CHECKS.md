@@ -173,6 +173,34 @@ appears after a delay:
     agent's task. Confirm both are refused. Try starting a task for an agent
     the caller cannot delegate to; confirm `start_task` is refused.
 
+## Manual agent/routine admin check
+
+1. As the workspace owner in a normal desktop conversation, ask for
+   `list_agents` and `read_agent`; confirm you get the roster and one profile
+   with no custom system prompt, working-folder path or permission scopes.
+2. Ask the agent to `create_agent` with a name and description. Confirm the new
+   agent appears in Settings with **no permissions**, **no delegation targets**,
+   **host control off**, **Ask** approval mode, and only memory/todo/ask skills.
+3. Ask it to `update_agent` including extra `permissions`, `skills`,
+   `approval_mode` and `host_control` fields. Confirm only the name/description/
+   rank/specialty/model changed and the capability fields did not.
+4. As an operator account, use a run in the shared workspace:
+   - `list_agents`/`read_agent`/`list_routines` work;
+   - `create_agent`/`update_agent`/`create_routine`/`update_routine`/
+     `delete_routine` are refused;
+   - `interrupt_agent` and `test_routine` work.
+5. As a viewer, confirm reads work and every write/operate tool is refused.
+6. From a paired Telegram/Slack/Discord chat, confirm all ten tools are refused
+   (a chat identity is not a workspace role).
+7. Ask for `create_routine` without `enabled`; confirm it is paused. Enable it
+   with `update_routine`, then call `test_routine`; confirm the result comes
+   back and `last_run_at` did not move. Delete the routine and confirm its MCP
+   event triggers are gone.
+8. Start a headless routine or office graph node (no owner actor) and confirm a
+   configuration tool is refused while `list_agents` remains read-only. Confirm
+   a delegated/task/routine-test run inherits an owner/operator actor rather
+   than becoming owner by accident.
+
 ## Manual voice-key check
 
 Transcription and speech both prefer the OpenAI key saved in Settings, then

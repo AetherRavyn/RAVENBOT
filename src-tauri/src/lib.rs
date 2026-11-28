@@ -5233,6 +5233,16 @@ fn default_agent_skills() -> Vec<String> {
         "await_event",
         "list_waits",
         "close_wait",
+        "list_agents",
+        "read_agent",
+        "create_agent",
+        "update_agent",
+        "interrupt_agent",
+        "list_routines",
+        "create_routine",
+        "update_routine",
+        "delete_routine",
+        "test_routine",
         "note_manager",
     ]
     .iter()

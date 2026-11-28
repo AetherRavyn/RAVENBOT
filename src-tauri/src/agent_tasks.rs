@@ -142,6 +142,17 @@ async fn run_claimed_task(
     ravenbot_db::queries::RunQueries::insert(db.pool(), &run)
         .await
         .map_err(|error| error.to_string())?;
+    if let Some(role) = task.actor_role.as_deref() {
+        let _ = ravenbot_db::queries::RunQueries::set_actor(
+            db.pool(),
+            run.id,
+            task.actor_id.as_deref().unwrap_or("task"),
+            task.actor_name.as_deref().unwrap_or("task"),
+            role,
+            task.actor_workspace_id.as_deref().unwrap_or("workspace"),
+        )
+        .await;
+    }
     let Some(running) =
         AgentTaskQueries::mark_running(db.pool(), task.id, thread.id, run.id, Utc::now())
             .await
@@ -362,6 +373,10 @@ mod tests {
                 target_bot_id: target.id,
                 owner_thread_id: None,
                 owner_run_id: None,
+                actor_id: Some("operator-1"),
+                actor_name: Some("Operator"),
+                actor_role: Some("operator"),
+                actor_workspace_id: Some("workspace-1"),
                 thread_id: Some(thread.id),
                 office_id: None,
                 title: "Check the build",
@@ -426,6 +441,12 @@ mod tests {
             .unwrap()
             .expect("run");
         assert_eq!(run.state, ravenbot_core::RunState::Completed);
+        let actor = ravenbot_db::queries::RunQueries::actor_for(db.pool(), run.id)
+            .await
+            .unwrap()
+            .expect("task run actor");
+        assert_eq!(actor.role, "operator");
+        assert_eq!(actor.workspace_id, "workspace-1");
         let fired = AgentWaitQueries::get(db.pool(), wait.id)
             .await
             .unwrap()

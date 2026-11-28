@@ -56,6 +56,26 @@ All notable changes to RAVENBOT are documented here.
   split describes the action, not a separate approval bypass. Tab list/close,
   downloads/uploads and a live-display run remain open.
 
+### Agent and routine administration tools
+
+- **The IPC role boundary, not a wider one.** `list_agents`, `read_agent`,
+  `create_agent`, `update_agent`, `interrupt_agent`, `list_routines`,
+  `create_routine`, `update_routine`, `delete_routine` and `test_routine` are
+  High risk and enforce the same read/operate/configure split as the desktop
+  gate. Only the owner can create or change agents/routines; owner/operator can
+  interrupt an agent or test a routine; a paired chat and any unknown role are
+  denied.
+- **Fail closed when there is no actor.** A run with no `run_actors` row is
+  read-only; delegation, background tasks and routine tests copy the caller's
+  actor, so a chat/operator identity cannot launder itself into owner powers.
+- **Deliberately narrow writes.** Tool-created agents start with no
+  permissions, no delegation targets, no host control, Ask approvals and only
+  permission-free memory/todo/ask skills. `update_agent` changes identity/model
+  fields only; permissions, skills, approval mode, host control and folder stay
+  in owner-only Settings. `create_routine` starts paused unless explicitly
+  armed; `test_routine` does not advance the schedule.
+- **Docs:** [docs/AGENT-ADMIN.md](docs/AGENT-ADMIN.md).
+
 ### Durable background agent tasks and event waits
 
 - **Tasks that outlive a tool call.** `start_task` creates a visible task

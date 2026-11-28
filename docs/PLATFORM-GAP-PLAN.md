@@ -51,7 +51,7 @@ Every slice must satisfy all of these before it is called done:
 | 7 | Chat backdrop (image/video) | Medium | M | Medium | planned |
 | 8 | Avatar-aware attention island | Medium | S | Low | planned |
 | 9 | Agent tasks and event waits | High | L | High | shipped |
-| 10 | Agent/profile/routine tools | Medium | M | High | planned |
+| 10 | Agent/profile/routine tools | Medium | M | High | shipped |
 | 11 | Theme palette files | Low | S | Low | planned |
 | 12 | Avatar candidate shuffle | Low | S | Low | planned |
 | — | Full agent dock, crew pile, server plush | Low for us | L | Low | deferred |
@@ -320,21 +320,34 @@ and more than one fleet-owner process.
 
 ---
 
-## Phase 7 — Agent/profile/routine tools — `planned`
+## Phase 7 — Agent/profile/routine tools — `shipped`
 
-Add agent-callable versions of operations the UI already owns:
+The ten tools are added and role-gated against the same IPC boundary:
 
-- `list_agents`, `read_agent`, `create_agent`, `update_agent`, `interrupt_agent`.
+- `list_agents`, `read_agent`, `create_agent`, `update_agent`,
+  `interrupt_agent`.
 - `list_routines`, `create_routine`, `update_routine`, `delete_routine`,
   `test_routine`.
-- Section/folder organization only if a real request appears.
-- High risk, owner/role-gated, no privilege widening, no cross-workspace access.
-- Test the same boundary as the IPC gate; a tool must not bypass owner-only
-  configuration.
+- Read tools allow owner/operator/viewer; interrupt and test allow
+  owner/operator; create/update/delete configuration is owner-only. A paired
+  chat and any unknown actor are denied.
+- **No actor means read-only.** Headless routines, office graph nodes and legacy
+  runs cannot claim owner configuration powers. Delegation, background tasks
+  and routine tests copy the caller's actor onto the child run.
+- `create_agent` starts with no permissions, no delegation, no host control,
+  Ask approvals and only permission-free memory/todo/ask skills. `update_agent`
+  changes identity/model fields only; capabilities remain owner-only Settings.
+- `create_routine` starts paused unless explicitly enabled; `test_routine` does
+  not advance `last_run_at` or the schedule and keeps the normal Review gates.
+- Routine deletion also removes its MCP event triggers.
+- Tests: the full role matrix, no-actor fail-closed behavior, safe agent
+  defaults, inability to add privileges through update, paused-by-default
+  routines, test-without-schedule-change and the IPC command mapping.
+- Docs: [AGENT-ADMIN.md](AGENT-ADMIN.md).
 
-Do **not** add a generic `tool_call` bridge or tool discovery until the catalog
-is large enough to justify it. Our ~46 native skills plus MCP/OpenAPI tools do
-not need prompt-hiding yet.
+**Still open:** `delete_agent`, section/folder organization, avatar/identity
+editing beyond name/rank/specialty, and a generic tool-discovery bridge (still
+deliberately rejected).
 
 ---
 

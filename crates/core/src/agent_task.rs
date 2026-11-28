@@ -129,6 +129,12 @@ pub struct AgentTask {
     pub target_bot_id: Uuid,
     pub owner_thread_id: Option<Uuid>,
     pub owner_run_id: Option<Uuid>,
+    /// The account/chat actor that started the task, copied onto the task run
+    /// so its tools enforce the same role boundary as the caller.
+    pub actor_id: Option<String>,
+    pub actor_name: Option<String>,
+    pub actor_role: Option<String>,
+    pub actor_workspace_id: Option<String>,
     pub thread_id: Option<Uuid>,
     pub run_id: Option<Uuid>,
     pub office_id: Option<Uuid>,
@@ -550,6 +556,10 @@ mod tests {
             target_bot_id: Uuid::new_v4(),
             owner_thread_id: None,
             owner_run_id: None,
+            actor_id: None,
+            actor_name: None,
+            actor_role: None,
+            actor_workspace_id: None,
             thread_id: None,
             run_id: None,
             office_id: None,

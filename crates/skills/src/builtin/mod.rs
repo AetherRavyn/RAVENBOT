@@ -1,5 +1,6 @@
 //! Built-in skills
 
+pub mod agent_admin;
 pub mod agent_tasks;
 pub mod analyze_image;
 pub mod api_keys;
@@ -49,6 +50,10 @@ pub mod voice_output;
 pub mod web_search;
 pub mod youtube;
 
+pub use agent_admin::{
+    CreateAgentSkill, CreateRoutineSkill, DeleteRoutineSkill, InterruptAgentSkill, ListAgentsSkill,
+    ListRoutinesSkill, ReadAgentSkill, TestRoutineSkill, UpdateAgentSkill, UpdateRoutineSkill,
+};
 pub use agent_tasks::{
     AwaitEventSkill, CloseTaskSkill, CloseWaitSkill, ListWaitsSkill, MessageTaskSkill,
     StartTaskSkill,

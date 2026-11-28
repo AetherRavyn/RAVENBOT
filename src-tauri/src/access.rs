@@ -277,6 +277,38 @@ mod tests {
     }
 
     #[test]
+    fn agent_admin_tools_match_the_ipc_role_boundary() {
+        // Read tools: the same commands a viewer may invoke.
+        for command in ["list_bots", "get_bot", "list_routines"] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(role_allows("operator", command), "{command}");
+            assert!(role_allows("viewer", command), "{command}");
+        }
+        // Create/update/delete configuration is owner-only.
+        for command in [
+            "create_bot",
+            "update_bot",
+            "delete_bot",
+            "create_routine",
+            "update_routine",
+            "delete_routine",
+        ] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(!role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
+        // Operate tools: cancel/run work, like cancel_run and run_routine_now.
+        for command in ["cancel_run", "run_routine_now"] {
+            assert!(role_allows("owner", command), "{command}");
+            assert!(role_allows("operator", command), "{command}");
+            assert!(!role_allows("viewer", command), "{command}");
+        }
+        // A paired-chat identity is not a workspace role.
+        assert!(!role_allows("chat", "list_bots"));
+        assert!(!role_allows("chat", "create_bot"));
+    }
+
+    #[test]
     fn api_key_answers_are_owner_only() {
         assert!(role_allows("owner", "submit_api_key_answer"));
         assert!(!role_allows("operator", "submit_api_key_answer"));

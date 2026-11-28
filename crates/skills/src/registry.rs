@@ -57,6 +57,16 @@ impl SkillRegistry {
         registry.register(Arc::new(AwaitEventSkill::new()));
         registry.register(Arc::new(ListWaitsSkill::new()));
         registry.register(Arc::new(CloseWaitSkill::new()));
+        registry.register(Arc::new(ListAgentsSkill::new()));
+        registry.register(Arc::new(ReadAgentSkill::new()));
+        registry.register(Arc::new(CreateAgentSkill::new()));
+        registry.register(Arc::new(UpdateAgentSkill::new()));
+        registry.register(Arc::new(InterruptAgentSkill::new()));
+        registry.register(Arc::new(ListRoutinesSkill::new()));
+        registry.register(Arc::new(CreateRoutineSkill::new()));
+        registry.register(Arc::new(UpdateRoutineSkill::new()));
+        registry.register(Arc::new(DeleteRoutineSkill::new()));
+        registry.register(Arc::new(TestRoutineSkill::new()));
         registry.register(Arc::new(ComputerControlSkill::new()));
         registry.register(Arc::new(YoutubeSkill::new()));
         registry.register(Arc::new(ArxivSkill::new()));

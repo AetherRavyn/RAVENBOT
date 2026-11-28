@@ -10,6 +10,7 @@ ravenbot-core = { path = "../core" }
 ravenbot-db = { path = "../db" }
 ravenbot-models = { path = "../models" }
 ravenbot-skills = { path = "../skills" }
+ravenbot-scheduler = { path = "../scheduler" }
 ravenbot-plugins = { path = "../plugins" }
 ravenbot-mcp = { path = "../mcp" }
 ravenbot-sandbox = { path = "../sandbox" }

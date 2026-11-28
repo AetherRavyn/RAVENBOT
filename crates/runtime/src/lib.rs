@@ -1266,6 +1266,38 @@ fn fold_reasoning(into: &mut String, reasoning: Option<&str>, first: bool) {
 /// whoever started it no longer knows what the answer needs to look like.
 const MAX_DELEGATION_CHAIN: u32 = 3;
 
+/// What a workspace role may do through the agent/routine tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolAccess {
+    /// List/read metadata. The same read commands a viewer may invoke over IPC.
+    Read,
+    /// Cancel running work or test a routine. The `cancel_run` /
+    /// `run_routine_now` operator commands.
+    Operate,
+    /// Create or change agents and routines. The owner-only IPC commands.
+    Configure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolRole {
+    Owner,
+    Operator,
+    Viewer,
+    /// A paired-chat identity or an unknown role. It is not a workspace role
+    /// and gets no configuration surface.
+    Other,
+}
+
+impl ToolRole {
+    fn allows(self, access: ToolAccess) -> bool {
+        match access {
+            ToolAccess::Read => matches!(self, Self::Owner | Self::Operator | Self::Viewer),
+            ToolAccess::Operate => matches!(self, Self::Owner | Self::Operator),
+            ToolAccess::Configure => matches!(self, Self::Owner),
+        }
+    }
+}
+
 impl Runtime {
     /// Create a new runtime
     pub fn new(db: Database) -> Self {
@@ -2692,6 +2724,20 @@ impl Runtime {
         if let Err(e) = ravenbot_db::queries::RunQueries::insert(self.db.pool(), &child_run).await {
             return ravenbot_skills::SkillResult::failure(e.to_string());
         }
+        // Delegation must not launder an operator/chat run into an owner run.
+        if let Ok(Some(actor)) =
+            ravenbot_db::queries::RunQueries::actor_for(self.db.pool(), parent_run.id).await
+        {
+            let _ = ravenbot_db::queries::RunQueries::set_actor(
+                self.db.pool(),
+                child_run.id,
+                &actor.actor_id,
+                &actor.actor_name,
+                &actor.role,
+                &actor.workspace_id,
+            )
+            .await;
+        }
 
         {
             let mut map = self
@@ -3204,6 +3250,16 @@ impl Runtime {
             "await_event" => "Wait for an event".to_string(),
             "list_waits" => "List event waits".to_string(),
             "close_wait" => "Close an event wait".to_string(),
+            "list_agents" => "List agents".to_string(),
+            "read_agent" => "Read an agent".to_string(),
+            "create_agent" => "Create an agent".to_string(),
+            "update_agent" => "Update an agent".to_string(),
+            "interrupt_agent" => "Interrupt an agent".to_string(),
+            "list_routines" => "List routines".to_string(),
+            "create_routine" => "Create a routine".to_string(),
+            "update_routine" => "Update a routine".to_string(),
+            "delete_routine" => "Delete a routine".to_string(),
+            "test_routine" => "Test a routine".to_string(),
             "diagnostics" => "Check diagnostics".to_string(),
             "image_gen" => "Generate an image".to_string(),
             _ => format!("Use {}", bare),
@@ -3740,6 +3796,26 @@ impl Runtime {
             return self.list_waits(run, args.clone()).await;
         } else if name == "close_wait" {
             return self.close_wait(run, args.clone()).await;
+        } else if name == "list_agents" {
+            return self.list_agents_tool(run).await;
+        } else if name == "read_agent" {
+            return self.read_agent_tool(run, args.clone()).await;
+        } else if name == "create_agent" {
+            return self.create_agent_tool(run, bot, args.clone()).await;
+        } else if name == "update_agent" {
+            return self.update_agent_tool(run, args.clone()).await;
+        } else if name == "interrupt_agent" {
+            return self.interrupt_agent_tool(run, args.clone()).await;
+        } else if name == "list_routines" {
+            return self.list_routines_tool(run, bot, args.clone()).await;
+        } else if name == "create_routine" {
+            return self.create_routine_tool(run, bot, args.clone()).await;
+        } else if name == "update_routine" {
+            return self.update_routine_tool(run, args.clone()).await;
+        } else if name == "delete_routine" {
+            return self.delete_routine_tool(run, args.clone()).await;
+        } else if name == "test_routine" {
+            return self.test_routine_tool(run, args.clone()).await;
         } else if name == "delegate" {
             Ok(self.exec_delegation(run, args.clone()).await)
         } else if name == "memory_save" {
@@ -4129,6 +4205,726 @@ impl Runtime {
         self.wait_for_question(run, &req).await
     }
 
+    /// Resolve the run's workspace actor. A run with no actor row is
+    /// deliberately read-only: an unattended graph node, a headless routine or
+    /// a legacy run must not be able to claim owner configuration powers. The
+    /// desktop sets an owner actor; delegation and task runs copy it. A paired
+    /// chat records `role = "chat"`, which is not a workspace role and gets no
+    /// configuration surface.
+    async fn tool_role(&self, run: &Run) -> Result<ToolRole, String> {
+        let actor = ravenbot_db::queries::RunQueries::actor_for(self.db.pool(), run.id)
+            .await
+            .map_err(|error| format!("Could not read the run actor: {error}"))?;
+        Ok(match actor {
+            None => ToolRole::Viewer,
+            Some(actor) => match actor.role.trim().to_ascii_lowercase().as_str() {
+                "owner" => ToolRole::Owner,
+                "operator" => ToolRole::Operator,
+                "viewer" => ToolRole::Viewer,
+                _ => ToolRole::Other,
+            },
+        })
+    }
+
+    async fn require_tool_access(&self, run: &Run, access: ToolAccess) -> Result<(), String> {
+        let role = self.tool_role(run).await?;
+        if role.allows(access) {
+            return Ok(());
+        }
+        Err(match access {
+            ToolAccess::Read => {
+                "This workspace role cannot read agent or routine configuration.".to_string()
+            }
+            ToolAccess::Operate => {
+                "Only a workspace owner or operator can interrupt agents or run routines."
+                    .to_string()
+            }
+            ToolAccess::Configure => {
+                "Only the workspace owner can create or change agents and routines.".to_string()
+            }
+        })
+    }
+
+    /// Resolve an agent by id or exact name inside this workspace database.
+    async fn resolve_agent(&self, raw: &str) -> Result<ravenbot_core::Bot, String> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Err("An agent id or name is required.".to_string());
+        }
+        if let Ok(id) = Uuid::parse_str(raw) {
+            if let Some(bot) = ravenbot_db::queries::BotQueries::get(self.db.pool(), id)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                return Ok(bot);
+            }
+        }
+        ravenbot_db::queries::BotQueries::list(self.db.pool())
+            .await
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|bot| bot.name.eq_ignore_ascii_case(raw))
+            .ok_or_else(|| format!("Agent not found: {raw}"))
+    }
+
+    fn permission_label(permission: &ravenbot_core::Permission) -> &'static str {
+        match permission {
+            ravenbot_core::Permission::FileSystem { .. } => "FileSystem",
+            ravenbot_core::Permission::Network { .. } => "Network",
+            ravenbot_core::Permission::Shell => "Shell",
+            ravenbot_core::Permission::Screenshot => "Screenshot",
+            ravenbot_core::Permission::InputControl => "InputControl",
+            ravenbot_core::Permission::AudioCapture => "AudioCapture",
+            ravenbot_core::Permission::AudioPlayback => "AudioPlayback",
+            ravenbot_core::Permission::Clipboard => "Clipboard",
+            ravenbot_core::Permission::Delegation => "Delegation",
+        }
+    }
+
+    fn agent_profile(bot: &ravenbot_core::Bot, full: bool) -> serde_json::Value {
+        // Names only: file roots and network domains belong to the owner-only
+        // Settings surface, not to an agent-readable profile.
+        let permissions: Vec<&str> = bot.permissions.iter().map(Self::permission_label).collect();
+        let mut value = serde_json::json!({
+            "id": bot.id,
+            "name": bot.name,
+            "description": bot.description,
+            "rank": bot.rank,
+            "specialty": bot.specialty,
+            "status": bot.status,
+            "is_orchestrator": bot.is_orchestrator,
+            "model_provider": bot.config.model_provider,
+            "model_id": bot.config.model_id,
+            "approval_mode": bot.approval_mode.as_str(),
+        });
+        if full {
+            value["skills"] = serde_json::json!(bot.skills);
+            value["permissions"] = serde_json::json!(permissions);
+            value["delegate_to"] = serde_json::json!(bot.delegate_to);
+            value["host_control"] = serde_json::json!(bot.config.host_control);
+            value["created_at"] = serde_json::json!(bot.created_at);
+            value["updated_at"] = serde_json::json!(bot.updated_at);
+            value["last_active_at"] = serde_json::json!(bot.last_active_at);
+            value["max_tokens"] = serde_json::json!(bot.config.max_tokens);
+            value["temperature"] = serde_json::json!(bot.config.temperature);
+            value["sandbox_tier"] = serde_json::json!(bot.config.sandbox_tier);
+        }
+        value
+    }
+
+    fn clean_optional_text(
+        args: &serde_json::Value,
+        key: &str,
+        max: usize,
+    ) -> Result<Option<String>, String> {
+        let Some(value) = args.get(key) else {
+            return Ok(None);
+        };
+        let value = value
+            .as_str()
+            .ok_or_else(|| format!("`{key}` must be a string."))?
+            .trim();
+        if value.chars().count() > max {
+            return Err(format!("`{key}` is longer than {max} characters."));
+        }
+        Ok(Some(value.to_string()))
+    }
+
+    fn routine_summary(routine: &ravenbot_core::Routine) -> serde_json::Value {
+        serde_json::json!({
+            "routine_id": routine.id,
+            "bot_id": routine.bot_id,
+            "name": routine.name,
+            "description": routine.description,
+            "schedule": routine.schedule,
+            "instruction": routine.instruction,
+            "enabled": routine.is_enabled,
+            "last_run_at": routine.last_run_at,
+            "created_at": routine.created_at,
+            "updated_at": routine.updated_at,
+        })
+    }
+
+    /// `list_agents`: safe workspace roster.
+    async fn list_agents_tool(&self, run: &Run) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Read).await {
+            return serde_json::json!({ "error": error });
+        }
+        match ravenbot_db::queries::BotQueries::list(self.db.pool()).await {
+            Ok(bots) => {
+                let total = bots.len();
+                let agents: Vec<serde_json::Value> = bots
+                    .iter()
+                    .take(100)
+                    .map(|bot| {
+                        let mut profile = Self::agent_profile(bot, false);
+                        if let Some(description) = profile["description"].as_str() {
+                            if description.chars().count() > 400 {
+                                profile["description"] = serde_json::json!(format!(
+                                    "{}…",
+                                    description.chars().take(400).collect::<String>()
+                                ));
+                            }
+                        }
+                        profile
+                    })
+                    .collect();
+                let truncated = total > agents.len();
+                serde_json::json!({ "agents": agents, "count": total, "truncated": truncated })
+            }
+            Err(error) => serde_json::json!({ "error": format!("Could not list agents: {error}") }),
+        }
+    }
+
+    /// `read_agent`: one safe profile.
+    async fn read_agent_tool(&self, run: &Run, args: serde_json::Value) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Read).await {
+            return serde_json::json!({ "error": error });
+        }
+        let raw = args
+            .get("agent")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        match self.resolve_agent(raw).await {
+            Ok(bot) => Self::agent_profile(&bot, true),
+            Err(error) => serde_json::json!({ "error": error }),
+        }
+    }
+
+    /// `create_agent`: owner-only, with deliberately narrow safe defaults.
+    async fn create_agent_tool(
+        &self,
+        run: &Run,
+        bot: &ravenbot_core::Bot,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Configure).await {
+            return serde_json::json!({ "error": error });
+        }
+        let name = args
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if name.is_empty() || name.chars().count() > 120 {
+            return serde_json::json!({ "error": "An agent needs a name of at most 120 characters." });
+        }
+        let description = args
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if description.is_empty() || description.chars().count() > 2_000 {
+            return serde_json::json!({
+                "error": "An agent needs a description of at most 2,000 characters."
+            });
+        }
+        let rank = match Self::clean_optional_text(&args, "rank", 120) {
+            Ok(rank) => rank,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let specialty = match Self::clean_optional_text(&args, "specialty", 120) {
+            Ok(specialty) => specialty,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let provider = match Self::clean_optional_text(&args, "provider", 200) {
+            Ok(Some(provider)) if !provider.is_empty() => provider,
+            Ok(_) => bot.config.model_provider.clone(),
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let model = match Self::clean_optional_text(&args, "model", 200) {
+            Ok(Some(model)) if !model.is_empty() => model,
+            Ok(_) => bot.config.model_id.clone(),
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let existing = ravenbot_db::queries::BotQueries::list(self.db.pool())
+            .await
+            .unwrap_or_default();
+        if existing
+            .iter()
+            .any(|candidate| candidate.name.eq_ignore_ascii_case(&name))
+        {
+            return serde_json::json!({
+                "error": format!("An agent named '{name}' already exists.")
+            });
+        }
+        let mut created = ravenbot_core::Bot::new(name, description);
+        created.rank = rank;
+        created.specialty = specialty;
+        created.config.model_provider = provider;
+        created.config.model_id = model;
+        created.config.host_control = false;
+        created.permissions = Vec::new();
+        created.is_orchestrator = false;
+        created.delegate_to = Vec::new();
+        created.approval_mode = ravenbot_core::ApprovalMode::Ask;
+        // A tool-created agent gets only permission-free memory/todo/ask
+        // capabilities. File, shell, browser and delegation skills remain
+        // owner-configured.
+        created.skills = vec![
+            "memory_recall".to_string(),
+            "memory_save".to_string(),
+            "todo".to_string(),
+            "ask_user".to_string(),
+        ];
+        match ravenbot_db::queries::BotQueries::insert(self.db.pool(), &created).await {
+            Ok(()) => serde_json::json!({
+                "created": true,
+                "agent": Self::agent_profile(&created, true),
+                "note": "The new agent has no permissions or delegation targets and uses Ask approvals. Configure capabilities in Settings."
+            }),
+            Err(error) => {
+                serde_json::json!({ "error": format!("Could not create the agent: {error}") })
+            }
+        }
+    }
+
+    /// `update_agent`: owner-only identity/model changes, never capabilities.
+    async fn update_agent_tool(&self, run: &Run, args: serde_json::Value) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Configure).await {
+            return serde_json::json!({ "error": error });
+        }
+        let raw = args
+            .get("agent")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let mut bot = match self.resolve_agent(raw).await {
+            Ok(bot) => bot,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        if let Some(name) = match Self::clean_optional_text(&args, "name", 120) {
+            Ok(name) => name,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+            if name.is_empty() {
+                return serde_json::json!({ "error": "An agent name cannot be empty." });
+            }
+            let existing = ravenbot_db::queries::BotQueries::list(self.db.pool())
+                .await
+                .unwrap_or_default();
+            if existing.iter().any(|candidate| {
+                candidate.id != bot.id && candidate.name.eq_ignore_ascii_case(&name)
+            }) {
+                return serde_json::json!({
+                    "error": format!("An agent named '{name}' already exists.")
+                });
+            }
+            bot.name = name;
+        }
+        if let Some(description) = match Self::clean_optional_text(&args, "description", 2_000) {
+            Ok(description) => description,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            if description.is_empty() {
+                return serde_json::json!({ "error": "An agent description cannot be empty." });
+            }
+            bot.description = description;
+        }
+        if let Some(rank) = match Self::clean_optional_text(&args, "rank", 120) {
+            Ok(rank) => rank,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            bot.rank = Some(rank);
+        }
+        if let Some(specialty) = match Self::clean_optional_text(&args, "specialty", 120) {
+            Ok(specialty) => specialty,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            bot.specialty = Some(specialty);
+        }
+        if let Some(provider) = match Self::clean_optional_text(&args, "provider", 200) {
+            Ok(Some(provider)) if !provider.is_empty() => Some(provider),
+            Ok(_) => None,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            bot.config.model_provider = provider;
+        }
+        if let Some(model) = match Self::clean_optional_text(&args, "model", 200) {
+            Ok(Some(model)) if !model.is_empty() => Some(model),
+            Ok(_) => None,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            bot.config.model_id = model;
+        }
+        bot.updated_at = chrono::Utc::now();
+        match ravenbot_db::queries::BotQueries::update(self.db.pool(), &bot).await {
+            Ok(()) => serde_json::json!({
+                "updated": true,
+                "agent": Self::agent_profile(&bot, true),
+                "note": "Identity and model fields were updated. Permissions, skills, delegation, approval mode, host control and working folder were not changed."
+            }),
+            Err(error) => {
+                serde_json::json!({ "error": format!("Could not update the agent: {error}") })
+            }
+        }
+    }
+
+    /// `interrupt_agent`: owner/operator cancellation of active work.
+    async fn interrupt_agent_tool(&self, run: &Run, args: serde_json::Value) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Operate).await {
+            return serde_json::json!({ "error": error });
+        }
+        let raw = args
+            .get("agent")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let bot = match self.resolve_agent(raw).await {
+            Ok(bot) => bot,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let active = match ravenbot_db::queries::RunProgressQueries::active_ids_for_bot(
+            self.db.pool(),
+            bot.id,
+        )
+        .await
+        {
+            Ok(active) => active,
+            Err(error) => {
+                return serde_json::json!({
+                    "error": format!("Could not read active runs: {error}")
+                })
+            }
+        };
+        for run_id in &active {
+            self.request_cancel(*run_id);
+        }
+        let reason: String = args
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(500)
+            .collect();
+        serde_json::json!({
+            "agent_id": bot.id,
+            "agent": bot.name,
+            "interrupted": active.len(),
+            "run_ids": active,
+            "reason": reason,
+            "note": "Active runs stop at their next boundary. Paused runs stay paused until resumed or cancelled."
+        })
+    }
+
+    /// `list_routines`: read-only routine list for one agent.
+    async fn list_routines_tool(
+        &self,
+        run: &Run,
+        bot: &ravenbot_core::Bot,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Read).await {
+            return serde_json::json!({ "error": error });
+        }
+        let target = match args.get("bot").and_then(serde_json::Value::as_str) {
+            Some(raw) if !raw.trim().is_empty() => match self.resolve_agent(raw).await {
+                Ok(bot) => bot,
+                Err(error) => return serde_json::json!({ "error": error }),
+            },
+            _ => bot.clone(),
+        };
+        let manager = ravenbot_scheduler::routine::RoutineManager::new(self.db.pool().clone());
+        match manager.list_for_bot(target.id).await {
+            Ok(routines) => serde_json::json!({
+                "bot_id": target.id,
+                "agent": target.name,
+                "routines": routines.iter().map(Self::routine_summary).collect::<Vec<_>>(),
+                "count": routines.len(),
+            }),
+            Err(error) => {
+                serde_json::json!({ "error": format!("Could not list routines: {error}") })
+            }
+        }
+    }
+
+    /// `create_routine`: owner-only, paused unless explicitly armed.
+    async fn create_routine_tool(
+        &self,
+        run: &Run,
+        bot: &ravenbot_core::Bot,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Configure).await {
+            return serde_json::json!({ "error": error });
+        }
+        let target = match args.get("bot").and_then(serde_json::Value::as_str) {
+            Some(raw) if !raw.trim().is_empty() => match self.resolve_agent(raw).await {
+                Ok(bot) => bot,
+                Err(error) => return serde_json::json!({ "error": error }),
+            },
+            _ => bot.clone(),
+        };
+        let name = args
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if name.is_empty() || name.chars().count() > 120 {
+            return serde_json::json!({ "error": "A routine needs a name of at most 120 characters." });
+        }
+        let schedule = args
+            .get("schedule")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if schedule.is_empty() || schedule.chars().count() > 200 {
+            return serde_json::json!({
+                "error": "A routine needs a schedule of at most 200 characters."
+            });
+        }
+        let instruction = args
+            .get("instruction")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if instruction.is_empty() || instruction.chars().count() > 8_000 {
+            return serde_json::json!({
+                "error": "A routine instruction must be 1-8,000 characters."
+            });
+        }
+        let description = args
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if description.chars().count() > 2_000 {
+            return serde_json::json!({ "error": "The routine description is longer than 2,000 characters." });
+        }
+        let enabled = args
+            .get("enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let manager = ravenbot_scheduler::routine::RoutineManager::new(self.db.pool().clone());
+        let mut routine = match manager
+            .create_paused(target.id, &name, schedule, instruction)
+            .await
+        {
+            Ok(routine) => routine,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        routine.description = description.to_string();
+        if enabled {
+            routine.is_enabled = true;
+        }
+        if let Err(error) = manager.update(&routine).await {
+            let _ = manager.delete(routine.id).await;
+            return serde_json::json!({ "error": error });
+        }
+        serde_json::json!({
+            "created": true,
+            "routine": Self::routine_summary(&routine),
+            "note": if enabled {
+                "The routine is armed."
+            } else {
+                "The routine is paused until enabled."
+            }
+        })
+    }
+
+    /// `update_routine`: owner-only, cannot move the routine to another agent.
+    async fn update_routine_tool(&self, run: &Run, args: serde_json::Value) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Configure).await {
+            return serde_json::json!({ "error": error });
+        }
+        let routine_id = match args
+            .get("routine_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| Uuid::parse_str(value.trim()).ok())
+        {
+            Some(id) => id,
+            None => {
+                return serde_json::json!({ "error": "update_routine needs a valid routine_id." })
+            }
+        };
+        let manager = ravenbot_scheduler::routine::RoutineManager::new(self.db.pool().clone());
+        let mut routine = match manager.get(routine_id).await {
+            Ok(Some(routine)) => routine,
+            Ok(None) => return serde_json::json!({ "error": "That routine no longer exists." }),
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        if let Some(name) = match Self::clean_optional_text(&args, "name", 120) {
+            Ok(name) => name,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+            if name.is_empty() {
+                return serde_json::json!({ "error": "A routine name cannot be empty." });
+            }
+            routine.name = name;
+        }
+        if let Some(description) = match Self::clean_optional_text(&args, "description", 2_000) {
+            Ok(description) => description,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            routine.description = description;
+        }
+        if let Some(schedule) = match Self::clean_optional_text(&args, "schedule", 200) {
+            Ok(schedule) => schedule,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            routine.schedule = schedule;
+        }
+        if let Some(instruction) = match Self::clean_optional_text(&args, "instruction", 8_000) {
+            Ok(instruction) => instruction,
+            Err(error) => return serde_json::json!({ "error": error }),
+        } {
+            if instruction.is_empty() {
+                return serde_json::json!({ "error": "A routine instruction cannot be empty." });
+            }
+            routine.instruction = instruction;
+        }
+        if let Some(enabled) = args.get("enabled").and_then(serde_json::Value::as_bool) {
+            routine.is_enabled = enabled;
+        }
+        if let Err(error) = ravenbot_scheduler::cron::CronParser::parse(&routine.schedule) {
+            return serde_json::json!({ "error": error });
+        }
+        routine.updated_at = chrono::Utc::now();
+        match manager.update(&routine).await {
+            Ok(()) => serde_json::json!({
+                "updated": true,
+                "routine": Self::routine_summary(&routine)
+            }),
+            Err(error) => serde_json::json!({ "error": error }),
+        }
+    }
+
+    /// `delete_routine`: owner-only, including its MCP event triggers.
+    async fn delete_routine_tool(&self, run: &Run, args: serde_json::Value) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Configure).await {
+            return serde_json::json!({ "error": error });
+        }
+        let routine_id = match args
+            .get("routine_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| Uuid::parse_str(value.trim()).ok())
+        {
+            Some(id) => id,
+            None => {
+                return serde_json::json!({ "error": "delete_routine needs a valid routine_id." })
+            }
+        };
+        let manager = ravenbot_scheduler::routine::RoutineManager::new(self.db.pool().clone());
+        match manager.get(routine_id).await {
+            Ok(Some(_)) => {}
+            Ok(None) => return serde_json::json!({ "error": "That routine no longer exists." }),
+            Err(error) => return serde_json::json!({ "error": error }),
+        }
+        if let Err(error) = manager.delete(routine_id).await {
+            return serde_json::json!({ "error": error });
+        }
+        let _ = ravenbot_db::queries::McpEventTriggerQueries::delete_for_routine(
+            self.db.pool(),
+            routine_id,
+        )
+        .await;
+        serde_json::json!({
+            "deleted": true,
+            "routine_id": routine_id,
+        })
+    }
+
+    /// `test_routine`: run once on a hidden routine thread, without moving the
+    /// schedule. High-risk tools inside the test use the normal Review gates.
+    async fn test_routine_tool(&self, run: &Run, args: serde_json::Value) -> serde_json::Value {
+        if let Err(error) = self.require_tool_access(run, ToolAccess::Operate).await {
+            return serde_json::json!({ "error": error });
+        }
+        let routine_id = match args
+            .get("routine_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| Uuid::parse_str(value.trim()).ok())
+        {
+            Some(id) => id,
+            None => return serde_json::json!({ "error": "test_routine needs a valid routine_id." }),
+        };
+        let manager = ravenbot_scheduler::routine::RoutineManager::new(self.db.pool().clone());
+        let routine = match manager.get(routine_id).await {
+            Ok(Some(routine)) => routine,
+            Ok(None) => return serde_json::json!({ "error": "That routine no longer exists." }),
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        if routine.instruction.trim().is_empty() {
+            return serde_json::json!({ "error": "That routine has no instruction to test." });
+        }
+        let thread = ravenbot_core::Thread::new_internal(
+            ravenbot_core::ThreadKind::Routine,
+            routine.bot_id,
+            format!("Routine test: {}", routine.name),
+        );
+        if let Err(error) =
+            ravenbot_db::queries::ThreadQueries::create(self.db.pool(), &thread).await
+        {
+            return serde_json::json!({ "error": format!("Could not create the test thread: {error}") });
+        }
+        let message = ravenbot_core::Message::user(thread.id, &routine.instruction);
+        if let Err(error) =
+            ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &message).await
+        {
+            let _ = ravenbot_db::queries::ThreadQueries::delete(self.db.pool(), thread.id).await;
+            return serde_json::json!({ "error": format!("Could not write the test prompt: {error}") });
+        }
+        let mut test_run = Run::new(routine.bot_id, thread.id);
+        if let Err(error) =
+            ravenbot_db::queries::RunQueries::insert(self.db.pool(), &test_run).await
+        {
+            let _ = ravenbot_db::queries::ThreadQueries::delete(self.db.pool(), thread.id).await;
+            return serde_json::json!({ "error": format!("Could not create the test run: {error}") });
+        }
+        // The test is still the caller's work; a chat/operator test must not
+        // become an owner run just because it is a routine.
+        if let Ok(Some(actor)) =
+            ravenbot_db::queries::RunQueries::actor_for(self.db.pool(), run.id).await
+        {
+            let _ = ravenbot_db::queries::RunQueries::set_actor(
+                self.db.pool(),
+                test_run.id,
+                &actor.actor_id,
+                &actor.actor_name,
+                &actor.role,
+                &actor.workspace_id,
+            )
+            .await;
+        }
+        // A test is unattended: low-risk work proceeds, high-risk tools park on
+        // the normal attention card rather than silently using Full.
+        self.review_approvals_for_run(test_run.id, true);
+        let result = self.execute_run(&mut test_run).await;
+        self.set_run_approval_policy(test_run.id, None);
+        let messages =
+            ravenbot_db::queries::MessageQueries::list_by_thread(self.db.pool(), thread.id)
+                .await
+                .unwrap_or_default();
+        let answer = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == ravenbot_core::MessageRole::Assistant)
+            .and_then(|message| match &message.content {
+                ravenbot_core::MessageContent::Text { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .map(|text| text.chars().take(8_000).collect::<String>());
+        serde_json::json!({
+            "routine_id": routine.id,
+            "routine": routine.name,
+            "run_id": test_run.id,
+            "thread_id": thread.id,
+            "state": test_run.state,
+            "result": answer,
+            "error": result
+                .err()
+                .map(|error| error.to_string().chars().take(4_000).collect::<String>()),
+            "note": "This was a test run. last_run_at and the schedule were not changed."
+        })
+    }
+
     /// `start_task`: create durable background work for another agent.
     ///
     /// The task thread and its first message are written before the task row,
@@ -4349,6 +5145,13 @@ impl Runtime {
             RunApprovalPolicy::AllowAll => "allow_all",
             RunApprovalPolicy::Review => "review",
         });
+        // Carry the caller's account/role onto the task run. Without this a
+        // chat-only actor could start a task and the task run would look like a
+        // local owner run to owner-only configuration tools.
+        let actor = ravenbot_db::queries::RunQueries::actor_for(self.db.pool(), run.id)
+            .await
+            .ok()
+            .flatten();
         let task = match ravenbot_db::agent_tasks::AgentTaskQueries::create(
             self.db.pool(),
             ravenbot_db::agent_tasks::NewAgentTask {
@@ -4357,6 +5160,10 @@ impl Runtime {
                 target_bot_id: target.id,
                 owner_thread_id: Some(run.thread_id),
                 owner_run_id: Some(run.id),
+                actor_id: actor.as_ref().map(|actor| actor.actor_id.as_str()),
+                actor_name: actor.as_ref().map(|actor| actor.actor_name.as_str()),
+                actor_role: actor.as_ref().map(|actor| actor.role.as_str()),
+                actor_workspace_id: actor.as_ref().map(|actor| actor.workspace_id.as_str()),
                 thread_id: Some(thread.id),
                 office_id: office.as_ref().map(|office| office.id),
                 title: &title,
@@ -6527,6 +7334,16 @@ impl Runtime {
             "await_event",
             "list_waits",
             "close_wait",
+            "list_agents",
+            "read_agent",
+            "create_agent",
+            "update_agent",
+            "interrupt_agent",
+            "list_routines",
+            "create_routine",
+            "update_routine",
+            "delete_routine",
+            "test_routine",
             "delegate",
             "analyze_image",
         ];
@@ -12361,6 +13178,19 @@ mod honesty_tests {
             .unwrap();
 
         let mut run = ravenbot_core::Run::new(manager_bot.id, thread.id);
+        ravenbot_db::queries::RunQueries::insert(db.pool(), &run)
+            .await
+            .unwrap();
+        ravenbot_db::queries::RunQueries::set_actor(
+            db.pool(),
+            run.id,
+            "operator-1",
+            "Operator",
+            "operator",
+            "workspace-1",
+        )
+        .await
+        .unwrap();
         runtime
             .execute_run(&mut run)
             .await
@@ -12379,6 +13209,22 @@ mod honesty_tests {
             1,
             "delegation must create a thread for the target bot"
         );
+        let child_run_id: (String,) = sqlx::query_as(
+            "SELECT id FROM runs WHERE thread_id = ? ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(specialist_threads[0].id.to_string())
+        .fetch_one(db.pool())
+        .await
+        .expect("child run");
+        let child_actor = ravenbot_db::queries::RunQueries::actor_for(
+            db.pool(),
+            Uuid::parse_str(&child_run_id.0).unwrap(),
+        )
+        .await
+        .unwrap()
+        .expect("delegation must copy the caller actor");
+        assert_eq!(child_actor.role, "operator");
+        assert_eq!(child_actor.workspace_id, "workspace-1");
         let specialist_msgs = ravenbot_db::queries::MessageQueries::list_by_thread(
             db.pool(),
             specialist_threads[0].id,
@@ -13344,6 +14190,16 @@ mod parity_tests {
             .await
             .unwrap();
         let (_thread, run) = seed_run(&db, &owner).await;
+        ravenbot_db::queries::RunQueries::set_actor(
+            db.pool(),
+            run.id,
+            "operator-1",
+            "Operator",
+            "operator",
+            "workspace-1",
+        )
+        .await
+        .unwrap();
 
         let started = runtime
             .start_task(
@@ -13366,6 +14222,8 @@ mod parity_tests {
             .expect("task");
         assert_eq!(task.owner_bot_id, owner.id);
         assert_eq!(task.target_bot_id, target.id);
+        assert_eq!(task.actor_role.as_deref(), Some("operator"));
+        assert_eq!(task.actor_workspace_id.as_deref(), Some("workspace-1"));
         assert_eq!(
             task.state,
             ravenbot_core::agent_task::AgentTaskState::Queued
@@ -13671,6 +14529,307 @@ mod parity_tests {
             .as_str()
             .unwrap_or_default()
             .contains("handoffs deep"));
+    }
+
+    #[tokio::test]
+    async fn agent_admin_tools_follow_the_ipc_role_boundary() {
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+        let owner = Bot::new("Owner", "workspace owner");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner)
+            .await
+            .unwrap();
+        let target = Bot::new("Target", "worker");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &target)
+            .await
+            .unwrap();
+        let (_thread, run) = seed_run(&db, &owner).await;
+        let script = std::iter::repeat_with(|| ModelResponse {
+            content: Some("routine answer".to_string()),
+            tool_calls: vec![],
+            usage: Usage {
+                input_tokens: 4,
+                output_tokens: 2,
+            },
+            reasoning: None,
+        })
+        .take(6)
+        .collect::<Vec<_>>();
+        let provider = Arc::new(ScriptProvider::new(script));
+        runtime
+            .set_provider_override(Some(provider as Arc<dyn ModelProviderTrait>))
+            .await;
+        // A run without an actor (headless routine, office graph node, legacy
+        // run) is read-only. It must not inherit owner configuration powers.
+        assert!(runtime.list_agents_tool(&run).await["error"].is_null());
+        assert!(!runtime
+            .create_agent_tool(
+                &run,
+                &owner,
+                serde_json::json!({"name": "Nope", "description": "No."}),
+            )
+            .await["error"]
+            .is_null());
+
+        ravenbot_db::queries::RunQueries::set_actor(
+            db.pool(),
+            run.id,
+            "owner-1",
+            "Owner",
+            "owner",
+            "workspace-1",
+        )
+        .await
+        .unwrap();
+
+        let listed = runtime.list_agents_tool(&run).await;
+        assert!(listed["error"].is_null(), "{listed}");
+        let read = runtime
+            .read_agent_tool(&run, serde_json::json!({"agent": target.id.to_string()}))
+            .await;
+        assert_eq!(read["name"], "Target", "{read}");
+        assert!(read.get("custom_prompt").is_none());
+        assert!(read.get("working_folder").is_none());
+
+        let created = runtime
+            .create_agent_tool(
+                &run,
+                &owner,
+                serde_json::json!({
+                    "name": "Reviewer",
+                    "description": "Reviews changes.",
+                    "rank": "QA",
+                    "provider": "openrouter",
+                    "model": "test/model"
+                }),
+            )
+            .await;
+        assert_eq!(created["created"], true, "{created}");
+        let created_id = Uuid::parse_str(created["agent"]["id"].as_str().unwrap()).unwrap();
+        let created_bot = ravenbot_db::queries::BotQueries::get(db.pool(), created_id)
+            .await
+            .unwrap()
+            .expect("created agent");
+        assert!(created_bot.permissions.is_empty());
+        assert!(created_bot.delegate_to.is_empty());
+        assert!(!created_bot.is_orchestrator);
+        assert!(!created_bot.config.host_control);
+        assert_eq!(created_bot.approval_mode, ravenbot_core::ApprovalMode::Ask);
+        assert_eq!(created_bot.config.model_id, "test/model");
+        assert!(created_bot.skills.contains(&"memory_recall".to_string()));
+        assert!(!created_bot.skills.contains(&"file_read".to_string()));
+        assert!(!created_bot.skills.contains(&"shell_exec".to_string()));
+
+        let updated = runtime
+            .update_agent_tool(
+                &run,
+                serde_json::json!({
+                    "agent": created_id.to_string(),
+                    "name": "Reviewer Two",
+                    "model": "test/other",
+                    "permissions": ["Shell"],
+                    "skills": ["shell_exec"],
+                    "approval_mode": "full",
+                    "host_control": true
+                }),
+            )
+            .await;
+        assert_eq!(updated["updated"], true, "{updated}");
+        let after = ravenbot_db::queries::BotQueries::get(db.pool(), created_id)
+            .await
+            .unwrap()
+            .expect("updated agent");
+        assert_eq!(after.name, "Reviewer Two");
+        assert_eq!(after.config.model_id, "test/other");
+        assert!(
+            after.permissions.is_empty(),
+            "permissions must not be changed"
+        );
+        assert!(!after.skills.contains(&"shell_exec".to_string()));
+        assert_eq!(after.approval_mode, ravenbot_core::ApprovalMode::Ask);
+        assert!(!after.config.host_control);
+
+        let routine = runtime
+            .create_routine_tool(
+                &run,
+                &owner,
+                serde_json::json!({
+                    "name": "Check the build",
+                    "schedule": "@manual",
+                    "instruction": "Report the build status.",
+                    "description": "A test routine."
+                }),
+            )
+            .await;
+        assert_eq!(routine["created"], true, "{routine}");
+        assert_eq!(routine["routine"]["enabled"], false);
+        let routine_id =
+            Uuid::parse_str(routine["routine"]["routine_id"].as_str().unwrap()).unwrap();
+
+        let tested = runtime
+            .test_routine_tool(
+                &run,
+                serde_json::json!({"routine_id": routine_id.to_string()}),
+            )
+            .await;
+        assert!(tested["error"].is_null(), "{tested}");
+        assert_eq!(tested["state"], "completed", "{tested}");
+        assert!(
+            tested["result"]
+                .as_str()
+                .is_some_and(|result| !result.is_empty()),
+            "{tested}"
+        );
+        let manager = ravenbot_scheduler::routine::RoutineManager::new(db.pool().clone());
+        let stored = manager.get(routine_id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.last_run_at, None,
+            "a test must not advance the schedule"
+        );
+
+        // Operator: read/list/operate, but no configuration.
+        ravenbot_db::queries::RunQueries::set_actor(
+            db.pool(),
+            run.id,
+            "operator-1",
+            "Operator",
+            "operator",
+            "workspace-1",
+        )
+        .await
+        .unwrap();
+        assert!(runtime.list_agents_tool(&run).await["error"].is_null());
+        assert!(!runtime
+            .create_agent_tool(
+                &run,
+                &owner,
+                serde_json::json!({"name": "Nope", "description": "No."}),
+            )
+            .await["error"]
+            .is_null());
+        assert!(!runtime
+            .update_agent_tool(
+                &run,
+                serde_json::json!({"agent": created_id.to_string(), "name": "Nope"}),
+            )
+            .await["error"]
+            .is_null());
+        assert!(!runtime
+            .create_routine_tool(
+                &run,
+                &owner,
+                serde_json::json!({
+                    "name": "Nope",
+                    "schedule": "@manual",
+                    "instruction": "No."
+                }),
+            )
+            .await["error"]
+            .is_null());
+        assert!(!runtime
+            .update_routine_tool(
+                &run,
+                serde_json::json!({"routine_id": routine_id.to_string(), "enabled": true}),
+            )
+            .await["error"]
+            .is_null());
+        assert!(!runtime
+            .delete_routine_tool(
+                &run,
+                serde_json::json!({"routine_id": routine_id.to_string()})
+            )
+            .await["error"]
+            .is_null());
+        let tested_by_operator = runtime
+            .test_routine_tool(
+                &run,
+                serde_json::json!({"routine_id": routine_id.to_string()}),
+            )
+            .await;
+        assert!(
+            tested_by_operator["error"].is_null(),
+            "{tested_by_operator}"
+        );
+
+        let target_thread = Thread::new(target.id, "target work");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &target_thread)
+            .await
+            .unwrap();
+        let target_run = Run::new(target.id, target_thread.id);
+        ravenbot_db::queries::RunQueries::insert(db.pool(), &target_run)
+            .await
+            .unwrap();
+        let interrupted = runtime
+            .interrupt_agent_tool(&run, serde_json::json!({"agent": "Target"}))
+            .await;
+        assert_eq!(interrupted["interrupted"], 1, "{interrupted}");
+        assert!(runtime.is_cancelled(target_run.id));
+
+        // Viewer: reads, no configuration.
+        ravenbot_db::queries::RunQueries::set_actor(
+            db.pool(),
+            run.id,
+            "viewer-1",
+            "Viewer",
+            "viewer",
+            "workspace-1",
+        )
+        .await
+        .unwrap();
+        assert!(runtime.list_agents_tool(&run).await["error"].is_null());
+        assert!(!runtime
+            .create_agent_tool(
+                &run,
+                &owner,
+                serde_json::json!({"name": "Nope", "description": "No."}),
+            )
+            .await["error"]
+            .is_null());
+        assert!(!runtime
+            .interrupt_agent_tool(&run, serde_json::json!({"agent": "Target"}))
+            .await["error"]
+            .is_null());
+        assert!(!runtime
+            .test_routine_tool(
+                &run,
+                serde_json::json!({"routine_id": routine_id.to_string()})
+            )
+            .await["error"]
+            .is_null());
+
+        // A paired chat identity is not a workspace role and gets no config
+        // surface at all.
+        ravenbot_db::queries::RunQueries::set_actor(
+            db.pool(),
+            run.id,
+            "chat-1",
+            "Chat user",
+            "chat",
+            "workspace-1",
+        )
+        .await
+        .unwrap();
+        assert!(!runtime.list_agents_tool(&run).await["error"].is_null());
+
+        // Owner cleanup.
+        ravenbot_db::queries::RunQueries::set_actor(
+            db.pool(),
+            run.id,
+            "owner-1",
+            "Owner",
+            "owner",
+            "workspace-1",
+        )
+        .await
+        .unwrap();
+        let deleted = runtime
+            .delete_routine_tool(
+                &run,
+                serde_json::json!({"routine_id": routine_id.to_string()}),
+            )
+            .await;
+        assert_eq!(deleted["deleted"], true, "{deleted}");
+        assert!(manager.get(routine_id).await.unwrap().is_none());
     }
 
     #[tokio::test]

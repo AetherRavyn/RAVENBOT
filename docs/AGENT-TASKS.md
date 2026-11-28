@@ -116,6 +116,14 @@ of waiting for a transition that will never happen.
 shows consumed, expired and cancelled rows. `close_wait` cancels a waiting or
 fired row and the blocked call returns `cancelled`.
 
+## Actor propagation
+
+A task stores the owner run's `run_actors` row and copies it onto the task run.
+The same happens for delegated children and routine tests. This is what keeps an
+operator's or paired-chat's task from becoming an owner run for the owner-only
+agent/routine configuration tools. A run with no actor row is treated as
+read-only by those tools, not as the owner.
+
 ## Approval and headless behaviour
 
 - Task runs inherit the creator's approval policy at creation time. An
