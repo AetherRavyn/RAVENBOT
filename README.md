@@ -106,7 +106,10 @@ Conversations take their name from the first message, can be renamed or deleted
 from the history drawer, and the last thread you opened for an agent is restored
 after a reload. Narrow windows keep the conversation usable: secondary header
 actions move into a **More** menu and the browser dock becomes an overlay rather
-than squeezing the thread below its minimum width.
+than squeezing the thread below its minimum width. Larger fleets stay legible:
+the sidebar groups **Pinned**, **Waiting on you**, **Hidden** and **Agents** with
+counts and remembered collapse state, and `Shift+?` (or the command palette)
+opens the keyboard cheat sheet.
 
 Local **accounts and workspace roles** let two people share one host without
 sharing a database: each account keeps its own root, session and keychain
@@ -493,7 +496,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
   plus 7 cross-tenant isolation tests, 255 runtime tests, 244 skill tests, 143
   database tests, 103 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **1,083 frontend tests** across 155 files. A gate rejects literal English
+- **1,095 frontend tests** across 158 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

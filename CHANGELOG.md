@@ -4,6 +4,24 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Grouped sidebar and keyboard shortcut sheet
+
+- **Fleet groups.** The sidebar now separates **Pinned**, **Waiting on you**,
+  **Hidden** and **Agents** with counts. Groups are disjoint, each one collapses
+  and remembers its state in local storage, and a search temporarily expands
+  collapsed groups so a match is never hidden. Existing drag order still writes
+  back through `reorder_bots`.
+- **Shortcut discovery.** A new **Keyboard shortcuts** sheet is reachable from
+  the command palette and from `Shift+?` outside text fields. It lists only
+  implemented bindings in Navigation, Chat and Workspace groups, with the
+  platform modifier glyph. The shortcut manager gained an `ignoreEditable`
+  option so a printable hint cannot eat a character being typed.
+- **Tasks in the palette.** The command palette can now open the cross-agent
+  Tasks view, matching the rail.
+- **Tests.** Sidebar group/collapse/search tests, shortcut-sheet DOM tests,
+  keyboard-manager tests for global and editable targets, and a palette test for
+  the shortcut action; all twelve locales carry the new strings.
+
 ### Home setup checklist
 
 - **Dismissing onboarding no longer hides missing setup.** Home now shows a

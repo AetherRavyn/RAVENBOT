@@ -51,6 +51,7 @@ function props(overrides: Record<string, unknown> = {}) {
     onOpenPlugins: vi.fn(),
     onOpenSkills: vi.fn(),
     onToggleBrowser: vi.fn(),
+    onOpenShortcuts: vi.fn(),
     onOpenMessage: vi.fn(),
     ...overrides,
   };
@@ -84,6 +85,21 @@ describe("CommandPalette global search", () => {
   it("focuses the search field when it opens", async () => {
     render(CommandPalette, { props: props() });
     await waitFor(() => expect(document.activeElement).toBe(searchInput()));
+  });
+
+  it("opens the shortcut sheet from the quick actions", async () => {
+    const onOpenShortcuts = vi.fn();
+    render(CommandPalette, { props: props({ onOpenShortcuts }) });
+    await waitFor(() => expect(document.activeElement).toBe(searchInput()));
+    await fireEvent.input(searchInput(), { target: { value: "keyboard" } });
+    expect(searchInput().value).toBe("keyboard");
+    const option = await waitFor(() => {
+      const element = document.getElementById("palette-item-action:shortcuts");
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    await fireEvent.click(option);
+    expect(onOpenShortcuts).toHaveBeenCalledTimes(1);
   });
 
   it("accepts printable keys when focus is on the dialog shell", async () => {

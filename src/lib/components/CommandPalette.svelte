@@ -19,7 +19,9 @@
     Inbox,
     Info,
     Key,
+    Keyboard,
     Layers,
+    ListChecks,
     Loader2,
     MessageSquare,
     Palette,
@@ -57,11 +59,12 @@
     onNewChat?: () => void;
     onOpenSettings: (section?: string) => void;
     onNavigate?: (
-      dest: "home" | "inbox" | "agents" | "offices" | "projects" | "channels" | "connectors" | "routines",
+      dest: "home" | "inbox" | "tasks" | "agents" | "offices" | "projects" | "channels" | "connectors" | "routines",
     ) => void;
     onOpenPlugins?: () => void;
     onOpenSkills?: () => void;
     onToggleBrowser?: () => void;
+    onOpenShortcuts?: () => void;
     onOpenMessage?: (hit: MessageHit) => void;
   }
 
@@ -79,6 +82,7 @@
     onOpenPlugins,
     onOpenSkills,
     onToggleBrowser,
+    onOpenShortcuts,
     onOpenMessage,
   }: Props = $props();
 
@@ -222,6 +226,17 @@
       keywords: "new agent bot create",
       run: onCreateBot,
     });
+    if (onOpenShortcuts) {
+      actions.push({
+        key: "action:shortcuts",
+        kind: "action",
+        title: t("shortcuts.title"),
+        subtitle: t("shortcuts.openDesc"),
+        icon: Keyboard,
+        keywords: "keyboard shortcut help keys bindings",
+        run: onOpenShortcuts,
+      });
+    }
     if (onNavigate) {
       actions.push({
         key: "action:inbox",
@@ -231,6 +246,15 @@
         icon: Inbox,
         keywords: "inbox attention approvals questions queue needs you",
         run: () => onNavigate?.("inbox"),
+      });
+      actions.push({
+        key: "action:tasks",
+        kind: "action",
+        title: t("rail.tasks"),
+        subtitle: t("tasks.subtitle"),
+        icon: ListChecks,
+        keywords: "tasks background agents queue running failed",
+        run: () => onNavigate?.("tasks"),
       });
       actions.push({
         key: "action:offices",

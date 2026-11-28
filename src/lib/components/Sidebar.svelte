@@ -6,7 +6,7 @@
   import { notify } from "$lib/toast";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { attention, awaitingBots, awaitingCount } from "$lib/attention.svelte";
-  import { t } from "$lib/i18n";
+  import { t, type TranslationKey } from "$lib/i18n";
   import { cn } from "$lib/utils.js";
   import { Button } from "$lib/components/ui/button";
   import { Input } from "$lib/components/ui/input";
@@ -44,6 +44,8 @@
     Eye,
     EyeOff,
     TriangleAlert,
+    ChevronDown,
+    ChevronRight,
   } from "@lucide/svelte";
 
   interface Props {
@@ -96,6 +98,50 @@
   let contacts = $state<Record<string, Contact>>({});
   let unread = $state<Record<string, number>>({});
   let showHidden = $state(false);
+
+  type SidebarGroupId = "pinned" | "waiting" | "hidden" | "agents";
+  type SidebarGroup = {
+    id: SidebarGroupId;
+    label: TranslationKey;
+    icon: any;
+    bots: any[];
+    collapsed: boolean;
+  };
+  type SidebarListItem =
+    | { kind: "group"; group: SidebarGroup }
+    | { kind: "bot"; bot: any };
+
+  const GROUP_STORE_KEY = "raven.sidebar.collapsedGroups";
+  const EMPTY_GROUPS: Record<SidebarGroupId, boolean> = {
+    pinned: false,
+    waiting: false,
+    hidden: false,
+    agents: false,
+  };
+
+  function loadCollapsedGroups(): Record<SidebarGroupId, boolean> {
+    if (typeof window === "undefined") return { ...EMPTY_GROUPS };
+    try {
+      const raw = JSON.parse(window.localStorage.getItem(GROUP_STORE_KEY) || "{}");
+      return {
+        pinned: Boolean(raw.pinned),
+        waiting: Boolean(raw.waiting),
+        hidden: Boolean(raw.hidden),
+        agents: Boolean(raw.agents),
+      };
+    } catch {
+      return { ...EMPTY_GROUPS };
+    }
+  }
+
+  let collapsedGroups = $state<Record<SidebarGroupId, boolean>>(loadCollapsedGroups());
+
+  function toggleGroup(id: SidebarGroupId) {
+    collapsedGroups = { ...collapsedGroups, [id]: !collapsedGroups[id] };
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(GROUP_STORE_KEY, JSON.stringify(collapsedGroups));
+    }
+  }
 
   async function loadContacts() {
     try {
@@ -189,7 +235,7 @@
 
   function commitDrop(targetId: string) {
     if (!dragId || dragId === targetId) return;
-    const visible = filteredBots.map((b) => b.id as string);
+    const visible = renderedBots.map((b) => b.id as string);
     const from = visible.indexOf(dragId);
     const to = visible.indexOf(targetId);
     if (from < 0 || to < 0) return;
@@ -230,6 +276,60 @@
         if (ap !== bp) return bp - ap;
         return 0;
       })
+  );
+
+  /**
+   * Grouped projection of the visible fleet.
+   *
+   * Pinned and waiting rows are pulled out so a dozen idle agents cannot bury
+   * one that needs a person; hidden rows only exist while the hidden toggle is
+   * on. The groups are disjoint — a pinned waiting agent appears in Pinned, not
+   * twice — and a search expands collapsed groups so a match is never hidden
+   * behind a closed heading.
+   */
+  let groupedFleet = $derived.by<SidebarGroup[]>(() => {
+    const buckets: Record<SidebarGroupId, any[]> = {
+      pinned: [],
+      waiting: [],
+      hidden: [],
+      agents: [],
+    };
+    for (const bot of filteredBots) {
+      if (contacts[bot.id]?.hidden) buckets.hidden.push(bot);
+      else if (contacts[bot.id]?.pinned) buckets.pinned.push(bot);
+      else if (awaitingIds.has(bot.id)) buckets.waiting.push(bot);
+      else buckets.agents.push(bot);
+    }
+    const definitions: Array<{
+      id: SidebarGroupId;
+      label: TranslationKey;
+      icon: any;
+    }> = [
+      { id: "pinned", label: "sidebar.groupPinned", icon: Pin },
+      { id: "waiting", label: "sidebar.groupWaiting", icon: AlertCircle },
+      { id: "hidden", label: "sidebar.groupHidden", icon: EyeOff },
+      { id: "agents", label: "sidebar.groupAgents", icon: Bot },
+    ];
+    return definitions
+      .filter((definition) => buckets[definition.id].length > 0)
+      .map((definition) => ({
+        ...definition,
+        bots: buckets[definition.id],
+        collapsed: collapsedGroups[definition.id] && !searchQuery.trim(),
+      }));
+  });
+
+  let sidebarItems = $derived.by<SidebarListItem[]>(() =>
+    groupedFleet.flatMap((group) => [
+      { kind: "group" as const, group },
+      ...(group.collapsed
+        ? []
+        : group.bots.map((bot) => ({ kind: "bot" as const, bot }))),
+    ]),
+  );
+
+  let renderedBots = $derived(
+    sidebarItems.flatMap((item) => (item.kind === "bot" ? [item.bot] : [])),
   );
 
   let effectiveAvatarUrl = $derived(
@@ -397,7 +497,30 @@
 
   <!-- Agent Card List -->
   <div class="flex-1 overflow-y-auto px-3 py-1.5 space-y-1.5">
-    {#each filteredBots as bot (bot.id)}
+    {#each sidebarItems as item (item.kind === "group" ? `group:${item.group.id}` : item.bot.id)}
+      {#if item.kind === "group"}
+        {@const group = item.group}
+        {@const GroupIcon = group.icon}
+        <button
+          type="button"
+          class="mt-2 flex w-full items-center gap-1.5 rounded-md px-1 py-1 text-left text-[var(--text-muted)] hover:bg-[var(--surface-1)] hover:text-[var(--text-secondary)] cursor-pointer first:mt-0"
+          aria-expanded={!group.collapsed}
+          aria-label={`${t(group.label)} · ${group.bots.length}`}
+          onclick={() => toggleGroup(group.id)}
+        >
+          {#if group.collapsed}
+            <ChevronRight class="size-3 shrink-0" />
+          {:else}
+            <ChevronDown class="size-3 shrink-0" />
+          {/if}
+          <GroupIcon class="size-3 shrink-0" />
+          <span class="text-[11px] font-bold uppercase tracking-wider">{t(group.label)}</span>
+          <span class="ml-auto rounded-full border border-[var(--hairline)] bg-[var(--surface-2)] px-1.5 py-px font-mono text-[11px]">
+            {group.bots.length}
+          </span>
+        </button>
+      {:else}
+      {@const bot = item.bot}
       {@const isSelected = selectedBotId === bot.id}
       {@const statusTheme = getStatusTheme(bot.status)}
       {@const awaiting = awaitingIds.has(bot.id)}
@@ -661,6 +784,7 @@
           </div>
         {/if}
       </div>
+      {/if}
     {:else}
       <div class="py-12 px-3 text-center text-[var(--text-muted)]">
         <Bot class="size-8 mx-auto mb-2 opacity-30 text-[var(--text-tertiary)]" />

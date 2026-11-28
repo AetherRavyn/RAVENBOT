@@ -140,6 +140,24 @@ appears after a delay:
    the chat says to open RAVENBOT and that `answer <id> <text>` is refused.
 9. As a non-owner workspace role, confirm `submit_api_key_answer` is refused.
 
+## Manual sidebar and shortcut check
+
+1. Pin one agent, trigger an approval/question on another, hide a third, and
+   leave a fourth ordinary. Confirm the sidebar shows **Pinned**, **Waiting on
+   you**, **Hidden** (only after the eye toggle) and **Agents**, with no agent
+   appearing twice.
+2. Collapse each group, reload the app, and confirm the collapse state returns.
+   Search for an agent inside a collapsed group and confirm the group expands
+   for the match.
+3. Drag two agents within a group, reload, and confirm the order persisted.
+4. Press `Shift+?` outside a text field; confirm the shortcut sheet opens.
+   Focus a message textarea and type `?`; confirm the character is inserted and
+   the sheet does not open.
+5. Open the command palette, search for **Keyboard shortcuts**, and confirm the
+   same sheet opens after the palette closes.
+6. Confirm every binding in the sheet works on the current platform, including
+   the displayed modifier key.
+
 ## Manual first-run checklist check
 
 1. Start with a throwaway `RAVENBOT_HOME` that has no provider, no default

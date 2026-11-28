@@ -113,36 +113,34 @@ blank name and description.
 Research, Support, Release Engineer) that prefill instructions, default tools,
 and a first prompt. No fake agents: each template creates a real bot.
 
-### P1 — Sidebar organization
+### P1 — Sidebar organization — shipped
 
 OpenBot groups **Pinned**, **Waiting**, custom sections, and hidden chats, with
-drag support across groups. RAVENBOT sorts pinned agents first, offers a
-waiting filter, and has a hidden toggle, but the groups are not visually
+drag support across groups. RAVENBOT sorted pinned agents first, offered a
+waiting filter, and had a hidden toggle, but the groups were not visually
 separated.
 
-**User pain:** with more than a handful of agents, the fleet list is a flat
-scroll.
+**User pain solved:** with more than a handful of agents, the list is no longer
+a flat scroll. Pinned, Waiting on you, Hidden and Agents are separate headings
+with counts; each group collapses and remembers its state; a search temporarily
+expands collapsed groups so a match is never hidden. Pinned and waiting rows are
+disjoint, and existing drag persistence still writes the visible order.
 
-**Next slice:** group headings for Pinned, Waiting on you, and All agents;
-collapse state per group; keep the existing drag persistence.
+### P1 — Keyboard shortcut help — shipped
 
-### P1 — Keyboard shortcut help
+OpenBot exposes shortcut hints in context. RAVENBOT registered useful shortcuts
+(⌘K, ⌘N, ⌘B, ⌘,, ⌘⇧B, Alt+↑/↓) but had no cheat sheet.
 
-OpenBot exposes shortcut hints in context. RAVENBOT registers useful shortcuts
-(⌘K, ⌘N, ⌘B, ⌘,, ⌘⇧B, Alt+↑/↓) but has no cheat sheet.
+**User pain solved:** the palette now offers **Keyboard shortcuts**, and
+`Shift+?` opens the same sheet outside a text field. It is grouped by
+Navigation / Chat / Workspace and lists only implemented bindings, with the
+platform modifier glyph.
 
-**User pain:** users do not discover the fast paths.
+### P2 — Attention inbox — shipped
 
-**Next slice:** a “Keyboard shortcuts” dialog, reachable from the palette and a
-`?` shortcut, grouped by Navigation / Chat / Workspace.
-
-### P2 — Attention inbox
-
-The rail already shows working and attention counts. There is no list of the
-approvals, questions, and failed runs behind those badges.
-
-**Next slice:** an inbox panel that lists pending approvals/questions and failed
-runs, with a jump to the owning office or thread.
+The rail shows working and attention counts, and the **Inbox** is the list of
+pending approvals, questions, office queue rows and budget alerts behind those
+badges, with a jump to the owning office or thread.
 
 ### P2 — Files and projects in global search
 
@@ -172,15 +170,15 @@ surfaces; a token lint that rejects raw color literals in components.
 
 ## Recommended next three slices
 
-1. **Pinned/Waiting sidebar groups + shortcut sheet** — makes a larger fleet
-   feel organized.
-2. **Agent templates** — starts a new teammate from a role, not a blank name.
+1. **Agent templates** — starts a new teammate from a role, not a blank name.
+2. **Files and projects in global search** — makes the workspace findable
+   without leaving the palette.
 3. **What's New overlay + provider recovery card** — makes a broken key
    recoverable from the error the user actually sees.
 
 ## Verification
 
 - Rust workspace: 1,306 passed, 0 failed, 17 ignored across the current suite.
-- Frontend: 1,083 passed across 155 files.
+- Frontend: 1,095 passed across 158 files.
 - `svelte-check`: 0 errors, 0 warnings.
 - Production build: clean.

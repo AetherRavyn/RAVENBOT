@@ -7,6 +7,7 @@
   import ScreenReader from "$lib/components/ScreenReader.svelte";
   import Toaster from "$lib/components/Toaster.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
+  import ShortcutSheet from "$lib/components/ShortcutSheet.svelte";
   import Settings from "$lib/components/Settings.svelte";
   import Onboarding from "$lib/components/Onboarding.svelte";
   import KillSwitch from "$lib/components/KillSwitch.svelte";
@@ -53,6 +54,7 @@
   let marketplaceModalBotId = $state<string | null>(null);
   let marketplaceOpen = $state(false);
   let showOnboarding = $state(false);
+  let showShortcuts = $state(false);
 
   function dismissOnboarding() {
     // Missing provider/agent setup reopens on the next start; a dismissal only
@@ -223,9 +225,15 @@
     });
     const unsubN = keyboardShortcuts.register("mod+n", () => workspace.newChat());
     const unsubBrowser = keyboardShortcuts.register("mod+shift+b", () => sidePanel.toggleForSelection("browser"));
+    const unsubHelp = keyboardShortcuts.register(
+      "shift+?",
+      () => (showShortcuts = true),
+      { ignoreEditable: true },
+    );
     const unsubEsc = keyboardShortcuts.register("escape", () => {
       workspace.showPalette = false;
       workspace.showSettings = false;
+      showShortcuts = false;
     });
 
     const mediaQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -271,6 +279,7 @@
       unsubB();
       unsubN();
       unsubBrowser();
+      unsubHelp();
       unsubEsc();
       unlistenActivity?.();
       mediaQuery.removeEventListener("change", handler);
@@ -527,6 +536,7 @@
   onOpenPlugins={openMarketplace}
   onOpenSkills={openSkills}
   onToggleBrowser={() => sidePanel.toggleForSelection("browser")}
+  onOpenShortcuts={() => (showShortcuts = true)}
   onOpenMessage={(hit) => {
     workspace.showPalette = false;
     workspace.selectBot(hit.bot_id);
@@ -537,6 +547,8 @@
     });
   }}
 />
+
+<ShortcutSheet open={showShortcuts} onClose={() => (showShortcuts = false)} />
 
 <Settings
   open={workspace.showSettings}

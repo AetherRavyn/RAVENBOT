@@ -145,16 +145,39 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
 }
 
 /**
+ * Whether a key event is happening inside something that accepts text.
+ *
+ * Shortcut hints are fine globally, but a plain printable key must never
+ * `preventDefault` while a person is typing a prompt or a note.
+ */
+function isEditableTarget(target: EventTarget | null): boolean {
+  const element = target as HTMLElement | null;
+  if (!element || typeof element.closest !== "function") return false;
+  return Boolean(
+    element.closest(
+      'input, textarea, select, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]',
+    ),
+  );
+}
+
+/**
  * Keyboard shortcut handler
  */
 export class KeyboardShortcutManager {
   private shortcuts: Map<string, () => void> = new Map();
 
-  register(combo: string, callback: () => void): () => void {
+  register(
+    combo: string,
+    callback: () => void,
+    options: { ignoreEditable?: boolean } = {},
+  ): () => void {
     this.shortcuts.set(combo, callback);
     
     const handler = (e: KeyboardEvent) => {
       if (this.matchesCombo(e, combo)) {
+        // A plain `?` hint must not eat the character a person is typing into
+        // a message, a note, or a form field.
+        if (options.ignoreEditable && isEditableTarget(e.target)) return;
         e.preventDefault();
         callback();
       }
