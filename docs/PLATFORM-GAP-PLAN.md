@@ -45,7 +45,7 @@ Every slice must satisfy all of these before it is called done:
 | 1 | Custom avatar upload/replace/remove | High | S | Low | shipped |
 | 2 | Visual page → composer actions | High | M | Medium | shipped |
 | 3 | Proactive messaging tools | High | M | Medium | shipped |
-| 4 | Browser action depth | Medium | M | Medium | planned |
+| 4 | Browser action depth | Medium | M | Medium | shipped |
 | 5 | Secure API-key request | Medium | M | Medium | planned |
 | 6 | Activity-aware avatars | Medium | S/M | Low | planned |
 | 7 | Chat backdrop (image/video) | Medium | M | Medium | planned |
@@ -232,20 +232,22 @@ real external workspace (manual check).
 
 ---
 
-## Phase 4 — Browser action depth — `planned`
+## Phase 4 — Browser action depth — `shipped`
 
-Extend `browser_dom` after snapshot:
+`browser_dom` now supports, after snapshot:
 
-- `hover` (low risk), `select_option` and `set_checked` (high risk, approval).
-- `wait_for` with target/text/url/state and a 30 s cap.
-- `run_steps` — a bounded 200-step script of the same actions, max 20,000 chars,
-  120 s total, with a stop on the first failure.
-- Tab list/close and optional downloads/uploads only after the action model is
-  tested.
+- `hover`, `select_option` (by value or visible label) and `set_checked` (native
+  click path so page handlers run).
+- `wait_for` with selector/text/url conditions, `visible`/`hidden`/`attached`
+  state and a 30 s cap. It refuses a blind wait.
+- `run_steps` — 1–200 steps, 20,000-character payload, 120-second total budget,
+  stops on the first failure. `open`, `eval` and nested `run_steps` are refused.
+- The result reports the completed count and the last step result, not every
+  intermediate value.
 
-Every action reuses the existing page-origin evaluator, returns a structured
-status and never claims success when no selector matched. Add DOM-script unit
-tests and a Playwright/browser-dock live check.
+Every action reuses the existing page-origin evaluator and returns a structured
+status; a missing selector never becomes a fake success. **Still open:** tab
+list/close, downloads/uploads and a real-display Playwright/browser-dock run.
 
 ---
 

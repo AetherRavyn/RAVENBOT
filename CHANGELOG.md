@@ -42,6 +42,20 @@ All notable changes to RAVENBOT are documented here.
   RAVENBOT, not the platform's full archive; the tool says so. Attachments,
   replies and platform-side history remain open.
 
+### Browser DOM action depth
+
+- **Structured controls and pacing.** `browser_dom` now supports `hover`,
+  `select_option` (value or visible label), `set_checked` (native click path),
+  and `wait_for` with selector/text/url conditions, visible/hidden/attached
+  state and a 30-second cap. A blind wait is refused.
+- **Bounded multi-step runs.** `run_steps` executes 1–200 of the same actions,
+  capped at 20,000 characters and 120 seconds, and stops at the first failure.
+  `open`, `eval` and nested `run_steps` are refused. It reports the completed
+  count and the last result, not every intermediate page value.
+- **Honest risk.** The skill is High risk as a whole; the read-only/mutating
+  split describes the action, not a separate approval bypass. Tab list/close,
+  downloads/uploads and a live-display run remain open.
+
 ### Meeting recording import
 
 - **Import an existing recording, not a live meeting.** The new

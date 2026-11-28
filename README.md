@@ -212,10 +212,11 @@ voice, and computer control. It also supports:
   Agents can also list their own paired places, read the local conversation
   history, and post an approval-gated message through the existing connector.
 - **A browser dock and desktop control.** A real webview beside the conversation,
-  DOM snapshots and actions for the agent, plus opt-in window/screen control,
-  app launch, clipboard read/write, and drag on Linux. App launch and clipboard
-  use native helpers on macOS and Windows; synthetic pointer/keyboard input is
-  still Linux-only.
+  DOM snapshots, structured click/fill/select/check actions, waits and bounded
+  multi-step runs for the agent, plus opt-in window/screen control, app launch,
+  clipboard read/write, and drag on Linux. App launch and clipboard use native
+  helpers on macOS and Windows; synthetic pointer/keyboard input is still
+  Linux-only.
 
 ### Output people can open
 
@@ -435,7 +436,7 @@ RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
 - **1,100+ Rust tests** across the workspace, including 266 Tauri library tests
-  plus 7 cross-tenant isolation tests, 246 runtime tests, 229 skill tests, 122
+  plus 7 cross-tenant isolation tests, 246 runtime tests, 233 skill tests, 122
   database tests, 90 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
 - **1,014 frontend tests** across 144 files. A gate rejects literal English

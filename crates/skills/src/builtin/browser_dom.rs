@@ -5,10 +5,11 @@
 //! shell only on platforms that expose a result-bearing bridge. A headless run
 //! reports that DOM actions are unavailable instead of pretending they worked.
 //!
-//! Read-only inspection (`snapshot`, `text`, `html`, `highlight`, `scroll`,
-//! `back`, `forward`, `wait`) is safe to run unattended. `click`, `fill`,
-//! `press`, `reload`, and `eval` are high risk and go through the approval
-//! broker; `reload` is high risk because it can resubmit a form.
+//! The skill is high-risk as a whole: the same tool can click, submit, reload
+//! and run page JavaScript. Read-only inspection is documented per action, but
+//! a run should not treat the tool as a bypass around the approval policy.
+//! `run_steps` reuses the same builders, stops on the first failure and refuses
+//! `open`, `eval` and nested `run_steps`.
 
 use async_trait::async_trait;
 use ravenbot_core::Permission;
@@ -41,7 +42,7 @@ impl Skill for BrowserDomSkill {
     }
 
     fn description(&self) -> &str {
-        "Operate the page open in the desktop browser dock. Start with action=snapshot to get selectors, then click, fill, press, scroll, highlight, text, html, back, forward, reload, wait, or eval. text and html accept an optional selector; without one they read the whole page. Never guess a selector: snapshot first."
+        "Operate the page open in the desktop browser dock. Start with action=snapshot to get selectors, then click, fill, press, hover, scroll, highlight, select_option, set_checked, text, html, back, forward, reload, wait, wait_for, run_steps, or eval. text and html accept an optional selector; without one they read the whole page. wait_for polls a selector/text/url until it matches. run_steps executes a bounded list of the same actions and stops on the first failure. Never guess a selector: snapshot first."
     }
 
     fn version(&self) -> &str {
@@ -63,16 +64,16 @@ impl Skill for BrowserDomSkill {
             "properties": {
                 "action": {
                     "type": "string",
-                    "description": "snapshot | click | fill | press | scroll | highlight | text | html | back | forward | reload | wait | eval | open",
-                    "enum": ["snapshot", "click", "fill", "press", "scroll", "highlight", "text", "html", "back", "forward", "reload", "wait", "eval", "open"]
+                    "description": "snapshot | click | fill | press | hover | scroll | highlight | select_option | set_checked | text | html | back | forward | reload | wait | wait_for | run_steps | eval | open",
+                    "enum": ["snapshot", "click", "fill", "press", "hover", "scroll", "highlight", "select_option", "set_checked", "text", "html", "back", "forward", "reload", "wait", "wait_for", "run_steps", "eval", "open"]
                 },
                 "selector": {
                     "type": "string",
-                    "description": "CSS selector from a snapshot (click, fill, press, scroll, highlight, text, html)"
+                    "description": "CSS selector from a snapshot (click, fill, press, hover, scroll, highlight, select_option, set_checked, text, html, wait_for)"
                 },
                 "text": {
                     "type": "string",
-                    "description": "Text to fill into the selected field (fill)"
+                    "description": "Text to fill into the selected field (fill), or text to wait for (wait_for)"
                 },
                 "key": {
                     "type": "string",
@@ -91,13 +92,43 @@ impl Skill for BrowserDomSkill {
                     "type": "integer",
                     "description": "Wait duration (wait), max 30000"
                 },
+                "timeout_ms": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 30000,
+                    "description": "How long wait_for polls before failing (default 5000, max 30000)"
+                },
+                "values": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Option values or visible labels to select (select_option)"
+                },
+                "checked": {
+                    "type": "boolean",
+                    "description": "Desired state for a checkbox or radio (set_checked)"
+                },
+                "wait_state": {
+                    "type": "string",
+                    "enum": ["visible", "hidden", "attached"],
+                    "description": "Selector state for wait_for. Default visible."
+                },
+                "steps": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 200,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                    },
+                    "description": "run_steps: objects with action plus that action's fields. Allowed: snapshot, click, fill, press, hover, scroll, highlight, select_option, set_checked, text, html, back, forward, reload, wait, wait_for. Stops on the first failure."
+                },
                 "script": {
                     "type": "string",
-                    "description": "JavaScript to evaluate in the page origin (eval)"
+                    "description": "JavaScript to evaluate in the page origin (eval). Not allowed inside run_steps."
                 },
                 "url": {
                     "type": "string",
-                    "description": "http(s) URL to open in the dock (open)"
+                    "description": "http(s) URL to open in the dock (open), or a substring to wait for (wait_for)"
                 }
             },
             "required": ["action"]
@@ -168,6 +199,38 @@ impl Skill for BrowserDomSkill {
                     "milliseconds": ms
                 })))
             }
+            "wait_for" => {
+                let value = wait_for_condition(&arguments).await;
+                match value {
+                    Ok(value) => {
+                        let matched = value
+                            .get("matched")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false);
+                        let detail = arguments
+                            .get("selector")
+                            .and_then(Value::as_str)
+                            .or_else(|| arguments.get("text").and_then(Value::as_str))
+                            .or_else(|| arguments.get("url").and_then(Value::as_str))
+                            .unwrap_or("condition");
+                        activity(context, "wait_for", detail, matched);
+                        if matched {
+                            Ok(SkillResult::success(value))
+                        } else {
+                            let message = value
+                                .get("error")
+                                .and_then(Value::as_str)
+                                .unwrap_or("The page condition did not appear before the timeout.");
+                            Ok(SkillResult::failure(message))
+                        }
+                    }
+                    Err(error) => {
+                        activity(context, "wait_for", "condition", false);
+                        Ok(SkillResult::failure(error))
+                    }
+                }
+            }
+            "run_steps" => run_steps(context, &arguments).await,
             "eval" => {
                 let script = arguments
                     .get("script")
@@ -248,6 +311,251 @@ async fn evaluate(script: String) -> Result<Value, String> {
 
 fn js_string(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "\"\"".to_string())
+}
+
+fn optional_string<'a>(arguments: &'a Value, key: &str) -> Option<&'a str> {
+    arguments
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+fn build_wait_probe(
+    selector: Option<&str>,
+    text: Option<&str>,
+    url: Option<&str>,
+    state: &str,
+) -> String {
+    let selector = selector
+        .map(js_string)
+        .unwrap_or_else(|| "null".to_string());
+    let text = text.map(js_string).unwrap_or_else(|| "null".to_string());
+    let url = url.map(js_string).unwrap_or_else(|| "null".to_string());
+    let state = js_string(state);
+    format!(
+        r##"
+(() => {{
+  const selector = {selector};
+  const wantedText = {text};
+  const wantedUrl = {url};
+  const state = {state};
+  const visible = (el) => {{
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 1 && rect.height > 1 && style.visibility !== "hidden" && style.display !== "none";
+  }};
+  let matched = true;
+  let found = null;
+  if (selector) {{
+    const el = document.querySelector(selector);
+    found = !!el;
+    if (!el) matched = state === "hidden";
+    else if (state === "hidden") matched = !visible(el);
+    else if (state === "visible") matched = visible(el);
+  }}
+  if (matched && wantedText) matched = (document.body?.innerText || "").includes(wantedText);
+  if (matched && wantedUrl) matched = location.href.includes(wantedUrl);
+  return {{ ok: true, action: "wait_for", matched, selectorFound: found, url: location.href, title: document.title }};
+}})()
+"##
+    )
+}
+
+async fn wait_for_condition(arguments: &Value) -> Result<Value, String> {
+    let selector = optional_string(arguments, "selector");
+    let text = optional_string(arguments, "text");
+    let url = optional_string(arguments, "url");
+    if selector.is_none() && text.is_none() && url.is_none() {
+        return Err(
+            "wait_for needs a selector, text or url condition; refusing to wait blindly."
+                .to_string(),
+        );
+    }
+    if selector.is_some_and(|value| value.len() > 2_000) {
+        return Err("The wait_for selector is longer than 2,000 characters.".to_string());
+    }
+    if text.is_some_and(|value| value.len() > 2_000) {
+        return Err("The wait_for text is longer than 2,000 characters.".to_string());
+    }
+    if url.is_some_and(|value| value.len() > 2_048) {
+        return Err("The wait_for URL is longer than 2,048 characters.".to_string());
+    }
+    let state = optional_string(arguments, "wait_state").unwrap_or("visible");
+    if !["visible", "hidden", "attached"].contains(&state) {
+        return Err("wait_state must be visible, hidden or attached.".to_string());
+    }
+    let timeout_ms = arguments
+        .get("timeout_ms")
+        .and_then(Value::as_u64)
+        .unwrap_or(5_000)
+        .min(30_000);
+    let probe = build_wait_probe(selector, text, url, state);
+    let started = std::time::Instant::now();
+    loop {
+        let value = evaluate(probe.clone()).await?;
+        let matched = value
+            .get("matched")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let elapsed = started.elapsed().as_millis() as u64;
+        if matched {
+            return Ok(serde_json::json!({
+                "ok": true,
+                "action": "wait_for",
+                "matched": true,
+                "waited_ms": elapsed,
+                "url": value.get("url").cloned().unwrap_or(Value::Null),
+                "title": value.get("title").cloned().unwrap_or(Value::Null),
+            }));
+        }
+        if elapsed >= timeout_ms {
+            return Ok(serde_json::json!({
+                "ok": false,
+                "action": "wait_for",
+                "matched": false,
+                "waited_ms": elapsed,
+                "error": format!("The page condition did not appear within {timeout_ms} ms."),
+                "url": value.get("url").cloned().unwrap_or(Value::Null),
+                "title": value.get("title").cloned().unwrap_or(Value::Null),
+            }));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+const STEP_ACTIONS: &[&str] = &[
+    "snapshot",
+    "click",
+    "fill",
+    "press",
+    "hover",
+    "scroll",
+    "highlight",
+    "select_option",
+    "set_checked",
+    "text",
+    "html",
+    "back",
+    "forward",
+    "reload",
+    "wait",
+    "wait_for",
+];
+
+async fn run_steps(context: &SkillContext, arguments: &Value) -> Result<SkillResult, SkillError> {
+    let steps = arguments
+        .get("steps")
+        .and_then(Value::as_array)
+        .filter(|steps| !steps.is_empty())
+        .ok_or_else(|| {
+            SkillError::InvalidArguments(
+                "run_steps requires a non-empty 'steps' array.".to_string(),
+            )
+        })?;
+    if steps.len() > 200 {
+        return Err(SkillError::InvalidArguments(
+            "run_steps accepts at most 200 steps.".to_string(),
+        ));
+    }
+    if serde_json::to_string(steps)
+        .map(|value| value.len())
+        .unwrap_or(0)
+        > 20_000
+    {
+        return Err(SkillError::InvalidArguments(
+            "The run_steps payload is larger than 20,000 characters.".to_string(),
+        ));
+    }
+
+    let total = steps.len();
+    let started = std::time::Instant::now();
+    let mut last = Value::Null;
+    for (index, step) in steps.iter().enumerate() {
+        if started.elapsed().as_millis() >= 120_000 {
+            activity(context, "run_steps", &format!("step {}", index + 1), false);
+            return Ok(SkillResult::failure(format!(
+                "Step {} would exceed the 120-second run_steps budget.",
+                index + 1
+            )));
+        }
+        let action = step
+            .get("action")
+            .and_then(Value::as_str)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .ok_or_else(|| {
+                SkillError::InvalidArguments(format!("Step {} has no action.", index + 1))
+            })?;
+        if !STEP_ACTIONS.contains(&action.as_str()) {
+            activity(context, "run_steps", &format!("step {}", index + 1), false);
+            return Ok(SkillResult::failure(format!(
+                "Step {} uses `{action}`, which is not allowed inside run_steps.",
+                index + 1
+            )));
+        }
+        if action == "wait" {
+            let ms = step
+                .get("milliseconds")
+                .and_then(Value::as_u64)
+                .unwrap_or(500)
+                .min(30_000);
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+            last = serde_json::json!({"ok": true, "action": "wait", "milliseconds": ms});
+            continue;
+        }
+        if action == "wait_for" {
+            let value = wait_for_condition(step)
+                .await
+                .map_err(SkillError::Execution)?;
+            if value.get("matched").and_then(Value::as_bool) != Some(true) {
+                let message = value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("The page condition did not appear.");
+                activity(context, "run_steps", &format!("step {}", index + 1), false);
+                return Ok(SkillResult::failure(format!(
+                    "Step {} (wait_for) failed: {message}",
+                    index + 1
+                )));
+            }
+            last = value;
+            continue;
+        }
+        let selector = optional_string(step, "selector");
+        let script = build_script(&action, step, selector)?;
+        let value = evaluate(script).await.map_err(SkillError::Execution)?;
+        let failed = value
+            .get("ok")
+            .and_then(Value::as_bool)
+            .map(|ok| !ok)
+            .unwrap_or(false);
+        if failed {
+            let message = value
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("The page action failed.");
+            activity(context, "run_steps", &format!("step {}", index + 1), false);
+            return Ok(SkillResult::failure(format!(
+                "Step {} ({action}) failed: {message}",
+                index + 1
+            )));
+        }
+        last = value;
+    }
+
+    if started.elapsed().as_millis() > 120_000 {
+        activity(context, "run_steps", &format!("{total}/{total}"), false);
+        return Ok(SkillResult::failure(
+            "The run_steps budget of 120 seconds was exceeded.".to_string(),
+        ));
+    }
+    activity(context, "run_steps", &format!("{total}/{total}"), true);
+    Ok(SkillResult::success(serde_json::json!({
+        "ok": true,
+        "action": "run_steps",
+        "completed": total,
+        "last": last
+    })))
 }
 
 fn build_script(
@@ -430,6 +738,116 @@ fn build_script(
 }})()
 "##))
         }
+        "hover" => {
+            let selector = selector_literal.ok_or_else(|| {
+                SkillError::InvalidArguments("hover requires a 'selector'".to_string())
+            })?;
+            Ok(format!(r##"
+(() => {{
+  const el = document.querySelector({selector});
+  if (!el) return {{ ok: false, error: "No element matches the selector." }};
+  el.scrollIntoView({{ block: "center", inline: "center" }});
+  const fire = (type) => {{
+    try {{ el.dispatchEvent(new PointerEvent(type, {{ bubbles: true }})); }}
+    catch {{ el.dispatchEvent(new MouseEvent(type, {{ bubbles: true }})); }}
+  }};
+  ["pointerover", "mouseover", "pointerenter", "mouseenter", "mousemove"].forEach(fire);
+  el.style.outline = "3px solid #c4b5fd";
+  setTimeout(() => {{ el.style.outline = ""; }}, 600);
+  return {{ ok: true, action: "hover", selector: {selector}, tag: el.tagName.toLowerCase() }};
+}})()
+"##))
+        }
+        "select_option" => {
+            let selector = selector_literal.ok_or_else(|| {
+                SkillError::InvalidArguments("select_option requires a 'selector'".to_string())
+            })?;
+            let values = arguments
+                .get("values")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(js_string)
+                        .collect::<Vec<_>>()
+                })
+                .or_else(|| {
+                    arguments
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .map(|value| vec![js_string(value)])
+                })
+                .filter(|values| !values.is_empty())
+                .ok_or_else(|| {
+                    SkillError::InvalidArguments(
+                        "select_option requires a 'values' array or a 'value'.".to_string(),
+                    )
+                })?;
+            if values.len() > 100 {
+                return Err(SkillError::InvalidArguments(
+                    "select_option accepts at most 100 values.".to_string(),
+                ));
+            }
+            let list = values.join(",");
+            Ok(format!(r##"
+(() => {{
+  const el = document.querySelector({selector});
+  if (!el) return {{ ok: false, error: "No element matches the selector." }};
+  if (!(el instanceof HTMLSelectElement)) return {{ ok: false, error: "The selector is not a <select> element." }};
+  const wanted = [{list}];
+  if (!el.multiple && wanted.length > 1) return {{ ok: false, error: "A single-select accepts one value." }};
+  const options = Array.from(el.options);
+  const chosen = [];
+  for (const want of wanted) {{
+    const match = options.find((option) => option.value === want || (option.text || "").trim() === want);
+    if (!match) return {{ ok: false, error: "No option matches " + JSON.stringify(want) + "." }};
+    if (!el.multiple) {{
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      if (setter) setter.call(el, match.value); else el.value = match.value;
+      chosen.push(match.value);
+      break;
+    }}
+    match.selected = true;
+    chosen.push(match.value);
+  }}
+  el.dispatchEvent(new Event("input", {{ bubbles: true }}));
+  el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  return {{ ok: true, action: "select_option", selector: {selector}, values: chosen }};
+}})()
+"##))
+        }
+        "set_checked" => {
+            let selector = selector_literal.ok_or_else(|| {
+                SkillError::InvalidArguments("set_checked requires a 'selector'".to_string())
+            })?;
+            let checked = arguments
+                .get("checked")
+                .and_then(Value::as_bool)
+                .ok_or_else(|| {
+                    SkillError::InvalidArguments(
+                        "set_checked requires a boolean 'checked'.".to_string(),
+                    )
+                })?;
+            Ok(format!(r##"
+(() => {{
+  const el = document.querySelector({selector});
+  if (!el) return {{ ok: false, error: "No element matches the selector." }};
+  if (!(el instanceof HTMLInputElement) || (el.type !== "checkbox" && el.type !== "radio")) {{
+    return {{ ok: false, error: "The selector is not a checkbox or radio." }};
+  }}
+  const wanted = {checked};
+  if (el.type === "radio" && !wanted) {{
+    el.checked = false;
+    el.dispatchEvent(new Event("input", {{ bubbles: true }}));
+    el.dispatchEvent(new Event("change", {{ bubbles: true }}));
+  }} else if (el.checked !== wanted) {{
+    el.click();
+  }}
+  return {{ ok: true, action: "set_checked", selector: {selector}, checked: el.checked }};
+}})()
+"##))
+        }
         "text" => {
             let selector = selector_literal.unwrap_or_else(|| "null".to_string());
             Ok(format!(r##"
@@ -460,7 +878,7 @@ fn build_script(
 (() => { location.reload(); return { ok: true, action: "reload" }; })()
 "##.to_string()),
         other => Err(SkillError::InvalidArguments(format!(
-            "Unknown browser action '{other}'. Use snapshot, click, fill, press, scroll, highlight, text, html, back, forward, reload, wait, eval, or open."
+            "Unknown browser action '{other}'. Use snapshot, click, fill, press, hover, scroll, highlight, select_option, set_checked, text, html, back, forward, reload, wait, wait_for, run_steps, eval, or open."
         ))),
     }
 }
@@ -485,6 +903,17 @@ mod tests {
             ),
             ("scroll", serde_json::json!({"delta_y": 400}), None),
             ("highlight", serde_json::json!({}), Some("a")),
+            ("hover", serde_json::json!({}), Some("button")),
+            (
+                "select_option",
+                serde_json::json!({"values": ["open", "closed"]}),
+                Some("select[name=status]"),
+            ),
+            (
+                "set_checked",
+                serde_json::json!({"checked": true}),
+                Some("input[type=checkbox]"),
+            ),
         ];
         for (action, arguments, selector) in cases {
             let script = build_script(action, &arguments, selector).expect(action);
@@ -497,6 +926,74 @@ mod tests {
                 "{action}: unformatted braces: {script}"
             );
         }
+    }
+
+    #[test]
+    fn select_option_and_set_checked_build_the_expected_values() {
+        let select = build_script(
+            "select_option",
+            &serde_json::json!({"values": ["open", "closed"]}),
+            Some("#status"),
+        )
+        .expect("select");
+        assert!(
+            select.contains("const wanted = [\"open\",\"closed\"]"),
+            "{select}"
+        );
+        assert!(select.contains("HTMLSelectElement"), "{select}");
+        assert!(select.contains("new Event(\"change\""), "{select}");
+
+        let check = build_script(
+            "set_checked",
+            &serde_json::json!({"checked": true}),
+            Some("#agree"),
+        )
+        .expect("checked");
+        assert!(check.contains("const wanted = true"), "{check}");
+        assert!(check.contains("el.type !== \"checkbox\""), "{check}");
+    }
+
+    #[test]
+    fn wait_probe_carries_all_conditions() {
+        let probe = build_wait_probe(Some("#done"), Some("Finished"), Some("/result"), "visible");
+        assert!(probe.contains("const selector = \"#done\""), "{probe}");
+        assert!(probe.contains("const wantedText = \"Finished\""), "{probe}");
+        assert!(probe.contains("const wantedUrl = \"/result\""), "{probe}");
+        assert!(probe.contains("const state = \"visible\""), "{probe}");
+        assert!(!probe.contains("{{"), "{probe}");
+    }
+
+    #[tokio::test]
+    async fn wait_for_refuses_a_blind_wait() {
+        let error = wait_for_condition(&serde_json::json!({}))
+            .await
+            .expect_err("blind wait");
+        assert!(error.contains("refusing to wait blindly"));
+    }
+
+    #[tokio::test]
+    async fn run_steps_rejects_an_unbounded_or_forbidden_list() {
+        let context = SkillContext::with_default_tier(
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4(),
+        );
+        let too_many = serde_json::json!({
+            "steps": vec![serde_json::json!({"action": "snapshot"}); 201]
+        });
+        let error = run_steps(&context, &too_many).await.expect_err("too many");
+        assert!(error.to_string().contains("at most 200"));
+
+        let forbidden = serde_json::json!({
+            "steps": [{"action": "eval", "script": "alert(1)"}]
+        });
+        let result = run_steps(&context, &forbidden).await.expect("result");
+        assert!(!result.success);
+        assert!(result
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("not allowed"));
     }
 
     #[test]

@@ -89,11 +89,12 @@ previews, agent takeover, and a separate Computer Use driver.
 
 RAVENBOT now has a persistent browser dock: a real child webview with URL,
 back/forward/reload, page title, downloads, session persistence, a
-`browser_open` skill, and `browser_dom` snapshot/click/fill/highlight/press/
-scroll/read/navigate/eval actions (Linux), with a user Take Over control that
-pauses agent actions and refusal at both the command and skill paths. The dock
-shows the performing agent and its last action, and clicked elements flash an
-outline. The Computer panel has a live preview, a click marker, Take over /
+`browser_open` skill, and `browser_dom` snapshot/click/fill/hover/select_option/
+set_checked/highlight/press/scroll/wait_for/run_steps/read/navigate/eval actions
+(Linux), with a user Take Over control that pauses agent actions and refusal at
+both the command and skill paths. The dock shows the performing agent and its
+last action, and clicked elements flash an outline. The Computer panel has a live
+preview, a click marker, Take over /
 Release, a window list with focus/capture, and an isolated Docker desktop.
 Remaining: browser tabs and named profiles, page-only screenshots, per-action
 leases, native DOM bridges outside Linux, and Wayland-native window focus.

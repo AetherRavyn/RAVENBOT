@@ -88,6 +88,27 @@ test workspace:
 8. Repeat one post from the headless daemon (desktop closed) and confirm it
    still uses the same link and connector.
 
+## Manual browser DOM depth check
+
+Use a local test page with a select, a checkbox, a hover target and a result that
+appears after a delay:
+
+1. Open the fixture in the browser dock and call `browser_dom` action `snapshot`.
+2. Select a visible option with `select_option`; confirm the page's change
+   handler runs. Try a single-select with two values and confirm it is refused.
+3. Toggle a checkbox with `set_checked`; confirm the native click path runs the
+   page's handler and the returned checked state matches.
+4. Hover the target and confirm a script-visible hover handler runs (CSS `:hover`
+   itself may not apply to synthetic events).
+5. Call `wait_for` with the delayed result's text or selector; confirm it waits
+   and returns `matched: true`. Use a missing condition and a short timeout and
+   confirm the failure is honest.
+6. Run a `run_steps` list that fills, selects, checks and waits; confirm the steps
+   run in order and stop at a deliberately broken selector.
+7. Try `run_steps` with `eval`, `open` or a nested `run_steps`; confirm each is
+   refused before evaluation. Try 201 steps and confirm the cap.
+8. Press **Take over** and run any action; confirm it is blocked until release.
+
 ## Manual voice-key check
 
 Transcription and speech both prefer the OpenAI key saved in Settings, then

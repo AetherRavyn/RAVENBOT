@@ -124,7 +124,8 @@ outside world:
 
 - `shell_exec`;
 - `computer_control` (any action);
-- `browser_dom` `click`, `fill`, `press`, `reload` or `eval`;
+- `browser_dom` `click`, `fill`, `press`, `select_option`, `set_checked`,
+  `reload`, `run_steps` or `eval`;
 - `file_write`, `file_edit`, `code_edit`;
 - write-like MCP tools (names containing write/create/update/delete/send/…);
 - non-read `http_request` methods.
