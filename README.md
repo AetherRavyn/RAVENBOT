@@ -142,6 +142,16 @@ a pending question, a budget ceiling, a kill switch, or repeated no-progress
 cycles. Research answers keep their source chips in the office too, and a failed
 load is an error with a retry rather than an empty room.
 
+### Background tasks, visible
+
+An agent can hand durable work to another agent (or itself) with a title,
+instruction, expected result, resource locks and dependencies. The **Tasks**
+rail shows that ledger across the fleet: queued, starting, running, failed,
+completed and cancelled rows, with the owner and target, the result or error,
+live updates from the task stream, a failed-task badge, Open to the task thread,
+and cooperative Cancel. The task loop is the same one the agent tools use; the
+view is a projection, not a second scheduler.
+
 ### Avatars that show the work
 
 Every agent has a face, and the face follows the fleet. The generated Raven
@@ -477,10 +487,10 @@ RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
 - **1,300+ Rust tests** across the workspace, including 275 Tauri library tests
-  plus 7 cross-tenant isolation tests, 255 runtime tests, 244 skill tests, 142
+  plus 7 cross-tenant isolation tests, 255 runtime tests, 244 skill tests, 143
   database tests, 103 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **1,060 frontend tests** across 150 files. A gate rejects literal English
+- **1,072 frontend tests** across 152 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

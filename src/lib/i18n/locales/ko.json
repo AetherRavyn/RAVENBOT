@@ -1023,7 +1023,8 @@
     "projects": "프로젝트",
     "browser": "브라우저",
     "channels": "채널",
-    "inbox": "받은편지함"
+    "inbox": "받은편지함",
+    "tasks": "작업"
   },
   "activity": {
     "thinking": "차근차근 생각하는 중...",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "{{budget}} 중 {{spent}} 사용 ({{percent}}%)",
     "budgetNearBadge": "경고",
     "budgetOverBadge": "심각"
+  },
+  "tasks": {
+    "title": "작업",
+    "subtitle": "에이전트가 대기열에 넣고 실행하거나 완료한 백그라운드 작업입니다.",
+    "empty": "아직 작업이 없습니다.",
+    "emptyHint": "에이전트가 다른 에이전트에게 작업을 넘기면 상태와 스레드가 여기에 표시됩니다.",
+    "all": "전체",
+    "active": "진행 중",
+    "failed": "실패",
+    "finished": "완료",
+    "state": {
+      "queued": "대기 중",
+      "starting": "시작 중",
+      "running": "실행 중",
+      "failed": "실패",
+      "completed": "완료됨",
+      "cancelled": "취소됨"
+    },
+    "cancel": "취소",
+    "cancelled": "작업을 취소했습니다.",
+    "open": "열기",
+    "from": "{{name}} 보냄",
+    "noDetail": "아직 결과가 기록되지 않았습니다.",
+    "error": "작업을 불러올 수 없습니다."
   },
   "sidePanel": {
     "ariaLabel": "워크스페이스 패널",

@@ -951,7 +951,8 @@
     "projects": "Projets",
     "browser": "Navigateur",
     "channels": "Canaux",
-    "inbox": "Boîte de réception"
+    "inbox": "Boîte de réception",
+    "tasks": "Tâches"
   },
   "activity": {
     "thinking": "Je réfléchis…",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "{{spent}} dépensés sur {{budget}} ({{percent}} %)",
     "budgetNearBadge": "Avertissement",
     "budgetOverBadge": "Critique"
+  },
+  "tasks": {
+    "title": "Tâches",
+    "subtitle": "Travail d'arrière-plan que les agents ont mis en file, exécuté ou terminé dans la flotte.",
+    "empty": "Aucune tâche pour l'instant.",
+    "emptyHint": "Quand un agent confie du travail à un autre, il apparaît ici avec son état et son fil.",
+    "all": "Toutes",
+    "active": "Actives",
+    "failed": "Échouées",
+    "finished": "Terminées",
+    "state": {
+      "queued": "En attente",
+      "starting": "Démarrage",
+      "running": "En cours",
+      "failed": "Échouée",
+      "completed": "Terminée",
+      "cancelled": "Annulée"
+    },
+    "cancel": "Annuler",
+    "cancelled": "Tâche annulée.",
+    "open": "Ouvrir",
+    "from": "de {{name}}",
+    "noDetail": "Aucun résultat enregistré pour l'instant.",
+    "error": "Impossible de charger les tâches."
   },
   "sidePanel": {
     "ariaLabel": "Panneau de l’espace",

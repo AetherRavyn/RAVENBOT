@@ -142,8 +142,18 @@ read-only by those tools, not as the owner.
 The task thread is a real visible conversation for the target agent, titled
 `Task: …`. The owner can open it from that agent's history. The task row stores
 the result/error, and the host emits `agent-task-changed` with the task id,
-thread id, owner, target, state and result. There is no dedicated task board in
-this slice; `await_event` and the task thread are the interface.
+thread id, owner, target, state and result.
+
+The **Tasks** rail destination is the cross-agent view of that ledger. It lists
+queued, starting, running, failed, completed and cancelled tasks with the
+target agent, owner, state, relative time and result/error. Filters split
+active, failed and finished work; Open jumps to the task thread, and Cancel
+cooperatively stops a running task (or closes a queued one) through
+`cancel_agent_task`. The rail shows a badge for failed tasks, and the view
+refreshes from `agent-task-changed` without polling.
+
+The agent-facing tools still have no `list_tasks`; the owner agent should use
+`await_event` for work it started. A human has the Tasks view instead.
 
 ## Crash recovery
 
@@ -177,10 +187,12 @@ Automated:
 
 - `cargo test -p ravenbot-core agent_task`
 - `cargo test -p ravenbot-db agent_tasks`
+- `cargo test -p ravenbot-db list_all_returns_tasks`
 - `cargo test -p ravenbot-skills agent_tasks`
 - `cargo test -p ravenbot-runtime background_tasks`
 - `cargo test -p ravenbot-runtime await_event`
 - `cargo test -p ravenbot-runtime start_task`
 - `cargo test -p ravenbot agent_tasks::tests`
+- `npm test -- agentTasks.test.ts TasksView.dom.test.ts`
 
 Manual: see the background-task section in [LIVE-CHECKS.md](LIVE-CHECKS.md).

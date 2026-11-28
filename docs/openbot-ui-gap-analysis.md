@@ -66,19 +66,22 @@ right thread title.
 
 ## Remaining gaps, in priority order
 
-### P0 — Unified tasks inbox
+### P0 — Unified tasks inbox — shipped
 
 OpenBot has a first-class Tasks page with a cross-agent list, task ownership,
-approvals, undoable starts, and task conversations. RAVENBOT has office queues
-and routines, but no single place to answer “what is waiting on me across every
-office?”
+approvals, undoable starts, and task conversations. RAVENBOT now has a **Tasks**
+rail destination backed by the durable `agent_tasks` ledger: target and owner
+identity, filtered states (active/failed/finished), the result or error, Open to
+the task thread, cooperative Cancel, a failed-task badge, and live refresh from
+`agent-task-changed`. Approvals, questions, office queues and budget alerts stay
+in the separate **Inbox** surface because they need a decision; tasks are work
+an agent already owns.
 
-**User pain:** queued work, approvals, and delegated tasks are spread across
-offices and threads.
+**User pain solved:** queued and delegated work no longer exists only as an
+event the owner agent can wait for; a person can see it across every agent.
 
-**Next slice:** a `tasks` page that aggregates office queue items, pending
-approvals/questions, and routine runs; filters by agent and state; opens the
-owning thread in one click.
+**Next slice:** undoable starts and task templates. The current view is
+read/stop, not a planner.
 
 ### P0 — First-run flow that finishes the job
 
@@ -164,11 +167,11 @@ surfaces; a token lint that rejects raw color literals in components.
 
 ## Recommended next three slices
 
-1. **Tasks inbox** — the largest remaining usability gap.
-2. **First-run checklist + first office** — converts new installs into working
+1. **First-run checklist + first office** — converts new installs into working
    fleets.
-3. **Pinned/Waiting sidebar groups + shortcut sheet** — makes a larger fleet
+2. **Pinned/Waiting sidebar groups + shortcut sheet** — makes a larger fleet
    feel organized.
+3. **Agent templates** — starts a new teammate from a role, not a blank name.
 
 ## Verification
 

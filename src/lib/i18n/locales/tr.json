@@ -1023,7 +1023,8 @@
     "projects": "Projeler",
     "browser": "Tarayıcı",
     "channels": "Kanallar",
-    "inbox": "Gelen kutusu"
+    "inbox": "Gelen kutusu",
+    "tasks": "Görevler"
   },
   "activity": {
     "thinking": "İyice düşünüyor…",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "{{budget}} bütçesinden {{spent}} harcandı (%{{percent}})",
     "budgetNearBadge": "Uyarı",
     "budgetOverBadge": "Kritik"
+  },
+  "tasks": {
+    "title": "Görevler",
+    "subtitle": "Ajanların filoda kuyruğa aldığı, çalıştırdığı veya bitirdiği arka plan işleri.",
+    "empty": "Henüz görev yok.",
+    "emptyHint": "Bir ajan işi başka bir ajana devrettiğinde, durumu ve sohbetiyle burada görünür.",
+    "all": "Tümü",
+    "active": "Etkin",
+    "failed": "Başarısız",
+    "finished": "Biten",
+    "state": {
+      "queued": "Kuyrukta",
+      "starting": "Başlıyor",
+      "running": "Çalışıyor",
+      "failed": "Başarısız",
+      "completed": "Tamamlandı",
+      "cancelled": "İptal edildi"
+    },
+    "cancel": "İptal",
+    "cancelled": "Görev iptal edildi.",
+    "open": "Aç",
+    "from": "{{name}} tarafından",
+    "noDetail": "Henüz sonuç kaydedilmedi.",
+    "error": "Görevler yüklenemedi."
   },
   "sidePanel": {
     "ariaLabel": "Çalışma alanı paneli",

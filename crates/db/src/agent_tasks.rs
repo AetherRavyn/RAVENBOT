@@ -264,6 +264,18 @@ impl AgentTaskQueries {
         Ok(rows.into_iter().map(TaskRow::into_domain).collect())
     }
 
+    /// Every task across the fleet, newest first. Bounded like `list_owned`.
+    pub async fn list_all(pool: &SqlitePool, limit: i64) -> Result<Vec<AgentTask>, String> {
+        let sql =
+            format!("SELECT {TASK_COLUMNS} FROM agent_tasks ORDER BY created_at DESC LIMIT ?");
+        let rows: Vec<TaskRow> = sqlx::query_as(sqlx::AssertSqlSafe(sql))
+            .bind(limit.clamp(1, 200))
+            .fetch_all(pool)
+            .await
+            .map_err(|error| format!("Could not list tasks: {error}"))?;
+        Ok(rows.into_iter().map(TaskRow::into_domain).collect())
+    }
+
     /// Claim one ready task, or report dependency failures.
     ///
     /// A task is ready when every dependency is completed, no running task
@@ -991,6 +1003,27 @@ mod tests {
             .expect("claim")
             .claimed
             .expect("a task")
+    }
+
+    #[tokio::test]
+    async fn list_all_returns_tasks_across_owners_and_respects_the_cap() {
+        let pool = db().await;
+        let (owner, target) = bots(&pool).await;
+        let first = queue(&pool, owner, target, "First", &[], &[]).await;
+        let second = queue(&pool, target, target, "Second", &[], &[]).await;
+
+        let all = AgentTaskQueries::list_all(&pool, 200)
+            .await
+            .expect("all tasks");
+        assert_eq!(all.len(), 2);
+        let ids: Vec<Uuid> = all.iter().map(|task| task.id).collect();
+        assert!(ids.contains(&first.id));
+        assert!(ids.contains(&second.id));
+
+        let one = AgentTaskQueries::list_all(&pool, 1)
+            .await
+            .expect("one task");
+        assert_eq!(one.len(), 1);
     }
 
     #[tokio::test]

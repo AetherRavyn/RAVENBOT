@@ -1023,7 +1023,8 @@
     "projects": "Progetti",
     "browser": "Browser",
     "channels": "Canali",
-    "inbox": "Posta in arrivo"
+    "inbox": "Posta in arrivo",
+    "tasks": "Attività"
   },
   "activity": {
     "thinking": "Ci sto pensando…",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "{{spent}} spesi su {{budget}} ({{percent}}%)",
     "budgetNearBadge": "Avviso",
     "budgetOverBadge": "Critico"
+  },
+  "tasks": {
+    "title": "Attività",
+    "subtitle": "Lavoro in background che gli agenti hanno messo in coda, eseguito o completato nella flotta.",
+    "empty": "Nessuna attività ancora.",
+    "emptyHint": "Quando un agente affida lavoro a un altro, appare qui con stato e thread.",
+    "all": "Tutte",
+    "active": "Attive",
+    "failed": "Non riuscite",
+    "finished": "Concluse",
+    "state": {
+      "queued": "In coda",
+      "starting": "Avvio",
+      "running": "In esecuzione",
+      "failed": "Non riuscita",
+      "completed": "Completata",
+      "cancelled": "Annullata"
+    },
+    "cancel": "Annulla",
+    "cancelled": "Attività annullata.",
+    "open": "Apri",
+    "from": "da {{name}}",
+    "noDetail": "Nessun risultato registrato.",
+    "error": "Impossibile caricare le attività."
   },
   "sidePanel": {
     "ariaLabel": "Pannello area di lavoro",

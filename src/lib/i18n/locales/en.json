@@ -1023,7 +1023,8 @@
     "projects": "Projects",
     "browser": "Browser",
     "channels": "Channels",
-    "inbox": "Inbox"
+    "inbox": "Inbox",
+    "tasks": "Tasks"
   },
   "activity": {
     "thinking": "Thinking it through…",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "{{spent}} spent of {{budget}} ({{percent}}%)",
     "budgetNearBadge": "Warning",
     "budgetOverBadge": "Critical"
+  },
+  "tasks": {
+    "title": "Tasks",
+    "subtitle": "Background work agents queued, running or finished across the fleet.",
+    "empty": "No tasks yet.",
+    "emptyHint": "When an agent hands work to another agent, it appears here with its state and thread.",
+    "all": "All",
+    "active": "Active",
+    "failed": "Failed",
+    "finished": "Finished",
+    "state": {
+      "queued": "Queued",
+      "starting": "Starting",
+      "running": "Running",
+      "failed": "Failed",
+      "completed": "Completed",
+      "cancelled": "Cancelled"
+    },
+    "cancel": "Cancel",
+    "cancelled": "Task cancelled.",
+    "open": "Open",
+    "from": "from {{name}}",
+    "noDetail": "No result recorded yet.",
+    "error": "Could not load tasks."
   },
   "sidePanel": {
     "ariaLabel": "Workspace panel",

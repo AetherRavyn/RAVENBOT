@@ -951,7 +951,8 @@
     "projects": "プロジェクト",
     "browser": "ブラウザ",
     "channels": "チャンネル",
-    "inbox": "受信トレイ"
+    "inbox": "受信トレイ",
+    "tasks": "タスク"
   },
   "activity": {
     "thinking": "考えを整理しています…",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "{{budget}} のうち {{spent}} を使用（{{percent}}%）",
     "budgetNearBadge": "警告",
     "budgetOverBadge": "重大"
+  },
+  "tasks": {
+    "title": "タスク",
+    "subtitle": "フリート内でエージェントがキューに入れ、実行し、完了したバックグラウンド作業。",
+    "empty": "タスクはまだありません。",
+    "emptyHint": "エージェントが別のエージェントに作業を渡すと、状態とスレッドがここに表示されます。",
+    "all": "すべて",
+    "active": "進行中",
+    "failed": "失敗",
+    "finished": "完了",
+    "state": {
+      "queued": "待機中",
+      "starting": "開始中",
+      "running": "実行中",
+      "failed": "失敗",
+      "completed": "完了",
+      "cancelled": "キャンセル済み"
+    },
+    "cancel": "キャンセル",
+    "cancelled": "タスクをキャンセルしました。",
+    "open": "開く",
+    "from": "{{name}} から",
+    "noDetail": "結果はまだ記録されていません。",
+    "error": "タスクを読み込めませんでした。"
   },
   "sidePanel": {
     "ariaLabel": "ワークスペースパネル",

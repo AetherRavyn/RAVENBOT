@@ -21,6 +21,7 @@
   import WorkspaceSidebar from "$lib/components/workspace/WorkspaceSidebar.svelte";
   import ChatRoomList from "$lib/components/ChatRoomList.svelte";
   import AttentionInbox from "$lib/components/workspace/AttentionInbox.svelte";
+  import TasksView from "$lib/components/workspace/TasksView.svelte";
   import HomePane from "$lib/components/workspace/HomePane.svelte";
   import ProjectsView from "$lib/components/workspace/ProjectsView.svelte";
   import SidePanel from "$lib/components/workspace/SidePanel.svelte";
@@ -37,6 +38,7 @@
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { startWorkflowScheduler, stopWorkflowScheduler } from "$lib/workflowScheduler";
   import { attention } from "$lib/attention.svelte";
+  import { agentTasks } from "$lib/agentTasks.svelte";
   import { initI18n, t } from "$lib/i18n";
   import { sessionRole } from "$lib/sessionRole.svelte";
   import { prefersReducedMotion, keyboardShortcuts } from "$lib/a11y";
@@ -191,6 +193,7 @@
     workspace.init();
     fleetActivity.start();
     void attention.start();
+    void agentTasks.start();
     startWorkflowScheduler();
 
     // First-run check: a provider key and The Raven, the default agent.
@@ -257,6 +260,7 @@
     return () => {
       fleetActivity.stop();
       attention.stop();
+      agentTasks.stop();
       stopWorkflowScheduler();
       stopThemePalette();
       unsubTheme();
@@ -387,6 +391,8 @@
         </div>
       {:else if workspace.dest === "inbox"}
         <AttentionInbox />
+      {:else if workspace.dest === "tasks"}
+        <TasksView />
       {:else if workspace.dest === "connectors"}
         <div class="flex-1 min-h-0 overflow-hidden">
           <ConnectorCenter

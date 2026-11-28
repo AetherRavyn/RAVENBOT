@@ -1023,7 +1023,8 @@
     "projects": "Projetos",
     "browser": "Navegador",
     "channels": "Canais",
-    "inbox": "Caixa de entrada"
+    "inbox": "Caixa de entrada",
+    "tasks": "Tarefas"
   },
   "activity": {
     "thinking": "Pensando a respeito…",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "{{spent}} gastos de {{budget}} ({{percent}}%)",
     "budgetNearBadge": "Aviso",
     "budgetOverBadge": "Crítico"
+  },
+  "tasks": {
+    "title": "Tarefas",
+    "subtitle": "Trabalho em segundo plano que os agentes enfileiraram, executaram ou concluíram na frota.",
+    "empty": "Ainda não há tarefas.",
+    "emptyHint": "Quando um agente entrega trabalho a outro, ele aparece aqui com o estado e a conversa.",
+    "all": "Todas",
+    "active": "Ativas",
+    "failed": "Falhadas",
+    "finished": "Concluídas",
+    "state": {
+      "queued": "Na fila",
+      "starting": "Iniciando",
+      "running": "Em execução",
+      "failed": "Falhada",
+      "completed": "Concluída",
+      "cancelled": "Cancelada"
+    },
+    "cancel": "Cancelar",
+    "cancelled": "Tarefa cancelada.",
+    "open": "Abrir",
+    "from": "de {{name}}",
+    "noDetail": "Nenhum resultado registrado ainda.",
+    "error": "Não foi possível carregar as tarefas."
   },
   "sidePanel": {
     "ariaLabel": "Painel do espaço de trabalho",

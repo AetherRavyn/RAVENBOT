@@ -1,10 +1,11 @@
 <script lang="ts">
-  import { Building2, GitBranch, Sparkles, Store, Plug, Clock, Settings, Plus, Home, Globe, Hash, Inbox, Briefcase } from "@lucide/svelte";
+  import { Building2, GitBranch, Sparkles, Store, Plug, Clock, Settings, Plus, Home, Globe, Hash, Inbox, Briefcase, ListChecks } from "@lucide/svelte";
   import { workspace } from "$lib/workspace.svelte";
   import { browserDock } from "$lib/browserDock.svelte";
   import { sidePanel } from "$lib/workspace/sidePanel.svelte";
   import { fleetActivity } from "$lib/fleetActivity.svelte";
   import { attention, awaitingBots } from "$lib/attention.svelte";
+  import { agentTasks } from "$lib/agentTasks.svelte";
   import { t, type TranslationKey } from "$lib/i18n";
 
   let {
@@ -19,6 +20,7 @@
 
   const sectionItems = [
     { dest: "inbox", icon: Inbox, label: "rail.inbox" },
+    { dest: "tasks", icon: ListChecks, label: "rail.tasks" },
     { dest: "offices", icon: Building2, label: "rail.offices" },
     // Placed beside Offices rather than at the bottom: the codebase is the
     // *product* of an office, not a utility like the connector list, and
@@ -41,6 +43,7 @@
     Object.values(fleetActivity.states).filter((a) => a === "working").length,
   );
   const inboxCount = $derived(attention.count);
+  const taskFailedCount = $derived(agentTasks.failedCount);
 </script>
 
 <nav class="shrink-0 flex flex-col items-center gap-2 py-3 bg-[var(--surface-0)] overflow-y-auto" style="scrollbar-width: none" aria-label={t("rail.ariaLabel")}>
@@ -75,9 +78,11 @@
       title={t(item.label as TranslationKey)}
       aria-label={item.dest === "inbox" && inboxCount
         ? `${t(item.label as TranslationKey)} · ${inboxCount}`
-        : item.dest === "offices" && officeAttentionCount
-          ? `${t(item.label as TranslationKey)} · ${officeAttentionCount} ${t("fleet.attention")}`
-          : t(item.label as TranslationKey)}
+        : item.dest === "tasks" && taskFailedCount
+          ? `${t(item.label as TranslationKey)} · ${taskFailedCount} ${t("tasks.failed")}`
+          : item.dest === "offices" && officeAttentionCount
+            ? `${t(item.label as TranslationKey)} · ${officeAttentionCount} ${t("fleet.attention")}`
+            : t(item.label as TranslationKey)}
     >
       {#if workspace.dest === item.dest}
         <span class="absolute -left-2 top-1/2 -translate-y-1/2 h-5 w-[3px] rounded-full bg-[var(--rail-selected)]"></span>
@@ -88,6 +93,11 @@
           class="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[var(--warning-text)] text-[var(--text-on-light)] text-[11px] font-bold flex items-center justify-center"
           aria-hidden="true"
         >{inboxCount > 9 ? "9+" : inboxCount}</span>
+      {:else if item.dest === "tasks" && taskFailedCount}
+        <span
+          class="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[var(--danger-text)] text-[var(--text-on-light)] text-[11px] font-bold flex items-center justify-center"
+          aria-hidden="true"
+        >{taskFailedCount > 9 ? "9+" : taskFailedCount}</span>
       {:else if item.dest === "offices" && officeAttentionCount}
         <span
           class="absolute -top-0.5 -right-0.5 min-w-[16px] h-[16px] px-1 rounded-full bg-[var(--warning-text)] text-[var(--text-on-light)] text-[11px] font-bold flex items-center justify-center"

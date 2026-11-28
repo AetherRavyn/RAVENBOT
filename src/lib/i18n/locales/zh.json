@@ -951,7 +951,8 @@
     "projects": "项目",
     "browser": "浏览器",
     "channels": "频道",
-    "inbox": "收件箱"
+    "inbox": "收件箱",
+    "tasks": "任务"
   },
   "activity": {
     "thinking": "正在仔细思考…",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "已使用 {{spent}}，共 {{budget}}（{{percent}}%）",
     "budgetNearBadge": "警告",
     "budgetOverBadge": "严重"
+  },
+  "tasks": {
+    "title": "任务",
+    "subtitle": "智能体在整个团队中排队、运行或完成的背景工作。",
+    "empty": "暂无任务。",
+    "emptyHint": "当一个智能体把工作交给另一个智能体时，它会连同状态和会话显示在这里。",
+    "all": "全部",
+    "active": "进行中",
+    "failed": "失败",
+    "finished": "已完成",
+    "state": {
+      "queued": "排队中",
+      "starting": "启动中",
+      "running": "运行中",
+      "failed": "失败",
+      "completed": "已完成",
+      "cancelled": "已取消"
+    },
+    "cancel": "取消",
+    "cancelled": "任务已取消。",
+    "open": "打开",
+    "from": "来自 {{name}}",
+    "noDetail": "尚未记录结果。",
+    "error": "无法加载任务。"
   },
   "sidePanel": {
     "ariaLabel": "工作区面板",

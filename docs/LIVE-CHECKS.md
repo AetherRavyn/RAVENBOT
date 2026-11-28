@@ -172,6 +172,16 @@ appears after a delay:
 10. From a second agent, try `message_task` and `close_task` on the first
     agent's task. Confirm both are refused. Try starting a task for an agent
     the caller cannot delegate to; confirm `start_task` is refused.
+11. Open the **Tasks** rail. Confirm the task appears with its target agent,
+    owner, state, relative time and result/error. Filter Active, Failed and
+    Finished; confirm each split is correct.
+12. Press **Open** on a task. Confirm it selects the target agent and focuses
+    the task thread.
+13. Cancel a queued or running task from the view. Confirm the row becomes
+    cancelled, the owner's `await_event` receives the `closed` event, and a
+    running task stops at its next boundary.
+14. Start a failing task. Confirm the Tasks rail badge counts it, and that the
+    badge matches the failed rows in the view.
 
 ## Manual agent/routine admin check
 

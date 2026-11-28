@@ -9,6 +9,7 @@ import type { StatusInfo } from "$lib/types";
 export type RailDest =
   | "home"
   | "inbox"
+  | "tasks"
   | "agents"
   | "offices"
   | "projects"

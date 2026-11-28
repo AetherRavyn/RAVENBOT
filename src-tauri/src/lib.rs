@@ -6263,6 +6263,66 @@ async fn list_runs_view(pool: &sqlx::SqlitePool, limit: i64) -> Result<serde_jso
     Ok(serde_json::Value::Array(out))
 }
 
+/// List recent durable agent tasks across the fleet, newest first.
+///
+/// The Tasks view needs a cross-agent projection; the existing per-bot
+/// `list_owned` query is for the tools, not for a person looking at the whole
+/// background queue.
+#[tauri::command]
+async fn list_agent_tasks(
+    state: State<'_, AppState>,
+    limit: Option<i64>,
+) -> Result<Vec<ravenbot_core::agent_task::AgentTask>, String> {
+    ravenbot_db::agent_tasks::AgentTaskQueries::list_all(state.db.pool(), limit.unwrap_or(200))
+        .await
+}
+
+/// Cancel one task from the Tasks view.
+///
+/// A running task is cooperatively stopped at its next boundary; a queued or
+/// starting one is simply closed before the loop claims it. Closing also fires
+/// the owner's `closed` event so an agent waiting on the task does not sit
+/// until its deadline.
+#[tauri::command]
+async fn cancel_agent_task(state: State<'_, AppState>, task_id: Uuid) -> Result<bool, String> {
+    if state.role == "viewer" {
+        return Err("viewers cannot cancel tasks".to_string());
+    }
+    let Some(task) =
+        ravenbot_db::agent_tasks::AgentTaskQueries::get(state.db.pool(), task_id).await?
+    else {
+        return Ok(false);
+    };
+    if task.state.is_terminal() {
+        return Ok(false);
+    }
+    if let Some(run_id) = task.run_id {
+        state.runtime.request_cancel(run_id);
+    }
+    let closed = ravenbot_db::agent_tasks::AgentTaskQueries::cancel(
+        state.db.pool(),
+        task.id,
+        task.owner_bot_id,
+        "cancelled from the Tasks view",
+        chrono::Utc::now(),
+    )
+    .await?;
+    if let Some(closed) = closed {
+        let event = closed.event_payload("closed", None);
+        let _ = ravenbot_db::agent_tasks::AgentWaitQueries::fire_matching(
+            state.db.pool(),
+            closed.owner_bot_id,
+            "task",
+            &event,
+            chrono::Utc::now(),
+        )
+        .await;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
 /// List recent runs for diagnostics, newest first.
 #[tauri::command]
 async fn list_runs(
@@ -25861,6 +25921,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         list_bots,
         get_bot,
         list_runs,
+        list_agent_tasks,
+        cancel_agent_task,
         list_audit_entries,
         get_audit_retention,
         set_audit_retention,

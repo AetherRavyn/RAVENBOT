@@ -951,7 +951,8 @@
     "projects": "Projekte",
     "browser": "Browser",
     "channels": "Kanäle",
-    "inbox": "Posteingang"
+    "inbox": "Posteingang",
+    "tasks": "Aufgaben"
   },
   "activity": {
     "thinking": "Ich denke nach…",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "{{spent}} von {{budget}} ausgegeben ({{percent}} %)",
     "budgetNearBadge": "Warnung",
     "budgetOverBadge": "Kritisch"
+  },
+  "tasks": {
+    "title": "Aufgaben",
+    "subtitle": "Hintergrundarbeit, die Agenten in der Flotte eingereiht, ausgeführt oder abgeschlossen haben.",
+    "empty": "Noch keine Aufgaben.",
+    "emptyHint": "Wenn ein Agent Arbeit an einen anderen übergibt, erscheint sie hier mit Status und Thread.",
+    "all": "Alle",
+    "active": "Aktiv",
+    "failed": "Fehlgeschlagen",
+    "finished": "Beendet",
+    "state": {
+      "queued": "In Warteschlange",
+      "starting": "Startet",
+      "running": "Läuft",
+      "failed": "Fehlgeschlagen",
+      "completed": "Abgeschlossen",
+      "cancelled": "Abgebrochen"
+    },
+    "cancel": "Abbrechen",
+    "cancelled": "Aufgabe abgebrochen.",
+    "open": "Öffnen",
+    "from": "von {{name}}",
+    "noDetail": "Noch kein Ergebnis erfasst.",
+    "error": "Aufgaben konnten nicht geladen werden."
   },
   "sidePanel": {
     "ariaLabel": "Arbeitsbereich",

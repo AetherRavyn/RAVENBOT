@@ -4,6 +4,23 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Cross-agent Tasks view
+
+- **A real surface for durable tasks.** The existing `agent_tasks` ledger now
+  appears in a **Tasks** rail destination: cross-agent rows with owner, target,
+  state, relative time and result/error; Active, Failed and Finished filters;
+  Open to the task thread; and Cancel for queued/running work.
+- **Live and honest.** The view refreshes from `agent-task-changed` instead of
+  polling, keeps the last list on a transient IPC failure, and shows a danger
+  badge for failed tasks. Cancel cooperatively stops a running task at its next
+  boundary and fires the owner's `closed` event; a queued task is closed before
+  the loop claims it.
+- **Bounded backend.** `list_agent_tasks` reads the newest 200 rows across all
+  agents; the existing per-owner query and tool permissions are unchanged.
+- **Tests and docs.** New Rust coverage for the cross-owner list/cap, frontend
+  store tests for filtering/cancel/error retention, DOM tests for rows, filters,
+  open and cancel, and a manual check in `docs/LIVE-CHECKS.md`.
+
 ### Conversation backdrops, local palettes and activity-aware avatars
 
 - **Per-conversation backdrops.** Four bundled images plus uploaded PNG/JPEG/

@@ -951,7 +951,8 @@
     "projects": "Proyectos",
     "browser": "Navegador",
     "channels": "Canales",
-    "inbox": "Bandeja"
+    "inbox": "Bandeja",
+    "tasks": "Tareas"
   },
   "activity": {
     "thinking": "Pensándolo bien…",
@@ -2454,6 +2455,30 @@
     "budgetDetail": "{{spent}} gastados de {{budget}} ({{percent}}%)",
     "budgetNearBadge": "Advertencia",
     "budgetOverBadge": "Crítico"
+  },
+  "tasks": {
+    "title": "Tareas",
+    "subtitle": "Trabajo en segundo plano que los agentes encolaron, ejecutaron o terminaron en la flota.",
+    "empty": "Aún no hay tareas.",
+    "emptyHint": "Cuando un agente encarga trabajo a otro, aparece aquí con su estado e hilo.",
+    "all": "Todas",
+    "active": "Activas",
+    "failed": "Fallidas",
+    "finished": "Terminadas",
+    "state": {
+      "queued": "En cola",
+      "starting": "Iniciando",
+      "running": "En ejecución",
+      "failed": "Fallida",
+      "completed": "Completada",
+      "cancelled": "Cancelada"
+    },
+    "cancel": "Cancelar",
+    "cancelled": "Tarea cancelada.",
+    "open": "Abrir",
+    "from": "de {{name}}",
+    "noDetail": "Aún no hay resultado registrado.",
+    "error": "No se pudieron cargar las tareas."
   },
   "sidePanel": {
     "ariaLabel": "Panel del espacio",
