@@ -4,6 +4,22 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Home setup checklist
+
+- **Dismissing onboarding no longer hides missing setup.** Home now shows a
+  provider → The Raven → first office checklist until all three exist. It
+  detects a cloud key or a local Ollama model, opens the relevant settings or
+  onboarding step, and opens the real office creator in place.
+- **Honest completion rules.** An agent configured for Ollama needs an actual
+  local model; a cloud key elsewhere does not mark it ready. Only the next
+  incomplete row has an action, completed rows are marked, and the card
+  disappears when the setup is complete.
+- **Fresh facts.** The checklist reloads after Settings closes or a bot changes,
+  and reads the office count from the live workspace rather than a copied list.
+- **Tests.** Pure setup-fact tests, checklist DOM tests for progress/actions,
+  and a Home integration test for probing, provider settings and the completed
+  state; all twelve locales carry the new strings.
+
 ### Cross-agent Tasks view
 
 - **A real surface for durable tasks.** The existing `agent_tasks` ledger now

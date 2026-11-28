@@ -2480,6 +2480,20 @@
     "noDetail": "Nessun risultato registrato.",
     "error": "Impossibile caricare le attività."
   },
+  "setup": {
+    "title": "Configura RAVENBOT",
+    "progress": "{{done}} di {{total}} completati",
+    "provider": "Collega un provider di modelli",
+    "providerHint": "Aggiungi una chiave cloud o avvia Ollama.",
+    "providerAction": "Apri impostazioni provider",
+    "agent": "Crea The Raven",
+    "agentHint": "L'agente predefinito che esegue le chat e progetta gli uffici.",
+    "agentAction": "Configura The Raven",
+    "office": "Crea il tuo primo ufficio",
+    "officeHint": "Un team con workspace e obiettivo condivisi.",
+    "officeAction": "Crea ufficio",
+    "done": "Fatto"
+  },
   "sidePanel": {
     "ariaLabel": "Pannello area di lavoro",
     "browser": "Browser",

@@ -83,18 +83,23 @@ event the owner agent can wait for; a person can see it across every agent.
 **Next slice:** undoable starts and task templates. The current view is
 read/stop, not a planner.
 
-### P0 — First-run flow that finishes the job
+### P0 — First-run flow that finishes the job — checklist shipped
 
 RAVENBOT’s onboarding modal asks for a provider key and The Raven, the default agent.
 OpenBot’s first run is a full sequence: language, provider detection/download,
 sign-in, model choice, and a clear transition into the workspace.
 
-**User pain:** a new user can skip the modal and land on Home with no provider,
-no architect, and no office, without a visible checklist.
+**User pain solved:** a dismissible modal no longer hides missing setup behind a
+clean Home screen. Home now shows a **setup checklist** (provider → architect →
+first office) until all three exist. It detects a cloud key or a local Ollama
+model, opens provider settings or the existing onboarding for The Raven, and
+opens the real office creator for the first office. Completed rows are marked;
+only the next incomplete row has an action; the card reloads after Settings or a
+bot change and disappears when the setup is complete.
 
-**Next slice:** keep the modal for existing users, but add a Home **setup
-checklist** (provider → architect → first office) and a full-screen first-run
-path with provider detection and a “create my first office” step.
+**Still next:** the full-screen first-run sequence with language choice,
+provider download/detection, and a single transition into the first office. The
+checklist is the persistent safety net, not a replacement for that flow.
 
 ### P1 — Agent templates
 
@@ -167,15 +172,15 @@ surfaces; a token lint that rejects raw color literals in components.
 
 ## Recommended next three slices
 
-1. **First-run checklist + first office** — converts new installs into working
-   fleets.
-2. **Pinned/Waiting sidebar groups + shortcut sheet** — makes a larger fleet
+1. **Pinned/Waiting sidebar groups + shortcut sheet** — makes a larger fleet
    feel organized.
-3. **Agent templates** — starts a new teammate from a role, not a blank name.
+2. **Agent templates** — starts a new teammate from a role, not a blank name.
+3. **What's New overlay + provider recovery card** — makes a broken key
+   recoverable from the error the user actually sees.
 
 ## Verification
 
-- Rust workspace: 501 passed, 0 failed, 7 ignored.
-- Frontend: 536 passed across 61 files.
+- Rust workspace: 1,306 passed, 0 failed, 17 ignored across the current suite.
+- Frontend: 1,083 passed across 155 files.
 - `svelte-check`: 0 errors, 0 warnings.
 - Production build: clean.

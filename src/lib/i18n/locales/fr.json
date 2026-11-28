@@ -2480,6 +2480,20 @@
     "noDetail": "Aucun résultat enregistré pour l'instant.",
     "error": "Impossible de charger les tâches."
   },
+  "setup": {
+    "title": "Configurer RAVENBOT",
+    "progress": "{{done}} sur {{total}} terminé(s)",
+    "provider": "Connecter un fournisseur de modèle",
+    "providerHint": "Ajoutez une clé cloud ou démarrez Ollama.",
+    "providerAction": "Ouvrir les paramètres du fournisseur",
+    "agent": "Créer The Raven",
+    "agentHint": "L'agent par défaut qui exécute les chats et conçoit les bureaux.",
+    "agentAction": "Configurer The Raven",
+    "office": "Créer votre premier bureau",
+    "officeHint": "Une équipe avec un espace de travail et un objectif partagés.",
+    "officeAction": "Créer un bureau",
+    "done": "Terminé"
+  },
   "sidePanel": {
     "ariaLabel": "Panneau de l’espace",
     "browser": "Navigateur",

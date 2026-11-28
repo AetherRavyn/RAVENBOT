@@ -2480,6 +2480,20 @@
     "noDetail": "尚未记录结果。",
     "error": "无法加载任务。"
   },
+  "setup": {
+    "title": "设置 RAVENBOT",
+    "progress": "已完成 {{done}}/{{total}}",
+    "provider": "连接模型提供商",
+    "providerHint": "添加云端密钥或启动 Ollama。",
+    "providerAction": "打开提供商设置",
+    "agent": "创建 The Raven",
+    "agentHint": "运行聊天并设计办公室的默认智能体。",
+    "agentAction": "设置 The Raven",
+    "office": "创建你的第一个办公室",
+    "officeHint": "拥有共享工作区和目标的团队。",
+    "officeAction": "创建办公室",
+    "done": "完成"
+  },
   "sidePanel": {
     "ariaLabel": "工作区面板",
     "browser": "浏览器",

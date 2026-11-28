@@ -386,10 +386,13 @@ database and data root; `RAVENBOT_DB` overrides the database path.
    `ollama pull llama3.1`), or add an API key in **Settings → Providers**.
 2. RAVENBOT creates **The Raven**, the default lead agent. Give it a name and a
    model, or keep the defaults.
-3. Start a thread and ask for something real: "read this repository and tell me
+3. Home keeps a **setup checklist** until a model path, The Raven, and a first
+   office exist. It survives a dismissed onboarding modal, detects local Ollama,
+   opens the right settings, and creates the office in place.
+4. Start a thread and ask for something real: "read this repository and tell me
    what is broken", "run the tests and fix the first failure", or "design an
    office that audits this project".
-4. Open the right-hand panels to inspect tool calls, reasoning, artifacts,
+5. Open the right-hand panels to inspect tool calls, reasoning, artifacts,
    approvals, and usage.
 
 ## Providers
@@ -490,7 +493,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
   plus 7 cross-tenant isolation tests, 255 runtime tests, 244 skill tests, 143
   database tests, 103 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **1,072 frontend tests** across 152 files. A gate rejects literal English
+- **1,083 frontend tests** across 155 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

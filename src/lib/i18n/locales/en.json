@@ -2480,6 +2480,20 @@
     "noDetail": "No result recorded yet.",
     "error": "Could not load tasks."
   },
+  "setup": {
+    "title": "Set up RAVENBOT",
+    "progress": "{{done}} of {{total}} complete",
+    "provider": "Connect a model provider",
+    "providerHint": "Add a cloud key or start Ollama.",
+    "providerAction": "Open provider settings",
+    "agent": "Create The Raven",
+    "agentHint": "The default agent that runs chats and designs offices.",
+    "agentAction": "Set up The Raven",
+    "office": "Create your first office",
+    "officeHint": "A team with a shared workspace and goal.",
+    "officeAction": "Create office",
+    "done": "Done"
+  },
   "sidePanel": {
     "ariaLabel": "Workspace panel",
     "browser": "Browser",

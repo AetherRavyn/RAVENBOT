@@ -2480,6 +2480,20 @@
     "noDetail": "Henüz sonuç kaydedilmedi.",
     "error": "Görevler yüklenemedi."
   },
+  "setup": {
+    "title": "RAVENBOT'u kur",
+    "progress": "{{total}} adımdan {{done}} tamam",
+    "provider": "Bir model sağlayıcısı bağla",
+    "providerHint": "Bulut anahtarı ekle veya Ollama'yı başlat.",
+    "providerAction": "Sağlayıcı ayarlarını aç",
+    "agent": "The Raven'ı oluştur",
+    "agentHint": "Sohbetleri yürüten ve ofisleri tasarlayan varsayılan ajan.",
+    "agentAction": "The Raven'ı kur",
+    "office": "İlk ofisini oluştur",
+    "officeHint": "Paylaşılan çalışma alanı ve hedefi olan bir ekip.",
+    "officeAction": "Ofis oluştur",
+    "done": "Tamam"
+  },
   "sidePanel": {
     "ariaLabel": "Çalışma alanı paneli",
     "browser": "Tarayıcı",

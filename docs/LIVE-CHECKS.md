@@ -140,6 +140,23 @@ appears after a delay:
    the chat says to open RAVENBOT and that `answer <id> <text>` is refused.
 9. As a non-owner workspace role, confirm `submit_api_key_answer` is refused.
 
+## Manual first-run checklist check
+
+1. Start with a throwaway `RAVENBOT_HOME` that has no provider, no default
+   agent and no office. Dismiss the onboarding modal. Confirm Home still shows
+   **Set up RAVENBOT** with `0 of 3 complete`.
+2. Start Ollama with a tool-capable model, or add a cloud key in Settings. Close
+   Settings. Confirm the provider row completes and the count advances.
+3. Click the The Raven action. Confirm the onboarding flow opens and creates the
+   default agent; the row completes when it closes.
+4. Click **Create office**, choose a template, and create it. Confirm the office
+   opens, the row completes, and the checklist disappears.
+5. Restart the app with the same root. Confirm the checklist stays hidden.
+6. Point The Raven at Ollama, stop Ollama, and keep a cloud key saved. Confirm
+   the provider row is **not** marked done: a local agent needs a local model.
+7. Delete the only office and confirm the office row returns on Home without a
+   restart.
+
 ## Manual background-task check
 
 1. In a desktop conversation, ask the agent to start a small task for another

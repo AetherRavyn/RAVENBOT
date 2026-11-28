@@ -2480,6 +2480,20 @@
     "noDetail": "अभी कोई परिणाम दर्ज नहीं।",
     "error": "कार्य लोड नहीं हो सके।"
   },
+  "setup": {
+    "title": "RAVENBOT सेट करें",
+    "progress": "{{total}} में से {{done}} पूर्ण",
+    "provider": "मॉडल प्रदाता कनेक्ट करें",
+    "providerHint": "क्लाउड कुंजी जोड़ें या Ollama शुरू करें।",
+    "providerAction": "प्रदाता सेटिंग्स खोलें",
+    "agent": "The Raven बनाएँ",
+    "agentHint": "चैट चलाने और ऑफ़िस डिज़ाइन करने वाला डिफ़ॉल्ट एजेंट।",
+    "agentAction": "The Raven सेट करें",
+    "office": "अपना पहला ऑफ़िस बनाएँ",
+    "officeHint": "साझा कार्यक्षेत्र और लक्ष्य वाली टीम।",
+    "officeAction": "ऑफ़िस बनाएँ",
+    "done": "पूर्ण"
+  },
   "sidePanel": {
     "ariaLabel": "वर्कस्पेस पैनल",
     "browser": "ब्राउज़र",

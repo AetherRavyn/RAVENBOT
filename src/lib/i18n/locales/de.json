@@ -2480,6 +2480,20 @@
     "noDetail": "Noch kein Ergebnis erfasst.",
     "error": "Aufgaben konnten nicht geladen werden."
   },
+  "setup": {
+    "title": "RAVENBOT einrichten",
+    "progress": "{{done}} von {{total}} erledigt",
+    "provider": "Modellanbieter verbinden",
+    "providerHint": "Cloud-Schlüssel hinzufügen oder Ollama starten.",
+    "providerAction": "Anbietereinstellungen öffnen",
+    "agent": "The Raven erstellen",
+    "agentHint": "Der Standard-Agent für Chats und Büro-Design.",
+    "agentAction": "The Raven einrichten",
+    "office": "Erstes Büro erstellen",
+    "officeHint": "Ein Team mit gemeinsamem Arbeitsbereich und Ziel.",
+    "officeAction": "Büro erstellen",
+    "done": "Fertig"
+  },
   "sidePanel": {
     "ariaLabel": "Arbeitsbereich",
     "browser": "Browser",

@@ -236,8 +236,10 @@
     mediaQuery.addEventListener("change", handler);
 
     const handleOpenSettings = () => workspace.openSettings("keys");
+    const handleOpenOnboarding = () => (showOnboarding = true);
     const onResize = () => (workspace.windowWidth = window.innerWidth);
     window.addEventListener("resize", onResize);
+    window.addEventListener("open-onboarding", handleOpenOnboarding);
     const handleOpenConnectors = (e: Event) => {
       const botId = (e as CustomEvent<{ botId?: string }>).detail?.botId;
       if (botId) workspace.selectedBotId = botId;
@@ -274,6 +276,7 @@
       mediaQuery.removeEventListener("change", handler);
       window.removeEventListener("resize", onResize);
       window.removeEventListener("open-settings", handleOpenSettings);
+      window.removeEventListener("open-onboarding", handleOpenOnboarding);
       window.removeEventListener("open-connectors", handleOpenConnectors);
       window.removeEventListener("office-deleted", handleOfficeDeleted);
       window.removeEventListener("office-updated", handleOfficeUpdated);
@@ -539,6 +542,7 @@
   open={workspace.showSettings}
   onClose={() => {
     workspace.showSettings = false;
+    window.dispatchEvent(new CustomEvent("settings-closed"));
     void checkFirstRun();
   }}
   bots={workspace.bots}

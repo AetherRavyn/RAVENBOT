@@ -2480,6 +2480,20 @@
     "noDetail": "아직 결과가 기록되지 않았습니다.",
     "error": "작업을 불러올 수 없습니다."
   },
+  "setup": {
+    "title": "RAVENBOT 설정",
+    "progress": "{{total}}개 중 {{done}}개 완료",
+    "provider": "모델 공급자 연결",
+    "providerHint": "클라우드 키를 추가하거나 Ollama를 시작하세요.",
+    "providerAction": "공급자 설정 열기",
+    "agent": "The Raven 만들기",
+    "agentHint": "채팅을 실행하고 오피스를 설계하는 기본 에이전트입니다.",
+    "agentAction": "The Raven 설정",
+    "office": "첫 오피스 만들기",
+    "officeHint": "공유 작업 공간과 목표를 가진 팀.",
+    "officeAction": "오피스 만들기",
+    "done": "완료"
+  },
   "sidePanel": {
     "ariaLabel": "워크스페이스 패널",
     "browser": "브라우저",

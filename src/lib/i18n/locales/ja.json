@@ -2480,6 +2480,20 @@
     "noDetail": "結果はまだ記録されていません。",
     "error": "タスクを読み込めませんでした。"
   },
+  "setup": {
+    "title": "RAVENBOT をセットアップ",
+    "progress": "{{total}} 中 {{done}} 完了",
+    "provider": "モデルプロバイダーを接続",
+    "providerHint": "クラウドキーを追加するか Ollama を起動します。",
+    "providerAction": "プロバイダー設定を開く",
+    "agent": "The Raven を作成",
+    "agentHint": "チャットを実行しオフィスを設計する既定のエージェント。",
+    "agentAction": "The Raven をセットアップ",
+    "office": "最初のオフィスを作成",
+    "officeHint": "共有ワークスペースと目標を持つチーム。",
+    "officeAction": "オフィスを作成",
+    "done": "完了"
+  },
   "sidePanel": {
     "ariaLabel": "ワークスペースパネル",
     "browser": "ブラウザ",

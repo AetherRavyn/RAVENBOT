@@ -12,15 +12,73 @@
   import SimpleSelect from "$lib/components/SimpleSelect.svelte";
   import ThemeLogo from "$lib/components/ThemeLogo.svelte";
   import KillSwitch from "$lib/components/KillSwitch.svelte";
+  import CreateChatRoom from "$lib/components/CreateChatRoom.svelte";
+  import SetupChecklist from "$lib/components/workspace/SetupChecklist.svelte";
+  import { invoke } from "@tauri-apps/api/core";
   import { onMount, onDestroy, tick } from "svelte";
   import { workspace } from "$lib/workspace.svelte";
   import { t } from "$lib/i18n";
+  import {
+    nextSetupStep,
+    setupSteps,
+    type SetupStepId,
+  } from "$lib/workspace/setupChecklist";
   import type { ThemeDefinition } from "$lib/theme";
 
   let { theme }: { theme: ThemeDefinition } = $props();
 
   let prompt = $state("");
   let promptEl = $state<HTMLTextAreaElement | null>(null);
+
+  /**
+   * First-run facts. The checklist is shown only after the probes finish, so a
+   * person never sees "0 of 3" flash before a configured workspace loads.
+   */
+  let setupLoading = $state(true);
+  let setupProviders = $state<string[]>([]);
+  let setupAgent = $state<any | null>(null);
+  let setupOllamaModels = $state<any[]>([]);
+  let showFirstOffice = $state(false);
+  let setupSeq = 0;
+  let setupStepsState = $derived(
+    setupSteps({
+      providers: setupProviders,
+      agent: setupAgent,
+      ollamaModels: setupOllamaModels,
+      officeCount: workspace.chatrooms.length,
+    }),
+  );
+  let nextSetup = $derived(nextSetupStep(setupStepsState));
+
+  async function loadSetupFacts() {
+    const seq = ++setupSeq;
+    const [providers, agent, local] = await Promise.all([
+      invoke<string[]>("get_configured_providers").catch(() => []),
+      invoke<any>("get_default_agent").catch(() => null),
+      invoke<any>("probe_ollama").catch(() => null),
+    ]);
+    if (seq !== setupSeq) return;
+    setupProviders = Array.isArray(providers) ? providers : [];
+    setupAgent = agent ?? null;
+    setupOllamaModels = Array.isArray(local?.models) ? local.models : [];
+    setupLoading = false;
+  }
+
+  function handleSetupAction(id: SetupStepId) {
+    if (id === "provider") {
+      workspace.openSettings("keys");
+      return;
+    }
+    if (id === "agent") {
+      window.dispatchEvent(new CustomEvent("open-onboarding"));
+      return;
+    }
+    showFirstOffice = true;
+  }
+
+  function onSetupFactsChanged() {
+    void loadSetupFacts();
+  }
 
   function handleTryLocalSkill(event: Event) {
     const text = (event as CustomEvent<{ prompt?: string }>).detail?.prompt;
@@ -29,8 +87,17 @@
     void tick().then(() => promptEl?.focus());
   }
 
-  onMount(() => window.addEventListener("local-skill-try", handleTryLocalSkill));
-  onDestroy(() => window.removeEventListener("local-skill-try", handleTryLocalSkill));
+  onMount(() => {
+    window.addEventListener("local-skill-try", handleTryLocalSkill);
+    window.addEventListener("bots-changed", onSetupFactsChanged);
+    window.addEventListener("settings-closed", onSetupFactsChanged);
+    void loadSetupFacts();
+  });
+  onDestroy(() => {
+    window.removeEventListener("local-skill-try", handleTryLocalSkill);
+    window.removeEventListener("bots-changed", onSetupFactsChanged);
+    window.removeEventListener("settings-closed", onSetupFactsChanged);
+  });
   let deepSearch = $state(false);
   let think = $state(false);
   let targetBotId = $state<string | null>(null);
@@ -138,6 +205,10 @@
         {t("home.heading")}
       </h1>
     </div>
+
+    {#if !setupLoading}
+      <SetupChecklist steps={setupStepsState} next={nextSetup} onAction={handleSetupAction} />
+    {/if}
 
     <div class="rounded-xl border border-[var(--hairline)] bg-[var(--surface-1)] p-3.5 focus-within:border-[var(--brand)] transition-colors" style="transition-duration: var(--duration-normal)">
       <textarea
@@ -257,3 +328,13 @@
     <KillSwitch />
   </div>
 </div>
+
+<CreateChatRoom
+  open={showFirstOffice}
+  bots={workspace.bots}
+  onClose={() => (showFirstOffice = false)}
+  onCreated={(room) => {
+    showFirstOffice = false;
+    workspace.handleRoomCreated(room);
+  }}
+/>
