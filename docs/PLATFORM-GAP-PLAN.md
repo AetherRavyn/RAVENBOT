@@ -111,7 +111,7 @@ now; if a real fleet shows payload pressure, move the bytes to
 
 **Shipped evidence:** `AvatarPicker.upload.dom.test.ts` covers a valid PNG,
 forged bytes, a >512 KB file, remove and the generated fallback; the six keys
-exist in all twelve locales; the full frontend suite passes at 1,095 tests.
+exist in all twelve locales; the full frontend suite passes at 1,100 tests.
 
 ### 1.2 Activity-aware avatars — `shipped`
 

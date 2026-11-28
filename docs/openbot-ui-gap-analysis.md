@@ -101,17 +101,19 @@ bot change and disappears when the setup is complete.
 provider download/detection, and a single transition into the first office. The
 checklist is the persistent safety net, not a replacement for that flow.
 
-### P1 — Agent templates
+### P1 — Agent templates — shipped
 
 OpenBot ships agent templates and a marketplace for complete teammates.
-RAVENBOT’s marketplace is skills-first; creating a new agent still starts from a
-blank name and description.
+RAVENBOT’s marketplace is skills-first; creating a new agent started from a blank
+name and description.
 
-**User pain:** blank-page agent creation is the hardest part for a non-expert.
-
-**Next slice:** a small set of real starter templates (Billing & Ledger,
-Research, Support, Release Engineer) that prefill instructions, default tools,
-and a first prompt. No fake agents: each template creates a real bot.
+**User pain solved:** the create-agent dialog now starts from four real roles:
+**Billing & Ledger**, **Research Scout**, **Support Triage**, and **Release
+Engineer**. A template prefills the editable name, description, specialty,
+system prompt, a bounded list of built-in tools, and a first composer prompt.
+Creating it inserts a normal `bots` row with the real config and skills; the
+prompt stays in the draft store until the person sends it. Connectors are still
+assigned separately, and nothing is downloaded or installed by a template.
 
 ### P1 — Sidebar organization — shipped
 
@@ -170,15 +172,16 @@ surfaces; a token lint that rejects raw color literals in components.
 
 ## Recommended next three slices
 
-1. **Agent templates** — starts a new teammate from a role, not a blank name.
-2. **Files and projects in global search** — makes the workspace findable
+1. **Files and projects in global search** — makes the workspace findable
    without leaving the palette.
-3. **What's New overlay + provider recovery card** — makes a broken key
+2. **What's New overlay + provider recovery card** — makes a broken key
    recoverable from the error the user actually sees.
+3. **Visual regression and token gates** — snapshot the palette, settings, chat,
+   and office surfaces before a release.
 
 ## Verification
 
 - Rust workspace: 1,306 passed, 0 failed, 17 ignored across the current suite.
-- Frontend: 1,095 passed across 158 files.
+- Frontend: 1,100 passed across 161 files.
 - `svelte-check`: 0 errors, 0 warnings.
 - Production build: clean.

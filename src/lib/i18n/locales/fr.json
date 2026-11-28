@@ -53,6 +53,22 @@
     "fleetNavigator": "Navigateur de flotte",
     "resize": "Redimensionner la barre latérale"
   },
+  "agentTemplates": {
+    "title": "Partir d'un rôle",
+    "hint": "Préremplit le brief et un premier prompt. Tout reste modifiable.",
+    "billingName": "Facturation & grand livre",
+    "billingDesc": "Rapproche factures et écritures, signale les écarts et documente les preuves.",
+    "billingPrompt": "Examine les fichiers de cet espace de travail et liste chaque facture ou écriture qui demande ton attention.",
+    "researchName": "Research Scout",
+    "researchDesc": "Trouve des sources primaires, compare les affirmations et rend des conclusions citées.",
+    "researchPrompt": "Recherche l'état actuel du sujet dans cet espace de travail et rends une courte note avec sources.",
+    "supportName": "Triage support",
+    "supportDesc": "Transforme les signalements clients en problèmes reproductibles et en réponses claires.",
+    "supportPrompt": "Examine le dernier signalement client, reproduis ce que tu peux et rédige une réponse claire.",
+    "releaseName": "Ingénieur release",
+    "releaseDesc": "Lance les tests, examine les diffs et prépare des notes de version avec preuves.",
+    "releasePrompt": "Lance les tests du projet, inspecte le diff et liste les blocages de release avec preuves."
+  },
   "bot": {
     "status": {
       "idle": "Inactif",

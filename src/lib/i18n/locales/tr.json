@@ -53,6 +53,22 @@
     "fleetNavigator": "Filo gezgini",
     "resize": "Kenar çubuğunu yeniden boyutlandır"
   },
+  "agentTemplates": {
+    "title": "Bir rolden başla",
+    "hint": "Briefi ve ilk istemi doldurur. Her şey düzenlenebilir.",
+    "billingName": "Faturalama ve defter",
+    "billingDesc": "Faturaları ve defter kayıtlarını eşleştirir, uyuşmazlıkları işaretler ve kanıt kaydeder.",
+    "billingPrompt": "Bu çalışma alanındaki dosyaları incele ve dikkat gerektiren her faturayı veya defter kaydını listele.",
+    "researchName": "Araştırma İzcisi",
+    "researchDesc": "Birincil kaynaklar bulur, iddiaları karşılaştırır ve kaynaklı bulgular döndürür.",
+    "researchPrompt": "Bu çalışma alanındaki konunun güncel durumunu araştır ve kaynaklarla kısa bir özet döndür.",
+    "supportName": "Destek Triyajı",
+    "supportDesc": "Müşteri bildirimlerini yeniden üretilebilir sorunlara ve net yanıtlara dönüştürür.",
+    "supportPrompt": "En son müşteri bildirimini incele, mümkün olanı yeniden üret ve net bir yanıt taslağı hazırla.",
+    "releaseName": "Sürüm Mühendisi",
+    "releaseDesc": "Testleri çalıştırır, diff'leri inceler ve kanıtlarla sürüm notları hazırlar.",
+    "releasePrompt": "Projenin testlerini çalıştır, diff'i incele ve sürüm engellerini kanıtlarla listele."
+  },
   "bot": {
     "status": {
       "idle": "Boşta",

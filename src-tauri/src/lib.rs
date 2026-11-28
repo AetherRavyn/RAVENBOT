@@ -5169,6 +5169,9 @@ async fn create_bot(
     description: String,
     avatar_url: Option<String>,
     avatar_style: Option<String>,
+    specialty: Option<String>,
+    prompt: Option<String>,
+    skills: Option<Vec<String>>,
 ) -> Result<Bot, String> {
     let mut bot = Bot::new(name, description);
     if let Some(url) = avatar_url {
@@ -5176,6 +5179,27 @@ async fn create_bot(
     }
     if let Some(style) = avatar_style {
         bot.avatar_style = Some(style);
+    }
+    if let Some(specialty) = specialty
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        bot.specialty = Some(specialty.chars().take(120).collect());
+    }
+    if let Some(prompt) = prompt
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        bot.config.custom_prompt = Some(prompt);
+    }
+    if let Some(skills) = skills {
+        let mut seen = std::collections::HashSet::new();
+        bot.skills = skills
+            .into_iter()
+            .map(|skill| skill.trim().to_string())
+            .filter(|skill| !skill.is_empty() && seen.insert(skill.clone()))
+            .take(64)
+            .collect();
     }
     let (default_provider, default_model) = resolve_default_model(state.db.pool()).await;
     bot.config.model_provider = default_provider;

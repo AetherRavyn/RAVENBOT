@@ -53,6 +53,22 @@
     "fleetNavigator": "플릿 탐색기",
     "resize": "사이드바 크기 조정"
   },
+  "agentTemplates": {
+    "title": "역할에서 시작",
+    "hint": "브리프와 첫 프롬프트를 채웁니다. 모두 편집할 수 있습니다.",
+    "billingName": "청구 및 원장",
+    "billingDesc": "청구서와 원장 항목을 대조하고 불일치를 표시하며 근거를 기록합니다.",
+    "billingPrompt": "이 작업 공간의 파일을 검토하고 주의가 필요한 모든 청구서나 원장 항목을 나열하세요.",
+    "researchName": "리서치 스카우트",
+    "researchDesc": "1차 자료를 찾고 주장을 비교해 인용된 결과를 반환합니다.",
+    "researchPrompt": "이 작업 공간의 주제 현황을 조사하고 출처가 포함된 짧은 브리프를 반환하세요.",
+    "supportName": "지원 트리아지",
+    "supportDesc": "고객 보고를 재현 가능한 문제와 명확한 답변으로 바꿉니다.",
+    "supportPrompt": "최신 고객 보고를 검토하고 가능한 만큼 재현한 뒤 명확한 답변 초안을 작성하세요.",
+    "releaseName": "릴리스 엔지니어",
+    "releaseDesc": "테스트를 실행하고 diff를 검토하며 근거가 있는 릴리스 노트를 준비합니다.",
+    "releasePrompt": "프로젝트 테스트를 실행하고 diff를 검사해 릴리스 차단 요소를 근거와 함께 나열하세요."
+  },
   "bot": {
     "status": {
       "idle": "대기 중",

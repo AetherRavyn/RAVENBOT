@@ -53,6 +53,22 @@
     "fleetNavigator": "Flottennavigator",
     "resize": "Seitenleiste Größe ändern"
   },
+  "agentTemplates": {
+    "title": "Mit einer Rolle starten",
+    "hint": "Füllt Brief und ersten Prompt vor. Alles bleibt bearbeitbar.",
+    "billingName": "Abrechnung & Hauptbuch",
+    "billingDesc": "Gleicht Rechnungen und Hauptbucheinträge ab, markiert Abweichungen und dokumentiert Belege.",
+    "billingPrompt": "Prüfe die Dateien in diesem Arbeitsbereich und liste jede Rechnung oder jeden Hauptbucheintrag auf, der Aufmerksamkeit braucht.",
+    "researchName": "Research Scout",
+    "researchDesc": "Findet Primärquellen, vergleicht Aussagen und liefert belegte Ergebnisse.",
+    "researchPrompt": "Recherchiere den aktuellen Stand des Themas in diesem Arbeitsbereich und liefere eine kurze Zusammenfassung mit Quellen.",
+    "supportName": "Support-Triage",
+    "supportDesc": "Macht aus Kundenmeldungen reproduzierbare Probleme und klare Antworten.",
+    "supportPrompt": "Prüfe die neueste Kundenmeldung, reproduziere was möglich ist und entwirf eine klare Antwort.",
+    "releaseName": "Release Engineer",
+    "releaseDesc": "Führt Tests aus, prüft Diffs und bereitet Release-Notes mit Belegen vor.",
+    "releasePrompt": "Führe die Tests des Projekts aus, prüfe den Diff und liste Release-Blocker mit Belegen auf."
+  },
   "bot": {
     "status": {
       "idle": "Bereit",

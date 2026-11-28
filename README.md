@@ -98,7 +98,10 @@ reasoning kept separate from its answer.
 ### A fleet, not a single chat
 
 Give each agent a rank, a specialty, a model, a skill set, and its own workspace.
-The lead agent (`The Raven` by default) designs offices from a one-line mission,
+The create-agent dialog starts from four editable roles — **Billing & Ledger**,
+**Research Scout**, **Support Triage**, and **Release Engineer** — each with a
+real system brief, built-in tools and a first prompt that waits in the composer
+instead of sending. The lead agent (`The Raven` by default) designs offices from a one-line mission,
 proposes the roster, and assigns only the skills and connectors that are actually
 installed and configured on this machine. You can talk to the lead, mention a
 specialist directly, or open any agent's thread and work with it one to one.
@@ -496,7 +499,7 @@ sandboxing, persistence, provider failure, memory retrieval, and the UI.
   plus 7 cross-tenant isolation tests, 255 runtime tests, 244 skill tests, 143
   database tests, 103 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **1,095 frontend tests** across 158 files. A gate rejects literal English
+- **1,100 frontend tests** across 161 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

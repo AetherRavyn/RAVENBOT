@@ -218,6 +218,20 @@ appears after a delay:
 14. Start a failing task. Confirm the Tasks rail badge counts it, and that the
     badge matches the failed rows in the view.
 
+## Manual agent-template check
+
+1. Open **Create new AI agent** and choose **Research Scout**. Confirm the name,
+   description and avatar preview update without creating anything.
+2. Edit the name, then create it. Confirm a real agent appears in the fleet and
+   its settings show the research brief and only the built-in tools the template
+   listed.
+3. Confirm the first prompt is visible in the new agent's composer and has not
+   been sent. Send it only after reviewing it.
+4. Repeat for **Billing & Ledger**, **Support Triage**, and **Release Engineer**;
+   confirm each produces the right brief and tools.
+5. Add a connector to one template-created agent and confirm the template does
+   not silently configure it for the others.
+
 ## Manual agent/routine admin check
 
 1. As the workspace owner in a normal desktop conversation, ask for

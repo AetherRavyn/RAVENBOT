@@ -53,6 +53,22 @@
     "fleetNavigator": "舰队导航器",
     "resize": "调整侧边栏宽度"
   },
+  "agentTemplates": {
+    "title": "从角色开始",
+    "hint": "预填简报和第一条提示。所有内容都可以编辑。",
+    "billingName": "账单与总账",
+    "billingDesc": "核对发票和总账分录，标记差异并记录证据。",
+    "billingPrompt": "查看此工作区中的文件，列出所有需要关注的发票或总账分录。",
+    "researchName": "研究侦察员",
+    "researchDesc": "查找一手资料，比较说法并返回带引用的发现。",
+    "researchPrompt": "研究此工作区中该主题的现状，并返回带来源的简短报告。",
+    "supportName": "支持分诊",
+    "supportDesc": "将客户报告转化为可复现的问题和清晰的回复。",
+    "supportPrompt": "查看最新的客户报告，尽可能复现，并起草清晰的回复。",
+    "releaseName": "发布工程师",
+    "releaseDesc": "运行测试、审查差异并准备带证据的发布说明。",
+    "releasePrompt": "运行项目测试，检查差异并列出带证据的发布阻碍。"
+  },
   "bot": {
     "status": {
       "idle": "空闲",

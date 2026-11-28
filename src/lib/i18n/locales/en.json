@@ -53,6 +53,22 @@
     "fleetNavigator": "Fleet navigator",
     "resize": "Resize sidebar"
   },
+  "agentTemplates": {
+    "title": "Start from a role",
+    "hint": "Prefills the brief and a first prompt. You can edit everything.",
+    "billingName": "Billing & Ledger",
+    "billingDesc": "Reconciles invoices and ledger entries, flags mismatches and records evidence.",
+    "billingPrompt": "Review the files in this workspace and list every invoice or ledger entry that needs attention.",
+    "researchName": "Research Scout",
+    "researchDesc": "Finds primary sources, compares claims and returns cited findings.",
+    "researchPrompt": "Research the current state of the topic in this workspace and return a short brief with sources.",
+    "supportName": "Support Triage",
+    "supportDesc": "Turns customer reports into reproducible issues and clear replies.",
+    "supportPrompt": "Review the latest customer report here, reproduce what you can, and draft a clear reply.",
+    "releaseName": "Release Engineer",
+    "releaseDesc": "Runs tests, reviews diffs and prepares release notes with evidence.",
+    "releasePrompt": "Run the project's tests, inspect the diff and list release blockers with evidence."
+  },
   "bot": {
     "status": {
       "idle": "Idle",

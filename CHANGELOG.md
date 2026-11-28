@@ -4,6 +4,22 @@ All notable changes to RAVENBOT are documented here.
 
 ## Unreleased
 
+### Starter agent templates
+
+- **Four real roles.** The create-agent dialog can start from **Billing &
+  Ledger**, **Research Scout**, **Support Triage**, or **Release Engineer**.
+  A template prefills the editable name, description, specialty, system prompt,
+  built-in tool allowlist, and a first composer prompt; it does not install or
+  download anything.
+- **Real creation path.** `create_bot` accepts optional specialty, prompt and
+  skills, deduplicates and bounds the skill list, and persists them in the
+  normal bot row/config. Existing callers keep the old behaviour.
+- **Review before sending.** The template's first prompt is saved under the new
+  bot's draft key and selected with the agent; it is never sent automatically.
+- **Tests and docs.** Template data/skill-id tests, picker DOM tests, and a
+  Sidebar create flow that asserts the backend payload and draft. All twelve
+  locales carry names, descriptions and first prompts.
+
 ### Grouped sidebar and keyboard shortcut sheet
 
 - **Fleet groups.** The sidebar now separates **Pinned**, **Waiting on you**,

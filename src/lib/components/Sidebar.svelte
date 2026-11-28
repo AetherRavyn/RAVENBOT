@@ -18,6 +18,9 @@
   import { Textarea } from "$lib/components/ui/textarea";
   import AvatarPicker from "$lib/components/AvatarPicker.svelte";
   import RavenAvatar from "$lib/components/RavenAvatar.svelte";
+  import AgentTemplatePicker from "$lib/components/AgentTemplatePicker.svelte";
+  import { agentTemplate, type AgentTemplate, type AgentTemplateId } from "$lib/agentTemplates";
+  import { drafts, threadDraftKey } from "$lib/chat/drafts";
   import {
     Bot,
     Plus,
@@ -83,6 +86,7 @@
   // is the animated style, and an agent that has never done anything is still
   // an agent you should be able to tell apart at a glance.
   let newBotAvatarStyle = $state(DEFAULT_AVATAR_STYLE);
+  let selectedTemplateId = $state<AgentTemplateId | null>(null);
 
   let searchQuery = $state("");
   let showOnlyWaiting = $state(false);
@@ -332,6 +336,12 @@
     sidebarItems.flatMap((item) => (item.kind === "bot" ? [item.bot] : [])),
   );
 
+  function applyAgentTemplate(template: AgentTemplate) {
+    selectedTemplateId = template.id;
+    newBotName = t(template.nameKey);
+    newBotDescription = t(template.descriptionKey);
+  }
+
   let effectiveAvatarUrl = $derived(
     newBotAvatarUrl ||
       (parseOpenBotStyle(newBotAvatarStyle)
@@ -343,18 +353,28 @@
     if (!newBotName.trim()) return;
     isCreating = true;
     try {
-      const bot = await invoke("create_bot", {
+      const template = agentTemplate(selectedTemplateId);
+      const bot = await invoke<any>("create_bot", {
         name: newBotName,
         description: newBotDescription,
         avatarUrl: newBotAvatarUrl || effectiveAvatarUrl,
         avatarStyle: newBotAvatarStyle,
+        specialty: template ? t(template.nameKey) : undefined,
+        prompt: template?.prompt,
+        skills: template ? [...template.skills] : undefined,
       });
+      if (template) {
+        // The task thread is opened on the new agent; the draft makes the first
+        // prompt visible for review instead of sending it automatically.
+        drafts.saveNow(threadDraftKey(bot.id, null), t(template.firstPromptKey));
+      }
       onBotCreated(bot);
       showCreateModal = false;
       newBotName = "";
       newBotDescription = "";
       newBotAvatarUrl = null;
       newBotAvatarStyle = DEFAULT_AVATAR_STYLE;
+      selectedTemplateId = null;
       createModalTab = "profile";
     } catch (e) {
       console.error("Failed to create bot:", e);
@@ -419,6 +439,7 @@
         onclick={() => {
           showCreateModal = true;
           createModalTab = "profile";
+          selectedTemplateId = null;
         }}
         title={t("sidebar.createTip")}
       >
@@ -863,6 +884,7 @@
     <form onsubmit={(e) => { e.preventDefault(); createBot(); }} class="flex-1 flex flex-col overflow-hidden">
       <div class="flex-1 overflow-y-auto px-6 py-4 space-y-4">
         {#if createModalTab === "profile"}
+          <AgentTemplatePicker selectedId={selectedTemplateId} onSelect={applyAgentTemplate} />
           <!-- Live Avatar Preview Card -->
           <div class="p-3.5 rounded-xl bg-[var(--surface-2)] border border-[var(--hairline)] flex items-center justify-between">
             <div class="flex items-center gap-3.5">

@@ -53,6 +53,22 @@
     "fleetNavigator": "Navegador da frota",
     "resize": "Redimensionar barra lateral"
   },
+  "agentTemplates": {
+    "title": "Começar por um papel",
+    "hint": "Preenche o brief e um primeiro prompt. Tudo pode ser editado.",
+    "billingName": "Faturamento e razão",
+    "billingDesc": "Concilia faturas e lançamentos, sinaliza divergências e registra evidências.",
+    "billingPrompt": "Revise os arquivos deste espaço de trabalho e liste cada fatura ou lançamento que precisa de atenção.",
+    "researchName": "Pesquisador",
+    "researchDesc": "Encontra fontes primárias, compara afirmações e devolve conclusões citadas.",
+    "researchPrompt": "Pesquise o estado atual do tema neste espaço de trabalho e devolva um breve resumo com fontes.",
+    "supportName": "Triagem de suporte",
+    "supportDesc": "Transforma relatos de clientes em problemas reproduzíveis e respostas claras.",
+    "supportPrompt": "Revise o relato de cliente mais recente, reproduza o que puder e redija uma resposta clara.",
+    "releaseName": "Engenheiro de release",
+    "releaseDesc": "Executa testes, revisa diffs e prepara notas de versão com evidências.",
+    "releasePrompt": "Execute os testes do projeto, inspecione o diff e liste bloqueios de release com evidências."
+  },
   "bot": {
     "status": {
       "idle": "Ocioso",
