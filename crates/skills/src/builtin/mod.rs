@@ -1,6 +1,7 @@
 //! Built-in skills
 
 pub mod analyze_image;
+pub mod api_keys;
 pub mod api_tester;
 pub mod arxiv;
 pub mod ask_user;
@@ -48,6 +49,7 @@ pub mod web_search;
 pub mod youtube;
 
 pub use analyze_image::AnalyzeImageSkill;
+pub use api_keys::{ListApiKeysSkill, RemoveApiKeySkill, SaveApiKeySkill};
 pub use api_tester::ApiTesterSkill;
 pub use arxiv::ArxivSkill;
 pub use ask_user::AskUserSkill;

@@ -891,6 +891,10 @@ mod tests {
     #[tokio::test]
     async fn preview_and_commit_skip_existing_duplicates() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        crate::secrets::force_fallback_for_tests();
+        crate::secrets::use_test_vault_root(
+            std::env::temp_dir().join(format!("ravenbot-import-secrets-{}", Uuid::new_v4())),
+        );
         std::env::set_var("RAVENBOT_DISABLE_KEYCHAIN", "1");
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -902,6 +906,7 @@ mod tests {
                 id TEXT PRIMARY KEY NOT NULL,
                 kind TEXT NOT NULL,
                 name TEXT NOT NULL,
+                key_name TEXT,
                 username TEXT NOT NULL DEFAULT '',
                 website TEXT NOT NULL DEFAULT '',
                 last4 TEXT,

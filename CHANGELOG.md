@@ -56,6 +56,22 @@ All notable changes to RAVENBOT are documented here.
   split describes the action, not a separate approval bypass. Tab list/close,
   downloads/uploads and a live-display run remain open.
 
+### Secure API-key requests
+
+- **Ask without receiving.** `save_api_key` and the `ask_user` Vault
+  `api_key` block park the run on a desktop password card. The owner enters the
+  value; the model receives only the name and owner-only file path.
+- **Two private copies, one clear rule.** The Vault keeps the key through the
+  same keychain/sealed path as a login, and an atomic `0600` file in a `0700`
+  `keys/api-keys` directory gives commands a path to read. A symlinked key
+  directory is refused. `list_api_keys` reports metadata and `file_exists`;
+  `remove_api_key` deletes both copies.
+- **No leak through the side doors.** `save_api_key` rejects any value in its
+  arguments, tool arguments are redacted before the streamed card and audit log,
+  the question answer stores only `{name, path}`, paired chats cannot answer the
+  card, and the submit command is owner-only.
+- **Docs:** [docs/SECURE-API-KEYS.md](docs/SECURE-API-KEYS.md).
+
 ### Meeting recording import
 
 - **Import an existing recording, not a live meeting.** The new

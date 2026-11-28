@@ -24,8 +24,10 @@
     allowCustom?: boolean;
     kind?: QuestionKind | null;
     payload?: BlockPayload | null;
+    questionId?: string;
     answering?: boolean;
     onAnswer: (answer: string) => void;
+    onSubmitted?: () => void;
   }
 
   let {
@@ -36,8 +38,10 @@
     allowCustom = true,
     kind = "question",
     payload = null,
+    questionId = "",
     answering = false,
     onAnswer,
+    onSubmitted,
   }: Props = $props();
 </script>
 
@@ -48,7 +52,16 @@
 {:else if kind === "form" && payload}
   <FormBlock {botName} {header} {question} {payload} {answering} {onAnswer} />
 {:else if kind === "vault" && payload}
-  <VaultRequestCard {botName} {header} {question} {payload} {answering} {onAnswer} />
+  <VaultRequestCard
+    {botName}
+    {header}
+    {question}
+    {payload}
+    {questionId}
+    {answering}
+    {onAnswer}
+    {onSubmitted}
+  />
 {:else}
   <QuestionCard
     {botName}

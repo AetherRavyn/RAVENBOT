@@ -240,6 +240,10 @@ impl SandboxRunner {
             format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
         }
         let mut writable: Vec<String> = self.config.allowed_paths.clone();
+        let mut readable: Vec<String> = Vec::new();
+        if let Some(key_dir) = self.api_key_read_dir() {
+            readable.push(key_dir.to_string_lossy().to_string());
+        }
         if let Some(cwd) = cwd {
             writable.push(cwd.to_string_lossy().to_string());
         }
@@ -280,6 +284,10 @@ impl SandboxRunner {
         for path in writable {
             let quoted = quote(&path);
             rules.push(format!("(allow file-read* file-write* (subpath {quoted}))"));
+        }
+        for path in readable {
+            let quoted = quote(&path);
+            rules.push(format!("(allow file-read* (subpath {quoted}))"));
         }
         if self.config.network_policy.enabled {
             rules.push("(allow network*)".to_string());
@@ -548,6 +556,12 @@ impl SandboxRunner {
             cmd.args(["-v", &format!("{as_text}:{as_text}:rw")]);
             mounted.push(path);
         }
+        if let Some(key_dir) = self.api_key_read_dir() {
+            if !mounted.iter().any(|existing| existing == &key_dir) {
+                let as_text = key_dir.to_string_lossy().to_string();
+                cmd.args(["-v", &format!("{as_text}:{as_text}:ro")]);
+            }
+        }
 
         if let Some(dir) = cwd {
             cmd.args([
@@ -608,6 +622,14 @@ impl SandboxRunner {
             }
         }
 
+        // API keys requested through the Vault: read-only. An agent needs the
+        // key to make a request, but must not be able to rewrite or delete the
+        // owner-only copy from inside the sandbox.
+        if let Some(key_dir) = self.api_key_read_dir() {
+            let s = key_dir.to_string_lossy().to_string();
+            cmd.args(["--ro-bind-try", &s, &s]);
+        }
+
         // Read-write allowed paths (skipping blocked ones).
         for allowed in &self.config.allowed_paths {
             let resolved = expand_path(allowed);
@@ -656,6 +678,16 @@ impl SandboxRunner {
                 }
             }
         }
+    }
+
+    /// The owner-only API-key directory, when it exists and is not blocked.
+    ///
+    /// It is mounted read-only into every non-host sandbox: agents need to use
+    /// a key without the value entering the model, but they must not be able
+    /// to replace or delete the owner's copy.
+    fn api_key_read_dir(&self) -> Option<PathBuf> {
+        let dir = ravenbot_core::api_keys::api_keys_dir();
+        (dir.is_dir() && !self.is_blocked(&dir)).then_some(dir)
     }
 
     fn is_blocked(&self, path: &Path) -> bool {
@@ -841,6 +873,84 @@ mod tests {
         assert!(runner.report().filesystem_isolated);
         assert!(runner.report().network_isolated);
         let _ = std::fs::remove_dir_all(work);
+    }
+
+    #[test]
+    fn api_key_files_are_mounted_read_only_in_every_backend() {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let root = std::env::temp_dir().join(format!("ravenbot-keys-{}", uuid::Uuid::new_v4()));
+        let key_dir = root.join("keys").join("api-keys");
+        std::fs::create_dir_all(&key_dir).unwrap();
+        let saved = std::env::var("RAVENBOT_HOME").ok();
+        std::env::set_var("RAVENBOT_HOME", &root);
+        let key_text = key_dir.to_string_lossy().to_string();
+
+        let bwrap = SandboxRunner {
+            config: SandboxConfig {
+                tier: SandboxTier::OsLevel,
+                resource_limits: ResourceLimits::default(),
+                network_policy: NetworkPolicy::blocked(),
+                allowed_paths: Vec::new(),
+                ..Default::default()
+            },
+            backend: SandboxBackend::Bubblewrap(PathBuf::from("bwrap")),
+        };
+        let args: Vec<String> = bwrap
+            .command("sh", &[], None)
+            .expect("bwrap command")
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            args.windows(3).any(|pair| pair[0] == "--ro-bind-try"
+                && pair[1] == key_text
+                && pair[2] == key_text),
+            "{args:?}"
+        );
+
+        let profile = bwrap.seatbelt_profile(None);
+        assert!(
+            profile.contains(&format!("(allow file-read* (subpath \"{key_text}\"))")),
+            "{profile}"
+        );
+        assert!(
+            !profile.contains(&format!(
+                "(allow file-read* file-write* (subpath \"{key_text}\"))"
+            )),
+            "the key directory must not be writable: {profile}"
+        );
+
+        let docker = SandboxRunner {
+            config: SandboxConfig {
+                tier: SandboxTier::Docker,
+                resource_limits: ResourceLimits::default(),
+                network_policy: NetworkPolicy::blocked(),
+                allowed_paths: Vec::new(),
+                docker_image: Some("alpine:3.20".to_string()),
+                ..Default::default()
+            },
+            backend: SandboxBackend::Docker(PathBuf::from("docker")),
+        };
+        let args: Vec<String> = docker
+            .command("sh", &[], None)
+            .expect("docker command")
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "-v" && pair[1] == format!("{key_text}:{key_text}:ro")),
+            "{args:?}"
+        );
+
+        match saved {
+            Some(value) => std::env::set_var("RAVENBOT_HOME", value),
+            None => std::env::remove_var("RAVENBOT_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

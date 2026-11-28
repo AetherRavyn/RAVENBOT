@@ -44,7 +44,9 @@ export interface InteractionBlock {
   preview?: string | null;
   site?: string | null;
   purpose?: string | null;
-  item_kind?: "login" | "card" | "contact" | null;
+  item_kind?: "login" | "api_key" | "card" | "contact" | null;
+  name?: string | null;
+  placeholder?: string | null;
   options?: BlockOption[];
   fields?: BlockField[];
   actions?: BlockAction[];

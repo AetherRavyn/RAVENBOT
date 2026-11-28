@@ -18,6 +18,7 @@
     answeringQuestion?: string | null;
     onDecide: (approvalId: string, allowed: boolean) => void;
     onAnswer: (questionId: string, answer: string) => void;
+    onSubmitted?: (questionId: string) => void;
   }
 
   let {
@@ -28,6 +29,7 @@
     answeringQuestion = null,
     onDecide,
     onAnswer,
+    onSubmitted,
   }: Props = $props();
 </script>
 
@@ -54,7 +56,9 @@
     allowCustom={q.allow_custom !== false}
     kind={q.kind || "question"}
     payload={q.payload || null}
+    questionId={q.id}
     answering={answeringQuestion === q.id}
     onAnswer={(answer) => onAnswer(q.id, answer)}
+    onSubmitted={onSubmitted ? () => onSubmitted(q.id) : undefined}
   />
 {/each}

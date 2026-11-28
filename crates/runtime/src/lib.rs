@@ -390,6 +390,28 @@ fn approval_mode_for(
     }
 }
 
+/// Replace secret-bearing fields before tool arguments leave the runtime.
+///
+/// `save_api_key` never accepts a value, and its handler refuses one. A model
+/// can still put a key in the arguments by mistake; the streamed tool card and
+/// the audit log must not become the place where it lands. Other tools keep
+/// their arguments so the approval card can show exactly what will run.
+fn redacted_tool_arguments(name: &str, arguments: &serde_json::Value) -> serde_json::Value {
+    if name != "save_api_key" {
+        return arguments.clone();
+    }
+    let Some(map) = arguments.as_object() else {
+        return arguments.clone();
+    };
+    let mut safe = map.clone();
+    for field in ["value", "secret", "key", "token", "api_key"] {
+        if safe.contains_key(field) {
+            safe.insert(field.to_string(), serde_json::json!("[redacted]"));
+        }
+    }
+    serde_json::Value::Object(safe)
+}
+
 fn tool_needs_approval(
     mode: &ravenbot_core::ApprovalMode,
     risk: ravenbot_skills::SkillRisk,
@@ -3155,6 +3177,10 @@ impl Runtime {
             "delegate" => "Delegate to another bot".to_string(),
             "computer_control" => "Control your computer".to_string(),
             "memory_save" => "Save a memory".to_string(),
+            "ask_user" => "Ask you a question".to_string(),
+            "save_api_key" => "Request an API key".to_string(),
+            "list_api_keys" => "List API keys".to_string(),
+            "remove_api_key" => "Remove an API key".to_string(),
             "diagnostics" => "Check diagnostics".to_string(),
             "image_gen" => "Generate an image".to_string(),
             _ => format!("Use {}", bare),
@@ -3677,6 +3703,8 @@ impl Runtime {
             Ok(self.exec_diagnostics(run, skill_context, args).await)
         } else if name == "ask_user" {
             return self.ask_user(run, bot, args.clone()).await;
+        } else if name == "save_api_key" {
+            return self.save_api_key(run, bot, args.clone()).await;
         } else if name == "delegate" {
             Ok(self.exec_delegation(run, args.clone()).await)
         } else if name == "memory_save" {
@@ -3860,6 +3888,19 @@ impl Runtime {
             )
             .await;
 
+        self.wait_for_question(run, &req).await
+    }
+
+    /// Park `run` until the question is answered, cancelled, paused or expires.
+    ///
+    /// Shared by `ask_user` and `save_api_key` so the lifecycle rules — one
+    /// answer, a ten-minute deadline, pause/cancel/kill handling — stay in one
+    /// place. The question must already be persisted and emitted.
+    async fn wait_for_question(
+        &self,
+        run: &Run,
+        req: &ravenbot_core::QuestionRequest,
+    ) -> serde_json::Value {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
         loop {
             if self.kill_switch.is_triggered().await {
@@ -3923,6 +3964,134 @@ impl Runtime {
             }
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         }
+    }
+
+    /// `save_api_key`: ask the owner to enter a key in the desktop secure card.
+    ///
+    /// The tool's arguments never include the value. The runtime builds the
+    /// same validated Vault block an `ask_user` request would, parks the run,
+    /// and returns only what the card wrote into the answer: the name and the
+    /// owner-only file path. A secret passed in the arguments is refused before
+    /// the card is shown, so a model cannot accidentally put one in the
+    /// transcript, the audit log or the question row.
+    async fn save_api_key(
+        &self,
+        run: &Run,
+        bot: &ravenbot_core::Bot,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        for forbidden in ["value", "secret", "key", "token", "api_key"] {
+            if args.get(forbidden).is_some() {
+                return serde_json::json!({
+                    "error": "save_api_key never accepts the secret itself. The owner enters it in the secure card; call this tool with only name, label, website and purpose."
+                });
+            }
+        }
+        let name = args
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let name = match ravenbot_core::api_keys::validate_api_key_name(name) {
+            Ok(name) => name.to_string(),
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let label = args
+            .get("label")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&name)
+            .to_string();
+        if label.chars().count() > 120 {
+            return serde_json::json!({
+                "error": "The API key label is longer than 120 characters."
+            });
+        }
+        let website = args
+            .get("website")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if website
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 300)
+        {
+            return serde_json::json!({
+                "error": "The API key website is longer than 300 characters."
+            });
+        }
+        let purpose = args
+            .get("purpose")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if purpose
+            .as_ref()
+            .is_some_and(|value| value.chars().count() > 500)
+        {
+            return serde_json::json!({
+                "error": "The API key purpose is longer than 500 characters."
+            });
+        }
+
+        if self.auto_allow_for(run.id) {
+            return serde_json::json!({
+                "answer": null,
+                "skipped": true,
+                "note": "No user is available to enter an API key (headless run). Ask the operator to add one in the desktop app.",
+            });
+        }
+
+        let card = ravenbot_core::InteractionBlock {
+            title: Some(label.clone()),
+            description: purpose,
+            site: website,
+            item_kind: Some("api_key".to_string()),
+            name: Some(name.clone()),
+            ..Default::default()
+        };
+        let question = format!("Enter the {label} so it can be stored in the local Vault.");
+        let req = match ravenbot_core::QuestionRequest::pending_block(
+            bot.id,
+            run.thread_id,
+            run.id,
+            label,
+            question,
+            ravenbot_core::QuestionKind::Vault,
+            card,
+        ) {
+            Ok(req) => req,
+            Err(error) => {
+                return serde_json::json!({ "error": format!("invalid api-key request: {error}") })
+            }
+        };
+        if let Err(error) =
+            ravenbot_db::queries::QuestionQueries::create(self.db.pool(), &req).await
+        {
+            return serde_json::json!({ "error": format!("failed to record question: {error}") });
+        }
+        self.emit(StreamEvent::QuestionAsked {
+            bot_id: bot.id,
+            thread_id: run.thread_id,
+            question: req.clone(),
+        });
+        let _ = self
+            .audit_logger
+            .log_tool_call(
+                bot.id,
+                Some(run.id),
+                Some(run.thread_id),
+                "save_api_key",
+                serde_json::json!({
+                    "name": name,
+                    "label": req.header,
+                }),
+            )
+            .await;
+        self.wait_for_question(run, &req).await
     }
 
     /// Trigger the kill switch
@@ -5553,6 +5722,9 @@ impl Runtime {
             "session_search",
             "todo",
             "ask_user",
+            "save_api_key",
+            "list_api_keys",
+            "remove_api_key",
             "delegate",
             "analyze_image",
         ];
@@ -6379,11 +6551,12 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
             // execution pass so the model gets a precise, non-retryable answer.
             let mut blocked: Vec<Option<String>> = Vec::with_capacity(calls.len());
             for tool_call in &calls {
+                let safe_arguments = redacted_tool_arguments(&tool_call.name, &tool_call.arguments);
                 self.emit(StreamEvent::ToolStarted {
                     thread_id: run.thread_id,
                     bot_id: bot.id,
                     name: tool_call.name.clone(),
-                    arguments: tool_call.arguments.clone(),
+                    arguments: safe_arguments.clone(),
                 });
                 self.emit(StreamEvent::Status {
                     bot_id: bot.id,
@@ -6398,12 +6571,14 @@ Use real data only, label units, start bar charts at zero, and keep one idea per
                         Some(run.id),
                         Some(run.thread_id),
                         &tool_call.name,
-                        tool_call.arguments.clone(),
+                        safe_arguments,
                     )
                     .await;
 
-                // ask_user never gates: the card *is* the interaction.
-                if tool_call.name == "ask_user" {
+                // ask_user and save_api_key never gate: the card *is* the
+                // interaction, and a second approval before the key field
+                // would be noise on the same consent.
+                if matches!(tool_call.name.as_str(), "ask_user" | "save_api_key") {
                     decisions.push(true);
                     blocked.push(None);
                     continue;
@@ -12194,6 +12369,157 @@ mod parity_tests {
     }
 
     #[tokio::test]
+    async fn save_api_key_refuses_a_secret_in_the_tool_arguments() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let bot = Bot::new("Key holder", "requests keys");
+        let thread_id = Uuid::new_v4();
+        let run = ravenbot_core::Run::new(bot.id, thread_id);
+
+        for field in ["secret", "value", "api_key"] {
+            let mut args = serde_json::json!({ "name": "openai" });
+            args[field] = serde_json::json!("sk-must-not-pass");
+            let result = runtime.save_api_key(&run, &bot, args).await;
+            assert!(
+                result["error"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("never accepts the secret"),
+                "{field}: {result}"
+            );
+        }
+        let result = runtime
+            .save_api_key(&run, &bot, serde_json::json!({ "name": "../openai" }))
+            .await;
+        assert!(result["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("must start"));
+        assert!(
+            ravenbot_db::queries::QuestionQueries::list_pending_for_thread(db.pool(), thread_id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "a refused request must not create a card"
+        );
+    }
+
+    #[tokio::test]
+    async fn save_api_key_parks_and_returns_only_the_name_and_path() {
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+
+        let bot = Bot::new("Key holder", "requests keys");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (thread, _) = seed_run(&db, &bot).await;
+
+        let script = vec![
+            ModelResponse {
+                content: None,
+                tool_calls: vec![tool_call(
+                    "save_api_key",
+                    serde_json::json!({
+                        "name": "openai",
+                        "label": "OpenAI API key",
+                        "website": "https://platform.openai.com",
+                        "purpose": "Call the models API"
+                    }),
+                    "call-key",
+                )],
+                usage: Usage {
+                    input_tokens: 5,
+                    output_tokens: 2,
+                },
+                reasoning: None,
+            },
+            ModelResponse {
+                content: Some("Key stored.".to_string()),
+                tool_calls: vec![],
+                usage: Usage {
+                    input_tokens: 6,
+                    output_tokens: 2,
+                },
+                reasoning: None,
+            },
+        ];
+        let provider = Arc::new(ScriptProvider::new(script));
+        runtime
+            .set_provider_override(Some(provider.clone() as Arc<dyn ModelProviderTrait>))
+            .await;
+
+        let mut run = ravenbot_core::Run::new(bot.id, thread.id);
+        let rt = runtime.clone();
+        let handle = tokio::spawn(async move { rt.execute_run(&mut run).await });
+
+        let mut parked = None;
+        for _ in 0..120 {
+            let pending = ravenbot_db::queries::QuestionQueries::list_pending_for_thread(
+                db.pool(),
+                thread.id,
+            )
+            .await
+            .unwrap();
+            if let Some(question) = pending.into_iter().next() {
+                parked = Some(question);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let question = parked.expect("save_api_key must park the run");
+        assert_eq!(question.kind, ravenbot_core::QuestionKind::Vault);
+        assert!(question.is_api_key_request());
+        assert_eq!(question.api_key_name(), Some("openai"));
+        assert_eq!(
+            question
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.item_kind.as_deref()),
+            Some("api_key")
+        );
+
+        let stored = ravenbot_db::api_keys::answer_question_with_key(
+            db.pool(),
+            question.id,
+            "sk-runtime-secret",
+        )
+        .await
+        .expect("store the key");
+        assert!(stored.answered);
+        assert!(stored.path.ends_with("keys/api-keys/openai"));
+
+        handle
+            .await
+            .unwrap()
+            .expect("run resumes after the secure card");
+
+        let tool_result = {
+            let seen = provider.seen.lock().unwrap();
+            let round2 = &seen[1];
+            round2
+                .iter()
+                .find(|(role, _)| role == "tool")
+                .map(|(_, content)| content.clone())
+                .expect("tool result")
+        };
+        assert!(tool_result.contains("\"path\""), "{tool_result}");
+        assert!(tool_result.contains("openai"), "{tool_result}");
+        assert!(
+            !tool_result.contains("sk-runtime-secret"),
+            "the value must never reach the model: {tool_result}"
+        );
+
+        let answered = ravenbot_db::queries::QuestionQueries::get(db.pool(), question.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(!answered.answer.unwrap().contains("sk-runtime-secret"));
+
+        let _ = ravenbot_db::api_keys::remove(db.pool(), "openai").await;
+    }
+
+    #[tokio::test]
     async fn parallel_tool_calls_all_execute_and_round_trip() {
         let db = temp_db().await;
         let runtime = Runtime::new(db.clone());
@@ -14198,6 +14524,30 @@ mod final_answer_tests {
 #[cfg(test)]
 mod trace_span_helper_tests {
     use super::*;
+
+    #[test]
+    fn api_key_secret_arguments_are_redacted_before_they_leave_the_runtime() {
+        let safe = redacted_tool_arguments(
+            "save_api_key",
+            &serde_json::json!({
+                "name": "openai",
+                "label": "OpenAI API key",
+                "secret": "sk-must-not-leak",
+                "value": "sk-also-not",
+                "api_key": "sk-third"
+            }),
+        );
+        assert_eq!(safe["name"], "openai");
+        assert_eq!(safe["label"], "OpenAI API key");
+        assert_eq!(safe["secret"], "[redacted]");
+        assert_eq!(safe["value"], "[redacted]");
+        assert_eq!(safe["api_key"], "[redacted]");
+        assert!(!safe.to_string().contains("sk-must-not-leak"));
+
+        let unchanged =
+            redacted_tool_arguments("shell_exec", &serde_json::json!({ "command": "echo hi" }));
+        assert_eq!(unchanged["command"], "echo hi");
+    }
 
     #[test]
     fn trace_spans_are_capped_and_mark_failures() {

@@ -19,7 +19,30 @@ use std::path::PathBuf;
 pub const KEYCHAIN_MARKER: &str = "__RAVENBOT_KEYCHAIN__";
 const SERVICE: &str = "com.ravenbot.app";
 
+#[cfg(test)]
+static FORCE_FALLBACK_FOR_TESTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(test)]
+static TEST_VAULT_ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Keep tests off the real OS keychain, even when one is available.
+#[cfg(test)]
+pub(crate) fn force_fallback_for_tests() {
+    FORCE_FALLBACK_FOR_TESTS.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Keep sealed test entries under a temporary directory.
+#[cfg(test)]
+pub(crate) fn use_test_vault_root(root: PathBuf) {
+    let _ = TEST_VAULT_ROOT.set(root);
+}
+
 fn disabled() -> bool {
+    #[cfg(test)]
+    if FORCE_FALLBACK_FOR_TESTS.load(std::sync::atomic::Ordering::SeqCst) {
+        return true;
+    }
     std::env::var("RAVENBOT_DISABLE_KEYCHAIN")
         .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
@@ -221,6 +244,10 @@ impl SealedVault {
 }
 
 fn fallback_vault() -> SealedVault {
+    #[cfg(test)]
+    if let Some(root) = TEST_VAULT_ROOT.get() {
+        return SealedVault::new(root.clone());
+    }
     let root = std::env::var("RAVENBOT_SECRET_VAULT")
         .ok()
         .map(|value| value.trim().to_string())

@@ -48,6 +48,9 @@ impl SkillRegistry {
         registry.register(Arc::new(HttpRequestSkill::new()));
         registry.register(Arc::new(TodoSkill::new()));
         registry.register(Arc::new(AskUserSkill::new()));
+        registry.register(Arc::new(SaveApiKeySkill::new()));
+        registry.register(Arc::new(ListApiKeysSkill::new()));
+        registry.register(Arc::new(RemoveApiKeySkill::new()));
         registry.register(Arc::new(ComputerControlSkill::new()));
         registry.register(Arc::new(YoutubeSkill::new()));
         registry.register(Arc::new(ArxivSkill::new()));

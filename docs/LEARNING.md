@@ -126,6 +126,8 @@ outside world:
 - `computer_control` (any action);
 - `browser_dom` `click`, `fill`, `press`, `select_option`, `set_checked`,
   `reload`, `run_steps` or `eval`;
+- `remove_api_key` (a secret-store mutation; `save_api_key` only opens the
+  owner-entered secure card and `list_api_keys` returns metadata);
 - `file_write`, `file_edit`, `code_edit`;
 - write-like MCP tools (names containing write/create/update/delete/send/…);
 - non-read `http_request` methods.

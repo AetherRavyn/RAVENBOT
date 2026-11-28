@@ -277,6 +277,13 @@ mod tests {
     }
 
     #[test]
+    fn api_key_answers_are_owner_only() {
+        assert!(role_allows("owner", "submit_api_key_answer"));
+        assert!(!role_allows("operator", "submit_api_key_answer"));
+        assert!(!role_allows("viewer", "submit_api_key_answer"));
+    }
+
+    #[test]
     fn agent_email_configuration_and_drafts_are_owner_only() {
         for command in [
             "set_agent_email",

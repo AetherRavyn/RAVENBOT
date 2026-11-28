@@ -3,6 +3,7 @@
 //! This crate handles all SQLite database operations including migrations,
 //! queries, and the typed database interface.
 
+pub mod api_keys;
 pub mod migrations;
 pub mod models;
 pub mod queries;

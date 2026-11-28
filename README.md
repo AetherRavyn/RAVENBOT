@@ -217,6 +217,12 @@ voice, and computer control. It also supports:
   clipboard read/write, and drag on Linux. App launch and clipboard use native
   helpers on macOS and Windows; synthetic pointer/keyboard input is still
   Linux-only.
+- **A local Vault with secure API-key requests.** A login request fills the open
+  page without exposing the password. An API-key request opens a password card,
+  stores the key in the Vault, writes an owner-only `0600` file, and gives the
+  agent only the name and path. `list_api_keys` and `remove_api_key` manage the
+  metadata; paired chats and headless runs cannot answer the card. See
+  [`docs/SECURE-API-KEYS.md`](docs/SECURE-API-KEYS.md).
 
 ### Output people can open
 
@@ -435,11 +441,11 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 266 Tauri library tests
-  plus 7 cross-tenant isolation tests, 246 runtime tests, 233 skill tests, 122
-  database tests, 90 core tests, 42 vision tests, 35 memory tests, 33 MCP
+- **1,100+ Rust tests** across the workspace, including 270 Tauri library tests
+  plus 7 cross-tenant isolation tests, 249 runtime tests, 237 skill tests, 129
+  database tests, 97 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **1,014 frontend tests** across 144 files. A gate rejects literal English
+- **1,016 frontend tests** across 144 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

@@ -32,8 +32,12 @@ impl Skill for AskUserSkill {
          `kind: confirm` shows a decision card with up to four actions and an \
          optional hold-to-confirm dangerous action. `kind: choice` shows a \
          single- or multi-select list. `kind: form` collects labelled text, \
-         textarea, or select fields. For a structured kind, put the card in \
-         `payload` and still give a short fallback `question`."
+         textarea, or select fields. `kind: vault` with `item_kind: login` \
+         fills the current browser page from the local Vault; with \
+         `item_kind: api_key` it opens a secure input, stores the key in the \
+         Vault and returns only its name and owner-only file path. For a \
+         structured kind, put the card in `payload` and still give a short \
+         fallback `question`."
     }
     fn version(&self) -> &str {
         "1.0.0"
@@ -63,7 +67,7 @@ impl Skill for AskUserSkill {
                 },
                 "payload": {
                     "type": "object",
-                    "description": "The block. confirm: {title, description?, danger?, preview?, fields?: [{id,label,value}], actions: [{id,label,style?,danger?,confirm?,hold_ms?}]}. choice: {title, description?, multiple?, allow_text?, options: [{id,label,meta?,selected?}], submit_label?}. form: {title, description?, fields: [{id,label,kind:text|textarea|select,required?,options?,placeholder?,value?}], submit_label?}. vault: {site: string, purpose?: string, item_kind?: \"login\"}. The user fills the current browser page from the local vault; the tool result contains only the item name, origin and whether the fill succeeded, never the password."
+                    "description": "The block. confirm: {title, description?, danger?, preview?, fields?: [{id,label,value}], actions: [{id,label,style?,danger?,confirm?,hold_ms?}]}. choice: {title, description?, multiple?, allow_text?, options: [{id,label,meta?,selected?}], submit_label?}. form: {title, description?, fields: [{id,label,kind:text|textarea|select,required?,options?,placeholder?,value?}], submit_label?}. vault login: {site: string, purpose?, item_kind?: \"login\"}; the user fills the current browser page from the local vault and the tool result contains only the item name, origin and whether the fill succeeded, never the password. vault api_key: {item_kind: \"api_key\", name: string, title?, description?, site?, placeholder?, submit_label?}; the owner enters the key in a secure card, it is stored in the Vault, and the tool result contains only the name and owner-only file path, never the value."
                 }
             },
             "required": ["question"]

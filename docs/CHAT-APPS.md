@@ -19,6 +19,11 @@ desktop and headless daemon install the same sender, which re-checks the link an
 the connector switch before using the existing client. A disabled connector, an
 unpaired place, or a headless process with no sender fails closed.
 
+Secure API-key requests are desktop-only. A paired chat is not offered the
+password card and cannot answer it with `answer <id> <text>`; the notice asks the
+owner to open RAVENBOT, because a platform transcript is not a secure input. See
+[SECURE-API-KEYS.md](SECURE-API-KEYS.md).
+
 WhatsApp free-form posts remain subject to Meta's 24-hour customer-service
 window; the provider error is returned rather than replaced with a fake success.
 `messaging_history` is local conversation history, so it does not fetch messages

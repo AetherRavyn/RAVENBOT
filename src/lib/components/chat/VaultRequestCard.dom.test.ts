@@ -34,6 +34,81 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("VaultRequestCard", () => {
+  it("stores an API key through the secure command without answering with the value", async () => {
+    const onAnswer = vi.fn();
+    const onSubmitted = vi.fn();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "submit_api_key_answer") {
+        return {
+          name: "openai",
+          label: "OpenAI API key",
+          path: "/home/tester/RAVENBOT/keys/api-keys/openai",
+          replaced: false,
+          answered: true,
+        };
+      }
+      throw new Error(`unexpected command ${command}`);
+    });
+    const { getByLabelText, getByRole } = render(VaultRequestCard, {
+      props: {
+        header: "API key",
+        question: "Enter an OpenAI key",
+        questionId: "q-key",
+        payload: {
+          item_kind: "api_key",
+          name: "openai",
+          title: "OpenAI API key",
+          description: "Call the models API",
+          placeholder: "sk-…",
+          submit_label: "Save key",
+        },
+        onAnswer,
+        onSubmitted,
+      },
+    });
+
+    await fireEvent.input(getByLabelText("API key value"), {
+      target: { value: "sk-test-123" },
+    });
+    await fireEvent.click(getByRole("button", { name: "Save key" }));
+
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalled());
+    expect(invokeMock).toHaveBeenCalledWith("submit_api_key_answer", {
+      questionId: "q-key",
+      secret: "sk-test-123",
+    });
+    expect(onAnswer).not.toHaveBeenCalled();
+  });
+
+  it("refuses a key with whitespace before calling the host", async () => {
+    const onAnswer = vi.fn();
+    const onSubmitted = vi.fn();
+    const { getByLabelText, getByRole } = render(VaultRequestCard, {
+      props: {
+        header: "API key",
+        question: "Enter an OpenAI key",
+        questionId: "q-key",
+        payload: {
+          item_kind: "api_key",
+          name: "openai",
+          submit_label: "Save key",
+        },
+        onAnswer,
+        onSubmitted,
+      },
+    });
+    await fireEvent.input(getByLabelText("API key value"), {
+      target: { value: "sk-line-one sk-line-two" },
+    });
+    await fireEvent.click(getByRole("button", { name: "Save key" }));
+    expect(getByRole("alert").textContent).toContain("single line");
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "submit_api_key_answer",
+      expect.anything(),
+    );
+    expect(onSubmitted).not.toHaveBeenCalled();
+  });
+
   it("fills the chosen login and answers with metadata, not the secret", async () => {
     const onAnswer = vi.fn();
     const { getByText } = render(VaultRequestCard, {

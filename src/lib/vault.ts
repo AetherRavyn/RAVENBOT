@@ -3,6 +3,8 @@ export interface VaultItem {
   id: string;
   kind: string;
   name: string;
+  /** The machine-safe file name of an API-key item. */
+  key_name?: string | null;
   username: string;
   website: string;
   last4: string | null;

@@ -109,6 +109,37 @@ appears after a delay:
    refused before evaluation. Try 201 steps and confirm the cap.
 8. Press **Take over** and run any action; confirm it is blocked until release.
 
+## Manual secure API-key check
+
+1. In a normal desktop conversation, ask the agent to call `save_api_key` with
+   `{"name":"openai-test","label":"OpenAI test key","purpose":"Live check"}`.
+2. Confirm the card shows a password field, the purpose and **Save key**, with no
+   list of other Vault items and no text box that would send the value as an
+   answer.
+3. Enter a clearly fake value such as `sk-live-check-not-real` and save.
+4. Confirm the run resumes and the agent receives only `name`, `label` and
+   `path`. The value must not appear in the transcript, the tool card, the
+   audit log or the model response.
+5. Inspect the stored row and file:
+   - `vault_items.kind = 'api_key'`, `key_name = 'openai-test'`, and the answer
+     column contains `{name, path}` but not the value;
+   - `~/.ravenbot` is not used: the file is under
+     `$RAVENBOT_HOME/keys/api-keys/openai-test` (default
+     `~/RAVENBOT/keys/api-keys/openai-test`);
+   - `stat -c '%a %n'` shows `700` for `api-keys` and `600` for the file;
+   - `cat` the file once to confirm it contains the fake value, then do not paste
+     it into the conversation.
+6. Call `list_api_keys`; confirm it returns the name, label, path and
+   `file_exists: true`, and no value. Use the returned path in a harmless
+   command, for example
+   `wc -c < "$HOME/RAVENBOT/keys/api-keys/openai-test"` (this prints a length,
+   not the key).
+7. Call `remove_api_key` with the same name; confirm the row and file are gone
+   and a second call reports that no key is stored.
+8. From a paired Telegram/Slack/Discord chat, trigger an API-key request. Confirm
+   the chat says to open RAVENBOT and that `answer <id> <text>` is refused.
+9. As a non-owner workspace role, confirm `submit_api_key_answer` is refused.
+
 ## Manual voice-key check
 
 Transcription and speech both prefer the OpenAI key saved in Settings, then

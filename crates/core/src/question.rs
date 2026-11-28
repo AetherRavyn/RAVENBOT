@@ -151,10 +151,17 @@ pub struct InteractionBlock {
     /// The agent's one-line explanation of why it needs the item.
     #[serde(default)]
     pub purpose: Option<String>,
-    /// The vault item kind requested. Only `login` is supported for browser
-    /// fill today.
+    /// The vault item kind requested: `login` for a browser fill or `api_key`
+    /// for a value the owner enters into a secure card.
     #[serde(default)]
     pub item_kind: Option<String>,
+    /// The machine-safe name of an `api_key` request. It becomes the file name
+    /// under `keys/api-keys`; it is never the display title.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// A hint for the secure input, such as the key's prefix.
+    #[serde(default)]
+    pub placeholder: Option<String>,
     #[serde(default)]
     pub options: Vec<BlockOption>,
     #[serde(default)]
@@ -272,16 +279,39 @@ impl InteractionBlock {
                 self.validate_fields(true)
             }
             QuestionKind::Vault => {
-                let site = self.site.as_deref().unwrap_or("").trim();
-                if site.is_empty() || site.chars().count() > 300 {
-                    return Err("a vault request needs a site of at most 300 characters".into());
-                }
                 check_text(self.purpose.as_deref(), 500, "purpose")?;
-                let item_kind = self.item_kind.as_deref().unwrap_or("login");
-                if item_kind != "login" {
-                    return Err("only login vault items can be filled into the browser".into());
+                check_text(self.site.as_deref(), 300, "site")?;
+                check_text(self.placeholder.as_deref(), 120, "placeholder")?;
+                match self.item_kind.as_deref().unwrap_or("login") {
+                    "login" => {
+                        if self.name.is_some() {
+                            return Err(
+                                "a login vault request does not take an api-key name".into()
+                            );
+                        }
+                        let site = self.site.as_deref().unwrap_or("").trim();
+                        if site.is_empty() {
+                            return Err(
+                                "a vault request needs a site of at most 300 characters".into()
+                            );
+                        }
+                        Ok(())
+                    }
+                    "api_key" => {
+                        let name = self.name.as_deref().unwrap_or("").trim();
+                        crate::api_keys::validate_api_key_name(name)?;
+                        if !self.options.is_empty()
+                            || !self.fields.is_empty()
+                            || !self.actions.is_empty()
+                        {
+                            return Err(
+                                "an api-key request cannot carry options, fields or actions".into(),
+                            );
+                        }
+                        Ok(())
+                    }
+                    other => Err(format!("unknown vault item kind '{other}'")),
                 }
-                Ok(())
             }
         }
     }
@@ -327,6 +357,22 @@ impl InteractionBlock {
             }
         }
         Ok(())
+    }
+
+    /// The machine-safe name of an API-key request, if this block is one.
+    pub fn api_key_name(&self) -> Option<&str> {
+        if self.item_kind.as_deref() != Some("api_key") {
+            return None;
+        }
+        self.name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+    }
+
+    /// Whether this block asks the owner to enter an API key.
+    pub fn is_api_key_request(&self) -> bool {
+        self.api_key_name().is_some()
     }
 }
 
@@ -429,6 +475,28 @@ impl QuestionRequest {
             created_at: Utc::now(),
             answered_at: None,
         })
+    }
+
+    /// Whether this request must be answered in the desktop secure card.
+    ///
+    /// A remote chat cannot render a password field or keep the value out of a
+    /// platform transcript, so it may not answer this request at all.
+    pub fn is_api_key_request(&self) -> bool {
+        self.kind == QuestionKind::Vault
+            && self
+                .payload
+                .as_ref()
+                .is_some_and(InteractionBlock::is_api_key_request)
+    }
+
+    /// The requested API-key name, when this is an API-key request.
+    pub fn api_key_name(&self) -> Option<&str> {
+        if self.kind != QuestionKind::Vault {
+            return None;
+        }
+        self.payload
+            .as_ref()
+            .and_then(InteractionBlock::api_key_name)
     }
 
     /// Parse the stored answer for a structured block.
@@ -556,7 +624,7 @@ mod tests {
     }
 
     #[test]
-    fn a_vault_request_needs_a_site_and_only_supports_logins() {
+    fn a_login_vault_request_needs_a_site() {
         let missing = InteractionBlock::default();
         assert!(missing
             .validate(QuestionKind::Vault)
@@ -570,7 +638,7 @@ mod tests {
         assert!(card
             .validate(QuestionKind::Vault)
             .unwrap_err()
-            .contains("login"));
+            .contains("unknown vault item kind"));
         let login = InteractionBlock {
             site: Some("https://github.com".into()),
             item_kind: Some("login".into()),
@@ -578,6 +646,54 @@ mod tests {
             ..Default::default()
         };
         assert!(login.validate(QuestionKind::Vault).is_ok());
+        assert!(!login.is_api_key_request());
+    }
+
+    #[test]
+    fn an_api_key_request_needs_a_safe_name() {
+        let missing = InteractionBlock {
+            item_kind: Some("api_key".into()),
+            ..Default::default()
+        };
+        assert!(missing
+            .validate(QuestionKind::Vault)
+            .unwrap_err()
+            .contains("name"));
+
+        let unsafe_name = InteractionBlock {
+            item_kind: Some("api_key".into()),
+            name: Some("../openai".into()),
+            ..Default::default()
+        };
+        assert!(unsafe_name
+            .validate(QuestionKind::Vault)
+            .unwrap_err()
+            .contains("must start"));
+
+        let card = InteractionBlock {
+            item_kind: Some("api_key".into()),
+            name: Some("openai".into()),
+            title: Some("OpenAI API key".into()),
+            placeholder: Some("sk-…".into()),
+            site: Some("https://platform.openai.com".into()),
+            ..Default::default()
+        };
+        card.validate(QuestionKind::Vault).expect("api key card");
+        assert!(card.is_api_key_request());
+        assert_eq!(card.api_key_name(), Some("openai"));
+
+        let request = QuestionRequest::pending_block(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "OpenAI",
+            "Enter an OpenAI key",
+            QuestionKind::Vault,
+            card,
+        )
+        .expect("request");
+        assert!(request.is_api_key_request());
+        assert_eq!(request.api_key_name(), Some("openai"));
     }
 
     #[test]

@@ -5223,6 +5223,9 @@ fn default_agent_skills() -> Vec<String> {
         "memory_save",
         "todo",
         "ask_user",
+        "save_api_key",
+        "list_api_keys",
+        "remove_api_key",
         "note_manager",
     ]
     .iter()
@@ -9602,16 +9605,90 @@ async fn list_pending_questions_for_bot(
         .map_err(|e| e.to_string())
 }
 
+/// An API-key card may only be cancelled through the ordinary answer path.
+///
+/// The object must be exactly `{"action_id":"cancel"}`. Any additional field
+/// could be a secret the renderer was tricked into sending, and the value path
+/// is exclusively `submit_api_key_answer`.
+fn api_key_cancel_answer(answer: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(answer) else {
+        return false;
+    };
+    let Some(map) = value.as_object() else {
+        return false;
+    };
+    map.len() == 1 && map.get("action_id").and_then(|id| id.as_str()) == Some("cancel")
+}
+
 /// Answer a parked question. Returns true if it was still pending.
+///
+/// API-key requests are refused here on purpose. Their value must go through
+/// [`submit_api_key_answer`], which stores it and records only the name and
+/// path as the answer; a plain text answer would put the key into the model
+/// transcript. The one exception is a bare cancel, which carries no value.
 #[tauri::command]
 async fn answer_question(
     state: State<'_, AppState>,
     question_id: Uuid,
     answer: String,
 ) -> Result<bool, String> {
+    if let Some(question) = ravenbot_db::queries::QuestionQueries::get(state.db.pool(), question_id)
+        .await
+        .map_err(|e| e.to_string())?
+    {
+        if question.is_api_key_request() && !api_key_cancel_answer(&answer) {
+            return Err(
+                "API keys must be entered in the secure card, not answered as text.".to_string(),
+            );
+        }
+    }
     ravenbot_db::queries::QuestionQueries::answer(state.db.pool(), question_id, &answer)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Complete an API-key request with the value entered in the secure card.
+///
+/// The value is stored in the Vault and written to an owner-only file. The
+/// question answer contains only the name and path; the returned JSON adds the
+/// label and the replaced/answered flags. The value never enters the
+/// transcript, the audit log or the model. Only the workspace owner can invoke
+/// this command (it is not in any operator or viewer allowlist).
+#[tauri::command]
+async fn submit_api_key_answer(
+    state: State<'_, AppState>,
+    question_id: Uuid,
+    secret: String,
+) -> Result<serde_json::Value, String> {
+    let stored =
+        ravenbot_db::api_keys::answer_question_with_key(state.db.pool(), question_id, &secret)
+            .await?;
+    if let Some(question) = ravenbot_db::queries::QuestionQueries::get(state.db.pool(), question_id)
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        let entry = ravenbot_core::AuditEntry::new(
+            question.bot_id,
+            ravenbot_core::AuditEventType::ToolCall {
+                tool_name: "save_api_key".to_string(),
+                arguments: serde_json::json!({
+                    "name": stored.name.clone(),
+                    "label": stored.label.clone(),
+                    "path": stored.path.clone(),
+                }),
+            },
+        )
+        .with_run_id(question.run_id)
+        .with_thread_id(question.thread_id);
+        let _ = state.runtime.audit_logger().log(&entry).await;
+    }
+    Ok(serde_json::json!({
+        "name": stored.name,
+        "label": stored.label,
+        "path": stored.path,
+        "replaced": stored.replaced,
+        "answered": stored.answered,
+    }))
 }
 
 /// Cooperatively cancel a running run (stops at the next step boundary).
@@ -20572,6 +20649,21 @@ async fn save_vault_item(
     if secret.len() > 16 * 1024 {
         return Err("The vault secret is larger than 16KB.".to_string());
     }
+    if let Some(existing) = item
+        .id
+        .as_deref()
+        .and_then(|value| Uuid::parse_str(value).ok())
+    {
+        let items = ravenbot_db::queries::VaultQueries::list(state.db.pool())
+            .await
+            .map_err(|error| error.to_string())?;
+        if items
+            .iter()
+            .any(|entry| entry.id == existing.to_string() && entry.kind == "api_key")
+        {
+            return Err("API keys are managed through the secure card, not this form.".to_string());
+        }
+    }
     let id = item
         .id
         .as_deref()
@@ -20716,9 +20808,10 @@ async fn reveal_vault_item(
 
 #[tauri::command]
 async fn delete_vault_item(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    ravenbot_db::queries::VaultQueries::delete(state.db.pool(), &id)
-        .await
-        .map_err(|e| e.to_string())
+    // An API key has a second copy outside the database. Deleting the row but
+    // leaving the owner-only file behind would make the Vault look empty while
+    // an agent could still read the key.
+    ravenbot_db::api_keys::remove_vault_item(state.db.pool(), &id).await
 }
 
 const MAX_VAULT_IMPORT_BYTES: u64 = ravenbot_db::vault_import::MAX_IMPORT_BYTES as u64;
@@ -25193,6 +25286,7 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
         list_pending_questions,
         list_pending_questions_for_bot,
         answer_question,
+        submit_api_key_answer,
         cancel_run,
         pause_run,
         cancel_office_turn,
@@ -28162,6 +28256,21 @@ mod browser_dock_tests {
     }
 
     #[test]
+    fn an_api_key_card_only_accepts_a_bare_cancel() {
+        assert!(api_key_cancel_answer(r#"{"action_id":"cancel"}"#));
+        assert!(!api_key_cancel_answer("sk-must-not-enter"));
+        assert!(!api_key_cancel_answer(
+            r#"{"action_id":"saved","values":{"name":"openai"}}"#
+        ));
+        assert!(!api_key_cancel_answer(
+            r#"{"action_id":"cancel","secret":"sk-must-not-enter"}"#
+        ));
+        assert!(!api_key_cancel_answer(
+            r#"{"action_id":"cancel","values":{}}"#
+        ));
+    }
+
+    #[test]
     fn browser_saves_require_the_same_http_origin() {
         let current = tauri::Url::parse("https://app.example/login?next=1").unwrap();
         assert_eq!(
@@ -28181,6 +28290,7 @@ mod browser_dock_tests {
                 id: id.to_string(),
                 kind: "login".to_string(),
                 name: name.to_string(),
+                key_name: None,
                 username: username.to_string(),
                 website: website.to_string(),
                 last4: None,
@@ -29085,6 +29195,21 @@ mod audit_schedule_tests {
     use ravenbot_core::{AuditEntry, AuditEventType};
     use ravenbot_db::Database;
 
+    /// Keep signed-export tests off the real keychain/vault.
+    fn test_secret_vault() -> std::path::PathBuf {
+        use std::sync::OnceLock;
+        static DIR: OnceLock<std::path::PathBuf> = OnceLock::new();
+        DIR.get_or_init(|| {
+            let dir =
+                std::env::temp_dir().join(format!("ravenbot-audit-secrets-{}", Uuid::new_v4()));
+            std::fs::create_dir_all(&dir).expect("test secret dir");
+            std::env::set_var("RAVENBOT_DISABLE_KEYCHAIN", "1");
+            std::env::set_var("RAVENBOT_SECRET_VAULT", &dir);
+            dir
+        })
+        .clone()
+    }
+
     fn entry(age: Duration) -> AuditEntry {
         AuditEntry {
             id: Uuid::new_v4(),
@@ -29120,7 +29245,7 @@ mod audit_schedule_tests {
 
     #[tokio::test]
     async fn due_backup_is_signed_verifiable_and_gated_by_interval() {
-        std::env::set_var("RAVENBOT_DISABLE_KEYCHAIN", "1");
+        let _vault_dir = test_secret_vault();
         let db_path =
             std::env::temp_dir().join(format!("ravenbot-audit-schedule-{}.db", Uuid::new_v4()));
         let export_dir =
@@ -29203,7 +29328,6 @@ mod audit_schedule_tests {
         let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
         let _ = std::fs::remove_dir_all(&export_dir);
-        std::env::remove_var("RAVENBOT_DISABLE_KEYCHAIN");
     }
 }
 #[cfg(test)]

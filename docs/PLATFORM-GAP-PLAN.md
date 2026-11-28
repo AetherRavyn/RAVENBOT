@@ -46,7 +46,7 @@ Every slice must satisfy all of these before it is called done:
 | 2 | Visual page → composer actions | High | M | Medium | shipped |
 | 3 | Proactive messaging tools | High | M | Medium | shipped |
 | 4 | Browser action depth | Medium | M | Medium | shipped |
-| 5 | Secure API-key request | Medium | M | Medium | planned |
+| 5 | Secure API-key request | Medium | M | Medium | shipped |
 | 6 | Activity-aware avatars | Medium | S/M | Low | planned |
 | 7 | Chat backdrop (image/video) | Medium | M | Medium | planned |
 | 8 | Avatar-aware attention island | Medium | S | Low | planned |
@@ -111,7 +111,7 @@ now; if a real fleet shows payload pressure, move the bytes to
 
 **Shipped evidence:** `AvatarPicker.upload.dom.test.ts` covers a valid PNG,
 forged bytes, a >512 KB file, remove and the generated fallback; the six keys
-exist in all twelve locales; the full frontend suite passes at 1,014 tests.
+exist in all twelve locales; the full frontend suite passes at 1,016 tests.
 
 ### 1.2 Activity-aware avatars — `planned`
 
@@ -251,21 +251,36 @@ list/close, downloads/uploads and a real-display Playwright/browser-dock run.
 
 ---
 
-## Phase 5 — Secure API-key request — `planned`
+## Phase 5 — Secure API-key request — `shipped`
 
-Our Vault request is login-oriented. Coding tasks also need a key the agent can
-use without seeing it.
+`ask_user` now has a Vault `api_key` subtype, and `save_api_key` is the
+convenience request tool.
 
-- Add a `secret`/`api_key` question kind (or a Vault subtype) with name, title,
-  placeholder and submit label.
-- The owner enters the value in a secure form. It is stored in the Vault; the
+- The card accepts a machine-safe `name`, `title`, `site`, `placeholder`,
+  `purpose` and `submit_label`. The owner enters the value in a password field;
+  the save path calls `submit_api_key_answer`, never `answer_question`. Cancel
+  is a bare `{"action_id":"cancel"}` object with no other fields.
+- The value is stored in the Vault (`kind = 'api_key'`, unique `key_name`) and
+  written to an atomic `0600` file in a `0700` `keys/api-keys` directory. The
   agent receives only `{name, path}`.
-- Add `list_api_keys`, `save_api_key` (only for a user-provided value) and
-  `remove_api_key`; never return or log the value.
-- The tool path is readable only by the agent's process and is quoted in
-  examples.
-- Tests: value never crosses the model boundary, invalid name rejected, file
-  permissions, owner-only answer.
+- `list_api_keys` returns metadata and `file_exists`; `remove_api_key` deletes
+  both copies; `save_api_key` refuses any value in its arguments. Tool arguments
+  are redacted before they are emitted or audited.
+- Paired chats cannot answer an API-key question, and headless runs skip it.
+  `submit_api_key_answer` is owner-only.
+- Linux bubblewrap and Docker mount `keys/api-keys` read-only, and the macOS
+  Seatbelt profile allows reads but not writes, so a shell can use a key
+  without being able to rewrite or delete the owner's copy.
+- Tests: the value never enters the question row, model tool result, audit
+  event or list output; invalid names and whitespace values are refused; file
+  and directory permissions, symlinked-directory refusal, atomic replacement,
+  remote refusal and the owner-only gate are covered.
+- Docs: [SECURE-API-KEYS.md](SECURE-API-KEYS.md).
+
+**Still open:** per-process isolation of the key file, rotation history/expiry,
+and provider-specific environment injection. The value is protected from the
+model, not from the owner's OS account; an agent with shell access can read the
+path by design.
 
 ---
 

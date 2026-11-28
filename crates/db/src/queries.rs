@@ -13437,6 +13437,8 @@ pub struct VaultItemMeta {
     pub id: String,
     pub kind: String,
     pub name: String,
+    /// The machine-safe name of an API key; `None` for other vault kinds.
+    pub key_name: Option<String>,
     pub username: String,
     pub website: String,
     pub last4: Option<String>,
@@ -13452,6 +13454,7 @@ impl VaultQueries {
             String,
             String,
             String,
+            Option<String>,
             String,
             String,
             Option<String>,
@@ -13459,7 +13462,7 @@ impl VaultQueries {
             String,
         );
         let rows: Vec<Row> = sqlx::query_as(
-            "SELECT id, kind, name, username, website, last4, created_at, updated_at
+            "SELECT id, kind, name, key_name, username, website, last4, created_at, updated_at
              FROM vault_items ORDER BY updated_at DESC",
         )
         .fetch_all(pool)
@@ -13467,11 +13470,12 @@ impl VaultQueries {
         Ok(rows
             .into_iter()
             .map(
-                |(id, kind, name, username, website, last4, created_at, updated_at)| {
+                |(id, kind, name, key_name, username, website, last4, created_at, updated_at)| {
                     VaultItemMeta {
                         id,
                         kind,
                         name,
+                        key_name,
                         username,
                         website,
                         last4,

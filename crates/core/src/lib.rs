@@ -4,6 +4,7 @@
 //! bots, threads, messages, skills, routines, runs, and more.
 
 pub mod agent_activity;
+pub mod api_keys;
 pub mod approval;
 pub mod audit;
 pub mod bot;

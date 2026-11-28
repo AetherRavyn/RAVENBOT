@@ -84,6 +84,12 @@ pub async fn answer_question(
     if question.thread_id != thread_id {
         return Err("That question belongs to another conversation.".to_string());
     }
+    if question.is_api_key_request() {
+        return Err(
+            "API keys must be entered in the RAVENBOT desktop secure card, not in this chat."
+                .to_string(),
+        );
+    }
     let answered = QuestionQueries::answer(db.pool(), question_id, answer)
         .await
         .map_err(|error| error.to_string())?;
@@ -124,7 +130,9 @@ pub async fn pending_card(db: &Database, thread_id: Uuid) -> Option<PendingCard>
     let questions = QuestionQueries::list_pending_for_thread(db.pool(), thread_id)
         .await
         .ok()?;
-    let question = questions.first()?;
+    let question = questions
+        .iter()
+        .find(|question| !question.is_api_key_request())?;
     Some(PendingCard::Question {
         id: question.id,
         header: question.header.clone(),
@@ -145,6 +153,12 @@ pub async fn answer_option(
         .ok_or_else(|| "That question no longer exists.".to_string())?;
     if question.thread_id != thread_id {
         return Err("That question belongs to another conversation.".to_string());
+    }
+    if question.is_api_key_request() {
+        return Err(
+            "API keys must be entered in the RAVENBOT desktop secure card, not in this chat."
+                .to_string(),
+        );
     }
     let option = question
         .options
@@ -189,17 +203,30 @@ pub async fn pending_notice(db: &Database, thread_id: Uuid) -> Option<String> {
     let questions = QuestionQueries::list_pending_for_thread(db.pool(), thread_id)
         .await
         .ok()?;
-    let question = questions.first()?;
-    Some(format!(
-        "Question: {}{}. Reply `answer {} <text>`.",
-        question.header,
-        if question.question.trim().is_empty() {
-            String::new()
-        } else {
-            format!(" — {}", question.question)
-        },
-        question.id
-    ))
+    if let Some(question) = questions
+        .iter()
+        .find(|question| !question.is_api_key_request())
+    {
+        return Some(format!(
+            "Question: {}{}. Reply `answer {} <text>`.",
+            question.header,
+            if question.question.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" — {}", question.question)
+            },
+            question.id
+        ));
+    }
+    if questions
+        .iter()
+        .any(|question| question.is_api_key_request())
+    {
+        return Some(
+            "This run needs an API key. Open RAVENBOT to enter it in the secure card.".to_string(),
+        );
+    }
+    None
 }
 
 pub async fn first_pending_approval(
@@ -223,7 +250,8 @@ pub async fn first_pending_question(
         QuestionQueries::list_pending_for_thread(db.pool(), thread_id)
             .await
             .map_err(|error| error.to_string())?
-            .first()
+            .iter()
+            .find(|question| !question.is_api_key_request())
             .map(|question| question.id),
     )
 }
@@ -294,5 +322,67 @@ mod tests {
         let id = Uuid::new_v4();
         assert_eq!(parse_id(&format!("approve {id}"), 1), Some(id));
         assert_eq!(parse_id("approve nope", 1), None);
+    }
+
+    async fn api_key_question() -> (Database, Uuid, Uuid) {
+        let path = std::env::temp_dir().join(format!("ravenbot-chat-key-{}.db", Uuid::new_v4()));
+        let db = Database::new(&path).await.expect("temp db");
+        let bot = ravenbot_core::Bot::new("Key holder", "assistant");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .expect("bot");
+        let thread = ravenbot_core::Thread::new(bot.id, "Keys");
+        ravenbot_db::queries::ThreadQueries::create(db.pool(), &thread)
+            .await
+            .expect("thread");
+        let question = ravenbot_core::QuestionRequest::pending_block(
+            bot.id,
+            thread.id,
+            Uuid::new_v4(),
+            "OpenAI",
+            "Enter an OpenAI key",
+            ravenbot_core::QuestionKind::Vault,
+            ravenbot_core::InteractionBlock {
+                item_kind: Some("api_key".into()),
+                name: Some("openai".into()),
+                title: Some("OpenAI API key".into()),
+                ..Default::default()
+            },
+        )
+        .expect("question");
+        QuestionQueries::create(db.pool(), &question)
+            .await
+            .expect("create");
+        (db, thread.id, question.id)
+    }
+
+    #[tokio::test]
+    async fn a_paired_chat_cannot_answer_an_api_key_request() {
+        let (db, thread_id, question_id) = api_key_question().await;
+        let error = answer_question(&db, thread_id, question_id, "sk-must-not-enter")
+            .await
+            .expect_err("remote answer");
+        assert!(error.contains("desktop secure card"));
+        let question = QuestionQueries::get(db.pool(), question_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(question.status, ravenbot_core::QuestionStatus::Pending);
+        assert!(!question
+            .answer
+            .unwrap_or_default()
+            .contains("sk-must-not-enter"));
+    }
+
+    #[tokio::test]
+    async fn an_api_key_card_is_not_offered_to_a_chat_as_a_text_question() {
+        let (db, thread_id, _) = api_key_question().await;
+        assert!(pending_card(&db, thread_id).await.is_none());
+        assert!(first_pending_question(&db, thread_id)
+            .await
+            .unwrap()
+            .is_none());
+        let notice = pending_notice(&db, thread_id).await.expect("notice");
+        assert!(notice.contains("secure card"), "{notice}");
     }
 }

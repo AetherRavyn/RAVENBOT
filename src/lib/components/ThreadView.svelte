@@ -764,8 +764,7 @@
     answeringQuestion = id;
     try {
       await invoke("answer_question", { questionId: id, answer: value });
-      pendingQuestions = pendingQuestions.filter((q) => q.id !== id);
-      announceAttentionChanged();
+      questionSettled(id);
     } catch (e) {
       console.error("Failed to answer question:", e);
       notify(t("thread.answerFailed", { error: String(e) }), "error");
@@ -776,6 +775,12 @@
     } finally {
       answeringQuestion = null;
     }
+  }
+
+  /** A secure card stored its answer through its own command. */
+  function questionSettled(id: string) {
+    pendingQuestions = pendingQuestions.filter((q) => q.id !== id);
+    announceAttentionChanged();
   }
 
   // Inline image attachments (paste/drop) sent with the next message
@@ -3247,6 +3252,7 @@
             {answeringQuestion}
             onDecide={decideApproval}
             onAnswer={answerQuestion}
+            onSubmitted={questionSettled}
           />
         </div>
         </div>

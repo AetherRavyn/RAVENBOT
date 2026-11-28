@@ -756,13 +756,18 @@
     answeringQuestion = id;
     try {
       await invoke("answer_question", { questionId: id, answer: value });
-      pendingQuestions = pendingQuestions.filter((q) => q.id !== id);
-      announceAttentionChanged();
+      questionSettled(id);
     } catch (e) {
       notify(`Failed to answer: ${String(e)}`, "error");
     } finally {
       answeringQuestion = null;
     }
+  }
+
+  /** A secure card stored its answer through its own command. */
+  function questionSettled(id: string) {
+    pendingQuestions = pendingQuestions.filter((q) => q.id !== id);
+    announceAttentionChanged();
   }
 
 
@@ -3057,6 +3062,7 @@
           answeringQuestion={answeringQuestion}
           onDecide={decideApproval}
           onAnswer={answerQuestion}
+          onSubmitted={questionSettled}
         />
 
         <!--

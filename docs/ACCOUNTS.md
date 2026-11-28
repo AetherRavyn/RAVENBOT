@@ -63,6 +63,10 @@ Roles:
 - **viewer** — read-only: list messages, read files, inspect status. It cannot
   send, run, approve or change anything.
 
+`submit_api_key_answer` is owner-only: an operator can run work and answer
+ordinary questions, but only the owner can enter an API key into the secure
+card. The key itself never appears in the role matrix or the audit log.
+
 The role check is **server-side** in the Tauri IPC gate. Non-owner roles are
 fail-closed: a command must be explicitly allowed for the role. The UI hides
 owner-only Settings sections and shows an operator/read-only banner, but the IPC

@@ -209,6 +209,7 @@
   function kindLabel(value: string): string {
     if (value === "card") return t("vault.card");
     if (value === "contact") return t("vault.contact");
+    if (value === "api_key") return t("vault.apiKey");
     return t("vault.login");
   }
 
@@ -436,7 +437,9 @@
                   </span>
                 </div>
                 <p class="mt-0.5 truncate text-[11px] text-[var(--text-tertiary)]">
-                  {item.username || item.website || t("vault.noWebsite")}
+                  {item.kind === "api_key" && item.key_name
+                    ? item.key_name
+                    : item.username || item.website || t("vault.noWebsite")}
                 </p>
                 {#if item.last4}
                   <p class="mt-0.5 font-mono text-[11px] text-[var(--text-muted)]">{t("vault.cardMasked", { last4: item.last4 })}</p>
