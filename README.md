@@ -223,6 +223,14 @@ voice, and computer control. It also supports:
   agent only the name and path. `list_api_keys` and `remove_api_key` manage the
   metadata; paired chats and headless runs cannot answer the card. See
   [`docs/SECURE-API-KEYS.md`](docs/SECURE-API-KEYS.md).
+- **Durable background tasks and one-shot waits.** `start_task` gives another
+  agent (or the caller) a real task thread and run, scheduled under explicit
+  `browser`/workspace locks, dependency order and the handoff-depth cap.
+  `message_task` and `close_task` stay owner-only; `await_event` blocks on an
+  exact task event or timer, fires once, and returns `expired` instead of
+  hanging. Interrupted tasks fail with a cause on restart, and task threads are
+  never resumed as ordinary chats. See
+  [`docs/AGENT-TASKS.md`](docs/AGENT-TASKS.md).
 
 ### Output people can open
 
@@ -441,11 +449,11 @@ The design contracts are in [`docs/agent-harness.md`](docs/agent-harness.md) and
 RAVENBOT is tested at the boundaries that matter: the agent loop, approvals,
 sandboxing, persistence, provider failure, memory retrieval, and the UI.
 
-- **1,100+ Rust tests** across the workspace, including 270 Tauri library tests
-  plus 7 cross-tenant isolation tests, 249 runtime tests, 237 skill tests, 129
-  database tests, 97 core tests, 42 vision tests, 35 memory tests, 33 MCP
+- **1,100+ Rust tests** across the workspace, including 272 Tauri library tests
+  plus 7 cross-tenant isolation tests, 254 runtime tests, 240 skill tests, 141
+  database tests, 103 core tests, 42 vision tests, 35 memory tests, 33 MCP
   tests, and 40 remote-access tests.
-- **1,016 frontend tests** across 144 files. A gate rejects literal English
+- **1,017 frontend tests** across 144 files. A gate rejects literal English
   `aria-label` values, and axe checks cover 20+ surfaces; accessible names follow
   the selected locale.
 - `cargo test --workspace`, `cargo clippy --workspace --all-targets`,

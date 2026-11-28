@@ -128,6 +128,8 @@ outside world:
   `reload`, `run_steps` or `eval`;
 - `remove_api_key` (a secret-store mutation; `save_api_key` only opens the
   owner-entered secure card and `list_api_keys` returns metadata);
+- every background-task tool: `start_task`, `message_task`, `close_task`,
+  `await_event`, `list_waits`, `close_wait`;
 - `file_write`, `file_edit`, `code_edit`;
 - write-like MCP tools (names containing write/create/update/delete/send/…);
 - non-read `http_request` methods.

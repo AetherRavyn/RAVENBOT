@@ -197,6 +197,11 @@ pub async fn run() -> Result<(), String> {
         runtime.clone(),
         HostEvents::Headless,
     ));
+    let agent_task_task = tokio::spawn(crate::agent_tasks::run_loop(
+        db.clone(),
+        runtime.clone(),
+        HostEvents::Headless,
+    ));
     let mcp_event_task = tokio::spawn(crate::mcp_events::run_loop(
         db.clone(),
         runtime.clone(),
@@ -254,6 +259,7 @@ pub async fn run() -> Result<(), String> {
     queue_task.abort();
     autonomy_task.abort();
     thread_goal_task.abort();
+    agent_task_task.abort();
     mcp_event_task.abort();
     audit_task.abort();
     otel_task.abort();

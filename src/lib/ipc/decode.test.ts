@@ -43,6 +43,11 @@ describe("decodeThreads", () => {
     ]);
   });
 
+  it("keeps the task thread kind used by background tasks", () => {
+    const [thread] = decodeThreads([{ id: "thread-task", kind: "task" }]);
+    expect(thread.kind).toBe("task");
+  });
+
   it("falls back to chat for an unknown kind", () => {
     const [thread] = decodeThreads([{ id: "thread-3", kind: "something-new" }]);
     expect(thread.kind).toBe("chat");

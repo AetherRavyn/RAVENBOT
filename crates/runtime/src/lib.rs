@@ -1343,6 +1343,21 @@ impl Runtime {
         }
     }
 
+    /// Seed the handoff depth for a run started outside `delegate` (the host's
+    /// task runner), so nested tasks and delegations keep the same cap.
+    pub fn set_delegation_depth(&self, run_id: Uuid, depth: u32) {
+        if let Ok(mut map) = self.delegation_depth.write() {
+            map.insert(run_id, depth);
+        }
+    }
+
+    /// Drop a task run's handoff-depth entry when it ends.
+    pub fn clear_delegation_depth(&self, run_id: Uuid) {
+        if let Ok(mut map) = self.delegation_depth.write() {
+            map.remove(&run_id);
+        }
+    }
+
     /// Whether cancellation was requested for a run.
     fn is_cancelled(&self, run_id: Uuid) -> bool {
         self.cancel_flags
@@ -2640,7 +2655,7 @@ impl Runtime {
         // wrong place. The office's own folders are stamped on the thread
         // exactly as the graph executor stamps them for a parallel node.
         if let Some(office) = self.office_of(parent_run.thread_id).await {
-            if let Err(e) = self.link_thread_to_office(&thread, &office).await {
+            if let Err(e) = self.attach_thread_to_office(&thread, &office).await {
                 return ravenbot_skills::SkillResult::failure(e);
             }
         }
@@ -3029,7 +3044,9 @@ impl Runtime {
     /// `INSERT OR REPLACE` is safe in the new table because its key is
     /// `(chatroom_id, thread_id)`: re-linking the same thread is a no-op, so a
     /// retry cannot duplicate it.
-    async fn link_thread_to_office(
+    /// Link a thread to an office so its working directory and shared context
+    /// match the room it belongs to. Public for the host's task runner.
+    pub async fn attach_thread_to_office(
         &self,
         thread: &ravenbot_core::Thread,
         office: &ravenbot_core::ChatRoom,
@@ -3181,6 +3198,12 @@ impl Runtime {
             "save_api_key" => "Request an API key".to_string(),
             "list_api_keys" => "List API keys".to_string(),
             "remove_api_key" => "Remove an API key".to_string(),
+            "start_task" => "Start a background task".to_string(),
+            "message_task" => "Message a background task".to_string(),
+            "close_task" => "Close a background task".to_string(),
+            "await_event" => "Wait for an event".to_string(),
+            "list_waits" => "List event waits".to_string(),
+            "close_wait" => "Close an event wait".to_string(),
             "diagnostics" => "Check diagnostics".to_string(),
             "image_gen" => "Generate an image".to_string(),
             _ => format!("Use {}", bare),
@@ -3705,6 +3728,18 @@ impl Runtime {
             return self.ask_user(run, bot, args.clone()).await;
         } else if name == "save_api_key" {
             return self.save_api_key(run, bot, args.clone()).await;
+        } else if name == "start_task" {
+            return self.start_task(run, bot, args.clone()).await;
+        } else if name == "message_task" {
+            return self.message_task(run, bot, args.clone()).await;
+        } else if name == "close_task" {
+            return self.close_task(run, bot, args.clone()).await;
+        } else if name == "await_event" {
+            return self.await_event(run, bot, args.clone()).await;
+        } else if name == "list_waits" {
+            return self.list_waits(run, args.clone()).await;
+        } else if name == "close_wait" {
+            return self.close_wait(run, args.clone()).await;
         } else if name == "delegate" {
             Ok(self.exec_delegation(run, args.clone()).await)
         } else if name == "memory_save" {
@@ -4092,6 +4127,767 @@ impl Runtime {
             )
             .await;
         self.wait_for_question(run, &req).await
+    }
+
+    /// `start_task`: create durable background work for another agent.
+    ///
+    /// The task thread and its first message are written before the task row,
+    /// so a queued task already has a readable record when the host loop sees
+    /// it. The target permission is the same roster/`delegate_to` rule as
+    /// `delegate`; the task cannot hand work to an agent the caller could not
+    /// delegate to.
+    async fn start_task(
+        &self,
+        run: &Run,
+        bot: &ravenbot_core::Bot,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        if self.kill_switch.is_triggered().await {
+            return serde_json::json!({ "error": "Kill switch active — tasks are paused" });
+        }
+        let target_raw = args
+            .get("target")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if target_raw.is_empty() {
+            return serde_json::json!({ "error": "start_task needs a target agent." });
+        }
+        let instruction = args
+            .get("instruction")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let instruction = match ravenbot_core::agent_task::validate_task_instruction(instruction) {
+            Ok(instruction) => instruction,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let expected_result = args
+            .get("expected_result")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let expected_result =
+            match ravenbot_core::agent_task::validate_expected_result(expected_result) {
+                Ok(expected) => expected,
+                Err(error) => return serde_json::json!({ "error": error }),
+            };
+        let title = args
+            .get("title")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| instruction.chars().take(60).collect());
+        let title = match ravenbot_core::agent_task::validate_task_title(&title) {
+            Ok(title) => title,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+
+        let depth = self
+            .delegation_depth
+            .read()
+            .map(|map| map.get(&run.id).copied().unwrap_or(0))
+            .unwrap_or(0);
+        if depth >= MAX_DELEGATION_CHAIN {
+            return serde_json::json!({
+                "error": format!(
+                    "This task is already {depth} handoffs deep and cannot start another task. Do the work yourself, or report back what you have."
+                )
+            });
+        }
+
+        let target = match Uuid::parse_str(target_raw) {
+            Ok(id) => ravenbot_db::queries::BotQueries::get(self.db.pool(), id)
+                .await
+                .ok()
+                .flatten(),
+            Err(_) => ravenbot_db::queries::BotQueries::list(self.db.pool())
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .find(|candidate| candidate.name.eq_ignore_ascii_case(target_raw)),
+        };
+        let Some(target) = target else {
+            return serde_json::json!({
+                "error": format!("Task target bot not found: {target_raw}")
+            });
+        };
+        let office = self.office_of(run.thread_id).await;
+        if target.id != bot.id {
+            let roster: Vec<Uuid> = match &office {
+                Some(office) => {
+                    ravenbot_db::queries::ChatRoomQueries::list_members(self.db.pool(), office.id)
+                        .await
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|member| member.bot_id)
+                        .collect()
+                }
+                None => Vec::new(),
+            };
+            if let Err(denial) =
+                ravenbot_core::delegation_permitted(bot, target.id, &target.name, &roster)
+            {
+                return serde_json::json!({ "error": denial.explain() });
+            }
+        }
+
+        let mut resources = Vec::new();
+        match args.get("resources") {
+            None => {}
+            Some(serde_json::Value::Array(items)) => {
+                for item in items {
+                    let Some(resource) = item.as_str() else {
+                        return serde_json::json!({
+                            "error": "Every task resource must be a string."
+                        });
+                    };
+                    resources.push(resource.to_string());
+                }
+            }
+            Some(_) => return serde_json::json!({ "error": "`resources` must be an array." }),
+        }
+        let mut resources = match ravenbot_core::agent_task::normalize_resources(&resources) {
+            Ok(resources) => resources,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let workspace = office
+            .as_ref()
+            .and_then(|office| office.project_folders.first().cloned())
+            .unwrap_or_else(|| default_project_dir(&target.name).display().to_string());
+        if let Ok(resource) =
+            ravenbot_core::agent_task::normalize_resource(&format!("workspace:{workspace}"))
+        {
+            if !resources.contains(&resource) {
+                resources.push(resource);
+                resources.sort();
+            }
+        }
+
+        let mut depends_on = Vec::new();
+        if let Some(items) = args.get("depends_on").and_then(serde_json::Value::as_array) {
+            for item in items {
+                let Some(raw) = item.as_str() else {
+                    return serde_json::json!({ "error": "Every dependency must be a task id." });
+                };
+                let Ok(id) = Uuid::parse_str(raw.trim()) else {
+                    return serde_json::json!({
+                        "error": format!("Dependency '{raw}' is not a valid task id.")
+                    });
+                };
+                let Some(dependency) =
+                    ravenbot_db::agent_tasks::AgentTaskQueries::get(self.db.pool(), id)
+                        .await
+                        .ok()
+                        .flatten()
+                else {
+                    return serde_json::json!({
+                        "error": format!("Dependency {id} no longer exists.")
+                    });
+                };
+                if dependency.owner_bot_id != bot.id {
+                    return serde_json::json!({
+                        "error": format!("Dependency {id} belongs to another agent.")
+                    });
+                }
+                if matches!(
+                    dependency.state,
+                    ravenbot_core::agent_task::AgentTaskState::Failed
+                        | ravenbot_core::agent_task::AgentTaskState::Cancelled
+                ) {
+                    return serde_json::json!({
+                        "error": format!("Dependency {id} is already terminal."),
+                    });
+                }
+                if !depends_on.contains(&id) {
+                    depends_on.push(id);
+                }
+            }
+        } else if args.get("depends_on").is_some() {
+            return serde_json::json!({ "error": "`depends_on` must be an array." });
+        }
+        if depends_on.len() > ravenbot_core::agent_task::MAX_DEPENDENCIES {
+            return serde_json::json!({
+                "error": format!(
+                    "A task may depend on at most {} tasks.",
+                    ravenbot_core::agent_task::MAX_DEPENDENCIES
+                )
+            });
+        }
+
+        let task_id = Uuid::new_v4();
+        let thread = ravenbot_core::Thread::new_task(target.id, format!("Task: {title}"));
+        if let Err(error) =
+            ravenbot_db::queries::ThreadQueries::create(self.db.pool(), &thread).await
+        {
+            return serde_json::json!({ "error": format!("Could not create the task thread: {error}") });
+        }
+        if let Some(office) = &office {
+            if let Err(error) = self.attach_thread_to_office(&thread, office).await {
+                let _ =
+                    ravenbot_db::queries::ThreadQueries::delete(self.db.pool(), thread.id).await;
+                return serde_json::json!({ "error": error });
+            }
+        }
+        let prompt = ravenbot_core::agent_task::task_prompt(
+            task_id,
+            &bot.name,
+            &title,
+            &instruction,
+            &expected_result,
+            &resources,
+        );
+        let mut user_message = ravenbot_core::Message::user(thread.id, &prompt);
+        user_message.sender_bot_id = Some(bot.id);
+        user_message.sender_name = Some(bot.name.clone());
+        if let Err(error) =
+            ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &user_message).await
+        {
+            let _ = ravenbot_db::queries::ThreadQueries::delete(self.db.pool(), thread.id).await;
+            return serde_json::json!({ "error": format!("Could not write the task prompt: {error}") });
+        }
+        let approval_policy = self.approval_policy_for(run.id).map(|policy| match policy {
+            RunApprovalPolicy::AllowAll => "allow_all",
+            RunApprovalPolicy::Review => "review",
+        });
+        let task = match ravenbot_db::agent_tasks::AgentTaskQueries::create(
+            self.db.pool(),
+            ravenbot_db::agent_tasks::NewAgentTask {
+                id: task_id,
+                owner_bot_id: bot.id,
+                target_bot_id: target.id,
+                owner_thread_id: Some(run.thread_id),
+                owner_run_id: Some(run.id),
+                thread_id: Some(thread.id),
+                office_id: office.as_ref().map(|office| office.id),
+                title: &title,
+                instruction: &instruction,
+                expected_result: &expected_result,
+                resources: &resources,
+                depends_on: &depends_on,
+                workspace: Some(workspace.as_str()),
+                depth: depth + 1,
+                auto_allow: self.auto_allow_for(run.id),
+                approval_policy,
+            },
+        )
+        .await
+        {
+            Ok(task) => task,
+            Err(error) => {
+                let _ =
+                    ravenbot_db::queries::ThreadQueries::delete(self.db.pool(), thread.id).await;
+                return serde_json::json!({ "error": error });
+            }
+        };
+        serde_json::json!({
+            "task_id": task.id,
+            "thread_id": thread.id,
+            "title": task.title,
+            "target_bot_id": task.target_bot_id,
+            "state": task.state.as_str(),
+            "resources": task.resources,
+            "depends_on": task.depends_on,
+            "depth": task.depth,
+            "note": "The task is queued. Use await_event with {\"task_id\":\"…\"} for its result."
+        })
+    }
+
+    /// `message_task`: append a message and steer it when the task run is at a
+    /// tool boundary. A message to a running task outside that boundary is
+    /// still recorded, but the result says so instead of claiming delivery.
+    async fn message_task(
+        &self,
+        _run: &Run,
+        bot: &ravenbot_core::Bot,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        let task_id = match args
+            .get("task_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| Uuid::parse_str(value.trim()).ok())
+        {
+            Some(id) => id,
+            None => return serde_json::json!({ "error": "message_task needs a valid task_id." }),
+        };
+        let message = args
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if message.is_empty() || message.chars().count() > 8_000 {
+            return serde_json::json!({
+                "error": "The task message must be between 1 and 8,000 characters."
+            });
+        }
+        let Some(task) = ravenbot_db::agent_tasks::AgentTaskQueries::get(self.db.pool(), task_id)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return serde_json::json!({ "error": "That task no longer exists." });
+        };
+        if task.owner_bot_id != bot.id {
+            return serde_json::json!({
+                "error": "Only the agent that started a task can message it."
+            });
+        }
+        if task.state.is_terminal() {
+            return serde_json::json!({
+                "error": format!("That task is already {}.", task.state.as_str())
+            });
+        }
+        let Some(thread_id) = task.thread_id else {
+            return serde_json::json!({ "error": "That task has no thread to message." });
+        };
+        let mut user_message = ravenbot_core::Message::user(thread_id, message);
+        user_message.sender_bot_id = Some(bot.id);
+        user_message.sender_name = Some(bot.name.clone());
+        if let Err(error) =
+            ravenbot_db::queries::MessageQueries::insert(self.db.pool(), &user_message).await
+        {
+            return serde_json::json!({ "error": format!("Could not write the task message: {error}") });
+        }
+        let mut delivery = "queued";
+        if let Some(task_run_id) = task.run_id {
+            if self.steerable_run(thread_id) == Some(task_run_id)
+                && self.queue_steering(task_run_id, user_message.id, message.to_string())
+            {
+                delivery = "steered";
+            } else if task.state == ravenbot_core::agent_task::AgentTaskState::Running {
+                delivery = "thread";
+            }
+        }
+        let event = task.event_payload("message", Some(message));
+        let _ = ravenbot_db::agent_tasks::AgentWaitQueries::fire_matching(
+            self.db.pool(),
+            task.owner_bot_id,
+            "task",
+            &event,
+            chrono::Utc::now(),
+        )
+        .await;
+        let note = if delivery == "thread" {
+            "The task is running outside a tool boundary; the message is in its thread but this run may not read it."
+        } else {
+            "The message is in the task thread."
+        };
+        serde_json::json!({
+            "task_id": task.id,
+            "state": task.state.as_str(),
+            "delivery": delivery,
+            "note": note,
+        })
+    }
+
+    /// `close_task`: terminate a task the caller owns.
+    async fn close_task(
+        &self,
+        _run: &Run,
+        bot: &ravenbot_core::Bot,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        let task_id = match args
+            .get("task_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| Uuid::parse_str(value.trim()).ok())
+        {
+            Some(id) => id,
+            None => return serde_json::json!({ "error": "close_task needs a valid task_id." }),
+        };
+        let reason: String = args
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .chars()
+            .take(500)
+            .collect();
+        let Some(task) = ravenbot_db::agent_tasks::AgentTaskQueries::get(self.db.pool(), task_id)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return serde_json::json!({ "error": "That task no longer exists." });
+        };
+        if task.owner_bot_id != bot.id {
+            return serde_json::json!({
+                "error": "Only the agent that started a task can close it."
+            });
+        }
+        if task.state.is_terminal() {
+            return serde_json::json!({
+                "closed": false,
+                "task_id": task.id,
+                "state": task.state.as_str(),
+                "note": "The task is already terminal."
+            });
+        }
+        let run_cancelled = if let Some(run_id) = task.run_id {
+            self.request_cancel(run_id);
+            true
+        } else {
+            false
+        };
+        let closed = ravenbot_db::agent_tasks::AgentTaskQueries::cancel(
+            self.db.pool(),
+            task.id,
+            bot.id,
+            &reason,
+            chrono::Utc::now(),
+        )
+        .await;
+        match closed {
+            Ok(Some(task)) => {
+                let event = task.event_payload("closed", None);
+                let _ = ravenbot_db::agent_tasks::AgentWaitQueries::fire_matching(
+                    self.db.pool(),
+                    task.owner_bot_id,
+                    "task",
+                    &event,
+                    chrono::Utc::now(),
+                )
+                .await;
+                serde_json::json!({
+                    "closed": true,
+                    "task_id": task.id,
+                    "state": task.state.as_str(),
+                    "run_cancelled": run_cancelled,
+                })
+            }
+            Ok(None) => serde_json::json!({
+                "closed": false,
+                "task_id": task.id,
+                "note": "The task changed state before it could be closed."
+            }),
+            Err(error) => serde_json::json!({ "error": error }),
+        }
+    }
+
+    /// `await_event`: block on one task event or timer.
+    async fn await_event(
+        &self,
+        run: &Run,
+        bot: &ravenbot_core::Bot,
+        args: serde_json::Value,
+    ) -> serde_json::Value {
+        let event_kind = args
+            .get("event_kind")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let event_kind = match ravenbot_core::agent_task::validate_event_kind(event_kind) {
+            Ok(kind) => kind,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let filter = args
+            .get("filter")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        let filter = match ravenbot_core::agent_task::validate_event_filter(&filter) {
+            Ok(filter) => filter,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        if event_kind == "timer" && filter.as_object().is_some_and(|map| !map.is_empty()) {
+            return serde_json::json!({ "error": "A timer wait cannot carry a task filter." });
+        }
+        let timeout_ms = args
+            .get("timeout_ms")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(ravenbot_core::agent_task::DEFAULT_WAIT_MS)
+            .clamp(1_000, ravenbot_core::agent_task::MAX_WAIT_MS);
+        let deadline = chrono::Utc::now() + chrono::Duration::milliseconds(timeout_ms as i64);
+        let wait = match ravenbot_db::agent_tasks::AgentWaitQueries::create(
+            self.db.pool(),
+            ravenbot_db::agent_tasks::NewAgentWait {
+                bot_id: bot.id,
+                run_id: run.id,
+                thread_id: run.thread_id,
+                event_kind: &event_kind,
+                filter: filter.clone(),
+                deadline,
+            },
+        )
+        .await
+        {
+            Ok(wait) => wait,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        // A task can finish between the owner's decision to wait and the wait
+        // row. It can also be terminal already after a crash/resume. If the
+        // named task already satisfies the filter, fire immediately instead of
+        // waiting for another transition that will never come.
+        if event_kind == "task" {
+            if let Some(task_id) = filter
+                .get("task_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|value| Uuid::parse_str(value).ok())
+            {
+                if let Ok(Some(task)) =
+                    ravenbot_db::agent_tasks::AgentTaskQueries::get(self.db.pool(), task_id).await
+                {
+                    let explicit_state = filter.get("state").is_some();
+                    if task.owner_bot_id == bot.id && (task.state.is_terminal() || explicit_state) {
+                        let event = task.event_payload("state", None);
+                        if ravenbot_core::agent_task::task_event_matches(&filter, &event) {
+                            let _ = ravenbot_db::agent_tasks::AgentWaitQueries::fire_matching(
+                                self.db.pool(),
+                                bot.id,
+                                "task",
+                                &event,
+                                chrono::Utc::now(),
+                            )
+                            .await;
+                            if let Ok(Some(payload)) =
+                                ravenbot_db::agent_tasks::AgentWaitQueries::claim_fired(
+                                    self.db.pool(),
+                                    wait.id,
+                                    run.id,
+                                )
+                                .await
+                            {
+                                return serde_json::json!({
+                                    "status": "fired",
+                                    "wait_id": wait.id,
+                                    "event_kind": "task",
+                                    "payload": payload,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let started = std::time::Instant::now();
+        let timeout = std::time::Duration::from_millis(timeout_ms);
+        loop {
+            if self.kill_switch.is_triggered().await {
+                let _ = ravenbot_db::agent_tasks::AgentWaitQueries::cancel(
+                    self.db.pool(),
+                    wait.id,
+                    run.id,
+                    "run interrupted",
+                )
+                .await;
+                return serde_json::json!({ "error": "run interrupted before the event" });
+            }
+            if self.is_cancelled(run.id) {
+                let _ = ravenbot_db::agent_tasks::AgentWaitQueries::cancel(
+                    self.db.pool(),
+                    wait.id,
+                    run.id,
+                    "run cancelled",
+                )
+                .await;
+                return serde_json::json!({ "error": "run cancelled before the event" });
+            }
+            if self.is_pause_requested(run.id) {
+                let _ = ravenbot_db::agent_tasks::AgentWaitQueries::cancel(
+                    self.db.pool(),
+                    wait.id,
+                    run.id,
+                    "run paused",
+                )
+                .await;
+                return serde_json::json!({
+                    "paused": true,
+                    "error": "run paused before the event",
+                    "note": "Do not retry; the run will resume from its checkpoint."
+                });
+            }
+            let current = match ravenbot_db::agent_tasks::AgentWaitQueries::get(
+                self.db.pool(),
+                wait.id,
+            )
+            .await
+            {
+                Ok(Some(current)) => current,
+                Ok(None) => return serde_json::json!({ "error": "the wait record disappeared" }),
+                Err(error) => return serde_json::json!({ "error": error }),
+            };
+            match current.state {
+                ravenbot_core::agent_task::AgentWaitState::Fired => {
+                    match ravenbot_db::agent_tasks::AgentWaitQueries::claim_fired(
+                        self.db.pool(),
+                        wait.id,
+                        run.id,
+                    )
+                    .await
+                    {
+                        Ok(Some(payload)) => {
+                            return serde_json::json!({
+                                "status": "fired",
+                                "wait_id": wait.id,
+                                "event_kind": current.event_kind,
+                                "payload": payload,
+                            })
+                        }
+                        Ok(None) => continue,
+                        Err(error) => return serde_json::json!({ "error": error }),
+                    }
+                }
+                ravenbot_core::agent_task::AgentWaitState::Expired => {
+                    return serde_json::json!({
+                        "status": "expired",
+                        "wait_id": wait.id,
+                        "event_kind": current.event_kind,
+                        "deadline": current.deadline,
+                    })
+                }
+                ravenbot_core::agent_task::AgentWaitState::Cancelled => {
+                    return serde_json::json!({
+                        "status": "cancelled",
+                        "wait_id": wait.id,
+                        "event_kind": current.event_kind,
+                        "payload": current.payload,
+                    })
+                }
+                ravenbot_core::agent_task::AgentWaitState::Consumed => {
+                    return serde_json::json!({
+                        "status": "consumed",
+                        "wait_id": wait.id,
+                        "note": "This wait was already consumed."
+                    })
+                }
+                ravenbot_core::agent_task::AgentWaitState::Waiting => {
+                    let due =
+                        chrono::Utc::now() >= current.deadline || started.elapsed() >= timeout;
+                    if due {
+                        if current.event_kind == "timer" {
+                            let _ = ravenbot_db::agent_tasks::AgentWaitQueries::fire_timer(
+                                self.db.pool(),
+                                wait.id,
+                                run.id,
+                            )
+                            .await;
+                            match ravenbot_db::agent_tasks::AgentWaitQueries::claim_fired(
+                                self.db.pool(),
+                                wait.id,
+                                run.id,
+                            )
+                            .await
+                            {
+                                Ok(Some(payload)) => {
+                                    return serde_json::json!({
+                                        "status": "fired",
+                                        "wait_id": wait.id,
+                                        "event_kind": "timer",
+                                        "payload": payload,
+                                    })
+                                }
+                                Ok(None) => continue,
+                                Err(error) => return serde_json::json!({ "error": error }),
+                            }
+                        }
+                        let _ = ravenbot_db::agent_tasks::AgentWaitQueries::expire(
+                            self.db.pool(),
+                            wait.id,
+                            run.id,
+                            "wait timed out",
+                        )
+                        .await;
+                        return serde_json::json!({
+                            "status": "expired",
+                            "wait_id": wait.id,
+                            "event_kind": current.event_kind,
+                            "deadline": current.deadline,
+                        });
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    }
+
+    /// `list_waits`: this run's waits, never another run's.
+    async fn list_waits(&self, run: &Run, args: serde_json::Value) -> serde_json::Value {
+        let include_finished = args
+            .get("include_finished")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let waits = match ravenbot_db::agent_tasks::AgentWaitQueries::list_for_run(
+            self.db.pool(),
+            run.id,
+            include_finished,
+        )
+        .await
+        {
+            Ok(waits) => waits,
+            Err(error) => return serde_json::json!({ "error": error }),
+        };
+        let items: Vec<serde_json::Value> = waits
+            .iter()
+            .map(|wait| {
+                serde_json::json!({
+                    "wait_id": wait.id,
+                    "event_kind": wait.event_kind,
+                    "filter": wait.filter,
+                    "deadline": wait.deadline,
+                    "state": wait.state.as_str(),
+                    "has_payload": wait.payload.is_some(),
+                    "created_at": wait.created_at,
+                })
+            })
+            .collect();
+        serde_json::json!({ "waits": items, "count": items.len() })
+    }
+
+    /// `close_wait`: cancel one of this run's waits.
+    async fn close_wait(&self, run: &Run, args: serde_json::Value) -> serde_json::Value {
+        let wait_id = match args
+            .get("wait_id")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|value| Uuid::parse_str(value.trim()).ok())
+        {
+            Some(id) => id,
+            None => return serde_json::json!({ "error": "close_wait needs a valid wait_id." }),
+        };
+        let reason: String = args
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("closed by its run")
+            .trim()
+            .chars()
+            .take(500)
+            .collect();
+        let Some(wait) = ravenbot_db::agent_tasks::AgentWaitQueries::get(self.db.pool(), wait_id)
+            .await
+            .ok()
+            .flatten()
+        else {
+            return serde_json::json!({ "error": "That wait no longer exists." });
+        };
+        if wait.run_id != run.id {
+            return serde_json::json!({
+                "error": "Only the run that created a wait can close it."
+            });
+        }
+        if !wait.state.is_active() {
+            return serde_json::json!({
+                "closed": false,
+                "wait_id": wait.id,
+                "state": wait.state.as_str(),
+                "note": "The wait is already finished."
+            });
+        }
+        match ravenbot_db::agent_tasks::AgentWaitQueries::cancel(
+            self.db.pool(),
+            wait.id,
+            run.id,
+            &reason,
+        )
+        .await
+        {
+            Ok(true) => serde_json::json!({
+                "closed": true,
+                "wait_id": wait.id,
+                "state": "cancelled",
+            }),
+            Ok(false) => serde_json::json!({
+                "closed": false,
+                "wait_id": wait.id,
+                "note": "The wait changed state before it could be closed."
+            }),
+            Err(error) => serde_json::json!({ "error": error }),
+        }
     }
 
     /// Trigger the kill switch
@@ -5725,6 +6521,12 @@ impl Runtime {
             "save_api_key",
             "list_api_keys",
             "remove_api_key",
+            "start_task",
+            "message_task",
+            "close_task",
+            "await_event",
+            "list_waits",
+            "close_wait",
             "delegate",
             "analyze_image",
         ];
@@ -9886,9 +10688,15 @@ mod integration_tests {
             ravenbot_db::queries::ThreadQueries::create(db.pool(), &child)
                 .await
                 .unwrap();
-            runtime.link_thread_to_office(&child, &room).await.unwrap();
+            runtime
+                .attach_thread_to_office(&child, &room)
+                .await
+                .unwrap();
             // A retry must not duplicate the link.
-            runtime.link_thread_to_office(&child, &room).await.unwrap();
+            runtime
+                .attach_thread_to_office(&child, &room)
+                .await
+                .unwrap();
         }
 
         let rows: i64 = sqlx::query_scalar(
@@ -9983,7 +10791,10 @@ mod integration_tests {
         ravenbot_db::queries::ThreadQueries::create(db.pool(), &child)
             .await
             .unwrap();
-        runtime.link_thread_to_office(&child, &room).await.unwrap();
+        runtime
+            .attach_thread_to_office(&child, &room)
+            .await
+            .unwrap();
 
         (runtime, room, office, child)
     }
@@ -10066,7 +10877,7 @@ mod integration_tests {
             .unwrap();
 
         runtime
-            .link_thread_to_office(&delegate_thread, &room)
+            .attach_thread_to_office(&delegate_thread, &room)
             .await
             .expect("linking the delegated thread");
 
@@ -12517,6 +13328,349 @@ mod parity_tests {
         assert!(!answered.answer.unwrap().contains("sk-runtime-secret"));
 
         let _ = ravenbot_db::api_keys::remove(db.pool(), "openai").await;
+    }
+
+    #[tokio::test]
+    async fn background_tasks_are_owned_locked_and_closeable() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let target = Bot::new("Target", "runs background work");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &target)
+            .await
+            .unwrap();
+        let mut owner = Bot::new("Owner", "starts background work");
+        owner.delegate_to = vec![target.id];
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner)
+            .await
+            .unwrap();
+        let (_thread, run) = seed_run(&db, &owner).await;
+
+        let started = runtime
+            .start_task(
+                &run,
+                &owner,
+                serde_json::json!({
+                    "target": target.id.to_string(),
+                    "title": "Review the migration",
+                    "instruction": "Check the rollback path.",
+                    "expected_result": "A verdict with evidence.",
+                    "resources": ["browser"]
+                }),
+            )
+            .await;
+        assert!(started["error"].is_null(), "{started}");
+        let task_id = Uuid::parse_str(started["task_id"].as_str().unwrap()).unwrap();
+        let task = ravenbot_db::agent_tasks::AgentTaskQueries::get(db.pool(), task_id)
+            .await
+            .unwrap()
+            .expect("task");
+        assert_eq!(task.owner_bot_id, owner.id);
+        assert_eq!(task.target_bot_id, target.id);
+        assert_eq!(
+            task.state,
+            ravenbot_core::agent_task::AgentTaskState::Queued
+        );
+        assert!(task.resources.contains(&"browser".to_string()));
+        assert!(task
+            .resources
+            .iter()
+            .any(|resource| resource.starts_with("workspace:")));
+        let task_thread =
+            ravenbot_db::queries::ThreadQueries::get(db.pool(), task.thread_id.unwrap())
+                .await
+                .unwrap()
+                .expect("task thread");
+        assert_eq!(task_thread.kind, ravenbot_core::ThreadKind::Task);
+        assert!(task_thread.visible, "task threads are readable, not hidden");
+        let messages =
+            ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), task_thread.id)
+                .await
+                .unwrap();
+        let prompt = match &messages.first().unwrap().content {
+            ravenbot_core::MessageContent::Text { text, .. } => text.clone(),
+            other => panic!("unexpected task prompt: {other:?}"),
+        };
+        assert!(prompt.contains(&task_id.to_string()));
+
+        let intruder = Bot::new("Intruder", "not the owner");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &intruder)
+            .await
+            .unwrap();
+        let denied = runtime
+            .message_task(
+                &run,
+                &intruder,
+                serde_json::json!({"task_id": task_id.to_string(), "message": "hello"}),
+            )
+            .await;
+        assert!(denied["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Only the agent"));
+
+        let queued = runtime
+            .message_task(
+                &run,
+                &owner,
+                serde_json::json!({"task_id": task_id.to_string(), "message": "Also check CI."}),
+            )
+            .await;
+        assert_eq!(queued["delivery"], "queued");
+        let messages =
+            ravenbot_db::queries::MessageQueries::list_by_thread(db.pool(), task_thread.id)
+                .await
+                .unwrap();
+        assert_eq!(messages.len(), 2);
+
+        let closed = runtime
+            .close_task(
+                &run,
+                &owner,
+                serde_json::json!({"task_id": task_id.to_string(), "reason": "superseded"}),
+            )
+            .await;
+        assert_eq!(closed["closed"], true, "{closed}");
+        let task = ravenbot_db::agent_tasks::AgentTaskQueries::get(db.pool(), task_id)
+            .await
+            .unwrap()
+            .expect("closed task");
+        assert_eq!(
+            task.state,
+            ravenbot_core::agent_task::AgentTaskState::Cancelled
+        );
+        assert!(task
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("superseded"));
+    }
+
+    #[tokio::test]
+    async fn await_event_wakes_once_from_a_task_close() {
+        let db = temp_db().await;
+        let runtime = Arc::new(Runtime::new(db.clone()));
+        let target = Bot::new("Target", "runs background work");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &target)
+            .await
+            .unwrap();
+        let mut owner = Bot::new("Owner", "starts background work");
+        owner.delegate_to = vec![target.id];
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner)
+            .await
+            .unwrap();
+        let (_thread, run) = seed_run(&db, &owner).await;
+        let started = runtime
+            .start_task(
+                &run,
+                &owner,
+                serde_json::json!({
+                    "target": target.id.to_string(),
+                    "instruction": "Wait for the review."
+                }),
+            )
+            .await;
+        let task_id = Uuid::parse_str(started["task_id"].as_str().unwrap()).unwrap();
+
+        let await_runtime = runtime.clone();
+        let await_run = run.clone();
+        let await_bot = owner.clone();
+        let handle = tokio::spawn(async move {
+            await_runtime
+                .await_event(
+                    &await_run,
+                    &await_bot,
+                    serde_json::json!({
+                        "event_kind": "task",
+                        "filter": {"task_id": task_id.to_string()},
+                        "timeout_ms": 5_000
+                    }),
+                )
+                .await
+        });
+
+        let mut wait_id = None;
+        for _ in 0..120 {
+            let waits =
+                ravenbot_db::agent_tasks::AgentWaitQueries::list_for_run(db.pool(), run.id, false)
+                    .await
+                    .unwrap();
+            if let Some(wait) = waits.first() {
+                wait_id = Some(wait.id);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        let wait_id = wait_id.expect("await_event must park a wait");
+
+        let closed = runtime
+            .close_task(
+                &run,
+                &owner,
+                serde_json::json!({"task_id": task_id.to_string(), "reason": "done"}),
+            )
+            .await;
+        assert_eq!(closed["closed"], true, "{closed}");
+        let result = handle.await.expect("await task");
+        assert_eq!(result["status"], "fired", "{result}");
+        assert_eq!(result["payload"]["state"], "cancelled", "{result}");
+        let wait = ravenbot_db::agent_tasks::AgentWaitQueries::get(db.pool(), wait_id)
+            .await
+            .unwrap()
+            .expect("wait");
+        assert_eq!(
+            wait.state,
+            ravenbot_core::agent_task::AgentWaitState::Consumed
+        );
+
+        // A duplicate event cannot re-fire a consumed wait.
+        let payload = ravenbot_core::agent_task::bounded_event_payload(serde_json::json!({
+            "event": "state",
+            "task_id": task_id,
+            "state": "cancelled"
+        }));
+        let fired = ravenbot_db::agent_tasks::AgentWaitQueries::fire_matching(
+            db.pool(),
+            owner.id,
+            "task",
+            &payload,
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+        assert!(fired.is_empty());
+    }
+
+    #[tokio::test]
+    async fn await_event_returns_an_already_terminal_task() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let target = Bot::new("Target", "runs work");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &target)
+            .await
+            .unwrap();
+        let mut owner = Bot::new("Owner", "starts work");
+        owner.delegate_to = vec![target.id];
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner)
+            .await
+            .unwrap();
+        let (_thread, run) = seed_run(&db, &owner).await;
+        let started = runtime
+            .start_task(
+                &run,
+                &owner,
+                serde_json::json!({
+                    "target": target.id.to_string(),
+                    "instruction": "Finish before I wait."
+                }),
+            )
+            .await;
+        let task_id = Uuid::parse_str(started["task_id"].as_str().unwrap()).unwrap();
+        let closed = runtime
+            .close_task(
+                &run,
+                &owner,
+                serde_json::json!({"task_id": task_id.to_string(), "reason": "already done"}),
+            )
+            .await;
+        assert_eq!(closed["closed"], true, "{closed}");
+
+        // The task is already cancelled. The wait must see that instead of
+        // blocking for a transition that will never happen.
+        let result = runtime
+            .await_event(
+                &run,
+                &owner,
+                serde_json::json!({
+                    "event_kind": "task",
+                    "filter": {"task_id": task_id.to_string()},
+                    "timeout_ms": 1_000
+                }),
+            )
+            .await;
+        assert_eq!(result["status"], "fired", "{result}");
+        assert_eq!(result["payload"]["state"], "cancelled", "{result}");
+    }
+
+    #[tokio::test]
+    async fn await_event_expires_a_task_wait_and_fires_a_timer() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let bot = Bot::new("Waiter", "waits");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &bot)
+            .await
+            .unwrap();
+        let (_thread, run) = seed_run(&db, &bot).await;
+
+        let expired = runtime
+            .await_event(
+                &run,
+                &bot,
+                serde_json::json!({
+                    "event_kind": "task",
+                    "filter": {"task_id": Uuid::new_v4().to_string()},
+                    "timeout_ms": 1_000
+                }),
+            )
+            .await;
+        assert_eq!(expired["status"], "expired", "{expired}");
+
+        let timer = runtime
+            .await_event(
+                &run,
+                &bot,
+                serde_json::json!({"event_kind": "timer", "timeout_ms": 1_000}),
+            )
+            .await;
+        assert_eq!(timer["status"], "fired", "{timer}");
+        assert_eq!(timer["payload"]["event"], "timer", "{timer}");
+    }
+
+    #[tokio::test]
+    async fn start_task_respects_depth_and_delegation_permission() {
+        let db = temp_db().await;
+        let runtime = Runtime::new(db.clone());
+        let target = Bot::new("Target", "runs work");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &target)
+            .await
+            .unwrap();
+        let owner = Bot::new("Owner", "starts work");
+        ravenbot_db::queries::BotQueries::insert(db.pool(), &owner)
+            .await
+            .unwrap();
+        let (_thread, run) = seed_run(&db, &owner).await;
+
+        let denied = runtime
+            .start_task(
+                &run,
+                &owner,
+                serde_json::json!({
+                    "target": target.id.to_string(),
+                    "instruction": "Do work"
+                }),
+            )
+            .await;
+        assert!(!denied["error"].is_null(), "{denied}");
+
+        let mut permitted = owner.clone();
+        permitted.delegate_to = vec![target.id];
+        ravenbot_db::queries::BotQueries::update(db.pool(), &permitted)
+            .await
+            .unwrap();
+        runtime.set_delegation_depth(run.id, MAX_DELEGATION_CHAIN);
+        let too_deep = runtime
+            .start_task(
+                &run,
+                &permitted,
+                serde_json::json!({
+                    "target": target.id.to_string(),
+                    "instruction": "Do work"
+                }),
+            )
+            .await;
+        assert!(too_deep["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("handoffs deep"));
     }
 
     #[tokio::test]

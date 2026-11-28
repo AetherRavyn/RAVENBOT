@@ -51,6 +51,12 @@ impl SkillRegistry {
         registry.register(Arc::new(SaveApiKeySkill::new()));
         registry.register(Arc::new(ListApiKeysSkill::new()));
         registry.register(Arc::new(RemoveApiKeySkill::new()));
+        registry.register(Arc::new(StartTaskSkill::new()));
+        registry.register(Arc::new(MessageTaskSkill::new()));
+        registry.register(Arc::new(CloseTaskSkill::new()));
+        registry.register(Arc::new(AwaitEventSkill::new()));
+        registry.register(Arc::new(ListWaitsSkill::new()));
+        registry.register(Arc::new(CloseWaitSkill::new()));
         registry.register(Arc::new(ComputerControlSkill::new()));
         registry.register(Arc::new(YoutubeSkill::new()));
         registry.register(Arc::new(ArxivSkill::new()));

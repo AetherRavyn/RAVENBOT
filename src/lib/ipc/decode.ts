@@ -37,6 +37,7 @@ const THREAD_KINDS: ReadonlySet<string> = new Set<ThreadKind>([
   "node",
   "channel",
   "goal",
+  "task",
 ]);
 
 const MESSAGE_ROLES: ReadonlySet<string> = new Set<MessageRole>([

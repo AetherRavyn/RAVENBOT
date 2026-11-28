@@ -19,6 +19,8 @@ pub enum ThreadKind {
     Node,
     Channel,
     Goal,
+    /// Background work started with `start_task`.
+    Task,
 }
 
 impl ThreadKind {
@@ -31,6 +33,7 @@ impl ThreadKind {
             Self::Node => "node",
             Self::Channel => "channel",
             Self::Goal => "goal",
+            Self::Task => "task",
         }
     }
 
@@ -42,6 +45,7 @@ impl ThreadKind {
             "node" => Self::Node,
             "channel" => Self::Channel,
             "goal" => Self::Goal,
+            "task" => Self::Task,
             _ => Self::Chat,
         }
     }
@@ -103,6 +107,17 @@ impl Thread {
         let mut thread = Self::new(bot_id, title);
         thread.kind = kind;
         thread.visible = false;
+        thread
+    }
+
+    /// A visible thread for a background agent task.
+    ///
+    /// Tasks are real work, so the target agent's owner can open the thread and
+    /// read what happened. It is not `new_internal`: hiding the only record of
+    /// unattended work would make the task system less trustworthy, not tidier.
+    pub fn new_task(bot_id: Uuid, title: impl Into<String>) -> Self {
+        let mut thread = Self::new(bot_id, title);
+        thread.kind = ThreadKind::Task;
         thread
     }
 

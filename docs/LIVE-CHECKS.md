@@ -140,6 +140,39 @@ appears after a delay:
    the chat says to open RAVENBOT and that `answer <id> <text>` is refused.
 9. As a non-owner workspace role, confirm `submit_api_key_answer` is refused.
 
+## Manual background-task check
+
+1. In a desktop conversation, ask the agent to start a small task for another
+   agent (or itself) with `start_task`, a short title, and a concrete
+   instruction. Confirm the tool result contains a `task_id` and `thread_id`.
+2. Confirm a new **Task: …** conversation appears in the target agent's history.
+   Open it and verify the prompt names the task id, instruction and expected
+   result.
+3. Ask the owner to call `await_event` with
+   `{"event_kind":"task","filter":{"task_id":"<id>"},"timeout_ms":60000}`.
+   While it is waiting, call `list_waits`; confirm one `waiting` row with the
+   task id and deadline.
+4. Let the task finish (or send it a `message_task`). Confirm the wait returns
+   `status: "fired"` once with the task state/result, and `list_waits` now shows
+   it as consumed. The same wait must not deliver a second payload.
+5. Call `await_event` again with the same already-terminal task. Confirm it
+   fires immediately rather than waiting for a new transition.
+6. Start a task with `resources: ["browser"]`, then a second with the same
+   resource. Confirm only one runs at a time and the second remains queued until
+   the first is terminal.
+7. Start a task with `depends_on` pointing at a task, close the dependency, and
+   confirm the dependent task becomes failed with a dependency reason instead of
+   waiting forever.
+8. Call `await_event` with a 1-second timeout and no matching event; confirm it
+   returns `status: "expired"` and `list_waits` says expired.
+9. Restart the app while a task is running and a run is waiting. Confirm the
+   task becomes failed with an `app quit` reason, the wait becomes expired, and
+   the task thread is still readable. Confirm the task run is not resumed as an
+   ordinary 1:1 chat.
+10. From a second agent, try `message_task` and `close_task` on the first
+    agent's task. Confirm both are refused. Try starting a task for an agent
+    the caller cannot delegate to; confirm `start_task` is refused.
+
 ## Manual voice-key check
 
 Transcription and speech both prefer the OpenAI key saved in Settings, then

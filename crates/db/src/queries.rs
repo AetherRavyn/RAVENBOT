@@ -1214,6 +1214,11 @@ impl RunQueries {
                AND thread_id NOT IN (
                    SELECT thread_id FROM channel_tasks WHERE thread_id IS NOT NULL
                )
+               -- Background task runs are reconciled by the task loop and must
+               -- not be resumed as ordinary 1:1 chats.
+               AND thread_id NOT IN (
+                   SELECT thread_id FROM agent_tasks WHERE thread_id IS NOT NULL
+               )
                -- A 1:1 goal owns its round. Resuming the raw run would skip
                -- the goal's review/verdict step and leave the goal due, so the
                -- round is closed and the goal loop starts a fresh one.
@@ -1244,6 +1249,9 @@ impl RunQueries {
                    OR thread_id IN (SELECT thread_id FROM chatroom_office_threads)
                    OR thread_id IN (
                        SELECT thread_id FROM channel_tasks WHERE thread_id IS NOT NULL
+                   )
+                   OR thread_id IN (
+                       SELECT thread_id FROM agent_tasks WHERE thread_id IS NOT NULL
                    )
                    OR thread_id IN (
                        SELECT thread_id FROM goals

@@ -1,5 +1,6 @@
 //! Built-in skills
 
+pub mod agent_tasks;
 pub mod analyze_image;
 pub mod api_keys;
 pub mod api_tester;
@@ -48,6 +49,10 @@ pub mod voice_output;
 pub mod web_search;
 pub mod youtube;
 
+pub use agent_tasks::{
+    AwaitEventSkill, CloseTaskSkill, CloseWaitSkill, ListWaitsSkill, MessageTaskSkill,
+    StartTaskSkill,
+};
 pub use analyze_image::AnalyzeImageSkill;
 pub use api_keys::{ListApiKeysSkill, RemoveApiKeySkill, SaveApiKeySkill};
 pub use api_tester::ApiTesterSkill;

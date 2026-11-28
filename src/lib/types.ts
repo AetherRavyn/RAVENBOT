@@ -75,7 +75,8 @@ export type ThreadKind =
   | "routine"
   | "node"
   | "channel"
-  | "goal";
+  | "goal"
+  | "task";
 
 export interface Thread {
   id: string;

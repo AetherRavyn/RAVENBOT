@@ -50,7 +50,7 @@ Every slice must satisfy all of these before it is called done:
 | 6 | Activity-aware avatars | Medium | S/M | Low | planned |
 | 7 | Chat backdrop (image/video) | Medium | M | Medium | planned |
 | 8 | Avatar-aware attention island | Medium | S | Low | planned |
-| 9 | Agent tasks and event waits | High | L | High | planned |
+| 9 | Agent tasks and event waits | High | L | High | shipped |
 | 10 | Agent/profile/routine tools | Medium | M | High | planned |
 | 11 | Theme palette files | Low | S | Low | planned |
 | 12 | Avatar candidate shuffle | Low | S | Low | planned |
@@ -111,7 +111,7 @@ now; if a real fleet shows payload pressure, move the bytes to
 
 **Shipped evidence:** `AvatarPicker.upload.dom.test.ts` covers a valid PNG,
 forged bytes, a >512 KB file, remove and the generated fallback; the six keys
-exist in all twelve locales; the full frontend suite passes at 1,016 tests.
+exist in all twelve locales; the full frontend suite passes at 1,017 tests.
 
 ### 1.2 Activity-aware avatars — `planned`
 
@@ -284,29 +284,39 @@ path by design.
 
 ---
 
-## Phase 6 — Agent tasks and event waits — `planned`
+## Phase 6 — Agent tasks and event waits — `shipped`
 
-**Why:** offices, channel tasks and `delegate` cover planned work, but there is
-no generic per-agent background task that can wait for an event and wake later.
+`agent_tasks` and `agent_waits` now hold durable background work and one-shot
+waits. The host task loop (`src-tauri/src/agent_tasks.rs`) claims queued tasks
+under dependency/resource rules, runs them on a visible task thread, and fires
+waits on task transitions or messages; a timer wait is a deadline.
 
-**Design**
+- Tables: `agent_tasks` (owner, target, task thread/run, state, instruction,
+  expected result, lock resources, dependencies, depth, approval policy,
+  result/error, timestamps) and `agent_waits` (bot, run, thread, event kind,
+  exact filter, deadline, state, bounded payload).
+- Tools: `start_task`, `message_task`, `close_task`, `await_event`,
+  `list_waits`, `close_wait`. All High risk; task target permission uses the
+  same `delegate_to`/office-roster rule as `delegate`.
+- One owner; `browser` and `workspace:<absolute path>` are explicit locks. The
+  workspace lock is not a filesystem grant, and the target's real workspace
+  still comes from the task thread/office. At most four tasks run per process.
+- A wait fires only from `state = 'waiting'` and is consumed only from
+  `state = 'fired'`, so duplicate/racing events wake a run once. The task row
+  and event payload are bounded; a missing/foreign/failed dependency fails the
+  dependent task with a reason.
+- `await_event` returns `expired`, `cancelled` or `fired` honestly, and fires
+  immediately when the named task is already terminal (including after a
+  restart). A message to a run outside a tool boundary is recorded in the
+  thread and reported as `delivery: "thread"`, not as steered.
+- Crash recovery marks `starting`/`running` tasks failed, expires unconsumed
+  waits, excludes task threads from 1:1 resume, and fails their runs; the task
+  loop repeats the recovery defensively on its first tick.
+- Docs: [AGENT-TASKS.md](AGENT-TASKS.md).
 
-- Tables: `agent_tasks` (owner bot, target bot, thread, state, instruction,
-  expected result, resources, dependencies, timestamps) and `agent_waits`
-  (run, event kind, filter, deadline, state, payload).
-- Tools: `start_task`, `message_task`, `close_task`, `await_event`, `list_waits`,
-  `close_wait`.
-- One task owner; explicit resources (`browser`, `workspace:<path>`) serialize
-  conflicting work.
-- The scheduler wakes a waiting run exactly once, with a bounded payload;
-  expired waits return `expired`, never hang.
-- Crash recovery returns in-flight tasks to a safe state and records why.
-- All tools high risk; no silent delegation in a channel without a person's
-  request.
-- Tests: DB transitions, wake-once, timeout, duplicate event, crash recovery,
-  resource conflict, cross-workspace isolation.
-
-This is the largest slice; do it after the smaller tools.
+**Still open:** MCP/webhook events as wait sources, a task board/read tool,
+platform-side delivery guarantees for `message_task` outside a tool boundary,
+and more than one fleet-owner process.
 
 ---
 

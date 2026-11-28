@@ -56,6 +56,24 @@ All notable changes to RAVENBOT are documented here.
   split describes the action, not a separate approval bypass. Tab list/close,
   downloads/uploads and a live-display run remain open.
 
+### Durable background agent tasks and event waits
+
+- **Tasks that outlive a tool call.** `start_task` creates a visible task
+  thread, queues durable work for another agent (or the caller), and returns a
+  task id. `message_task` appends/steers, `close_task` cancels honestly, and the
+  host loop runs at most four tasks under explicit `browser`/workspace locks,
+  dependency order and the existing three-hop handoff cap.
+- **One-shot waits.** `await_event` blocks on an exact task filter or a timer;
+  the row fires once, is consumed once, and returns `fired`, `expired` or
+  `cancelled` instead of hanging. An already-terminal task fires immediately,
+  including after a restart. `list_waits` and `close_wait` expose and cancel
+  the current run's waits.
+- **Crash recovery and isolation.** Startup fails interrupted tasks with a
+  cause, expires unconsumed waits, excludes task threads from 1:1 resume and
+  fails their runs. Only the task owner can message or close it; targets follow
+  the same `delegate_to`/office-roster rule as `delegate`.
+- **Docs:** [docs/AGENT-TASKS.md](docs/AGENT-TASKS.md).
+
 ### Secure API-key requests
 
 - **Ask without receiving.** `save_api_key` and the `ask_user` Vault

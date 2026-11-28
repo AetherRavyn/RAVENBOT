@@ -16,6 +16,7 @@ use uuid::Uuid;
 
 mod access;
 pub mod accounts;
+mod agent_tasks;
 pub mod chat_attachments;
 pub mod chat_commands;
 pub mod chat_outbound;
@@ -5226,6 +5227,12 @@ fn default_agent_skills() -> Vec<String> {
         "save_api_key",
         "list_api_keys",
         "remove_api_key",
+        "start_task",
+        "message_task",
+        "close_task",
+        "await_event",
+        "list_waits",
+        "close_wait",
         "note_manager",
     ]
     .iter()
@@ -6737,13 +6744,13 @@ pub(crate) enum HostEvents {
 }
 
 impl HostEvents {
-    fn emit(&self, event: &str, payload: serde_json::Value) {
+    pub(crate) fn emit(&self, event: &str, payload: serde_json::Value) {
         if let Self::Tauri(app) = self {
             let _ = app.emit(event, payload);
         }
     }
 
-    fn stream_emitter(&self) -> Option<ravenbot_runtime::StreamEmitter> {
+    pub(crate) fn stream_emitter(&self) -> Option<ravenbot_runtime::StreamEmitter> {
         match self {
             Self::Tauri(app) => Some(make_stream_emitter(app.clone())),
             Self::Headless => None,
@@ -23193,6 +23200,8 @@ struct StartupReconciliation {
     expired_questions: u64,
     failed_queue_items: u64,
     reset_channel_tasks: u64,
+    interrupted_tasks: u64,
+    expired_waits: u64,
     reset_agents: u64,
 }
 
@@ -23218,6 +23227,25 @@ async fn reconcile_startup_state(
     // Office graph nodes and delegated children have no independent restart
     // path, so they are closed honestly rather than resumed out of order.
     let failed_runs = ravenbot_db::queries::RunQueries::fail_orphaned_runs(pool).await?;
+
+    // Background tasks are not resumable: their side effects may have started
+    // and replaying them would duplicate work. Mark them failed with the cause,
+    // and expire the waits that were blocked on them. The task loop also does
+    // this defensively, but startup reconciliation owns the visible counts.
+    let interrupted_tasks = ravenbot_db::agent_tasks::AgentTaskQueries::recover_interrupted(
+        pool,
+        "app quit while the background task was running",
+        chrono::Utc::now(),
+    )
+    .await
+    .map_err(sqlx::Error::Protocol)?
+    .len() as u64;
+    let expired_waits = ravenbot_db::agent_tasks::AgentWaitQueries::recover_interrupted(
+        pool,
+        "app quit while waiting",
+    )
+    .await
+    .map_err(sqlx::Error::Protocol)?;
 
     // The ledger is append-only, so bound it at startup rather than on every
     // write. 30 days or 100k rows is far more history than the UI reads.
@@ -23411,6 +23439,8 @@ async fn reconcile_startup_state(
         expired_questions,
         failed_queue_items,
         reset_channel_tasks,
+        interrupted_tasks,
+        expired_waits,
         reset_agents,
     })
 }
@@ -25686,6 +25716,8 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
                         expired_questions = state.expired_questions,
                         failed_queue_items = state.failed_queue_items,
                         reset_channel_tasks = state.reset_channel_tasks,
+                        interrupted_tasks = state.interrupted_tasks,
+                        expired_waits = state.expired_waits,
                         reset_agents = state.reset_agents,
                         "Startup reconciliation complete"
                     ),
@@ -25999,6 +26031,18 @@ pub fn run(context: tauri::Context<tauri::Wry>) {
             let queue_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 office_queue_loop(queue_db, queue_runtime, HostEvents::Tauri(queue_app)).await;
+            });
+
+            let task_db = db.clone();
+            let task_runtime = runtime.clone();
+            let task_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                agent_tasks::run_loop(
+                    task_db,
+                    task_runtime,
+                    HostEvents::Tauri(task_app),
+                )
+                .await;
             });
 
             // One stdio notification listener per server with enabled MCP
